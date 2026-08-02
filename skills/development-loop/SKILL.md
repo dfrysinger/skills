@@ -415,6 +415,47 @@ Fix `must-fix` findings. Use the selective finding verifier for a disputed
 candidate only when it could block landing and deterministic investigation
 cannot settle it. Do not add a third full-diff reviewer.
 
+### Ensemble escalation
+
+`dual-review` is the default and handles most changes. The `deep` plugin's
+`code-review` skill is the heavier alternative: a fixed roster of reviewer
+personas over the whole diff, then dedup, opposing advocates, and an
+independent judge that filters false positives. Its discovery cost is flat in
+diff size, but it is many model calls at high reasoning effort and it reports
+its own spend in `COST.md`. Treat it as a deliberate purchase, not a default.
+
+Escalate to it only when the lane is systemic or critical **and** at least one
+concrete condition holds:
+
+- the diff could not be split below the reviewable-slice target in section 5,
+  so a single reviewer pass cannot hold the whole change in view;
+- the change spans multiple independent user flows or state owners that must
+  be reasoned about together;
+- the critical lane applies to security, authorization, data loss, or a
+  fail-closed boundary, where a missed defect is not recoverable after landing;
+- `dual-review` round 2 leaves a material finding that neither deterministic
+  investigation nor the selective verifier can settle, and it blocks landing.
+
+Diff size alone does not qualify a bounded change. A large mechanical rename
+is still bounded.
+
+Escalation does not replace anything. Section 6's live-proof gate stays closed
+until it passes on its own terms, and `dual-review` still runs first — the
+ensemble reviews the tree that survived it, and its judge-confirmed findings
+re-enter this section's normal must-fix gate rather than arriving as a
+mandatory work list. The judge rules on whether a finding is accurate, not on
+whether it is worth acting on.
+
+When invoking it, pass `WORKTREE`, `BASE`, `HEAD`, and a `RUN` directory under
+the project or session — never `/tmp`, which its sub-agent policy rejects. Name
+the repository's convention file (`CLAUDE.md`, `AGENTS.md`,
+`copilot-instructions.md`, or the local equivalent) in the input you give it:
+its reviewer personas check compliance against project guidelines and will
+otherwise review against generic defaults. Its reviewer agents register at
+session start, so a session that began before the plugin was installed cannot
+launch them; start a fresh one rather than falling back to a general-purpose
+agent, which runs the wrong prompt.
+
 The review gate passes when no verified, in-scope, material finding remains.
 Non-blocking follow-ups may remain.
 
@@ -488,7 +529,8 @@ answer why, and the user may want to interrogate it.*
 Use the systemic lane plus the relevant specialist review, explicit rollback,
 and fail-closed evidence. Security specialist findings use the same
 evidence/scope process but critical security/auth/data-integrity risks remain
-must-fix even when reproduction is difficult.
+must-fix even when reproduction is difficult. Where a missed defect is
+unrecoverable after landing, escalate section 7 to ensemble review.
 
 ## Context hygiene
 
@@ -543,6 +585,10 @@ literal `findings: []`.
   verification-needed, follow-up, and dropped findings.
 - **Third full reviewer.** Use a cheap finding verifier only for disputed
   blockers.
+- **Ensemble review as the default.** Buying the heavy roster for a bounded
+  change spends real credits to rediscover what one reviewer already covers,
+  and a long judged findings list invites exactly the adjacent-issue expansion
+  the stop rules exist to prevent.
 - **Permanent guard proliferation.** A focused regression test is often enough.
 - **Harness green mistaken for product green.** Scripted checks, mocked E2Es,
   helper messages, and successful source reads do not prove the visible flow.
