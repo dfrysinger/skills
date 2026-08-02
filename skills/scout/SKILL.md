@@ -64,12 +64,14 @@ and either at least one **name with the source that used it** or an explicit
 statement that the harvest found none — the terms and stack each traced to a
 file path or manifest.
 
-## 3. Dispatch four scouts in parallel
+## 3. Dispatch the four tiers at once
 
-Issue all four `task` calls in a single response so the tiers run at once.
-Each brief carries the outcome sentence, the repository, and the point scout's
-terms, names, and stack. Every search runs against the names as well as the
-mechanisms. Each scout reports; none of them recommends.
+In a single response, issue the `task` calls for **in flight**, **in tree**,
+and **in the wild**, and run your own chat searches for **in house** alongside
+them. Then dispatch the in-house follow-up scout with the names that search
+harvested. Each brief carries the outcome sentence, the repository, and the
+point scout's terms, names, and stack. Every search runs against the names as
+well as the mechanisms. Each scout reports; none of them recommends.
 
 **In flight** (`explore`) — search pull requests and issues before anyone reads
 code. Someone may already own this.
@@ -100,12 +102,20 @@ pattern that could carry part of the outcome; and which orienting docs it read
 and which rules in them bind — or that there is none of the above. Collect
 what exists; designing belongs in the report.
 
-**In house** (`explore`) — find whether this organisation is already building
-it. This tier exists because the nearest competitor is usually a colleague,
-and colleagues announce their work in chat long before it is searchable in
-code.
+**In house** — find whether this organisation is already building it. This
+tier exists because the nearest competitor is usually a colleague, and
+colleagues announce their work in chat long before it is searchable in code.
 
-Search Slack first. Run **each** harvested name and **each** mechanism term as
+**Split this tier across yourself and a subagent.** A subagent does not
+inherit your MCP tools, so an `explore` scout dispatched to search Slack finds
+no Slack tools and returns nothing — the tier's highest-signal step, silently
+skipped. So run the chat search **yourself**, in your own context. It is the
+one exception to keeping legwork out of your context, and it is affordable
+because a handful of channel searches is small next to what it catches. Then
+dispatch an `explore` scout with the names you harvested to do the reading and
+the code-following, which is the bulk of the work.
+
+Search chat first. Run **each** harvested name and **each** mechanism term as
 its own search — combining them into one query is how a real channel gets
 missed — across both public and private channels the account can reach. Search
 channel names, topics, and purposes before messages: a channel purpose is the
@@ -113,6 +123,11 @@ highest-signal artifact in the company, one sentence in which a team says
 exactly what it is building. Read the most relevant channel rather than
 trusting a search snippet, and harvest again from what you read — internal
 codenames, repository links, epic numbers, the names of the people who own it.
+
+Expect the names to carry this tier and the mechanism terms to return noise: a
+team's channel is named for what they call the thing, so a search for
+*skills forge* finds nothing while the project's metaphor finds the channel,
+the owners, and the repositories in one hit.
 
 Report the search surface, not just the findings: which workspace, whether
 private channels were reachable, every phrasing run, and anything access
