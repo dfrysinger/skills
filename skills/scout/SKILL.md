@@ -38,12 +38,6 @@ ask it to report the terms this codebase uses for the topic, the terms the
 surrounding ecosystem uses for it, and the stack a solution would be built on
 — language, framework, and the libraries already carrying nearby work.
 
-Use `general-purpose` and not `explore` here: the harvest below needs web
-search, and an `explore` agent has none. Dispatched to one, the point scout
-falls back to scraping a search engine through the shell and returns a thin,
-inward-looking list of names — which is the same as failing, since the names
-it misses are the ones that would have found the competition.
-
 Require **names as well as mechanisms**. A mechanism term describes what the
 thing does — *memory consolidation*, *retry with backoff*. A name is what
 someone shipping it calls it on a landing page or a channel topic: a product
@@ -54,30 +48,29 @@ miss a product that is this exact feature under a name nobody guessed.
 **Names are harvested, not invented.** A guessed metaphor is worthless — it
 searches for a product that does not exist while the real one keeps its own
 name. So require the point scout to run a **harvest pass**: search the outcome
-and mechanism phrases broadly on the open web and across the organisation's
-own issues, then pull the **proper nouns** out of what comes back — product
-names, codenames, channel names, repository names, terms of art capitalised in
+and mechanism phrases broadly on the open web, then pull the **proper nouns**
+out of what comes back — product names, codenames, terms of art capitalised in
 prose. Each harvested name must arrive with the source that used it. Then
 search each harvested name once more, since a product name in a release note
-leads to the architecture post behind it.
-
-The names are the harvest's output, and there may be none. Reporting *"no
-distinct name found; here are the terms searched"* is a valid, useful result.
-Inventing one to satisfy this step is the failure it exists to prevent.
+leads to the architecture post behind it. Two rounds and the five
+best-evidenced new names per round are enough; report what the cap excluded.
 
 Complete when you hold the codebase's terms, the ecosystem's terms, the stack,
 and either at least one **name with the source that used it** or an explicit
 statement that the harvest found none — the terms and stack each traced to a
-file path or manifest.
+file path or manifest, and the harvest's own phrasings and surfaces listed
+either way, since a bare "none" cannot be told apart from legwork skipped.
 
-## 3. Dispatch the four tiers at once
+## 3. Dispatch four scouts in parallel
 
-In a single response, issue the `task` calls for **in flight**, **in tree**,
-and **in the wild**, and run your own chat searches for **in house** alongside
-them. Then dispatch the in-house follow-up scout with the names that search
-harvested. Each brief carries the outcome sentence, the repository, and the
-point scout's terms, names, and stack. Every search runs against the names as
-well as the mechanisms. Each scout reports; none of them recommends.
+Issue all four `task` calls in a single response so the tiers run at once.
+Each brief carries the outcome sentence, the repository, and the point scout's
+terms, names, and stack. Every search runs against the names as well as the
+mechanisms. Each scout reports; none of them recommends.
+
+Match each tier's agent type to the evidence it must **reach**: `explore`
+reaches files and code hosting but neither the web nor chat, so it suits the
+two near tiers and would silently gut the other two.
 
 **In flight** (`explore`) — search pull requests and issues before anyone reads
 code. Someone may already own this.
@@ -113,26 +106,18 @@ building it. This tier exists because the nearest competitor is usually a
 colleague, and colleagues announce their work in chat long before it is
 searchable in code.
 
-**Dispatch this one as `general-purpose`, not `explore`.** Agent types differ
-in what they can reach: an `explore` scout gets a small fixed toolset — shell,
-file reading, search, and a few code-hosting tools — and no chat search at
-all, so dispatching this tier to one silently guts its first and best step. A
-`general-purpose` agent carries the full tool set. Have the scout confirm it
-can actually reach chat search before it starts, and say so if it cannot.
-
-Search chat first. Run **each** harvested name and **each** mechanism term as
-its own search — combining them into one query is how a real channel gets
-missed — across both public and private channels the account can reach. Search
-channel names, topics, and purposes before messages: a channel purpose is the
-highest-signal artifact in the company, one sentence in which a team says
-exactly what it is building. Read the most relevant channel rather than
-trusting a search snippet, and harvest again from what you read — internal
-codenames, repository links, epic numbers, the names of the people who own it.
-
-Expect the names to carry this tier and the mechanism terms to return noise: a
-team's channel is named for what they call the thing, so a search for
-*skills forge* finds nothing while the project's metaphor finds the channel,
-the owners, and the repositories in one hit.
+Search chat first, the harvested names before the mechanism terms, and expect
+the names to carry the tier: a team names its channel for what it calls the
+thing, so the mechanism term returns noise while the metaphor returns the
+channel, the owners, and the repositories in one hit. Run each phrase as its
+own search — combining them is how a real channel gets missed — across the
+public and private channels the account can reach, taking the five
+best-evidenced names and four mechanism terms. Search channel names, topics,
+and purposes before messages: a channel purpose is the highest-signal artifact
+in the company, one sentence in which a team says exactly what it is building.
+Read the three most relevant channels rather than trusting a search snippet,
+and harvest again from what you read — internal codenames, repository links,
+epic numbers, the names of the people who own it.
 
 Report the search surface, not just the findings: which workspace, whether
 private channels were reachable, every phrasing run, and anything access
@@ -140,20 +125,18 @@ denied you. *"Nothing found"* means nothing without that, since it is
 indistinguishable from a narrow or public-only search.
 
 Then **follow what you found into code.** Take the repositories, issues,
-epics, and design documents linked from those channels and read them. Do not
-sweep the organisation's repositories on mechanism terms — generic terms
-return hundreds of unrelated hits and bury the finding.
+epics, and design documents linked from those channels and read them.
 
 Two searches are worth running blind, because internal work is not always
 discussed in a channel you can see:
 
 - Each **distinctive** name, organisation-wide. Distinctive means an evidenced
-  proper noun or codename specific enough that a hit is almost certainly this
-  work — test it by sampling the first few results and abandoning the search
-  if they are unrelated. A common word, even a vivid one, is not distinctive
-  on its own; pair it with a qualifier.
+  proper noun specific enough that a hit is almost certainly this work: sample
+  five results, and keep the name only when at least three of them touch the
+  outcome. A common word, even a vivid one, fails that test on its own — pair
+  it with a qualifier and sample again.
 - The names of any **team or repository** you have independent reason to think
-  owns this area, whether or not Slack led you there.
+  owns this area, whether or not chat led you there.
 
 ```bash
 gh search issues --owner <org> --limit 20 --json number,state,title,url '<distinctive name>'
@@ -166,18 +149,18 @@ searches returned nothing, with the surface above.
 
 **Everything this tier finds is confidential.** Summarise it; do not paste
 internal content, quotes, or links wholesale. Keep it to a section of the
-report marked internal, and keep that report on local disk. It must never
-reach a public repository, an upstream issue, a commit message, a published
-document, or an external service — including any agent or tool that transmits
-its input off this machine.
+report marked internal, and keep that report on local disk, where the scouts
+and the skills downstream can read it. It must never reach a public
+repository, an upstream issue, a commit message, or anything published.
 
 **In the wild** (`research`) — find who has already **shipped** this, not who
 has theorised about it.
 
-Decide first which kind of claim you are being asked to evidence, and say
-which you chose. A question is often **both** — *how should we cache this?*
-has a user-visible half and an implementation half — so where it is both,
-split it and apply each bar to its own half rather than forcing one label:
+Name the claim you are being asked to evidence before searching. Most
+questions carry both kinds, so write the two out as separate subquestions —
+one stated as an outcome a user could observe, one as a mechanism inside the
+code — and hold each to its own bar, tagging every source to the subquestion
+it answers:
 
 - **A capability** — a feature a user would notice. Require **shipped products
   at scale**: generally available or in public preview, from an organisation
@@ -192,24 +175,21 @@ split it and apply each bar to its own half rather than forcing one label:
   standard-library precedent, and engineering write-ups from teams running it.
 
 Search the point scout's harvested **names** first and its mechanism terms
-second, and **harvest again as you go**: every result that names a product,
-vendor, or codename you had not seen becomes a new search. A shipped product
-is indexed under its own name, so the first mechanism search rarely reaches
-it — but it is what surfaces the name that does. Stop when a round of searches
-turns up no new names.
+second, and **harvest again as you go**: every result naming a product,
+vendor, or codename you had not seen becomes a new search, for two further
+rounds of the five best-evidenced names each. A shipped product is indexed
+under its own name, so the first mechanism search rarely reaches it — but it
+is what surfaces the name that does.
 
 Returns, for each of at least two independent sources: who shipped it, its
 date or version, **how they built it** — the architecture, the data flow, and
-the specific mechanism, in enough detail to be copied or deliberately rejected
-— the tradeoff they accepted, and, for a capability, its shipping status and
-rough scale of use. Plus where consensus sits, or that the field disagrees.
-
-A source that establishes only *that* someone shipped this has not met the bar.
-The question is who has solved it at scale **and how**, so keep digging until
-the mechanism is legible: chase the architecture post behind the launch
-announcement, the design document behind the changelog, the source behind the
-product page. Where the how is genuinely undisclosed, say so plainly and say
-what you inferred it to be.
+the specific mechanism, in enough detail to be copied or deliberately rejected,
+chasing the architecture post behind the launch announcement and the design
+document behind the changelog, or saying where the mechanism is undisclosed
+and what you infer it to be — the tradeoff they accepted, and, for a
+capability, its shipping status and rough scale of use. Plus where consensus
+sits, or that the field disagrees. Establishing only *that* someone shipped
+this misses the question, which is who has solved it at scale **and how**.
 
 Complete when all four scouts have returned and each has met the bar above.
 Redispatch any scout that came back short, naming what was missing.
@@ -227,7 +207,7 @@ is exactly the evidence the report needs. Carry it into *Who is already
 building it* and finish the report.
 
 Complete when you have either stated that no joinable effort overlaps, or put
-the join-wait-build choice to the user.
+the join-wait-adopt choice to the user.
 
 ## 5. Write the scout report
 
@@ -290,9 +270,6 @@ and the compact is submitted.
 - **Accepting a proposal as proof.** A conference talk about a running system
   outranks a blog post proposing one, however well argued. For a capability,
   shipped beats clever.
-- **Sending a tier to an agent that cannot reach its evidence.** Agent types
-  carry different tools, and a scout that cannot search does not say so — it
-  returns a thin report that reads like a finding. `explore` has no web or
-  chat search, so it suits the in-tree and in-flight tiers and ruins the
-  point scout and the in-house tier. Match the type to the evidence the tier
-  must reach, and have each scout confirm it can reach it.
+- **Sending a tier to an agent that cannot **reach** its evidence.** A scout
+  that cannot search does not say so — it returns a thin report that reads
+  like a finding.
