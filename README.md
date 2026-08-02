@@ -28,47 +28,7 @@ codex plugin add dfrysinger-skills@dfrysinger-skills
 
 Skills register as `dfrysinger-skills` and become available to invoke from your agent session. Direct local installs from a path on disk are deprecated in Copilot CLI; installing from this GitHub repo is the supported path.
 
-### Optional: install the autonomous self-learning daemon (macOS)
-
-The daemon runs three per-user LaunchAgents under your login session:
-
-- `com.${USER}.skills.dreaming` (daily 09:15) — one ordered owner for daily transcript consolidation, followed by memory roll and dry-run pruning when the weekly bucket is due.
-- `com.${USER}.skills.selftest` (manual) — preflight check.
-- `com.${USER}.skills.watchdog` (daily 12:15) — freshness, failure, halt, and overdue-success alerts.
-
-Install + verify:
-
-```sh
-~/code/skills/skills/skill-review/scripts/daemon-install.sh install
-~/code/skills/skills/skill-review/scripts/daemon-install.sh selftest
-~/code/skills/skills/skill-review/scripts/daemon-install.sh enable
-```
-
-Other commands: `status`, `uninstall`, `rollback`. Install backs up and removes
-the legacy `sweep`, `curator`, and independently provisioned `memory` agents,
-then leaves the shared halt switch active until self-test succeeds. Any file at
-`~/.copilot/skill-state/skill-review/disable-daemon` makes autonomous
-maintenance no-op.
-
-The daemon writes only to `~/.copilot/skills/` (local, no remote) and the state dir `~/.copilot/skill-state/`. It never modifies this public repo, even on disk — `verify-repo-unchanged.sh` is the post-run guard.
-
 ## Reference
-
-### Self-learning skill system — a port of [Hermes Agent](https://github.com/NousResearch/hermes-agent) to Copilot CLI
-
-A port of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)'s autonomous self-learning machinery (MIT). Agents create skills from real work without being asked, and the library is routinely consolidated or pruned. Because Copilot CLI has no code-enforced post-turn fork like Hermes, the autonomous-creation trigger is reimplemented as an end-of-task subagent dispatch plus the daily consolidation pass of one dreaming job. Weekly memory roll and pruning remain later passes of that same owner. Both paths share a writer lease and durable ledger. The [two-root layout](#layout) provides the containment Hermes gets from forking. Full attribution and the verbatim-vs-adapted breakdown: [skills/skill-review/references/NOTICE.md](./skills/skill-review/references/NOTICE.md).
-
-- **[skill-review](./skills/skill-review/SKILL.md)** : Autonomous per-session reflection that creates/patches skills WITHOUT asking — a port of Hermes's `background_review.py` (`_SKILL_REVIEW_PROMPT` lifted verbatim, wrapped in a binding Copilot execution contract). Writes only to the LOCAL root.
-- **[skill-curator](./skills/skill-curator/SKILL.md)** : Periodic curator (Hermes `curator.py`) that consolidates narrow sibling skills into umbrellas and archives unused ones on a 7-day cadence; agent-created skills are autonomous, hand-made skills are recommend-only.
-- **[skill-create](./skills/skill-create/SKILL.md)** / **[skill-manage](./skills/skill-manage/SKILL.md)** : Copilot-native re-expression of Hermes's skill-management tool surface — create, patch, archive, restore, pin, promote, or extend a skill with enforced authoring standards and a validator.
-
-To trigger an autonomous skill-creation pass on demand instead of waiting for
-the dreaming backstop, drop a scoped prompt like this into a fresh Copilot CLI
-session:
-
-> Dispatch skill-review subagent to scan my last 30 days of sessions for any procedure I had to explain to an agent more than twice that isn't already covered by a skill in `~/code/skills/skills/` or `~/.copilot/skills/`.
-
-The subagent runs the same prompt the daemon does, scoped to whatever pattern you describe. Phrase the ask in terms of *recurring teaching patterns* rather than specific error messages — the reviewer is tuned to dismiss one-off failures as noise, so framing like "find this bug class" tends to come back empty even when the pattern is real. Output lands in `~/.copilot/skills/` with a `.agent-created` marker and a ledger entry; the public repo stays pristine.
 
 ### Code Review
 
@@ -102,12 +62,10 @@ cost nothing until you type their name: `grill-me` and `writing-great-skills`.
 
 ## Layout
 
-This system uses two skill roots with different authority:
-
-- **PUBLIC plugin repo** (this repo, installed at `~/code/skills/`) — curated, shareable skills loaded via `.claude-plugin/plugin.json` `.skills[]`. The autonomous self-learning daemon never writes here; promotion of a local skill into this repo is a deliberate user action via `skill-manage/scripts/promote-skill.sh`.
-- **LOCAL native root** `~/.copilot/skills/<name>/` — agent-managed, mutable. Loaded directly by Copilot CLI without a plugin entry. It is a local git repo with **no remote** (each daemon write is a reversible commit, but nothing is ever pushed). This is where the daemon-created and personal-only skills live.
-
-Daemon dedup state (ledger + tombstones) lives outside both repos at `~/.copilot/skill-state/skill-review/` so it never leaks into the published plugin.
+This repository contains curated, shareable skills loaded through the plugin
+manifest. Personal-only skills can live under
+`~/.copilot/skills/<name>/` and load directly in Copilot CLI without a plugin
+entry.
 
 Public repo on-disk layout:
 
@@ -125,7 +83,8 @@ skills/
 
 Adding a new skill via this repo: drop a `SKILL.md` under `skills/<name>/`, list its directory in `.claude-plugin/plugin.json` `.skills[]`, commit. Re-run `copilot plugin update dfrysinger-skills` on any machine to pull the change.
 
-For a personal-only skill that should NOT be published, drop the directory under `~/.copilot/skills/<name>/` instead and run `/skills reload`. Promote later if you decide to share it.
+For a personal-only skill that should not be published, drop the directory
+under `~/.copilot/skills/<name>/` instead and run `/skills reload`.
 
 ## Forking and portability
 
@@ -133,19 +92,23 @@ Most of this system is hardcoded to my paths/identity by default but parametrize
 
 | Override | Default | Effect |
 | -- | -- | -- |
-| `SKILLS_REPO_ROOT` | `~/code/skills` | Public/curated plugin repo path |
-| `SKILLS_LOCAL_ROOT` | `~/.copilot/skills` | Local agent-managed skills root (must be a local-only git repo with no remote) |
-| `SKILLS_STATE_DIR` | `~/.copilot/skill-state/skill-review` | Daemon ledger + tombstones location |
-| `SKILLS_LAUNCHD_PREFIX` | `com.${USER}.skills` | LaunchAgent label prefix; rendered into `__LABEL__` in `skills/skill-review/assets/launchd/*.plist.tpl` at install time |
-| `SKILLS_COAUTHOR_TRAILER` | `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>` | Trailer appended to commits made by archive/restore/promote scripts. Override for Codex / Claude Code / etc. |
+| `SKILLS_REPO_ROOT` | `~/code/skills` | Public plugin repository path |
+| `SKILLS_LOCAL_ROOT` | `~/.copilot/skills` | Personal native skills root |
 
-Plus two manual edits a forker should make:
+Two manual edits a forker should make:
 
 - `.claude-plugin/plugin.json` `name` field — the published plugin slug. Mine is `dfrysinger-skills`; rename it to `<your-handle>-skills` if you republish.
-- `~/.copilot/copilot-instructions.md` — the trigger prose currently names me; reword to your preferences.
-
-The launchd daemon is **macOS-only** (`launchctl`, `security`, `osascript`). Linux porters would need a systemd-user wrapper around `skill-review/scripts/daemon-run.sh` — out of scope here, but the script itself is portable.
+- `~/.copilot/copilot-instructions.md` — reword any personal trigger prose to
+  your preferences.
 
 ## License
 
 MIT. See [LICENSE](./LICENSE).
+
+## FYI: Dreaming
+
+[Dreaming](https://github.com/dfrysinger/dreaming) is the optional autonomous
+companion that learns reusable procedures from completed work, rolls durable
+memory into skills, and consolidates or prunes the personal skill library. Its
+repository contains the automation, installer, operational safeguards, and
+dreaming-specific skills.

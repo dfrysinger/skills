@@ -107,9 +107,9 @@ feature. A one-off script in `/tmp` fails the point of this step.
 
 Then write the route down. A capture path that lives only in this session's
 transcript will be rediscovered from scratch next time — record the project's
-harness, selectors, and invocation in the repository, and when the procedure is
-reusable beyond this project, run `skill-create` so it reaches future sessions
-as a skill.
+harness, selectors, and invocation in the repository. When the procedure is
+reusable beyond this project, capture it through the installed skill-authoring
+workflow so it reaches future sessions.
 
 Complete when the missing route exists and produced a capture, or you have
 named the specific thing that blocked building it.
