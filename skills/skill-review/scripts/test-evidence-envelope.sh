@@ -192,4 +192,55 @@ SKILLS_LOCK_HELD_BY_PARENT=1 "$SCRIPT_DIR/mark-agent-created.sh" \
 [[ -f "$SKILLS_LOCAL_ROOT/interrupted/.agent-created" ]] || fail "resumed marker missing"
 pass "valid envelope without marker resumes safely"
 
+make_skill marker-only
+touch "$SKILLS_LOCAL_ROOT/marker-only/.agent-created"
+if SKILLS_LOCK_HELD_BY_PARENT=1 "$SCRIPT_DIR/mark-agent-created.sh" \
+  marker-only marker-session dispatch >/dev/null 2>&1; then
+  fail "marker-only state was silently re-authorized"
+fi
+SKILLS_LOCK_HELD_BY_PARENT=1 "$SCRIPT_DIR/mark-agent-created.sh" \
+  marker-only marker-session dispatch \
+  --repair-marker-only \
+  --task-key task:99999999-9999-9999-9999-999999999999 \
+  --independence verified \
+  --evidence-kind owner-correction \
+  --summary "Explicit marker-only repair fixture" \
+  --routing-reason "Owner supplied complete repair evidence" >/dev/null
+"$SCRIPT_DIR/evidence-envelope.py" validate \
+  "$SKILLS_LOCAL_ROOT/marker-only/.agent-created.json" >/dev/null
+pass "marker-only provenance requires explicit repair evidence"
+
+make_skill implicit-task
+SKILLS_LOCK_HELD_BY_PARENT=1 "$SCRIPT_DIR/mark-agent-created.sh" \
+  implicit-task implicit-session dispatch >/dev/null
+assert_eq "$("$SCRIPT_DIR/evidence-envelope.py" validate "$SKILLS_LOCAL_ROOT/implicit-task/.agent-created.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["verified_task_count"])')" \
+  "0" "implicit task certainty"
+pass "auto-minted task keys remain unverified"
+
+CONCURRENT="$TMP/concurrent.json"
+"$SCRIPT_DIR/evidence-envelope.py" upsert "$CONCURRENT" \
+  --skill concurrent --session-id concurrent-one --source-mode dispatch \
+  --task-key task:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa \
+  --independence verified --evidence-kind successful-procedure \
+  --summary "Concurrent fixture one" --destination skill \
+  --reason "First concurrent task" >/dev/null
+"$SCRIPT_DIR/evidence-envelope.py" upsert "$CONCURRENT" \
+  --skill concurrent --session-id concurrent-two --source-mode dispatch \
+  --task-key task:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb \
+  --independence verified --evidence-kind independent-recurrence \
+  --summary "Concurrent fixture two" --destination skill \
+  --reason "Second concurrent task" >/dev/null &
+pid_one=$!
+"$SCRIPT_DIR/evidence-envelope.py" upsert "$CONCURRENT" \
+  --skill concurrent --session-id concurrent-three --source-mode dispatch \
+  --task-key task:cccccccc-cccc-cccc-cccc-cccccccccccc \
+  --independence verified --evidence-kind independent-recurrence \
+  --summary "Concurrent fixture three" --destination skill \
+  --reason "Third concurrent task" >/dev/null &
+pid_two=$!
+wait "$pid_one" "$pid_two"
+assert_eq "$(json_get 'len(json.load(open(0))["evidence"])' "$CONCURRENT")" \
+  "3" "concurrent evidence count"
+pass "concurrent distinct upserts retain every task"
+
 echo "PASS  $passes deterministic evidence-envelope checks"

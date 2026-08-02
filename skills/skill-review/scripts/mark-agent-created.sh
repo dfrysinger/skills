@@ -34,30 +34,54 @@ EVIDENCE_KIND="successful-procedure"
 SUMMARY="Agent-created reusable procedure"
 ROUTING_REASON="Reusable procedure justified skill creation"
 CREATED_BY="skill-review"
+TASK_KEY_EXPLICIT=0
+INDEPENDENCE_EXPLICIT=0
+EVIDENCE_KIND_EXPLICIT=0
+SUMMARY_EXPLICIT=0
+ROUTING_REASON_EXPLICIT=0
+REPAIR_MARKER_ONLY=0
 LEASE_TOKEN="${SKILLS_LOCK_TOKEN:-}"
 OWN_LEASE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --task-key) TASK_KEY="$2"; shift 2 ;;
-    --independence) INDEPENDENCE="$2"; shift 2 ;;
-    --evidence-kind) EVIDENCE_KIND="$2"; shift 2 ;;
-    --summary) SUMMARY="$2"; shift 2 ;;
-    --routing-reason) ROUTING_REASON="$2"; shift 2 ;;
+    --task-key) TASK_KEY="$2"; TASK_KEY_EXPLICIT=1; shift 2 ;;
+    --independence) INDEPENDENCE="$2"; INDEPENDENCE_EXPLICIT=1; shift 2 ;;
+    --evidence-kind) EVIDENCE_KIND="$2"; EVIDENCE_KIND_EXPLICIT=1; shift 2 ;;
+    --summary) SUMMARY="$2"; SUMMARY_EXPLICIT=1; shift 2 ;;
+    --routing-reason) ROUTING_REASON="$2"; ROUTING_REASON_EXPLICIT=1; shift 2 ;;
     --created-by) CREATED_BY="$2"; shift 2 ;;
     --lease-token) LEASE_TOKEN="$2"; shift 2 ;;
+    --repair-marker-only) REPAIR_MARKER_ONLY=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 [[ -n "$TASK_KEY" ]] || TASK_KEY="task:$(python3 -c 'import uuid; print(uuid.uuid4())')"
 if [[ -z "$INDEPENDENCE" ]]; then
-  [[ "$MODE" == "dispatch" ]] && INDEPENDENCE="verified" || INDEPENDENCE="unverified"
+  if [[ "$TASK_KEY_EXPLICIT" == "1" && "$MODE" == "dispatch" ]]; then
+    INDEPENDENCE="verified"
+  else
+    INDEPENDENCE="unverified"
+  fi
 fi
 
 DIR="$("$FIND" "$NAME")" || { echo "skill not found: $NAME" >&2; exit 1; }
 SKILL_MD="$DIR/SKILL.md"
 [[ -f "$SKILL_MD" ]] || { echo "no SKILL.md in $DIR" >&2; exit 1; }
+
+if [[ -f "$DIR/.agent-created" && ! -f "$DIR/.agent-created.json" ]]; then
+  if [[ "$REPAIR_MARKER_ONLY" != "1" ]]; then
+    echo "REFUSED: '$NAME' has an authority marker but no evidence envelope; use explicit --repair-marker-only inputs" >&2
+    exit 1
+  fi
+  if [[ "$TASK_KEY_EXPLICIT" != "1" || "$INDEPENDENCE_EXPLICIT" != "1" ||
+        "$EVIDENCE_KIND_EXPLICIT" != "1" || "$SUMMARY_EXPLICIT" != "1" ||
+        "$ROUTING_REASON_EXPLICIT" != "1" ]]; then
+    echo "REFUSED: marker-only repair requires explicit task key, independence, evidence kind, summary, and routing reason" >&2
+    exit 1
+  fi
+fi
 
 renew() {
   if [[ "${SKILLS_LOCK_HELD_BY_PARENT:-0}" == "1" ]]; then

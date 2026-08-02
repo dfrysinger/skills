@@ -178,11 +178,14 @@ def legacy_to_v2(data: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
-def atomic_write(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    directory_fd = os.open(path.parent, os.O_RDONLY)
-    try:
+def atomic_write(path: Path, data: dict[str, Any], directory_fd: int | None = None) -> None:
+    own_lock = directory_fd is None
+    if own_lock:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
         fcntl.flock(directory_fd, fcntl.LOCK_EX)
+    assert directory_fd is not None
+    try:
         fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -197,7 +200,8 @@ def atomic_write(path: Path, data: dict[str, Any]) -> None:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)
     finally:
-        os.close(directory_fd)
+        if own_lock:
+            os.close(directory_fd)
 
 
 def make_evaluation() -> dict[str, Any]:
@@ -224,37 +228,43 @@ def upsert(args: argparse.Namespace) -> dict[str, Any]:
         "evidence_kind": args.evidence_kind,
         "summary": args.summary,
     }
-    if path.exists():
-        data = legacy_to_v2(load_json(path))
-        if data.get("skill") != args.skill:
-            raise EnvelopeError("existing envelope skill does not match requested skill")
-        if not any(entry.get("task_key") == args.task_key for entry in data.get("evidence", [])):
-            data.setdefault("evidence", []).append(item)
-        data["routing"] = {"destination": args.destination, "reason": args.reason}
-        data.setdefault("claims", [])
-        data.setdefault("evaluation", make_evaluation())
-        data.setdefault("review_prompt_version", args.prompt_version)
-        data.setdefault("source_mode", args.source_mode)
-        data.setdefault("created_by", args.created_by)
-        data["schema_version"] = SCHEMA_VERSION
-        data["source_session_id"] = data["evidence"][0]["session_id"]
-    else:
-        data = {
-            "schema_version": SCHEMA_VERSION,
-            "skill": args.skill,
-            "created_by": args.created_by,
-            "source_session_id": args.session_id,
-            "source_mode": args.source_mode,
-            "review_prompt_version": args.prompt_version,
-            "created_at": timestamp,
-            "evidence": [item],
-            "routing": {"destination": args.destination, "reason": args.reason},
-            "claims": [],
-            "evaluation": make_evaluation(),
-        }
-    validate_envelope(data)
-    atomic_write(path, data)
-    return data
+    path.parent.mkdir(parents=True, exist_ok=True)
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        fcntl.flock(directory_fd, fcntl.LOCK_EX)
+        if path.exists():
+            data = legacy_to_v2(load_json(path))
+            if data.get("skill") != args.skill:
+                raise EnvelopeError("existing envelope skill does not match requested skill")
+            if not any(entry.get("task_key") == args.task_key for entry in data.get("evidence", [])):
+                data.setdefault("evidence", []).append(item)
+            data["routing"] = {"destination": args.destination, "reason": args.reason}
+            data.setdefault("claims", [])
+            data.setdefault("evaluation", make_evaluation())
+            data.setdefault("review_prompt_version", args.prompt_version)
+            data.setdefault("source_mode", args.source_mode)
+            data.setdefault("created_by", args.created_by)
+            data["schema_version"] = SCHEMA_VERSION
+            data["source_session_id"] = data["evidence"][0]["session_id"]
+        else:
+            data = {
+                "schema_version": SCHEMA_VERSION,
+                "skill": args.skill,
+                "created_by": args.created_by,
+                "source_session_id": args.session_id,
+                "source_mode": args.source_mode,
+                "review_prompt_version": args.prompt_version,
+                "created_at": timestamp,
+                "evidence": [item],
+                "routing": {"destination": args.destination, "reason": args.reason},
+                "claims": [],
+                "evaluation": make_evaluation(),
+            }
+        validate_envelope(data)
+        atomic_write(path, data, directory_fd)
+        return data
+    finally:
+        os.close(directory_fd)
 
 
 def build_parser() -> argparse.ArgumentParser:

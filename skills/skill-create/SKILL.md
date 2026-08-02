@@ -143,10 +143,16 @@ agent-created skill. NO git push, NO plugin.json registration.
 7. **Mark provenance** (only when this skill was created autonomously, not by hand):
    ```bash
    ~/code/skills/skills/skill-review/scripts/mark-agent-created.sh \
-     <name> <session_id> <mode>
+     <name> <session_id> <mode> \
+     --task-key <platform-or-baton-task-key> \
+     --independence verified \
+     --evidence-kind <kind> \
+     --summary "<privacy-safe summary>" \
+     --routing-reason "<why this is a skill>"
    ```
    Pass the current task key and privacy-safe evidence summary. Continuations
-   reuse the handoff/rotation task key.
+   reuse the handoff/rotation task key. If no explicit task key is available,
+   the helper mints one but records the evidence as unverified.
 
 8. **Commit in the LOCAL repo only:**
    ```bash

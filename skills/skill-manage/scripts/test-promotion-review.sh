@@ -49,6 +49,14 @@ if "$SCRIPT_DIR/promotion-review.py" approve "$LOCAL/private-skill" \
 fi
 pass "private support-file sentinel blocks approval"
 
+make_skill "$LOCAL" nested-sidecar
+echo "PRIVATE_SENTINEL" > "$LOCAL/nested-sidecar/references/.promotion-reviewed.json"
+if "$SCRIPT_DIR/promotion-review.py" approve "$LOCAL/nested-sidecar" \
+  --reviewer claude --reviewer gpt >/dev/null 2>&1; then
+  fail "nested reserved promotion sidecar was approved"
+fi
+pass "nested reserved sidecars fail closed"
+
 make_skill "$LOCAL" safe-skill
 if "$SCRIPT_DIR/promotion-review.py" approve "$LOCAL/safe-skill" \
   --reviewer same --reviewer same >/dev/null 2>&1; then
@@ -69,7 +77,7 @@ git -C "$LOCAL" commit -qm "add safe skill"
   --reviewer claude --reviewer gpt >/dev/null
 git -C "$LOCAL" add safe-skill/.promotion-reviewed.json
 git -C "$LOCAL" commit -qm "approve safe skill"
-SKILLS_LOCAL_ROOT="$LOCAL" SKILLS_REPO_ROOT="$PUBLIC" \
+SKILLS_LOCAL_ROOT="$LOCAL" SKILLS_REPO_ROOT="$PUBLIC" SKILLS_STATE_DIR="$TMP/state" \
   SKILLS_COAUTHOR_TRAILER="Reviewed-by: fixture" \
   "$SCRIPT_DIR/promote-skill.sh" safe-skill >/dev/null
 [[ -f "$PUBLIC/skills/safe-skill/SKILL.md" ]] || fail "promoted skill missing"

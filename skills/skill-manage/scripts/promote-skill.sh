@@ -22,12 +22,28 @@ NAME="$1"
 REPO_ROOT="${SKILLS_REPO_ROOT:-$HOME/code/skills}"
 LOCAL_ROOT="${SKILLS_LOCAL_ROOT:-$HOME/.copilot/skills}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCK_SCRIPT="$SCRIPT_DIR/../../skill-review/scripts/daemon-lock.sh"
+LOCK_TOKEN=""
+MOVED=0
+PUBLIC_COMMITTED=0
+
+cleanup() {
+  if [[ "$MOVED" == "1" && "$PUBLIC_COMMITTED" == "0" && -d "$DEST" && ! -e "$SRC" ]]; then
+    mv "$DEST" "$SRC" || true
+  fi
+  if [[ -n "$LOCK_TOKEN" ]]; then
+    "$LOCK_SCRIPT" release "$LOCK_TOKEN" >/dev/null || true
+  fi
+}
+trap cleanup EXIT
 
 SRC="$LOCAL_ROOT/$NAME"
 DEST="$REPO_ROOT/skills/$NAME"
 
 [[ -f "$SRC/SKILL.md" ]] || { echo "no local skill '$NAME' at $SRC" >&2; exit 1; }
 [[ -e "$DEST" ]] && { echo "REFUSED: '$NAME' already exists in public repo at $DEST" >&2; exit 1; }
+
+LOCK_TOKEN="$("$LOCK_SCRIPT" acquire --mode session --owner "promote-skill:$NAME")"
 
 # Validate before moving anything.
 "$SCRIPT_DIR/validate-skill.sh" "$SRC/SKILL.md"
@@ -36,14 +52,17 @@ DEST="$REPO_ROOT/skills/$NAME"
 # Move into the public repo.
 mkdir -p "$(dirname "$DEST")"
 mv "$SRC" "$DEST"
+MOVED=1
 
 # Strip agent provenance — promoted skills are curated, not agent-managed.
-rm -f "$DEST/.agent-created" "$DEST/.agent-created.json" "$DEST/.promotion-reviewed.json"
+rm -f "$DEST/.agent-created" "$DEST/.agent-created.json"
 
 if find "$DEST" -name '.agent-created*' -print -quit | grep -q .; then
   echo "REFUSED: provenance remained after promotion" >&2
   exit 1
 fi
+"$SCRIPT_DIR/promotion-review.py" verify "$DEST"
+rm -f "$DEST/.promotion-reviewed.json"
 
 # Register in plugin.json (public root only).
 "$SCRIPT_DIR/registry.sh" register "$NAME" || true
@@ -59,6 +78,7 @@ Promoted ~/.copilot/skills/$NAME into the public plugin repo by the user.
 Provenance markers stripped; registered in plugin.json.
 
 ${TRAILER}"
+PUBLIC_COMMITTED=1
 
 # Commit the local repo removal. A failure here leaves the skill in BOTH roots,
 # so surface it rather than swallowing it.

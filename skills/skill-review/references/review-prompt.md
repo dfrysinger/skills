@@ -206,7 +206,10 @@ revert its own changes.**
    `author: skill-review` and dropping the `.agent-created` authority marker.
    This lets the curator manage agent-created skills autonomously while leaving
    hand-made skills alone. A dispatch continuation reuses its baton task key; a
-   sweep observation with uncertain independence is `unverified`.
+   sweep observation with uncertain independence is `unverified`. An omitted
+   task key is always auto-minted as unverified. A marker-only legacy state is
+   repaired only with `--repair-marker-only` plus explicit task key,
+   independence, evidence kind, summary, and routing reason.
 
 7a. **Evidence on every agent-created PATCH:** before committing a patch or
 support file to a marker-backed skill, run `append-skill-evidence.sh` with the

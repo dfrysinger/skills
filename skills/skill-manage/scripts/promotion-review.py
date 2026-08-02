@@ -41,9 +41,13 @@ def inventory(skill_dir: Path) -> list[dict[str, Any]]:
         raise ReviewError(f"missing SKILL.md in {skill_dir}")
     files: list[dict[str, Any]] = []
     for path in sorted(skill_dir.rglob("*")):
-        if not path.is_file() or path.name in EXCLUDED:
+        if not path.is_file():
             continue
         relative = path.relative_to(skill_dir).as_posix()
+        if relative in EXCLUDED:
+            continue
+        if path.name in EXCLUDED:
+            raise ReviewError(f"{relative}: reserved promotion sidecar must be at skill root")
         content = path.read_bytes()
         try:
             text = content.decode("utf-8")
