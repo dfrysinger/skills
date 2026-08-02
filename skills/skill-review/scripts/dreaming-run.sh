@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One effective-weekly owner for consolidate -> roll -> prune.
+# One daily owner for consolidate, with weekly roll and prune passes.
 
 set -euo pipefail
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -34,6 +34,12 @@ record_terminal() {
     --run-id "$RUN_ID" --status "$status" --reason "$reason" \
     --started-at "$START_ISO" --start-epoch "$START_EPOCH" \
     --passes-file "$PASSES_FILE"
+}
+record_cadence_neutral_success() {
+  "$STATE_TOOL" record \
+    --run-id "$RUN_ID" --status ok --reason "consolidate-only" \
+    --started-at "$START_ISO" --start-epoch "$START_EPOCH" \
+    --passes-file "$PASSES_FILE" --cadence-neutral
 }
 abort_with_record() {
   local reason="$1" message="$2"
@@ -116,20 +122,6 @@ if [[ -e "$HALT_SWITCH" ]]; then
   exit 0
 fi
 
-if [[ "${DREAMING_FORCE_DUE:-0}" != "1" ]]; then
-  set +e
-  "$STATE_TOOL" due
-  due_rc=$?
-  set -e
-  if (( due_rc == 1 )); then
-    log "weekly bucket already completed; recording cadence skip"
-    record_terminal skipped "cadence-not-due"
-    exit 0
-  elif (( due_rc != 0 )); then
-    abort_with_record "cadence-eval-failed" "cadence state could not be evaluated"
-  fi
-fi
-
 PASSES=(consolidate roll prune)
 PROMPTS=(
   "$REPO/skills/skill-review/references/sweep-prompt.txt"
@@ -157,6 +149,25 @@ for index in 0 1 2; do
     fi
     record_terminal aborted "lock-lost-before-$pass"
     exit 1
+  fi
+
+  if (( index == 1 )) && [[ "${DREAMING_FORCE_DUE:-0}" != "1" ]]; then
+    set +e
+    "$STATE_TOOL" due
+    due_rc=$?
+    set -e
+    if (( due_rc == 1 )); then
+      log "weekly bucket already completed; roll and prune are not scheduled"
+      append_pass "roll" "not_scheduled" "" "" "" "weekly-not-due"
+      append_pass "prune" "not_scheduled" "" "" "" "weekly-not-due"
+      record_cadence_neutral_success
+      log "daily consolidation completed"
+      exit 0
+    elif (( due_rc != 0 )); then
+      append_pass "roll" "not_started" "" "" "" "cadence-eval-failed"
+      append_pass "prune" "not_started" "" "" "" "cadence-eval-failed"
+      abort_with_record "cadence-eval-failed" "cadence state could not be evaluated"
+    fi
   fi
 
   pass_started_epoch="${DREAMING_NOW_EPOCH:-$(date +%s)}"

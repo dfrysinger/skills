@@ -16,7 +16,8 @@ no end-of-turn hook, so this skill's **primary path is an end-of-task dispatch**
 heavy task) plus a **scheduled sweep** that acts as the deterministic backstop
 for sessions the in-session
 dispatch missed (interrupted runs, judgment-call misses). The scheduled backstop
-runs as the first pass of the effective-weekly dreaming pipeline. Both paths are
+runs daily; memory roll and library pruning continue only when the weekly
+dreaming bucket is due. Both paths are
 gated by a durable ledger and the shared writer lease so they neither
 double-create nor mutate the skill roots concurrently.
 
@@ -34,7 +35,7 @@ It does NOT consolidate or archive the library at scale — that is
   at the end of a qualifying heavy task (the `copilot-instructions.md` trigger),
   no-ask. This is the real-time path.
 - **sweep** (backstop) — the dreaming orchestrator runs `/skill-review sweep`
-  before memory roll and library pruning.
+  daily, then continues to memory roll and library pruning when they are due.
 - Manual: user says "review this session for skills", "learn from this".
 
 ## Prerequisites

@@ -32,7 +32,7 @@ Skills register as `dfrysinger-skills` and become available to invoke from your 
 
 The daemon runs three per-user LaunchAgents under your login session:
 
-- `com.${USER}.skills.dreaming` (daily 09:15, effective weekly) — one ordered owner for transcript consolidation, memory roll, then dry-run pruning.
+- `com.${USER}.skills.dreaming` (daily 09:15) — one ordered owner for daily transcript consolidation, followed by memory roll and dry-run pruning when the weekly bucket is due.
 - `com.${USER}.skills.selftest` (manual) — preflight check.
 - `com.${USER}.skills.watchdog` (daily 12:15) — freshness, failure, halt, and overdue-success alerts.
 
@@ -56,7 +56,7 @@ The daemon writes only to `~/.copilot/skills/` (local, no remote) and the state 
 
 ### Self-learning skill system — a port of [Hermes Agent](https://github.com/NousResearch/hermes-agent) to Copilot CLI
 
-A port of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)'s autonomous self-learning machinery (MIT). Agents create skills from real work without being asked, and the library is routinely consolidated or pruned. Because Copilot CLI has no code-enforced post-turn fork like Hermes, the autonomous-creation trigger is reimplemented as an end-of-task subagent dispatch plus the first pass of one effective-weekly dreaming job. Both paths share a writer lease and durable ledger. The [two-root layout](#layout) provides the containment Hermes gets from forking. Full attribution and the verbatim-vs-adapted breakdown: [skills/skill-review/references/NOTICE.md](./skills/skill-review/references/NOTICE.md).
+A port of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)'s autonomous self-learning machinery (MIT). Agents create skills from real work without being asked, and the library is routinely consolidated or pruned. Because Copilot CLI has no code-enforced post-turn fork like Hermes, the autonomous-creation trigger is reimplemented as an end-of-task subagent dispatch plus the daily consolidation pass of one dreaming job. Weekly memory roll and pruning remain later passes of that same owner. Both paths share a writer lease and durable ledger. The [two-root layout](#layout) provides the containment Hermes gets from forking. Full attribution and the verbatim-vs-adapted breakdown: [skills/skill-review/references/NOTICE.md](./skills/skill-review/references/NOTICE.md).
 
 - **[skill-review](./skills/skill-review/SKILL.md)** : Autonomous per-session reflection that creates/patches skills WITHOUT asking — a port of Hermes's `background_review.py` (`_SKILL_REVIEW_PROMPT` lifted verbatim, wrapped in a binding Copilot execution contract). Writes only to the LOCAL root.
 - **[skill-curator](./skills/skill-curator/SKILL.md)** : Periodic curator (Hermes `curator.py`) that consolidates narrow sibling skills into umbrellas and archives unused ones on a 7-day cadence; agent-created skills are autonomous, hand-made skills are recommend-only.

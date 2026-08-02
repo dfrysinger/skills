@@ -152,6 +152,23 @@ assert_eq "$(wc -l < "$DREAMING_STATE_DIR/ledger.jsonl" | tr -d ' ')" "1" "succe
 [[ -f "$DREAMING_LEGACY_MEMORY_STATE" ]] || fail "fresh memory state was not initialized"
 pass "successful pipeline is ordered and ledgered once"
 
+new_case daily-consolidate
+current_bucket="$("$SCRIPT_DIR/dreaming-state.py" bucket)"
+"$SCRIPT_DIR/dreaming-state.py" seed --bucket "$current_bucket" --epoch "$NOW"
+"$SCRIPT_DIR/dreaming-run.sh"
+assert_eq "$(paste -sd, "$ORDER_FILE")" "skills-consolidate" "daily consolidate order"
+latest="$("$SCRIPT_DIR/dreaming-state.py" latest)"
+assert_eq "$(printf '%s' "$latest" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')" "ok" "daily consolidate status"
+assert_eq "$(printf '%s' "$latest" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["reason"])')" "consolidate-only" "daily consolidate reason"
+assert_eq "$(printf '%s' "$latest" | /usr/bin/python3 -c 'import json,sys; print(",".join(item["status"] for item in json.load(sys.stdin)["passes"]))')" "ok,not_scheduled,not_scheduled" "daily pass statuses"
+assert_eq "$(printf '%s' "$latest" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["cadence_committed"])')" "True" "daily result was not finalized"
+assert_eq "$(/usr/bin/python3 - "$DREAMING_STATE_DIR/cadence.json" <<'PY'
+import json,sys
+print(json.load(open(sys.argv[1]))["last_success_bucket"])
+PY
+)" "$current_bucket" "daily consolidate changed weekly cadence"
+pass "consolidate runs daily while roll and prune remain weekly"
+
 new_case single-pass-parent-lock
 PROMPT="$CASE/prompt.txt"
 echo prompt > "$PROMPT"

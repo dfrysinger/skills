@@ -48,9 +48,12 @@ Install one scheduled `dreaming` LaunchAgent plus the existing manual self-test
 and daily watchdog. Remove and boot out the legacy `sweep`, `curator`, and
 `memory` agents during both install and uninstall migration paths.
 
-The `dreaming` agent launches daily. A daemon-scoped weekly bucket makes the
-full pipeline run at most once per calendar week while allowing a sleeping
-laptop to catch up on the next daily tick without completion-time drift.
+The `dreaming` agent launches daily and always runs transcript consolidation.
+A daemon-scoped weekly bucket gates only memory roll (including deletion of
+memories safely committed into skills) and dry-run pruning, so the backstop can
+review up to three sessions per day while the heavier maintenance passes run
+at most once per calendar week. A sleeping laptop catches up on the next daily
+tick without completion-time drift.
 
 ### Process structure
 

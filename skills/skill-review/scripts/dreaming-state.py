@@ -176,6 +176,8 @@ def append_ledger(record: dict) -> None:
 
 
 def record(args: argparse.Namespace) -> None:
+    if args.cadence_neutral and args.status != "ok":
+        raise SystemExit("--cadence-neutral requires --status ok")
     cadence = read_json_tolerant(
         cadence_path(),
         {"last_success_bucket": -1, "last_success_at": None},
@@ -192,10 +194,10 @@ def record(args: argparse.Namespace) -> None:
         "last_success_at_before": cadence.get("last_success_at"),
         "last_success_bucket_after": cadence.get("last_success_bucket", -1),
         "last_success_at_after": cadence.get("last_success_at"),
-        "cadence_committed": args.status != "ok",
+        "cadence_committed": args.status != "ok" or args.cadence_neutral,
     }
     atomic_json(run_path(args.run_id), value)
-    if args.status != "ok":
+    if value["cadence_committed"]:
         append_ledger(value)
 
 
@@ -266,6 +268,7 @@ def build_parser() -> argparse.ArgumentParser:
     record_parser.add_argument("--ended-at")
     record_parser.add_argument("--start-epoch", type=int, required=True)
     record_parser.add_argument("--passes-file")
+    record_parser.add_argument("--cadence-neutral", action="store_true")
     record_parser.set_defaults(func=record)
 
     commit = sub.add_parser("commit-success")
