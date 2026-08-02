@@ -26,7 +26,6 @@ installed=$(
   for r in "${roots[@]}"; do
     [ -d "$r" ] || continue
     find "$r" -name SKILL.md -maxdepth 5 2>/dev/null |
-      grep -v '/\.archive/' |
       sed 's|/SKILL.md$||; s|.*/||'
   done | sort -u
 )
@@ -42,8 +41,7 @@ for cand in "$@"; do
         if sed -n '1,/^---$/p' "$f" | grep -qi '^hand-invoked: *false'; then
           exempt=1
         fi
-      done < <(find "$r" -maxdepth 5 -path "*/$cand/SKILL.md" 2>/dev/null |
-                 grep -v '/\.archive/')
+      done < <(find "$r" -maxdepth 5 -path "*/$cand/SKILL.md" 2>/dev/null)
     done
   fi
   if [ "$exempt" -eq 1 ]; then

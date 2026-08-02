@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# restore-skill.sh — move a previously-archived skill back to its live location.
-# Inverse of archive-skill.sh. Root-aware: searches both roots' .archive/ and
-# restores within the same root (public repo => git + registry; local native =>
-# git only, no registry). Flattened layout: <root>/.archive/<name> -> <root>/<name>.
+# restore-skill.sh — bring a retired skill back from git history.
+# Inverse of archive-skill.sh.
+#
+# archive-skill.sh deletes the skill and writes a retirement record naming the
+# commit that still holds it. This reads that record and checks the skill's
+# tree back out of that commit. When the record is missing (retired before
+# records existed, or state dir wiped), it falls back to finding the delete
+# commit in the log, so history alone is always enough.
+#
+# Root-aware: public repo => git + registry; local native => git only.
 #
 # Usage: restore-skill.sh <name>
 
@@ -18,46 +24,77 @@ NAME="$1"
 REPO_ROOT="${SKILLS_REPO_ROOT:-$HOME/code/skills}"
 LOCAL_ROOT="${SKILLS_LOCAL_ROOT:-$HOME/.copilot/skills}"
 STATE_DIR="${SKILLS_STATE_DIR:-$HOME/.copilot/skill-state/skill-review}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Search both roots' archives. Each candidate carries its root context.
-ARCHIVED=""
-for BASE in "$REPO_ROOT/skills/.archive" "$LOCAL_ROOT/.archive"; do
-  [[ -d "$BASE" ]] || continue
-  if [[ -f "$BASE/$NAME/SKILL.md" ]]; then
-    if [[ -n "$ARCHIVED" ]]; then ARCHIVED="$ARCHIVED
-$BASE/$NAME"; else ARCHIVED="$BASE/$NAME"; fi
-  fi
-done
+GIT_ROOT=""
+SRC_REL=""
+DEST_REL=""
+RESTORE_SHA=""
 
-if [[ -z "$ARCHIVED" ]]; then
-  echo "no archived skill named '$NAME' under either root's .archive/" >&2
-  exit 1
-fi
-COUNT=$(printf '%s\n' "$ARCHIVED" | grep -c .)
-if [[ "$COUNT" -gt 1 ]]; then
-  echo "ambiguous: '$NAME' matched $COUNT archived skills:" >&2
-  printf '%s\n' "$ARCHIVED" >&2
-  exit 1
-fi
-
-ARCHIVED_DIR="$ARCHIVED"
-if [[ "$ARCHIVED_DIR" == "$REPO_ROOT/skills/.archive/"* ]]; then
-  GIT_ROOT="$REPO_ROOT"
-  DEST="$REPO_ROOT/skills/$NAME"
-  USE_REGISTRY=1
+RECORD="$STATE_DIR/retired/$NAME.json"
+if [[ -f "$RECORD" ]]; then
+  GIT_ROOT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["git_root"])' "$RECORD")
+  SRC_REL=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["path"])' "$RECORD")
+  DEST_REL=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("dest") or d["path"])' "$RECORD")
+  RESTORE_SHA=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["restore_sha"])' "$RECORD")
 else
-  GIT_ROOT="$LOCAL_ROOT"
-  DEST="$LOCAL_ROOT/$NAME"
-  USE_REGISTRY=0
+  # No record: search each root's history for the commit that deleted the skill.
+  # The restore point is that commit's parent.
+  for ROOT in "$REPO_ROOT" "$LOCAL_ROOT"; do
+    [[ -d "$ROOT/.git" ]] || continue
+    for CANDIDATE in "skills/$NAME" "$NAME"; do
+      # --no-renames is required: git's default rename detection reports a
+      # move as R, not D, so the delete commit would never be found.
+      SHA=$(git -C "$ROOT" log -1 --no-renames --format=%H --diff-filter=D \
+        -- "$CANDIDATE/SKILL.md" 2>/dev/null || true)
+      [[ -n "$SHA" ]] || continue
+      if [[ -n "$GIT_ROOT" ]]; then
+        echo "ambiguous: '$NAME' was deleted in more than one root; restore by hand." >&2
+        exit 1
+      fi
+      GIT_ROOT="$ROOT"
+      SRC_REL="$CANDIDATE"
+      RESTORE_SHA="$SHA^"
+    done
+  done
 fi
 
+if [[ -z "$GIT_ROOT" ]]; then
+  echo "no retired skill named '$NAME': no record at $RECORD and no delete commit in either root." >&2
+  exit 1
+fi
+
+# Verify the skill is actually present at the restore point before touching the
+# working tree — a wrong SHA should fail here, not half-restore.
+if ! git -C "$GIT_ROOT" cat-file -e "$RESTORE_SHA:$SRC_REL/SKILL.md" 2>/dev/null; then
+  echo "REFUSED: $SRC_REL/SKILL.md is not present in $RESTORE_SHA." >&2
+  exit 1
+fi
+
+[[ -n "$DEST_REL" ]] || DEST_REL="$SRC_REL"
+DEST="$GIT_ROOT/$DEST_REL"
 if [[ -e "$DEST" ]]; then
   echo "REFUSED: a live skill already exists at $DEST. Rename or remove it before restore." >&2
   exit 1
 fi
 
-mkdir -p "$(dirname "$DEST")"
-mv "$ARCHIVED_DIR" "$DEST"
+USE_REGISTRY=0
+[[ "$GIT_ROOT" == "$REPO_ROOT" ]] && USE_REGISTRY=1
+
+cd "$GIT_ROOT"
+git checkout "$RESTORE_SHA" -- "$SRC_REL"
+
+# The restore point may predate a layout change, so put the skill where it
+# belongs today and leave no empty scaffolding behind.
+if [[ "$DEST_REL" != "$SRC_REL" ]]; then
+  mkdir -p "$(dirname "$DEST_REL")"
+  git mv "$SRC_REL" "$DEST_REL"
+  PARENT="$(dirname "$SRC_REL")"
+  while [[ "$PARENT" != "." && -d "$PARENT" ]] && [[ -z "$(ls -A "$PARENT")" ]]; do
+    rmdir "$PARENT"
+    PARENT="$(dirname "$PARENT")"
+  done
+fi
 
 # Clear any curator tombstone — a deliberate restore means the skill is wanted
 # again, so skill-review should no longer be blocked from touching it.
@@ -68,24 +105,20 @@ if [[ -f "$TOMB" ]]; then
 fi
 
 # Re-register in the plugin allowlist (public repo only).
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ "$USE_REGISTRY" -eq 1 ]]; then
   "$SCRIPT_DIR/registry.sh" register "$NAME" || true
 fi
 
 # Stage only this restore's own paths: a bare `git add -A` sweeps unrelated
 # working-tree changes into the commit.
-cd "$GIT_ROOT"
-SRC_REL="${ARCHIVED_DIR#$GIT_ROOT/}"
-DEST_REL="${DEST#$GIT_ROOT/}"
 STAGE=("$SRC_REL" "$DEST_REL")
 if [[ "$USE_REGISTRY" -eq 1 ]]; then
-  STAGE+=(".claude-plugin/plugin.json")
+  while IFS= read -r M; do STAGE+=("$M"); done < <("$SCRIPT_DIR/registry.sh" --manifest-paths)
 fi
 git add -- "${STAGE[@]}"
-if ! git commit -m "skills/$NAME: restore from archive
+if ! git commit -m "skills/$NAME: restore
 
-Moved .archive/$NAME → $NAME.
+Checked $SRC_REL back out of $RESTORE_SHA into $DEST_REL.
 
 ${TRAILER}"; then
   git reset -q -- "${STAGE[@]}" || true
@@ -93,4 +126,5 @@ ${TRAILER}"; then
   exit 1
 fi
 
-echo "restored: .archive/$NAME → $NAME (root: $GIT_ROOT)"
+rm -f "$RECORD"
+echo "restored: $DEST_REL from $RESTORE_SHA (root: $GIT_ROOT)"

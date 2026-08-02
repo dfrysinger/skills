@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # find-skill.sh — resolve a skill name to its directory path.
 #
-# Searches BOTH skill roots (each including its .archive/ for restored skills):
+# Searches BOTH skill roots:
 #   1. PUBLIC repo   ~/code/skills/skills/   (curated, plugin, git)
 #   2. LOCAL native  ~/.copilot/skills/      (agent-managed, no remote)
 # Override roots with SKILLS_REPO_ROOT / SKILLS_LOCAL_ROOT.

@@ -40,14 +40,16 @@ All actions operate on a skill identified by its `<name>` (slug). The script `sc
 | `edit` | Full rewrite of `SKILL.md` | yes (git revert) |
 | `write-file` | Add/overwrite a `references/<f>.md`, `templates/<f>.<ext>`, `scripts/<f>.<ext>`, or `assets/<f>` | yes (git revert) |
 | `remove-file` | Delete a supporting file | yes (git revert) |
-| `archive` | Move skill dir to `<root>/.archive/<name>/` and commit (in its owning root) | yes (`restore`) |
-| `restore` | Move from `.archive/` back to live in the same root | yes (`archive`) |
+| `archive` | Delete the skill dir in a commit and record the commit that still holds it | yes (`restore`) |
+| `restore` | Check the skill back out of the commit named in its retirement record | yes (`archive`) |
 | `pin` | Touch `.pinned` in the skill dir — curator skips it | yes (`unpin`) |
 | `rename` | Move the skill to a new slug and rewrite every reference in both roots | yes (rename back) |
 | `unpin` | Remove `.pinned` | yes (`pin`) |
 | `promote` | Move a LOCAL skill into the PUBLIC repo (strip provenance, register, commit both) | yes (manual) |
 
-**Hard rule**: **no `delete`**. Archive is the maximum destructive action. `.archive/` is git-tracked, fully recoverable, and survives plugin sync.
+**Hard rule**: **no unrecoverable delete**. Archiving removes the skill from the working tree but never from history: the commit before the deletion still holds it, and `archive-skill.sh` writes that SHA to `~/.copilot/skill-state/skill-review/retired/<name>.json` so `restore` is one command.
+
+An earlier design parked retired skills in a git-tracked `.archive/` directory. It was dropped: it published dead skills to everyone installing the plugin, and every script that walked the tree had to remember to filter `.archive/` out — a filter that was, at least once, forgotten, so archived skills counted as live name collisions. Git history already is the archive.
 
 ## Workflow
 
@@ -76,14 +78,15 @@ All actions operate on a skill identified by its `<name>` (slug). The script `sc
    ```
    `--absorbed-into <umbrella>` is required when the curator merged this skill's content into another — it gets recorded in the commit message so consolidation history stays traceable. The script auto-detects which root the skill lives in: PUBLIC repo archives commit to `~/code/skills` and unregister from `plugin.json`; LOCAL native archives commit to `~/.copilot/skills` (no registry touch). Tombstones for agent-created skills always go to `~/.copilot/skill-state/skill-review/tombstones/`.
 
-3. Verify: skill dir is now under `<root>/.archive/<name>/`, and `git log -1` in the owning root shows the move.
+3. Verify: the skill dir is gone, `git log -1` in the owning root shows the deletion, and `~/.copilot/skill-state/skill-review/retired/<name>.json` exists.
 
 ### restore
 
 ```bash
 scripts/restore-skill.sh <name>
 ```
-Searches both roots' `.archive/` and restores within the same root. Clears any
+Reads the retirement record for the restore commit and path, falling back to
+finding the deletion in the log when no record exists. Clears any
 matching tombstone in the state dir. Re-registers in `plugin.json` only when
 restoring into the public repo.
 
@@ -152,5 +155,5 @@ After any mutating action:
 
 1. `git -C <owning-root> status` shows the change staged or committed (PUBLIC: `~/code/skills`; LOCAL: `~/.copilot/skills`).
 2. `validate-skill.sh` on the changed SKILL.md returns zero errors.
-3. `scripts/find-skill.sh <name>` resolves to the expected path (archived skills resolve to `.archive/...`).
+3. `scripts/find-skill.sh <name>` resolves to the expected path (a retired skill resolves to nothing — it is not in the tree).
 4. For archive/restore: directory listing matches the new location, the old location is gone.

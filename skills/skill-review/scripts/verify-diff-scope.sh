@@ -13,7 +13,6 @@
 #
 # Allowed paths (relative to ~/.copilot/skills):
 #   <name>/**        any skill directory (content + support files)
-#   .archive/**      archived skills (curator moves)
 #   README.md        local-root readme
 #
 # Exit codes:
@@ -45,7 +44,6 @@ while IFS= read -r path; do
   [[ -z "$path" ]] && continue
   case "$path" in
     README.md) ;;
-    .archive/*) ;;
     */*) ;;            # any path nested under a skill dir
     *)
       echo "OUT-OF-SCOPE: $path" >&2
@@ -62,4 +60,4 @@ if [[ "$VIOL" -ne 0 ]]; then
   exit 3
 fi
 
-echo "diff-scope OK: all local changes within <name>/**, .archive/**, README.md"
+echo "diff-scope OK: all local changes within <name>/**, README.md"

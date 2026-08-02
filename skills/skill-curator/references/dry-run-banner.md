@@ -16,7 +16,7 @@ This is a PREVIEW pass. Follow every instruction below EXCEPT:
 
   • DO NOT call /skill-manage with action=patch, create, delete,
     write-file, or remove-file.
-  • DO NOT call bash to mv skill directories into .archive/.
+  • DO NOT call bash to remove skill directories.
   • DO NOT call bash to mv, cp, rm, or rewrite any file under
     ~/code/skills/skills/.
 

@@ -106,7 +106,7 @@ upstream loop keeps in memory.
      `scripts/verify-repo-unchanged.sh check` — public repo must match the
      baseline, while unrelated pre-existing work is allowed.
    - `scripts/verify-diff-scope.sh` — local-repo changes must stay within
-    `<name>/**`, `.archive/**`, `README.md`.
+    `<name>/**`, `README.md`.
    On any exit 3, run the **UNWIND** procedure in
    [`references/review-prompt.md`](references/review-prompt.md) (contract item 9)
    and abort. Recovery needs the pre-run HEAD of each root, so capture it

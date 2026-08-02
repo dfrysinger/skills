@@ -212,7 +212,7 @@ revert its own changes.**
    `verify-repo-unchanged.sh check` — the public repo `~/code/skills/` must
    match its pre-run snapshot; unrelated pre-existing human work is allowed,
    but any run-caused change is untrusted. (b) `verify-diff-scope.sh` — the
-   LOCAL repo must show changes only under `<name>/**`, `.archive/**`,
+   LOCAL repo must show changes only under `<name>/**`,
    `README.md`. On any violation, run the **UNWIND** procedure below, then
    abort and report. There is no remote — nothing is ever pushed.
 

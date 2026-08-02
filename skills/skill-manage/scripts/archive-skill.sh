@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
-# archive-skill.sh — move a skill to its root's .archive/<name>/ and commit the
-# move with traceability metadata.
+# archive-skill.sh — retire a skill by deleting it in a git commit, and record
+# the commit that still holds it so restore-skill.sh can bring it back.
+#
+# Git history IS the archive. An earlier design moved the skill to
+# <root>/.archive/<name>, which published dead skills to everyone installing
+# the plugin and forced every other script to remember to filter .archive out
+# (a filter that was, at least once, forgotten). Deleting keeps the tree honest
+# and loses nothing: the retirement record below names the exact commit to
+# restore from.
 #
 # Root-aware (two-root model):
 #   PUBLIC repo  ~/code/skills        -> git commit + plugin.json unregister
 #   LOCAL native ~/.copilot/skills    -> git commit (local, no remote), NO registry
-# Flattened layout: skills live at <root>/<name>, archived to <root>/.archive/<name>.
-# Tombstones (for agent-created skills) always go to the shared state dir
-# ~/.copilot/skill-state/skill-review/tombstones/ — outside the public repo.
 #
-# Lifted from Hermes Agent's curator: archive (not delete) is the maximum
-# destructive action; --absorbed-into records consolidation lineage.
+# Retirement records go to ~/.copilot/skill-state/skill-review/retired/<name>.json.
+# Tombstones (for agent-created skills) live beside them in tombstones/ — both
+# outside the public repo.
+#
+# Lifted from Hermes Agent's curator: retiring (recoverably) rather than
+# destroying is the maximum destructive action; --absorbed-into records
+# consolidation lineage.
 #
 # Usage:
 #   archive-skill.sh <name>                          # prune (no consolidation target)
@@ -50,36 +59,136 @@ LOCAL_ROOT="${SKILLS_LOCAL_ROOT:-$HOME/.copilot/skills}"
 STATE_DIR="${SKILLS_STATE_DIR:-$HOME/.copilot/skill-state/skill-review}"
 
 # Determine which root SRC lives in, and set the git root + whether to touch the
-# plugin registry. Flattened layout => archive base is <root>/.archive.
+# plugin registry.
 if [[ "$SRC" == "$REPO_ROOT/skills/"* ]]; then
   GIT_ROOT="$REPO_ROOT"
-  ARCHIVE_BASE="$REPO_ROOT/skills/.archive"
   USE_REGISTRY=1
 elif [[ "$SRC" == "$LOCAL_ROOT/"* ]]; then
   GIT_ROOT="$LOCAL_ROOT"
-  ARCHIVE_BASE="$LOCAL_ROOT/.archive"
   USE_REGISTRY=0
 else
   echo "REFUSED: '$SRC' is not under a known skills root." >&2
   exit 1
 fi
 
-DEST="$ARCHIVE_BASE/$NAME"
-if [[ -e "$DEST" ]]; then
-  echo "REFUSED: archive destination already exists at $DEST" >&2
-  echo "         Restore or remove it first." >&2
+# A retirement is only recoverable if the tree is committed first: the restore
+# point is HEAD, and uncommitted edits to this skill would not be in it.
+if [[ -n "$(git -C "$GIT_ROOT" status --porcelain -- "${SRC#$GIT_ROOT/}")" ]]; then
+  echo "REFUSED: '$NAME' has uncommitted changes; they would not be recoverable." >&2
+  echo "         Commit or discard them first." >&2
   exit 1
 fi
-mkdir -p "$ARCHIVE_BASE"
 
-# Tombstone: if this skill was agent-created (skill-review marker present),
-# record a tombstone BEFORE moving it, so skill-review never recreates it.
-# (Hand-made skills get no tombstone — the curator shouldn't be archiving them
+# The commit that still holds the skill. restore-skill.sh checks the tree out
+# of exactly this SHA.
+RESTORE_SHA="$(git -C "$GIT_ROOT" rev-parse HEAD)"
+
+# Was this skill agent-created? The marker lives inside the skill, so read it
+# before the delete.
+AGENT_CREATED=0
+[[ -f "$SRC/.agent-created" ]] && AGENT_CREATED=1
+
+cd "$GIT_ROOT"
+SRC_REL="${SRC#$GIT_ROOT/}"
+
+# Delete the skill and stage the deletion in one step.
+if ! git rm -r -q -- "$SRC_REL"; then
+  echo "REFUSED: could not remove $SRC_REL." >&2
+  exit 1
+fi
+REMOVED=1
+
+# De-register from the plugin allowlist (public repo only; native skills need none).
+if [[ "$USE_REGISTRY" -eq 1 ]]; then
+  "$SCRIPT_DIR/registry.sh" unregister "$NAME" || true
+fi
+
+# Roll the working tree back to its pre-retirement state, so a failed commit
+# leaves nothing half-done.
+rollback() {
+  if [[ "${REMOVED:-0}" -eq 1 ]]; then
+    git reset -q -- "$SRC_REL" || true
+    git checkout -- "$SRC_REL" || true
+    echo "rolled back: restored $SRC_REL" >&2
+  fi
+  if [[ "$USE_REGISTRY" -eq 1 ]]; then
+    "$SCRIPT_DIR/registry.sh" register "$NAME" >/dev/null 2>&1 || true
+  fi
+}
+
+# Stage only this retirement's own paths: a bare `git add -A` sweeps unrelated
+# working-tree changes into the commit, and a revert of that commit would then
+# take the unrelated work down with it.
+STAGE=("$SRC_REL")
+if [[ "$USE_REGISTRY" -eq 1 ]]; then
+  # Every versioned manifest moves together; staging a subset leaves the repo
+  # failing validate-plugin-manifests.mjs.
+  while IFS= read -r M; do STAGE+=("$M"); done < <("$SCRIPT_DIR/registry.sh" --manifest-paths)
+fi
+if ! git add -- "${STAGE[@]}"; then
+  rollback
+  echo "REFUSED: could not stage retirement paths; working tree restored." >&2
+  exit 1
+fi
+if git diff --cached --quiet; then
+  rollback
+  echo "REFUSED: retirement produced no staged change; working tree restored." >&2
+  exit 1
+fi
+if [[ -n "$ABSORBED" ]]; then
+  SUBJECT="skills/$NAME: retire (consolidated into $ABSORBED)"
+  BODY="Content absorbed into umbrella skill: $ABSORBED."
+else
+  SUBJECT="skills/$NAME: retire (pruned)"
+  BODY="Retired as stale/obsolete with no consolidation target."
+fi
+
+if ! git commit -m "$SUBJECT
+
+Deleted $SRC_REL by /skill-curator. The content is not lost: it is intact in
+commit $RESTORE_SHA, which this commit's parent chain preserves.
+$BODY
+Restore with: $SCRIPT_DIR/restore-skill.sh $NAME
+
+${TRAILER}"; then
+  git reset -q -- "${STAGE[@]}" || true
+  rollback
+  echo "REFUSED: commit failed; working tree restored." >&2
+  exit 1
+fi
+
+# Records are written only after the commit lands, so a failed retirement never
+# leaves a record pointing at a skill that is still live.
+RETIRED_DIR="$STATE_DIR/retired"
+mkdir -p "$RETIRED_DIR"
+python3 - "$RETIRED_DIR/$NAME.json" "$NAME" "$SRC_REL" "$GIT_ROOT" "$RESTORE_SHA" "$ABSORBED" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+out, name, rel, git_root, sha, absorbed = sys.argv[1:7]
+json.dump({
+    "skill": name,
+    # Where it lived in restore_sha, and where it should land today. These are
+    # equal at retirement, but a record migrated from an older layout can point
+    # at a path that no longer exists in the live tree.
+    "path": rel,
+    "dest": rel,
+    "git_root": git_root,
+    "restore_sha": sha,
+    "retired_at": datetime.now(timezone.utc).isoformat(),
+    "reason": "consolidated" if absorbed else "pruned",
+    "replacement": absorbed or None,
+}, open(out, "w"), indent=2)
+open(out, "a").write("\n")
+PY
+echo "retirement record: $RETIRED_DIR/$NAME.json"
+
+# Tombstone: agent-created skills get one so skill-review never recreates them.
+# (Hand-made skills get no tombstone — the curator shouldn't be retiring them
 # autonomously anyway; see the tiered-authority rule in skill-curator.)
-if [[ -f "$SRC/.agent-created" ]]; then
+if [[ "$AGENT_CREATED" -eq 1 ]]; then
   TOMB_DIR="$STATE_DIR/tombstones"
   mkdir -p "$TOMB_DIR"
-  python3 - "$TOMB_DIR/$NAME.json" "$NAME" "$NAME" "$ABSORBED" <<'PY'
+  python3 - "$TOMB_DIR/$NAME.json" "$NAME" "$SRC_REL" "$ABSORBED" <<'PY'
 import json, sys
 from datetime import datetime, timezone
 out, name, rel, absorbed = sys.argv[1:5]
@@ -93,80 +202,7 @@ json.dump({
 }, open(out, "w"), indent=2)
 open(out, "a").write("\n")
 PY
-  TOMB_FILE="$TOMB_DIR/$NAME.json"
-  echo "tombstone written: $TOMB_FILE"
+  echo "tombstone written: $TOMB_DIR/$NAME.json"
 fi
 
-mv "$SRC" "$DEST"
-MOVED=1
-
-# De-register from the plugin allowlist (public repo only; native skills need none).
-if [[ "$USE_REGISTRY" -eq 1 ]]; then
-  "$SCRIPT_DIR/registry.sh" unregister "$NAME" || true
-fi
-
-# Roll the working tree back to its pre-archive state, so a failed commit leaves
-# nothing half-done. Archiving is only ever as reversible as this.
-rollback() {
-  if [[ "${MOVED:-0}" -eq 1 && -d "$DEST" && ! -e "$SRC" ]]; then
-    mv "$DEST" "$SRC"
-    echo "rolled back: $DEST -> $SRC" >&2
-  fi
-  if [[ "$USE_REGISTRY" -eq 1 ]]; then
-    "$SCRIPT_DIR/registry.sh" register "$NAME" >/dev/null 2>&1 || true
-  fi
-  if [[ -n "${TOMB_FILE:-}" && -f "$TOMB_FILE" ]]; then
-    rm -f "$TOMB_FILE"
-    echo "rolled back: removed $TOMB_FILE" >&2
-  fi
-}
-
-# Commit in the owning git root. Stage only this archive's own paths: a bare
-# `git add -A` sweeps unrelated working-tree changes into the commit, and a
-# revert of that commit would then take the unrelated work down with it.
-cd "$GIT_ROOT"
-SRC_REL="${SRC#$GIT_ROOT/}"
-DEST_REL="${DEST#$GIT_ROOT/}"
-STAGE=("$SRC_REL" "$DEST_REL")
-if [[ "$USE_REGISTRY" -eq 1 ]]; then
-  STAGE+=(".claude-plugin/plugin.json")
-fi
-if ! git add -- "${STAGE[@]}"; then
-  rollback
-  echo "REFUSED: could not stage archive paths; working tree restored." >&2
-  exit 1
-fi
-if git diff --cached --quiet; then
-  rollback
-  echo "REFUSED: archive produced no staged change; working tree restored." >&2
-  exit 1
-fi
-if [[ -n "$ABSORBED" ]]; then
-  SUBJECT="skills/$NAME: archive (consolidated into $ABSORBED)"
-  BODY="Content absorbed into umbrella skill: $ABSORBED."
-else
-  SUBJECT="skills/$NAME: archive (pruned)"
-  BODY="Archived as stale/obsolete with no consolidation target."
-fi
-
-# The tombstone lives outside git, so reverting this commit alone restores the
-# skill while still blocking recreation. restore-skill.sh clears both.
-if [[ -n "${TOMB_FILE:-}" ]]; then
-  BODY="$BODY
-Tombstone (outside git): $TOMB_FILE"
-fi
-
-if ! git commit -m "$SUBJECT
-
-Moved $NAME → .archive/$NAME by /skill-curator.
-$BODY
-Restore with: $SCRIPT_DIR/restore-skill.sh $NAME
-
-${TRAILER}"; then
-  git reset -q -- "${STAGE[@]}" || true
-  rollback
-  echo "REFUSED: commit failed; working tree restored." >&2
-  exit 1
-fi
-
-echo "archived: $NAME → .archive/$NAME (root: $GIT_ROOT)"
+echo "retired: $NAME deleted from $GIT_ROOT (restore from $RESTORE_SHA)"

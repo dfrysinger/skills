@@ -4,10 +4,10 @@ The following skills are vendored verbatim from
 [mattpocock/skills](https://github.com/mattpocock/skills) at commit
 [`e3b90b5`](https://github.com/mattpocock/skills/tree/e3b90b5238f38cdea5996e16861dcae28ef52eda/skills/productivity):
 
-- `caveman` (modified: converted to user-invoked; now archived under `.archive/`)
+- `caveman` (modified: converted to user-invoked; since retired — see git history)
 - `grill-me` (modified: converted to user-invoked)
 - `handoff` (modified)
-- `write-a-skill` (modified: converted to user-invoked; now archived under `.archive/`)
+- `write-a-skill` (modified: converted to user-invoked; since retired — see git history)
 
 Skills marked *modified* keep the upstream content but have been adapted for
 this library; they are no longer verbatim copies.

@@ -56,7 +56,7 @@ for R in "$PUBLIC" "$LOCAL"; do
       "$f"
     [ "$(shasum "$f" | cut -d' ' -f1)" = "$before" ] || changed=1
   done < <(grep -rl -- "$OLD" "$R" --include='*.md' --include='*.txt' 2>/dev/null |
-             grep -v '/\.git/\|/\.archive/' || true)
+             grep -v '/\.git/' || true)
   [ "$changed" -eq 1 ] && touched+=("$R")
 done
 
@@ -74,7 +74,7 @@ fi
 
 stale=$(grep -rn -- "\`$OLD\`\|skills/$OLD/\|dfrysinger-skills:$OLD" "$PUBLIC" "$LOCAL" \
           --include='*.md' --include='*.txt' --include='*.json' 2>/dev/null |
-        grep -v '/\.git/\|/\.archive/' || true)
+        grep -v '/\.git/' || true)
 [ -n "$stale" ] && { echo "$stale"; die "stale references to '$OLD' remain"; }
 
 if [ "$COMMIT" -eq 1 ]; then

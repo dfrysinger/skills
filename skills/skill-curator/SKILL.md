@@ -83,7 +83,7 @@ orchestrator bypasses it because one shared cadence governs all three passes.
 1. **Print the DRY-RUN BANNER verbatim** (`references/dry-run-banner.md`). This is a hard guard: the prompt below tells you to refuse all mutating actions.
 2. Load the **CURATOR_REVIEW_PROMPT** (`references/curator-prompt.md`) and follow it as your operating instructions for the rest of this run.
 3. Gather inputs:
-   - List of all skills across BOTH roots: `~/code/skills/skills/**/SKILL.md` and `~/.copilot/skills/**/SKILL.md` (exclude `.archive/`). `scripts/list-clusters.sh` already scans both.
+   - List of all skills across BOTH roots: `~/code/skills/skills/**/SKILL.md` and `~/.copilot/skills/**/SKILL.md`. `scripts/list-clusters.sh` already scans both.
    - Usage report from step 2 above.
    - Pinned set (skills with `.pinned`).
 4. Identify **prefix clusters** (skills sharing a first word or domain keyword — `pr-*`, `gh-*`, etc.). A mature library tends toward 10-25 clusters; smaller ones have only a few.
@@ -144,7 +144,7 @@ orchestrator bypasses it because one shared cadence governs all three passes.
 ## Hard rules (non-negotiable)
 
 1. **Only touch skills in the two managed roots** (`~/code/skills/skills/` and `~/.copilot/skills/`). Other plugins' skills are off-limits.
-2. **Never delete.** Archive is the maximum destructive action. `.archive/` is git-tracked.
+2. **Never delete by hand.** Archive via `archive-skill.sh` is the maximum destructive action; it keeps the skill recoverable from git history.
 3. **Never touch a pinned skill.** Pin = "preserve this", and it bypasses every transition.
 4. **`use_count == 0` is not evidence of low value.** Usage telemetry is new and sparse. Judge consolidation on CONTENT, not on counters.
 5. **Ninety days is a fallback, not a minimum.** An agent-created skill from a
@@ -192,8 +192,8 @@ After `--dry-run`:
 - **No git changes** to either root (verify with `git -C ~/code/skills status` and `git -C ~/.copilot/skills status` — both pristine).
 
 After `--live`:
-- All `consolidations[].from` skills are at `<root>/.archive/<name>/` in their owning root.
+- All `consolidations[].from` skills are gone from their owning root's tree, each with a retirement record.
 - All `consolidations[].into` skills have updated `SKILL.md` referencing absorbed content.
-- All `prunings[].name` skills are at `<root>/.archive/<name>/` without `absorbed_into` in their commit message.
+- All `prunings[].name` skills are gone from their owning root's tree, without `absorbed_into` in their commit message.
 - Each mutation has its own commit in its owning root.
 - `git -C ~/code/skills push` succeeded for any public-repo commits (local-repo commits stay local — no remote).

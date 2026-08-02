@@ -20,10 +20,10 @@ done
 REPO_ROOT="${SKILLS_REPO_ROOT:-$HOME/code/skills}/skills"
 LOCAL_ROOT="${SKILLS_LOCAL_ROOT:-$HOME/.copilot/skills}"
 
-# Collect every live skill name from BOTH roots (exclude .archive/).
+# Collect every live skill name from BOTH roots.
 for ROOT in "$REPO_ROOT" "$LOCAL_ROOT"; do
   [[ -d "$ROOT" ]] || continue
-  find "$ROOT" -name SKILL.md -not -path "*/.archive/*" -print 2>/dev/null | while read -r f; do
+  find "$ROOT" -name SKILL.md -print 2>/dev/null | while read -r f; do
     d="$(dirname "$f")"
     basename "$d"
   done
