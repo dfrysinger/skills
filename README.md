@@ -88,13 +88,6 @@ under `~/.copilot/skills/<name>/` instead and run `/skills reload`.
 
 ## Forking and portability
 
-Most of this system is hardcoded to my paths/identity by default but parametrized via env vars. To run it under a different user / repo / Copilot identity:
-
-| Override | Default | Effect |
-| -- | -- | -- |
-| `SKILLS_REPO_ROOT` | `~/code/skills` | Public plugin repository path |
-| `SKILLS_LOCAL_ROOT` | `~/.copilot/skills` | Personal native skills root |
-
 Two manual edits a forker should make:
 
 - `.claude-plugin/plugin.json` `name` field — the published plugin slug. Mine is `dfrysinger-skills`; rename it to `<your-handle>-skills` if you republish.
