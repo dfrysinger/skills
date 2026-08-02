@@ -14,6 +14,37 @@ assertion. Always verify the real end state out-of-band — query the system's
 actual state (PR/issue state via API, a database row, a rendered UI, a file on
 disk) rather than trusting the runner's final message.
 
+## Scripted E2E is not automatically live acceptance
+
+A scripted test may drive mocks, skip human authentication, recover state
+manually, assert only one downstream read, or target a different build from the
+visible app. Treat it as diagnostic evidence unless it proves the same complete
+acceptance scenario against the current running candidate. Record both the tree
+identity and process/build identity before promoting it to live proof.
+
+## Partial flow is failure
+
+Reaching a login prompt, completing authentication, loading one source, or
+showing one correct screen does not prove a multi-checkpoint flow. The receipt
+must account for every acceptance checkpoint and forbidden error. Missing,
+unseen, manually bypassed, or unexplained states keep the gate closed.
+
+## Human-in-the-loop checkpoints
+
+Credentials, MFA, JIT approval, and subjective visual checks may require the
+user. Reaching the point where help is needed is `BLOCKED`, not success. Resume
+the same identified candidate after the user acts, inspect the resulting app
+state, and record the user's observation only for evidence the agent cannot
+directly collect.
+
+## Competing proof owners
+
+Scheduled turns, background agents, and helper scripts can restart an app,
+replace a build, cancel an authentication episode, or consume a fixture while
+another proof is active. Assign one proof owner and keep other workers
+read-only. If candidate identity changes mid-scenario, mark the receipt `STALE`
+and restart the proof from its trigger.
+
 ## Fail-open test integrity (bash)
 
 On a `set -u` abort, bash 3.2 hands the `EXIT` trap `$?=0`, so successful

@@ -18,6 +18,19 @@ The governing rule is:
 This skill orchestrates `rubber-duck`, `architecture-guardrails`,
 `dual-review`, project-specific development/testing skills, and live validation.
 
+The phase order is fail-closed:
+
+> For user-visible or externally observable runtime behavior, do not start
+> implementation review, broad CI, full lint, PR creation or update, or landing
+> work until the complete acceptance flow has passed in the live app or service
+> on the current tree.
+
+Targeted tests, type checks, and builds needed to make the live candidate
+runnable may happen first. They are development diagnostics, not acceptance
+evidence. The systemic/critical pre-build design review in section 4 is the only
+review exception; it reviews the contract, not an implementation claimed to
+work.
+
 ## 0. Establish the failure
 
 Wrong behavior is diagnosed before it is classified: a misdiagnosed bug gets
@@ -96,6 +109,11 @@ Do not generalize in anticipation of hypothetical future callers.
 Record the selected lane, objective, acceptance criteria, and explicit
 non-goals before editing. Non-goals are a review boundary, not an invitation for
 reviewers to add requirements.
+
+For runtime work, turn the acceptance criteria into a short live scenario now.
+Name the trigger, each user-visible checkpoint, the terminal success state, and
+the errors or regressions that must be absent. A later partial success cannot
+silently become the proof contract.
 
 ## 2. Choose the durable contract
 
@@ -234,13 +252,40 @@ follow the local idiom until they rule.
 Before review, be able to point at the sibling each new unit followed, or the
 endorsed departure. Section 7's reviewers check idiom parity.
 
-Run the smallest existing test/type/lint commands that prove the changed path,
-then escalate only as needed.
+Run only the smallest existing test, type, lint, or build commands needed to
+catch cheap regressions and produce a runnable candidate. Do not spend time on
+broad CI, full lint, or implementation review while the live acceptance flow is
+still unproven.
 
 ## 6. Prove runtime behavior before static review
 
 *Compaction point: when the implementation is ready for validation, compact so
 runtime proof and any debugging start from a clean context.*
+
+This is a hard gate for user-visible or externally observable runtime work.
+When classification is unclear, treat the change as runtime work requiring the
+gate. Run the complete acceptance flow in the real app or service before
+implementation review, broad CI, full lint, PR creation or update, or landing
+work. Do not dispatch those tasks in parallel with an active live proof: a
+failed proof invalidates the premise of their work and wastes time.
+
+Before starting, record a compact **live-proof receipt** using
+[`references/live-proof-receipt.md`](./references/live-proof-receipt.md):
+
+- candidate identity: branch plus commit, diff fingerprint, or another
+  repository-specific identity;
+- running identity: process/build identity that proves the app or service was
+  started from that candidate, not a stale installation or another agent's
+  build;
+- scenario: the exact trigger, required checkpoints, terminal success state,
+  and forbidden errors from the acceptance criteria;
+- evidence source: what the agent can inspect directly and what requires a
+  human action or confirmation.
+
+The receipt records evidence; it does not create evidence. Every `PASS` row must
+point to a direct observation, artifact, query result, or explicit human
+confirmation from this run. Agent-written summaries of what "should" have
+happened are not evidence.
 
 Run a real end-to-end check when the change affects runtime behavior that unit
 tests cannot fully prove.
@@ -251,16 +296,54 @@ tests cannot fully prove.
 - Agent/LLM: use the real backend/model when behavior depends on it.
 - Pipeline/workflow: run the real canary or equivalent live path.
 
-Confirm the observable end state, not merely a harness exit code. Ensure the
-running process uses the current tree.
+For UI and authentication flows, exercise the interaction, not just the final
+screen: opening/focusing the correct window, user input, redirects, retries,
+auto-close/resume behavior, and the resulting app state are separate
+checkpoints when the acceptance criteria name them. A screenshot of one state
+or a source read succeeding after manual recovery does not prove the whole
+flow.
+
+Confirm every checkpoint and the observable end state, not merely a harness
+exit code, scripted test result, log line, or helper self-report. Inspect the
+actual app/service state out-of-band. Any unexplained user-visible error,
+missing window, manual workaround, stale data, failed retry, race, or unverified
+acceptance criterion makes the result **FAIL**, not "partial pass."
+
+When credentials, MFA, JIT approval, or subjective visual confirmation requires
+the user, stop at the ready live candidate and ask for only that action. Do not
+claim success from reaching the prompt. After the user acts, inspect the
+terminal app state and record their confirmation where direct automation cannot
+observe it.
+
+Use one proof owner and one running candidate. Scheduled turns and parallel
+agents must not restart the app, mutate the worktree, consume the fixture, or
+run a competing scenario; keep them read-only or stop them until proof ends.
+
+The gate opens only with a receipt whose result is `PASS` and whose evidence
+covers every acceptance criterion. `FAIL`, `BLOCKED`, `STALE`, and
+`INCONCLUSIVE` all keep the gate closed. On failure, record the first divergent
+checkpoint, return directly to sections 3-5, and rerun this gate before any
+review or PR work.
+
+Until the gate passes, describe the state as "candidate ready," "proof in
+progress," or the actual failure status. Do not say the feature works, is
+verified, or is ready to land.
 
 For a purely internal change fully proven by deterministic tests, the targeted
-integration test may be the live gate; do not manufacture an expensive external
-E2E without added evidence value.
+integration test may be the live gate only when no user, external caller, or
+downstream live surface observes the changed runtime behavior. If any
+acceptance checkpoint is externally observable, the hard gate above applies.
+Do not manufacture an expensive external E2E without added evidence value.
 
 ## 7. Risk-gated static review
 
 Invoke `dual-review` after the change works.
+
+Before dispatching, verify the live-proof receipt is present and still matches
+the reviewed tree. If runtime work has no passing receipt, stop: do not
+reinterpret scripted checks or a partial scenario as permission to review. Once
+the gate passes, run the remaining deterministic validation proportionate to
+the lane, then review.
 
 Give reviewers:
 
@@ -312,7 +395,7 @@ the change.
 Before landing:
 
 - relevant tests/build/type/lint checks are green;
-- required live proof is green;
+- required live-proof receipt is `PASS` for the exact tree being landed;
 - dual review has no `must-fix` finding;
 - the diff still matches the objective and non-goals;
 - test artifacts are cleaned up.
@@ -335,10 +418,10 @@ answer why, and the user may want to interrogate it.*
 1. Establish the failure, then define acceptance/non-goals.
 2. Add a focused regression test.
 3. Implement the smallest existing-pattern fix.
-4. Run targeted validation.
-5. Run live proof if it adds evidence.
+4. Run only targeted validation needed to produce a runnable candidate.
+5. Pass the complete live-proof gate for user-visible runtime behavior.
 6. Risk-gated dual review, maximum three bounded rounds.
-7. Rerun validation affected by review fixes.
+7. Run broader validation and rerun live proof when review fixes affect it.
 8. Land.
 
 ### Systemic change
@@ -346,9 +429,11 @@ answer why, and the user may want to interrogate it.*
 1. Durable design + one rubber-duck pass.
 2. Load-bearing test/guard contract.
 3. One paired design/check-contract review; one verification round if needed.
-4. Implement and run the broader suite.
-5. Real E2E.
-6. Risk-gated dual review of implementation, tests, and guards together.
+4. Implement and run only enough targeted validation to produce a runnable
+   candidate.
+5. Pass the complete live-proof gate.
+6. Run the broader suite, then risk-gated dual review of implementation, tests,
+   and guards together.
 7. Final real E2E.
 8. Land.
 
@@ -409,6 +494,15 @@ literal `findings: []`.
 - **Third full reviewer.** Use a cheap finding verifier only for disputed
   blockers.
 - **Permanent guard proliferation.** A focused regression test is often enough.
+- **Harness green mistaken for product green.** Scripted checks, mocked E2Es,
+  helper messages, and successful source reads do not prove the visible flow.
+- **Partial proof promoted to pass.** Reproducing the failure, reaching login,
+  or proving one downstream result cannot open the review gate when another
+  acceptance checkpoint is broken or unseen.
+- **Review started during debugging.** Do not use dual review, CI, lint, or PR
+  mechanics as background work while the live candidate is still failing.
+- **Stale or competing live candidates.** A process without tree identity, or
+  one restarted by another worker, cannot produce an admissible proof.
 - **Duplicate E2E runs without causal value.** Rerun expensive live proof when
   review fixes could affect it, not because a ritual says every edit restarts
   everything.
@@ -421,7 +515,7 @@ The change is complete when:
 2. objective, acceptance criteria, and non-goals are explicit;
 3. the durable contract is proportional to the lane;
 4. functional behavior is tested;
-5. required live behavior is proven;
+5. required live behavior has a passing receipt for the exact reviewed tree;
 6. dual review has no verified in-scope must-fix finding;
 7. post-review validation covers the actual review fixes;
 8. the landed diff remains coherent and scoped.
