@@ -58,8 +58,9 @@ best-evidenced new names per round are enough; report what the cap excluded.
 Complete when you hold the codebase's terms, the ecosystem's terms, the stack,
 and either at least one **name with the source that used it** or an explicit
 statement that the harvest found none — the terms and stack each traced to a
-file path or manifest, and the harvest's own phrasings and surfaces listed
-either way, since a bare "none" cannot be told apart from legwork skipped.
+file path or manifest, and the harvest's own phrasings, surfaces, and any
+names the cap excluded listed either way, since a bare "none" cannot be told
+apart from legwork skipped.
 
 ## 3. Dispatch four scouts in parallel
 
@@ -131,10 +132,12 @@ Two searches are worth running blind, because internal work is not always
 discussed in a channel you can see:
 
 - Each **distinctive** name, organisation-wide. Distinctive means an evidenced
-  proper noun specific enough that a hit is almost certainly this work: sample
-  five results, and keep the name only when at least three of them touch the
-  outcome. A common word, even a vivid one, fails that test on its own — pair
-  it with a qualifier and sample again.
+  proper noun specific enough that a hit is almost certainly this work.
+  Sample what comes back and abandon the name only when the results are many
+  and none of them touch the outcome. A handful of hits that do touch it is
+  the finding, not a failed test — a real codename is rare by construction. A
+  common word returns volume that goes nowhere; pair it with a qualifier and
+  sample again.
 - The names of any **team or repository** you have independent reason to think
   owns this area, whether or not chat led you there.
 
@@ -149,17 +152,19 @@ searches returned nothing, with the surface above.
 
 **Everything this tier finds is confidential.** Summarise it; do not paste
 internal content, quotes, or links wholesale. Keep it to a section of the
-report marked internal, and keep that report on local disk, where the scouts
-and the skills downstream can read it. It must never reach a public
+report marked internal, and keep that report on local disk, where the skills
+downstream can read it. It must never reach a public
 repository, an upstream issue, a commit message, or anything published.
 
 **In the wild** (`research`) — find who has already **shipped** this, not who
 has theorised about it.
 
 Name the claim you are being asked to evidence before searching. Most
-questions carry both kinds, so write the two out as separate subquestions —
-one stated as an outcome a user could observe, one as a mechanism inside the
-code — and hold each to its own bar, tagging every source to the subquestion
+questions carry both kinds; where yours does, write the two out as separate
+subquestions — one stated as an outcome a user could observe, one as a
+mechanism inside the code — and hold each to its own bar. Where it carries
+only one, say which, and hold it to that bar alone. Tag every source to the
+subquestion
 it answers:
 
 - **A capability** — a feature a user would notice. Require **shipped products
