@@ -233,6 +233,21 @@ git -C "$LOCAL" commit -qm "add rollback skill"
 approve_evaluation "$LOCAL/rollback-skill"
 git -C "$LOCAL" add rollback-skill/.promotion-reviewed.json
 git -C "$LOCAL" commit -qm "approve rollback skill"
+python3 - "$PUBLIC/.claude-plugin/plugin.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path))
+data["staged_fixture"] = True
+with open(path, "w") as handle:
+    json.dump(data, handle, indent=2)
+    handle.write("\n")
+PY
+git -C "$PUBLIC" add .claude-plugin/plugin.json
+cached_before="$(git -C "$PUBLIC" diff --cached --binary -- \
+  skills/rollback-skill \
+  .claude-plugin/plugin.json \
+  .claude-plugin/marketplace.json \
+  .codex-plugin/plugin.json)"
 cat > "$PUBLIC/.git/hooks/pre-commit" <<'SH'
 #!/usr/bin/env bash
 exit 1
@@ -253,6 +268,13 @@ fi
   fail "failed promotion lost evaluation cases"
 [[ ! -e "$PUBLIC/skills/rollback-skill" ]] ||
   fail "failed promotion left the skill in the public tree"
-pass "failed promotion restores local provenance"
+cached_after="$(git -C "$PUBLIC" diff --cached --binary -- \
+  skills/rollback-skill \
+  .claude-plugin/plugin.json \
+  .claude-plugin/marketplace.json \
+  .codex-plugin/plugin.json)"
+[[ "$cached_after" == "$cached_before" ]] ||
+  fail "failed promotion did not restore the scoped staged diff"
+pass "failed promotion restores local provenance and staged state"
 
 echo "PASS  $passes deterministic promotion checks"

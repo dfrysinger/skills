@@ -427,6 +427,24 @@ Acceptance:
 - a multi-root curator run can be reverted in one command;
 - rollback refuses to overwrite unrelated work.
 
+Implemented in v0.79.0:
+
+- installed LaunchAgents are discovered with the installer-compatible label
+  prefix, then followed through exact managed paths and recursive durable
+  prompt/script references;
+- explicit and implicit pins are checked while the shared writer lease is
+  held, and incomplete discovery fails closed;
+- `curator-run.py` freezes every planned archive dependency before mutation,
+  records atomic intent/completion manifests, scopes each commit to exact
+  files, and renews the shared lease through the run;
+- rollback restores archives through `restore-skill.sh`, reverts patch/create
+  commits through an isolated Git index, restores exact manifest/state bytes,
+  and removes only recorded ledger effects;
+- deterministic acceptance covers retargeting, aliases, malformed/missing
+  references, lock conflicts, staged and untracked unrelated work, two roots,
+  interrupted operations, state tampering, missing/rewritten commits, and
+  ambiguous root identity.
+
 ### M4: Hot-context budget
 
 Investigate the available Copilot memory surfaces before implementation.
@@ -567,7 +585,7 @@ run, and roll it back without touching unrelated fixtures.
 ### Later milestones
 
 - [x] M2 evaluation gate is implemented and rejects an overfitted skill.
-- [ ] M3 scheduled dependency protection and run rollback are implemented.
+- [x] M3 scheduled dependency protection and run rollback are implemented.
 - [ ] M4 is either implemented against a real platform boundary or explicitly
       closed as unnecessary.
 
@@ -576,7 +594,7 @@ run, and roll it back without touching unrelated fixtures.
 - [x] M1 routing and evidence envelopes are released and installed.
 - [x] M2 measures source benefit and sibling regressions, and gates promotion
       or major rewrites.
-- [ ] M3 protects scheduled dependencies and reverses a complete multi-root
+- [x] M3 protects scheduled dependencies and reverses a complete multi-root
       curator run without overwriting unrelated work.
 - [ ] M4 either enforces a real visible hot-context budget or records evidence
       that no enforceable local boundary exists and closes without a second

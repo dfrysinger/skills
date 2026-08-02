@@ -76,7 +76,12 @@ orchestrator bypasses it because one shared cadence governs all three passes.
      demonstrably finished bounded project, and not reusable or suitable for
      consolidation
    - pinned: ignored regardless
-4. Render a table: `name | root | use_count | last_used | state | pinned`. Highlight pinned + archive-eligible rows.
+4. Run `scripts/scheduled-skill-deps.py --inventory` before rendering the
+   table. Enumeration must complete successfully; malformed durable config,
+   missing explicit managed paths, or ambiguous live skill names abort the
+   run. Render `name | root | use_count | last_used | state | pinned |
+   implicit_pin`. Treat either pin column as protected and include the
+   `implicit_pin_sources` in the report evidence.
 
 ### Mode: `--dry-run` (default)
 
@@ -86,6 +91,10 @@ orchestrator bypasses it because one shared cadence governs all three passes.
    - List of all skills across BOTH roots: `~/code/skills/skills/**/SKILL.md` and `~/.copilot/skills/**/SKILL.md`. `scripts/list-clusters.sh` already scans both.
    - Usage report from step 2 above.
    - Pinned set (skills with `.pinned`).
+   - Complete durable dependency inventory from
+     `scripts/scheduled-skill-deps.py --inventory`. Any non-zero result aborts
+     the dry-run instead of producing a mutation-capable report from an
+     incomplete inventory.
 4. Identify **prefix clusters** (skills sharing a first word or domain keyword — `pr-*`, `gh-*`, etc.). A mature library tends toward 10-25 clusters; smaller ones have only a few.
 5. For each cluster with 2+ members, decide: **merge into existing umbrella**, **create new umbrella**, or **demote to references/templates/scripts** of an existing skill. The curator prompt has the full decision tree.
 6. Evaluate the completed-project lane for agent-created skills even when they
@@ -94,8 +103,10 @@ orchestrator bypasses it because one shared cadence governs all three passes.
    (default 14), then require explicit evidence that the bounded project ended,
    the configured period since both creation and last use, and no reusable
    procedure or umbrella destination. Uncertainty means keep, not prune.
-7. **Do NOT mutate.** Produce a report that describes what you WOULD do.
-8. The report must end with the structured YAML block (see prompt for exact shape):
+7. Mark every scheduled dependency as `implicit_pin=yes` in the report table
+   and exclude it from consolidations and prunings just like `.pinned`.
+8. **Do NOT mutate.** Produce a report that describes what you WOULD do.
+9. The report must end with the structured YAML block (see prompt for exact shape):
    ```yaml
    consolidations:
      - from: <old-skill-name>
@@ -105,7 +116,7 @@ orchestrator bypasses it because one shared cadence governs all three passes.
      - name: <skill-name>
        reason: <one sentence — why archive with no merge target>
    ```
-9. Save the report to `~/.copilot/skill-state/reports/{YYYYMMDD-HHMMSS}-curator-report.md` and update `curator.json` with `last_run_at`, `run_count++`, `last_report_path`.
+10. Save the report to `~/.copilot/skill-state/reports/{YYYYMMDD-HHMMSS}-curator-report.md` and update `curator.json` with `last_run_at`, `run_count++`, `last_report_path`.
 
 ### Mode: `--live`
 
@@ -121,17 +132,28 @@ orchestrator bypasses it because one shared cadence governs all three passes.
 4. Ask the user to confirm: show the consolidations + prunings YAML, ask for "approve" / "abort" / "edit". Do not proceed on silence.
 5. Re-check the shared halt switch immediately before applying the first
    archive or patch. Abort without mutation if it appeared after approval.
-6. For each `consolidations[].from → into` pair:
+6. Build the complete ordered transaction plan described in
+   `references/live-run-transactions.md`, then call `scripts/curator-run.py
+   begin` **before the first edit**. This freezes dependency decisions for
+   every planned archive, records both root identities and unrelated dirty
+   paths, and acquires the shared writer lease for the run.
+7. For each destination patch or umbrella create, call `curator-run.py intent`
+   before editing. Then:
    - Use `/skill-manage patch` to add the absorbed content as a labeled section in `<into>/SKILL.md` (or as a `references/<from>.md` file if it's session-specific detail).
    - If `<from>` has support files (`references/`, `templates/`, `scripts/`, `assets/`), re-home them into `<into>`'s matching subdirs and rewrite the destination paths in `<into>/SKILL.md`. Never leave dangling references.
    - Author distinct source and sibling cases for the changed umbrella and run
      `skill-review/scripts/run-skill-evaluation.sh <into-dir> --model
      <exact-model>`. Continue only when `skill-evaluation.py gate <into-dir>`
      passes.
-   - Use `/skill-manage archive <from> --absorbed-into <into>`.
-7. For each `prunings[].name`:
-   - Use `/skill-manage archive <name>` (no `--absorbed-into`).
-8. After all mutations, commit each change individually in its OWNING root with messages of the form:
+   - Run `writing-great-skills` and `dual-review`.
+   - Commit only through `curator-run.py commit`; it scopes the commit to the
+     declared paths and records exact ledger/state effects.
+8. Archive each approved source with `SKILLS_CURATOR_RUN_ID=<run-id>`:
+   - Consolidation: `/skill-manage archive <from> --absorbed-into <into>`.
+   - Pruning: `/skill-manage archive <name>` with no replacement.
+   `archive-skill.sh` records intent before `git rm` and completion only after
+   the commit, retirement record, and tombstone are durable.
+9. Commit messages for patch/create operations use:
    ```
    skill-curator: consolidate <from> into <into>
 
@@ -141,15 +163,22 @@ orchestrator bypasses it because one shared cadence governs all three passes.
 
    Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
    ```
-9. Push the PUBLIC repo only: `git -C ~/code/skills push origin main`. The
+10. Call `curator-run.py finish` only when every planned operation is complete.
+    On any failure, call `curator-run.py rollback`; do not hand-repair one root.
+11. Push the PUBLIC repo only after `finish`: `git -C ~/code/skills push origin
+    main`. The
    LOCAL repo `~/.copilot/skills` has no remote — its commits stay local.
-10. Update curator state: `last_run_at`, `run_count++`, `last_run_summary` = "consolidated N, pruned M".
+12. Update curator state: `last_run_at`, `run_count++`, `last_run_summary` = "consolidated N, pruned M".
 
 ## Hard rules (non-negotiable)
 
 1. **Only touch skills in the two managed roots** (`~/code/skills/skills/` and `~/.copilot/skills/`). Other plugins' skills are off-limits.
 2. **Never delete by hand.** Archive via `archive-skill.sh` is the maximum destructive action; it keeps the skill recoverable from git history.
-3. **Never touch a pinned skill.** Pin = "preserve this", and it bypasses every transition.
+3. **Never touch a pinned skill.** This includes both an explicit `.pinned`
+   file and an `implicit_pin` discovered from installed jobs and their
+   recursively referenced durable prompts/scripts. Pin = "preserve this", and
+   it bypasses every transition. Incomplete dependency enumeration fails
+   closed.
 4. **`use_count == 0` is not evidence of low value.** Usage telemetry is new and sparse. Judge consolidation on CONTENT, not on counters.
 5. **Ninety days is a fallback, not a minimum.** An agent-created skill from a
    completed bounded project may be proposed after
@@ -187,6 +216,10 @@ orchestrator bypasses it because one shared cadence governs all three passes.
 - `scripts/skill-usage-report.sh` — query `session_store_sql` for skill use_count + last_used_at.
 - `scripts/curator-state.sh` — read/write `~/.copilot/skill-state/curator.json`.
 - `scripts/list-clusters.sh` — group skills by name prefix to surface candidate clusters.
+- `scripts/scheduled-skill-deps.py --inventory` — enumerate scheduled
+  dependencies and emit report-ready `pinned` / `implicit_pin` rows.
+- `scripts/curator-run.py` — begin/intent/commit/finish/rollback transaction
+  boundary for live runs.
 - `scripts/curator-report.sh` — write a dry-run report to `~/.copilot/skill-state/reports/`.
 
 ## Verification
@@ -202,4 +235,6 @@ After `--live`:
 - All `consolidations[].into` skills have updated `SKILL.md` referencing absorbed content.
 - All `prunings[].name` skills are gone from their owning root's tree, without `absorbed_into` in their commit message.
 - Each mutation has its own commit in its owning root.
+- The curator run manifest is `status=complete`; failed runs are
+  `status=rolled_back` with every operation reversed.
 - `git -C ~/code/skills push` succeeded for any public-repo commits (local-repo commits stay local — no remote).

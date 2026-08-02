@@ -259,12 +259,14 @@ make_skill "$ARCHIVE_ROOT" umbrella-skill
 git -C "$ARCHIVE_ROOT" add .
 git -C "$ARCHIVE_ROOT" commit -qm base
 if SKILLS_LOCAL_ROOT="$ARCHIVE_ROOT" SKILLS_REPO_ROOT="$TMP/no-public" \
+  SKILLS_ALLOW_NO_SCHEDULED_JOBS=1 \
   "$SCRIPT_DIR/../../skill-manage/scripts/archive-skill.sh" source-skill \
     --absorbed-into umbrella-skill >/dev/null 2>&1; then
   fail "consolidation archive bypassed the evaluation gate"
 fi
 make_run "$ARCHIVE_ROOT/umbrella-skill" >/dev/null
 SKILLS_LOCAL_ROOT="$ARCHIVE_ROOT" SKILLS_REPO_ROOT="$TMP/no-public" \
+  SKILLS_ALLOW_NO_SCHEDULED_JOBS=1 \
   SKILLS_COAUTHOR_TRAILER="Reviewed-by: fixture" \
   "$SCRIPT_DIR/../../skill-manage/scripts/archive-skill.sh" source-skill \
     --absorbed-into umbrella-skill >/dev/null
@@ -289,6 +291,7 @@ git -C "$PUBLIC_ROOT" add . && git -C "$PUBLIC_ROOT" commit -qm base
 git -C "$LOCAL_ROOT" add . && git -C "$LOCAL_ROOT" commit -qm base
 make_run "$LOCAL_ROOT/local-umbrella" >/dev/null
 if SKILLS_REPO_ROOT="$PUBLIC_ROOT" SKILLS_LOCAL_ROOT="$LOCAL_ROOT" \
+  SKILLS_ALLOW_NO_SCHEDULED_JOBS=1 \
   "$SCRIPT_DIR/../../skill-manage/scripts/archive-skill.sh" public-source \
     --absorbed-into local-umbrella >/dev/null 2>&1; then
   fail "public source accepted a local-only replacement"

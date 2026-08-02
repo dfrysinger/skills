@@ -30,6 +30,7 @@ PUBLIC_COMMITTED=0
 PROVENANCE_BACKUP=""
 MANIFEST_BACKUP=""
 MANIFEST_PATHS=()
+INDEX_BACKUP=""
 
 cleanup() {
   if [[ "$MOVED" == "1" && "$PUBLIC_COMMITTED" == "0" && -d "$DEST" && ! -e "$SRC" ]]; then
@@ -53,9 +54,18 @@ cleanup() {
       fi
     done
   fi
+  if [[ "$PUBLIC_COMMITTED" == "0" && -n "$INDEX_BACKUP" && -f "$INDEX_BACKUP" ]]; then
+    git -C "$REPO_ROOT" reset -q -- "skills/$NAME" "${MANIFEST_PATHS[@]}" || true
+    if [[ -s "$INDEX_BACKUP" ]]; then
+      git -C "$REPO_ROOT" apply --cached "$INDEX_BACKUP" || {
+        echo "WARNING: could not restore the pre-promotion staged diff." >&2
+      }
+    fi
+  fi
   if [[ -n "$MANIFEST_BACKUP" && -d "$MANIFEST_BACKUP" ]]; then
     rm -rf "$MANIFEST_BACKUP"
   fi
+  [[ -z "$INDEX_BACKUP" ]] || rm -f "$INDEX_BACKUP"
   if [[ -n "$LOCK_TOKEN" ]]; then
     "$LOCK_SCRIPT" release "$LOCK_TOKEN" >/dev/null || true
   fi
@@ -74,6 +84,22 @@ LOCK_TOKEN="$("$LOCK_SCRIPT" acquire --mode session --owner "promote-skill:$NAME
 "$SCRIPT_DIR/validate-skill.sh" "$SRC/SKILL.md"
 "$EVALUATION_SCRIPT" gate "$SRC"
 "$SCRIPT_DIR/promotion-review.py" verify "$SRC"
+
+# Capture the exact staged state of every public path this promotion may touch.
+# A failed commit must not leave our addition staged or discard a user's
+# pre-existing staged manifest edit.
+MANIFEST_OUTPUT="$("$SCRIPT_DIR/registry.sh" --manifest-paths)"
+while IFS= read -r manifest; do
+  [[ -n "$manifest" ]] || continue
+  MANIFEST_PATHS+=("$manifest")
+done <<< "$MANIFEST_OUTPUT"
+[[ "${#MANIFEST_PATHS[@]}" -gt 0 ]] || {
+  echo "REFUSED: registry returned no manifest paths" >&2
+  exit 1
+}
+INDEX_BACKUP="$(mktemp "${TMPDIR:-/tmp}/skill-promotion-index.XXXXXX")"
+git -C "$REPO_ROOT" diff --cached --binary -- \
+  "skills/$NAME" "${MANIFEST_PATHS[@]}" > "$INDEX_BACKUP"
 
 # Move into the public repo.
 mkdir -p "$(dirname "$DEST")"
@@ -99,15 +125,6 @@ fi
 rm -f "$DEST/.promotion-reviewed.json" "$DEST/.skill-evaluation-cases.json"
 
 # Register in plugin.json (public root only).
-MANIFEST_OUTPUT="$("$SCRIPT_DIR/registry.sh" --manifest-paths)"
-while IFS= read -r manifest; do
-  [[ -n "$manifest" ]] || continue
-  MANIFEST_PATHS+=("$manifest")
-done <<< "$MANIFEST_OUTPUT"
-[[ "${#MANIFEST_PATHS[@]}" -gt 0 ]] || {
-  echo "REFUSED: registry returned no manifest paths" >&2
-  exit 1
-}
 MANIFEST_BACKUP="$(mktemp -d "${TMPDIR:-/tmp}/skill-promotion-manifests.XXXXXX")"
 for manifest in "${MANIFEST_PATHS[@]}"; do
   mkdir -p "$MANIFEST_BACKUP/$(dirname "$manifest")"

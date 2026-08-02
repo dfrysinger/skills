@@ -23,8 +23,18 @@ fi
 NAME="$1"
 REPO_ROOT="${SKILLS_REPO_ROOT:-$HOME/code/skills}"
 LOCAL_ROOT="${SKILLS_LOCAL_ROOT:-$HOME/.copilot/skills}"
+REPO_ROOT="$(cd "$REPO_ROOT" && pwd -P)"
+LOCAL_ROOT="$(cd "$LOCAL_ROOT" && pwd -P)"
 STATE_DIR="${SKILLS_STATE_DIR:-$HOME/.copilot/skill-state/skill-review}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCK_SCRIPT="$SCRIPT_DIR/../../skill-review/scripts/daemon-lock.sh"
+LOCK_TOKEN=""
+release_lock() {
+  if [[ -n "$LOCK_TOKEN" ]]; then
+    "$LOCK_SCRIPT" release "$LOCK_TOKEN" >/dev/null || true
+  fi
+}
+trap release_lock EXIT
 
 GIT_ROOT=""
 SRC_REL=""
@@ -32,7 +42,36 @@ DEST_REL=""
 RESTORE_SHA=""
 
 RECORD="$STATE_DIR/retired/$NAME.json"
-if [[ -f "$RECORD" ]]; then
+if [[ -n "${SKILLS_RESTORE_GIT_ROOT:-}" ||
+      -n "${SKILLS_RESTORE_SRC_REL:-}" ||
+      -n "${SKILLS_RESTORE_SHA:-}" ]]; then
+  [[ -n "${SKILLS_RESTORE_GIT_ROOT:-}" &&
+     -n "${SKILLS_RESTORE_SRC_REL:-}" &&
+     -n "${SKILLS_RESTORE_SHA:-}" ]] || {
+    echo "REFUSED: incomplete transaction restore identity." >&2
+    exit 1
+  }
+  GIT_ROOT="$(cd "$SKILLS_RESTORE_GIT_ROOT" && pwd -P)"
+  [[ "$GIT_ROOT" == "$(cd "$REPO_ROOT" && pwd -P)" ||
+     "$GIT_ROOT" == "$(cd "$LOCAL_ROOT" && pwd -P)" ]] || {
+    echo "REFUSED: transaction restore root is not managed: $GIT_ROOT" >&2
+    exit 1
+  }
+  SRC_REL="$SKILLS_RESTORE_SRC_REL"
+  DEST_REL="$SRC_REL"
+  RESTORE_SHA="$SKILLS_RESTORE_SHA"
+  if [[ "$GIT_ROOT" == "$(cd "$REPO_ROOT" && pwd -P)" ]]; then
+    [[ "$SRC_REL" == "skills/$NAME" ]] || {
+      echo "REFUSED: public transaction restore path does not match $NAME." >&2
+      exit 1
+    }
+  else
+    [[ "$SRC_REL" == "$NAME" ]] || {
+      echo "REFUSED: local transaction restore path does not match $NAME." >&2
+      exit 1
+    }
+  fi
+elif [[ -f "$RECORD" ]]; then
   GIT_ROOT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["git_root"])' "$RECORD")
   SRC_REL=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["path"])' "$RECORD")
   DEST_REL=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("dest") or d["path"])' "$RECORD")
@@ -63,6 +102,7 @@ if [[ -z "$GIT_ROOT" ]]; then
   echo "no retired skill named '$NAME': no record at $RECORD and no delete commit in either root." >&2
   exit 1
 fi
+GIT_ROOT="$(cd "$GIT_ROOT" && pwd -P)"
 
 # Verify the skill is actually present at the restore point before touching the
 # working tree — a wrong SHA should fail here, not half-restore.
@@ -76,6 +116,10 @@ DEST="$GIT_ROOT/$DEST_REL"
 if [[ -e "$DEST" ]]; then
   echo "REFUSED: a live skill already exists at $DEST. Rename or remove it before restore." >&2
   exit 1
+fi
+
+if [[ -z "${SKILLS_CURATOR_ROLLBACK:-}" ]]; then
+  LOCK_TOKEN="$("$LOCK_SCRIPT" acquire --mode session --owner "restore-skill:$NAME")"
 fi
 
 USE_REGISTRY=0
@@ -106,7 +150,18 @@ fi
 
 # Re-register in the plugin allowlist (public repo only).
 if [[ "$USE_REGISTRY" -eq 1 ]]; then
-  "$SCRIPT_DIR/registry.sh" register "$NAME" || true
+  if [[ -n "${SKILLS_RESTORE_MANIFEST_SNAPSHOT:-}" ]]; then
+    SNAPSHOT="$(cd "$SKILLS_RESTORE_MANIFEST_SNAPSHOT" && pwd -P)"
+    while IFS= read -r manifest; do
+      [[ -f "$SNAPSHOT/$manifest" ]] || {
+        echo "REFUSED: transaction manifest snapshot is incomplete: $manifest" >&2
+        exit 1
+      }
+      cp -p "$SNAPSHOT/$manifest" "$REPO_ROOT/$manifest"
+    done < <("$SCRIPT_DIR/registry.sh" --manifest-paths)
+  else
+    "$SCRIPT_DIR/registry.sh" register "$NAME" || true
+  fi
 fi
 
 # Stage only this restore's own paths: a bare `git add -A` sweeps unrelated
@@ -116,11 +171,11 @@ if [[ "$USE_REGISTRY" -eq 1 ]]; then
   while IFS= read -r M; do STAGE+=("$M"); done < <("$SCRIPT_DIR/registry.sh" --manifest-paths)
 fi
 git add -- "${STAGE[@]}"
-if ! git commit -m "skills/$NAME: restore
+if ! git commit --only -m "skills/$NAME: restore
 
 Checked $SRC_REL back out of $RESTORE_SHA into $DEST_REL.
 
-${TRAILER}"; then
+${TRAILER}" -- "${STAGE[@]}"; then
   git reset -q -- "${STAGE[@]}" || true
   echo "WARNING: restore succeeded on disk but was not committed." >&2
   exit 1

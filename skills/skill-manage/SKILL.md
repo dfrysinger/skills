@@ -77,6 +77,10 @@ An earlier design parked retired skills in a git-tracked `.archive/` directory. 
    scripts/archive-skill.sh <name> [--absorbed-into <umbrella>]
    ```
    `--absorbed-into <umbrella>` is required when the curator merged this skill's content into another — it gets recorded in the commit message so consolidation history stays traceable. The script auto-detects which root the skill lives in: PUBLIC repo archives commit to `~/code/skills` and unregister from `plugin.json`; LOCAL native archives commit to `~/.copilot/skills` (no registry touch). Tombstones for agent-created skills always go to `~/.copilot/skill-state/skill-review/tombstones/`.
+   It also refuses skills required by installed jobs or recursively referenced
+   durable prompts/scripts. Enumeration errors fail closed. During an approved
+   curator live run, set `SKILLS_CURATOR_RUN_ID`; the script records mutation
+   intent before `git rm` and completion after the commit and state records.
 
 3. Verify: the skill dir is gone, `git log -1` in the owning root shows the deletion, and `~/.copilot/skill-state/skill-review/retired/<name>.json` exists.
 
@@ -156,6 +160,14 @@ Add a supporting file under one of `references/`, `templates/`, `scripts/`, `ass
 4. Use the `create` tool (errors if file exists — overwrite uses `edit`).
 5. `chmod +x` if it's a script.
 6. Commit.
+
+### Active curator run
+
+When `skill-curator --live` calls patch, edit, write-file, or skill-create,
+follow `../skill-curator/references/live-run-transactions.md`: record intent
+before the edit and commit only through `curator-run.py commit`. Do not use the
+normal broad commit examples. Archive and restore share the same writer lease;
+archive self-records when `SKILLS_CURATOR_RUN_ID` is set.
 
 ## Pitfalls
 

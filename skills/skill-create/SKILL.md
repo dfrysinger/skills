@@ -50,6 +50,13 @@ Then run `dual-review` on the draft before committing, and apply what the
 reviewers agree on. Where they conflict, take the reading that removes an
 escape hatch or an unobservable completion criterion.
 
+When creation is one operation inside `skill-curator --live`, the curator
+transaction supersedes the normal commit step: call
+`skill-curator/scripts/curator-run.py intent` before creating files and
+`curator-run.py commit` afterward. The complete ordered plan and rollback
+contract live in
+`../skill-curator/references/live-run-transactions.md`.
+
 The mechanical checks below are the ones a script can settle. The skill is
 **not done** until all eight pass.
 

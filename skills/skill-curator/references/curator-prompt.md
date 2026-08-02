@@ -32,7 +32,10 @@ pass, then continue with the operating prompt below.
 >
 > 1. DO NOT touch skills outside `~/code/skills/skills/`. Other plugins' skills (builtin marketplace) are off-limits.
 > 2. DO NOT remove any skill by hand. Archiving via `archive-skill.sh` is the maximum destructive action: it deletes the directory in a commit and records the commit that still holds it, so the skill stays recoverable with `restore-skill.sh`. A bare `rm` is not recoverable.
-> 3. DO NOT touch skills shown as pinned=yes. Skip them entirely.
+> 3. DO NOT touch skills shown as pinned=yes or implicit_pin=yes. Skip them
+> entirely. `implicit_pin` means an installed job or one of its recursively
+> referenced durable prompts/scripts requires the skill. If scheduled
+> dependency enumeration is incomplete, stop rather than guessing.
 > 4. DO NOT use usage counters as a reason to skip consolidation. The counters are new and often mostly zero. Judge overlap on CONTENT, not on use_count. 'use=0' is not evidence a skill is valuable; it's absence of evidence either way.
 > 5. DO NOT reject consolidation on the grounds that 'each skill has a distinct trigger'. Pairwise distinctness is the wrong bar. The right bar is: 'would a human maintainer write this as N separate skills, or as one skill with N labeled subsections?' When the answer is the latter, merge.
 >

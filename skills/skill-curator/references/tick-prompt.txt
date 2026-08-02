@@ -23,6 +23,10 @@ SEQUENCE (follow ~/code/skills/skills/skill-curator/SKILL.md tick mode):
    - Print the dry-run banner (references/dry-run-banner.md).
    - Load the verbatim CURATOR_REVIEW_PROMPT from references/curator-prompt.md.
    - Identify prefix clusters across BOTH skill roots — public ~/code/skills/skills/ and local ~/.copilot/skills/ (scripts/list-clusters.sh scans both).
+   - Run scripts/scheduled-skill-deps.py --inventory before making any
+     recommendation. Abort on any enumeration error. Include `implicit_pin` in
+     every report table row, cite its sources, and exclude implicit pins from
+     consolidations and prunings exactly like `.pinned`.
    - Apply the completed-project pruning lane: an unpinned agent-created skill
      may be proposed before 90 days only after reading
      `config_overrides.completed_project_cooldown_days` from `curator.json`

@@ -20,6 +20,9 @@ fi
 NAME="$1"
 ACTION="${2:-pin}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCK_SCRIPT="$SCRIPT_DIR/../../skill-review/scripts/daemon-lock.sh"
+LOCK_TOKEN="$("$LOCK_SCRIPT" acquire --mode session --owner "pin-skill:$NAME")"
+trap '"$LOCK_SCRIPT" release "$LOCK_TOKEN" >/dev/null || true' EXIT
 SKILL_DIR=$("$SCRIPT_DIR/find-skill.sh" "$NAME") || exit 1
 MARKER="$SKILL_DIR/.pinned"
 

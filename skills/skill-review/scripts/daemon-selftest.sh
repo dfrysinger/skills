@@ -51,6 +51,14 @@ else
   bad "curator completed-project policy missing"
 fi
 
+if grep -q 'implicit_pin=yes' "$CURATOR_PROMPT" &&
+    grep -q 'scheduled-skill-deps.py --inventory' "$CURATOR_TICK" &&
+    grep -q 'Include `implicit_pin`' "$CURATOR_TICK"; then
+  ok "curator scheduled dependency policy"
+else
+  bad "curator scheduled dependency policy missing"
+fi
+
 for script in daemon-pass.sh daemon-run.sh daemon-lock.sh daemon-lock.py \
   dreaming-run.sh dreaming-state.py test-dreaming-daemon.sh \
   evidence-envelope.py append-skill-evidence.sh mark-agent-created.sh \
@@ -63,6 +71,13 @@ MANAGE_SCRIPT_DIR="$REPO/skills/skill-manage/scripts"
 for script in promotion-review.py promote-skill.sh test-promotion-review.sh; do
   [[ -x "$MANAGE_SCRIPT_DIR/$script" ]] && ok "executable: skill-manage/$script" ||
     bad "not executable: skill-manage/$script"
+done
+
+CURATOR_SCRIPT_DIR="$REPO/skills/skill-curator/scripts"
+for script in scheduled-skill-deps.py curator-run.py \
+  test-scheduled-skill-deps.sh test-curator-run.sh; do
+  [[ -x "$CURATOR_SCRIPT_DIR/$script" ]] && ok "executable: skill-curator/$script" ||
+    bad "not executable: skill-curator/$script"
 done
 
 if "$SCRIPT_DIR/test-dreaming-daemon.sh" --quick >>"$RESULT" 2>&1; then
@@ -84,6 +99,16 @@ if "$MANAGE_SCRIPT_DIR/test-promotion-review.sh" >>"$RESULT" 2>&1; then
   ok "deterministic promotion checks"
 else
   bad "deterministic promotion checks"
+fi
+if "$CURATOR_SCRIPT_DIR/test-scheduled-skill-deps.sh" >>"$RESULT" 2>&1; then
+  ok "deterministic scheduled dependency checks"
+else
+  bad "deterministic scheduled dependency checks"
+fi
+if "$CURATOR_SCRIPT_DIR/test-curator-run.sh" >>"$RESULT" 2>&1; then
+  ok "deterministic curator transaction checks"
+else
+  bad "deterministic curator transaction checks"
 fi
 
 if [[ -d "$LOCAL_ROOT/.git" && -z "$(git -C "$LOCAL_ROOT" remote 2>/dev/null)" ]]; then

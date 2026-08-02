@@ -45,7 +45,23 @@ while [[ $# -gt 0 ]]; do
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CURATOR_RUNNER="${SKILLS_CURATOR_RUNNER:-$SCRIPT_DIR/../../skill-curator/scripts/curator-run.py}"
+CURATOR_OP_ID=""
+LOCK_SCRIPT="$SCRIPT_DIR/../../skill-review/scripts/daemon-lock.sh"
+LOCK_TOKEN=""
+release_lock() {
+  if [[ -n "$LOCK_TOKEN" ]]; then
+    "$LOCK_SCRIPT" release "$LOCK_TOKEN" >/dev/null || true
+  fi
+}
+trap release_lock EXIT
 SRC=$("$SCRIPT_DIR/find-skill.sh" "$NAME") || exit 1
+
+if [[ -n "${SKILLS_CURATOR_RUN_ID:-}" ]]; then
+  "$CURATOR_RUNNER" renew --run "$SKILLS_CURATOR_RUN_ID"
+else
+  LOCK_TOKEN="$("$LOCK_SCRIPT" acquire --mode session --owner "archive-skill:$NAME")"
+fi
 
 # Pinned guard.
 if [[ -f "$SRC/.pinned" ]]; then
@@ -53,6 +69,12 @@ if [[ -f "$SRC/.pinned" ]]; then
   echo "         Unpin first: pin-skill.sh $NAME --unpin" >&2
   exit 1
 fi
+
+# Installed jobs and durable daemon prompts are implicit pins. Enumeration
+# failures are also refusals: archiving is unsafe when the dependency set is
+# incomplete.
+"$SCRIPT_DIR/../../skill-curator/scripts/scheduled-skill-deps.py" --check "$NAME" \
+  >/dev/null
 
 REPO_ROOT="${SKILLS_REPO_ROOT:-$HOME/code/skills}"
 LOCAL_ROOT="${SKILLS_LOCAL_ROOT:-$HOME/.copilot/skills}"
@@ -63,9 +85,11 @@ STATE_DIR="${SKILLS_STATE_DIR:-$HOME/.copilot/skill-state/skill-review}"
 if [[ "$SRC" == "$REPO_ROOT/skills/"* ]]; then
   GIT_ROOT="$REPO_ROOT"
   USE_REGISTRY=1
+  ROOT_LABEL="public"
 elif [[ "$SRC" == "$LOCAL_ROOT/"* ]]; then
   GIT_ROOT="$LOCAL_ROOT"
   USE_REGISTRY=0
+  ROOT_LABEL="local"
 else
   echo "REFUSED: '$SRC' is not under a known skills root." >&2
   exit 1
@@ -99,6 +123,18 @@ if [[ -n "$(git -C "$GIT_ROOT" status --porcelain -- "${SRC#$GIT_ROOT/}")" ]]; t
   echo "REFUSED: '$NAME' has uncommitted changes; they would not be recoverable." >&2
   echo "         Commit or discard them first." >&2
   exit 1
+fi
+
+# A live curator run records intent atomically before the first mutation.
+# Standalone user-driven archives retain their existing behavior.
+if [[ -n "${SKILLS_CURATOR_RUN_ID:-}" ]]; then
+  CURATOR_OP_ID=$(
+    "$CURATOR_RUNNER" intent \
+      --run "$SKILLS_CURATOR_RUN_ID" \
+      --kind archive \
+      --root "$ROOT_LABEL" \
+      --skill "$NAME"
+  )
 fi
 
 # The commit that still holds the skill. restore-skill.sh checks the tree out
@@ -160,7 +196,7 @@ if [[ "$USE_REGISTRY" -eq 1 ]]; then
     exit 1
   fi
 fi
-if git diff --cached --quiet; then
+if git diff --cached --quiet -- "${STAGE[@]}"; then
   rollback
   echo "REFUSED: retirement produced no staged change; working tree restored." >&2
   exit 1
@@ -173,14 +209,14 @@ else
   BODY="Retired as stale/obsolete with no consolidation target."
 fi
 
-if ! git commit -m "$SUBJECT
+if ! git commit --only -m "$SUBJECT
 
 Deleted $SRC_REL by /skill-curator. The content is not lost: it is intact in
 commit $RESTORE_SHA, which this commit's parent chain preserves.
 $BODY
 Restore with: $SCRIPT_DIR/restore-skill.sh $NAME
 
-${TRAILER}"; then
+${TRAILER}" -- "${STAGE[@]}"; then
   git reset -q -- "${STAGE[@]}" || true
   rollback
   echo "REFUSED: commit failed; working tree restored." >&2
@@ -233,6 +269,12 @@ json.dump({
 open(out, "a").write("\n")
 PY
   echo "tombstone written: $TOMB_DIR/$NAME.json"
+fi
+
+if [[ -n "$CURATOR_OP_ID" ]]; then
+  "$CURATOR_RUNNER" complete \
+    --run "$SKILLS_CURATOR_RUN_ID" \
+    --op "$CURATOR_OP_ID" >/dev/null
 fi
 
 echo "retired: $NAME deleted from $GIT_ROOT (restore from $RESTORE_SHA)"
