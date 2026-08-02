@@ -1,6 +1,6 @@
 ---
 name: prototype
-description: Prototype interface direction in throwaway HTML before building it. Use when work introduces an entirely new screen, sweepingly changes existing screens, or when `scout` routes a chosen option here; send screens assembled from existing components and contained or component-level UI changes to `feature-development-loop`.
+description: Prototype what a screen should look like in throwaway HTML before it is built. Use when work introduces an entirely new screen or sweepingly changes existing ones, and when `scout` routes a chosen option here. Send contained or component-level UI changes to `feature-development-loop` instead.
 ---
 
 # Prototype
