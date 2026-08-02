@@ -84,9 +84,9 @@ keepers remain, max 5 loops per run):
 5. REVIEW before committing. Rolling grows skills, and no human reads this
    diff. Hold each edited skill to the rubric at
    ~/code/skills/skills/writing-great-skills/ (SKILL.md + GLOSSARY.md), then
-   run the `review` skill on the diff of the skills you touched. Apply
+   run the `dual-review` skill on the diff of the skills you touched. Apply
    what both reviewers agree on; where they conflict, take the reading that
-   removes duplication. If `review` is unavailable, roll nothing this run
+   removes duplication. If `dual-review` is unavailable, roll nothing this run
    and report why.
 
 6. COMMIT both roots that changed (never push). Stage only the skill

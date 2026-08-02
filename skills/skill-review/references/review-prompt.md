@@ -144,7 +144,7 @@ revert its own changes.**
    `promote-skill.sh`.)
 
 2. **Allowed operations:** `view`, `grep`, `glob`, `git` (within the LOCAL
-   skills repo only), subagent dispatch for `review`, and the skill scripts (`/skill-create`, `/skill-manage`,
+   skills repo only), subagent dispatch for `dual-review`, and the skill scripts (`/skill-create`, `/skill-manage`,
    `validate-skill.sh`, `mark-agent-created.sh`, `verify-diff-scope.sh`,
    `verify-repo-unchanged.sh`, `check-tombstone.sh`, `review-ledger.sh`).
    Do NOT call `registry.sh` (native skills need no registry). Do NOT run
@@ -183,15 +183,15 @@ revert its own changes.**
    over creating a near-duplicate sibling (preference order above already
    encodes this).
 
-6. **Rubric and `review` on every CREATE or PATCH:** read the rubric at
+6. **Rubric and `dual-review` on every CREATE or PATCH:** read the rubric at
    `~/code/skills/skills/writing-great-skills/` (`SKILL.md` + `references/GLOSSARY.md`)
    BEFORE drafting — read-only, the public repo stays untouched — so the draft
-   arrives shaped rather than repaired. Then run the `review` skill on the
+   arrives shaped rather than repaired. Then run the `dual-review` skill on the
    draft before committing. No human reads this diff, so the two reviewers are
    the only check between a bad skill and the library. Apply what they agree
    on; where they conflict, take the reading that removes an escape hatch or an
    unobservable completion criterion. Note `dual-reviewed` in the commit
-   message. If `review` cannot run, skip the create and record why in the
+   message. If `dual-review` cannot run, skip the create and record why in the
    ledger.
 
 7. **Provenance on every CREATE:** after `/skill-create`, run

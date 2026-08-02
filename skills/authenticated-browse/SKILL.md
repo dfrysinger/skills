@@ -79,7 +79,7 @@ All subsequent invocations call `bash "$PW" <subcommand> ...`.
 
 ## The helper is general; the protocol below is not
 
-`pw-session.sh` is a plain Playwright driver. Its `fetch`, `screenshot`, and `eval` subcommands work against any URL, including a local dev server, and need no login and no profile. Another skill - `proof` captures a running UI this way - can call it directly and skip everything below.
+`pw-session.sh` is a plain Playwright driver. Its `fetch`, `screenshot`, and `eval` subcommands work against any URL, including a local dev server, and need no login and no profile. Another skill - `visual-proof` captures a running UI this way - can call it directly and skip everything below.
 
 The protocol that follows is for the branch where a person asked you to go look at a page for them. It exists to settle where to land, what to do there, and how to get through a login without a password ever reaching you.
 

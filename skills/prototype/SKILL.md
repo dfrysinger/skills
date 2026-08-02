@@ -1,13 +1,13 @@
 ---
 name: prototype
-description: Prototype what a screen should look like in throwaway HTML before it is built. Use when work introduces an entirely new screen or sweepingly changes existing ones, and when `scout` routes a chosen option here. Send contained or component-level UI changes to `develop` instead.
+description: Prototype what a screen should look like in throwaway HTML before it is built. Use when work introduces an entirely new screen or sweepingly changes existing ones, and when `scout` routes a chosen option here. Send contained or component-level UI changes to `development-loop` instead.
 ---
 
 # prototype
 
 Prototype the interface in a throwaway file, where a change costs seconds,
 rather than in a real implementation, where it costs days. This skill ends when
-the user approves the sketch, and hands that file to `develop`
+the user approves the sketch, and hands that file to `development-loop`
 as the picture its durable record is written against.
 
 Two fidelities, in order. A **wireframe** shows structure only — navigation,
@@ -20,7 +20,7 @@ data, opened straight from disk. Anything that needs installing is out of
 scope.
 
 Put every version in front of the user's eyes and name the file path
-alongside it. `proof` owns that ladder.
+alongside it. `visual-proof` owns that ladder.
 
 ## 1. Name the decision
 
@@ -88,12 +88,12 @@ treat the sketch as final and hand it to development.
 Commit the file at a path that will still make sense in a year, named for the
 screen rather than the round.
 
-Hand off to `develop` with the sketch linked at the top of the
+Hand off to `development-loop` with the sketch linked at the top of the
 durable record its lane produces — the design document for systemic or
 critical work, the change note for bounded work. Every interface claim in that
 record should be checkable against the file.
 
-Invoke `hygiene` before handing off. The committed file and its
+Invoke `self-compact` before handing off. The committed file and its
 `<!-- decisions -->` comment carry everything the build needs; the rounds that
 produced them do not.
 

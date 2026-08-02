@@ -60,7 +60,7 @@ Draft and judge every SKILL.md against `writing-great-skills` in this repo —
 its `SKILL.md` and `references/GLOSSARY.md` are the library's rubric. Read it before
 writing, not after, so the draft arrives shaped rather than needing repair.
 
-Then run `review` on the draft before committing. It is the library's
+Then run `dual-review` on the draft before committing. It is the library's
 standard check and it is not optional here: an autonomous run has no human
 reading the diff, so the two reviewers are the only thing standing between a
 bad skill and the library. Feed them the draft, the rubric, and the fact that

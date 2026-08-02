@@ -271,10 +271,10 @@ Route on the chosen option's interface surface:
   before any durable design work begins.
 - **Everything else** — a screen assembled from existing components, a
   contained change to one, or no interface at all. Hand off to
-  `develop`, which classifies the lane and writes the durable
+  `development-loop`, which classifies the lane and writes the durable
   contract.
 
-Invoke `hygiene` before handing off. The report is the baton; the
+Invoke `self-compact` before handing off. The report is the baton; the
 scouting that produced it is not.
 
 Complete when the user has chosen an option, you have named the route taken,

@@ -1,9 +1,9 @@
 ---
-name: hygiene
+name: self-compact
 description: Keep Copilot CLI working context lean while preserving decisions, active state, and session-bound resources through deliberate compaction. Use when a task finishes, work changes phase, a review round ends, tool history grows, the agent becomes stuck or repetitive, a durable work order enables a soft reset, or a long-lived session needs retirement.
 ---
 
-# hygiene
+# self-compact
 
 Keep the working context small without losing the state needed to continue.
 Choose the lightest reset that fits; cross-agent handoffs remain owned by
@@ -29,7 +29,7 @@ Persist any state that exists only in conversation, then make this the final
 tool action of the turn:
 
 ```sh
-~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/hygiene/scripts/submit-compact.sh \
+~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh \
   'Keep: <objective, decisions, current state, remaining work>. Drop: <resolved detail, superseded approaches, verbose output>.'
 ```
 

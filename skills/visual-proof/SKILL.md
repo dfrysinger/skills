@@ -1,9 +1,9 @@
 ---
-name: proof
+name: visual-proof
 description: Capture visual evidence that running software behaves as intended, and validate it is real rather than blank, stale, or unfalsifiable. Use when verifying a UI change end to end, when a change note claims a screenshot, or when another skill needs runtime proof a human can see.
 ---
 
-# proof
+# visual-proof
 
 Seeing the software work is a separate claim from the tests passing, and a
 screenshot has to earn it. A file that was written is not a capture, and a
@@ -134,7 +134,7 @@ and the written claim matches what you saw.
 ## 5. Pair the after against a baseline
 
 A **fix** earns an after only against a before. Capture the failure while it
-still fails — `develop` establishes it at section 0, before
+still fails — `development-loop` establishes it at section 0, before
 any edit — and keep its path, route, viewport, and theme for the after. When
 editing has already begun, reach the failing revision through a separate
 worktree, or stash the fix, capture, reapply, and recheck the intended diff.

@@ -5,7 +5,7 @@ The following skills are vendored verbatim from
 [`e3b90b5`](https://github.com/mattpocock/skills/tree/e3b90b5238f38cdea5996e16861dcae28ef52eda/skills/productivity):
 
 - `caveman` (modified: converted to user-invoked)
-- `grill` (modified: converted to user-invoked)
+- `grill-me` (modified: converted to user-invoked)
 - `handoff` (modified)
 - `write-a-skill` (modified: converted to user-invoked; now archived under `.archive/`)
 

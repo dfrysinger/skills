@@ -92,7 +92,7 @@ with the current `mem-lib.sh`.
    covered by the skill's prose. Validate each skill:
    `skill-manage/scripts/validate-skill.sh`.
 5. **Review before committing.** Rolling grows skills, so hold each edited
-   skill to `writing-great-skills` in this repo and run `review` on the
+   skill to `writing-great-skills` in this repo and run `dual-review` on the
    diff. Rolls are where sediment accumulates and no human reads the diff.
    Apply what the reviewers agree on; where they conflict, take the reading
    that removes duplication.
