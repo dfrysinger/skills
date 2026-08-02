@@ -32,11 +32,17 @@ your reply.
 
 ## 2. Send the point scout
 
-Dispatch one `explore` subagent to settle the vocabulary the other four will
-search with. Give it the outcome sentence and the repository, and ask it to
-report the terms this codebase uses for the topic, the terms the surrounding
-ecosystem uses for it, and the stack a solution would be built on — language,
-framework, and the libraries already carrying nearby work.
+Dispatch one `general-purpose` subagent to settle the vocabulary the other
+four will search with. Give it the outcome sentence and the repository, and
+ask it to report the terms this codebase uses for the topic, the terms the
+surrounding ecosystem uses for it, and the stack a solution would be built on
+— language, framework, and the libraries already carrying nearby work.
+
+Use `general-purpose` and not `explore` here: the harvest below needs web
+search, and an `explore` agent has none. Dispatched to one, the point scout
+falls back to scraping a search engine through the shell and returns a thin,
+inward-looking list of names — which is the same as failing, since the names
+it misses are the ones that would have found the competition.
 
 Require **names as well as mechanisms**. A mechanism term describes what the
 thing does — *memory consolidation*, *retry with backoff*. A name is what
@@ -102,18 +108,17 @@ pattern that could carry part of the outcome; and which orienting docs it read
 and which rules in them bind — or that there is none of the above. Collect
 what exists; designing belongs in the report.
 
-**In house** — find whether this organisation is already building it. This
-tier exists because the nearest competitor is usually a colleague, and
-colleagues announce their work in chat long before it is searchable in code.
+**In house** (`general-purpose`) — find whether this organisation is already
+building it. This tier exists because the nearest competitor is usually a
+colleague, and colleagues announce their work in chat long before it is
+searchable in code.
 
-**Split this tier across yourself and a subagent.** A subagent does not
-inherit your MCP tools, so an `explore` scout dispatched to search Slack finds
-no Slack tools and returns nothing — the tier's highest-signal step, silently
-skipped. So run the chat search **yourself**, in your own context. It is the
-one exception to keeping legwork out of your context, and it is affordable
-because a handful of channel searches is small next to what it catches. Then
-dispatch an `explore` scout with the names you harvested to do the reading and
-the code-following, which is the bulk of the work.
+**Dispatch this one as `general-purpose`, not `explore`.** Agent types differ
+in what they can reach: an `explore` scout gets a small fixed toolset — shell,
+file reading, search, and a few code-hosting tools — and no chat search at
+all, so dispatching this tier to one silently guts its first and best step. A
+`general-purpose` agent carries the full tool set. Have the scout confirm it
+can actually reach chat search before it starts, and say so if it cannot.
 
 Search chat first. Run **each** harvested name and **each** mechanism term as
 its own search — combining them into one query is how a real channel gets
@@ -285,3 +290,9 @@ and the compact is submitted.
 - **Accepting a proposal as proof.** A conference talk about a running system
   outranks a blog post proposing one, however well argued. For a capability,
   shipped beats clever.
+- **Sending a tier to an agent that cannot reach its evidence.** Agent types
+  carry different tools, and a scout that cannot search does not say so — it
+  returns a thin report that reads like a finding. `explore` has no web or
+  chat search, so it suits the in-tree and in-flight tiers and ruins the
+  point scout and the in-house tier. Match the type to the evidence the tier
+  must reach, and have each scout confirm it can reach it.
