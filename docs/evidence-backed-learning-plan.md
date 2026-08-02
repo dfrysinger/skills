@@ -567,6 +567,20 @@ run, and roll it back without touching unrelated fixtures.
 - [ ] M4 is either implemented against a real platform boundary or explicitly
       closed as unnecessary.
 
+### All phases Definition of Done
+
+- [x] M1 routing and evidence envelopes are released and installed.
+- [ ] M2 measures source benefit and sibling regressions, and gates promotion
+      or major rewrites.
+- [ ] M3 protects scheduled dependencies and reverses a complete multi-root
+      curator run without overwriting unrelated work.
+- [ ] M4 either enforces a real visible hot-context budget or records evidence
+      that no enforceable local boundary exists and closes without a second
+      memory store.
+- [ ] Every implemented milestone has deterministic coverage, a matching live
+      proof, clean dual review, a released version, and installed self-test
+      evidence.
+
 ## Explicit non-goals
 
 - Build a centralized multi-user service, scheduler, artifact database, or
