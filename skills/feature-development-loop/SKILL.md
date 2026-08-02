@@ -272,8 +272,9 @@ failed proof invalidates the premise of their work and wastes time.
 Before starting, record a compact **live-proof receipt** using
 [`references/live-proof-receipt.md`](./references/live-proof-receipt.md):
 
-- candidate identity: branch plus commit, diff fingerprint, or another
-  repository-specific identity;
+- candidate identity: a clean commit, or a full candidate identity that covers
+  tracked changes plus every untracked file that can affect the build or
+  runtime; branch plus commit alone is valid only for a clean worktree;
 - running identity: process/build identity that proves the app or service was
   started from that candidate, not a stale installation or another agent's
   build;
@@ -295,6 +296,10 @@ tests cannot fully prove.
 - Service/API: call the running service and inspect the actual state/result.
 - Agent/LLM: use the real backend/model when behavior depends on it.
 - Pipeline/workflow: run the real canary or equivalent live path.
+
+When a script, helper, CI job, or API-driven harness participates in the proof,
+apply the fail-closed checks in
+[`references/live-harness-traps.md`](./references/live-harness-traps.md).
 
 For UI and authentication flows, exercise the interaction, not just the final
 screen: opening/focusing the correct window, user input, redirects, retries,
@@ -329,6 +334,26 @@ Until the gate passes, describe the state as "candidate ready," "proof in
 progress," or the actual failure status. Do not say the feature works, is
 verified, or is ready to land.
 
+The receipt remains valid only while its covered runtime candidate is
+unchanged. A later delta may be appended without rerunning the live scenario
+only when all are true:
+
+- it changes no executable source, runtime configuration, dependency, build
+  input, generated runtime asset, or behavior exercised by the scenario;
+- the receipt records the delta identity and why it cannot affect runtime;
+- the smallest deterministic check confirms the runtime artifact or exercised
+  path is unchanged.
+
+Comments outside generated artifacts, documentation, and test-only changes are
+typical eligible deltas. "Mechanically equivalent" executable edits are not;
+rerun the affected live scenario for those. Any unrecorded or runtime-relevant
+delta makes the receipt `STALE`.
+
+Before proof, designate evidence and test-output paths that are not build or
+runtime inputs. Creating or cleaning those outputs does not change candidate
+identity and needs no per-file covered-delta entry. If an output path can affect
+the executable candidate, it cannot use this exclusion.
+
 For a purely internal change fully proven by deterministic tests, the targeted
 integration test may be the live gate only when no user, external caller, or
 downstream live surface observes the changed runtime behavior. If any
@@ -340,7 +365,8 @@ Do not manufacture an expensive external E2E without added evidence value.
 Invoke `dual-review` after the change works.
 
 Before dispatching, verify the live-proof receipt is present and still matches
-the reviewed tree. If runtime work has no passing receipt, stop: do not
+or explicitly covers the reviewed tree. If runtime work has no passing receipt,
+stop: do not
 reinterpret scripted checks or a partial scenario as permission to review. Once
 the gate passes, run the remaining deterministic validation proportionate to
 the lane, then review.
@@ -380,9 +406,10 @@ After review:
 
 - If review fixes changed runtime behavior, rerun the affected targeted tests
   and live scenario.
-- If review changed only comments, tests, or mechanically equivalent structure,
-  rerun the smallest relevant deterministic checks; do not duplicate an
-  expensive E2E without a causal reason.
+- If review produced only a delta eligible under section 6's receipt-validity
+  rule, append it to the receipt and rerun the required deterministic check.
+- If review made a supposedly behavior-preserving executable edit, rerun the
+  affected live scenario as required by section 6.
 - Systemic/critical changes always rerun their final live E2E on the reviewed
   tree.
 
@@ -395,7 +422,8 @@ the change.
 Before landing:
 
 - relevant tests/build/type/lint checks are green;
-- required live-proof receipt is `PASS` for the exact tree being landed;
+- required live-proof receipt is `PASS` and matches or explicitly covers the
+  exact tree being landed under section 6's receipt-validity rule;
 - dual review has no `must-fix` finding;
 - the diff still matches the objective and non-goals;
 - test artifacts are cleaned up.
@@ -419,9 +447,9 @@ answer why, and the user may want to interrogate it.*
 2. Add a focused regression test.
 3. Implement the smallest existing-pattern fix.
 4. Run only targeted validation needed to produce a runnable candidate.
-5. Pass the complete live-proof gate for user-visible runtime behavior.
-6. Risk-gated dual review, maximum three bounded rounds.
-7. Run broader validation and rerun live proof when review fixes affect it.
+5. Pass the section 6 live-proof gate when it applies.
+6. Run remaining deterministic validation, then risk-gated dual review.
+7. Rerun validation and live proof affected by review fixes.
 8. Land.
 
 ### Systemic change
@@ -431,7 +459,7 @@ answer why, and the user may want to interrogate it.*
 3. One paired design/check-contract review; one verification round if needed.
 4. Implement and run only enough targeted validation to produce a runnable
    candidate.
-5. Pass the complete live-proof gate.
+5. Pass the section 6 live-proof gate.
 6. Run the broader suite, then risk-gated dual review of implementation, tests,
    and guards together.
 7. Final real E2E.
@@ -452,9 +480,13 @@ skill is the instruction; a general intention to compact is not one, and is why
 agents arrive at review with a context full of resolved work.
 
 The baton this loop hands forward is the plan path, lane, objective, acceptance
-criteria, non-goals, remaining Definition-of-Done items, branch, and what has
-landed versus what remains. Persist it to a committed repo doc before
-compacting, so the summary cannot drop it. When you are still stuck after a
+criteria, non-goals, remaining Definition-of-Done items, branch, what has
+landed versus what remains, and the live-proof receipt path, status, candidate
+identity, running identity, first divergence, unverified criteria, and covered
+post-proof deltas. Persist it before compacting: use the existing committed
+repo plan/design for systemic or critical work, and an existing issue, handoff,
+or named session artifact for bounded work. The summary points to this durable
+record; it does not recreate its evidence. When you are still stuck after a
 compact, `rubber-duck` before trying more variations.
 
 ## Rabbit-hole stop rules
@@ -499,13 +531,14 @@ literal `findings: []`.
 - **Partial proof promoted to pass.** Reproducing the failure, reaching login,
   or proving one downstream result cannot open the review gate when another
   acceptance checkpoint is broken or unseen.
-- **Review started during debugging.** Do not use dual review, CI, lint, or PR
-  mechanics as background work while the live candidate is still failing.
+- **Review started before proof.** Section 6's gate is closed while runtime
+  behavior remains unproven; debugging and review/PR mechanics are separate
+  phases.
 - **Stale or competing live candidates.** A process without tree identity, or
   one restarted by another worker, cannot produce an admissible proof.
 - **Duplicate E2E runs without causal value.** Rerun expensive live proof when
-  review fixes could affect it, not because a ritual says every edit restarts
-  everything.
+  section 6's receipt-validity rule requires it, not because unrelated
+  evidence-output churn restarts the scenario.
 
 ## Verification
 
@@ -515,7 +548,8 @@ The change is complete when:
 2. objective, acceptance criteria, and non-goals are explicit;
 3. the durable contract is proportional to the lane;
 4. functional behavior is tested;
-5. required live behavior has a passing receipt for the exact reviewed tree;
+5. required live behavior has a passing receipt that matches or explicitly
+   covers the exact reviewed tree under section 6's receipt-validity rule;
 6. dual review has no verified in-scope must-fix finding;
 7. post-review validation covers the actual review fixes;
 8. the landed diff remains coherent and scoped.
