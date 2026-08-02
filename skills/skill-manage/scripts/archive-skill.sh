@@ -112,7 +112,12 @@ rollback() {
     echo "rolled back: restored $SRC_REL" >&2
   fi
   if [[ "$USE_REGISTRY" -eq 1 ]]; then
-    "$SCRIPT_DIR/registry.sh" register "$NAME" >/dev/null 2>&1 || true
+    # Restore the manifests from HEAD rather than re-registering: registry.sh
+    # bumps the version on every change, so unregister-then-register would
+    # leave the version two minors ahead of a retirement that never happened.
+    while IFS= read -r M; do
+      git checkout -- "$M" 2>/dev/null || true
+    done < <("$SCRIPT_DIR/registry.sh" --manifest-paths)
   fi
 }
 
@@ -125,7 +130,9 @@ if [[ "$USE_REGISTRY" -eq 1 ]]; then
   # failing validate-plugin-manifests.mjs.
   while IFS= read -r M; do STAGE+=("$M"); done < <("$SCRIPT_DIR/registry.sh" --manifest-paths)
 fi
-if ! git add -- "${STAGE[@]}"; then
+# -A is required: git rm already removed the path from the tree, so a plain
+# `git add -- <path>` fails on a pathspec that no longer matches anything.
+if ! git add -A -- "${STAGE[@]}"; then
   rollback
   echo "REFUSED: could not stage retirement paths; working tree restored." >&2
   exit 1
