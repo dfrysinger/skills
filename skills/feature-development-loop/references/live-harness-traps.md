@@ -35,7 +35,10 @@ Credentials, MFA, JIT approval, and subjective visual checks may require the
 user. Reaching the point where help is needed is `BLOCKED`, not success. Resume
 the same identified candidate after the user acts, inspect the resulting app
 state, and record the user's observation only for evidence the agent cannot
-directly collect.
+directly collect. If the owner may be away, use the user-level `agent-help`
+MCP server's `request_help` tool once with a short non-secret label; never put
+URLs, credentials, repository content, raw errors, or personal data in the
+notification.
 
 ## Competing proof owners
 

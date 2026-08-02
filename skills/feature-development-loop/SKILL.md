@@ -320,6 +320,16 @@ claim success from reaching the prompt. After the user acts, inspect the
 terminal app state and record their confirmation where direct automation cannot
 observe it.
 
+When the owner may be away and the user-level `agent-help` MCP server is
+available, call its `request_help` tool once for the blocker. Use the matching
+reason (`login_required`, `permission_required`, `decision_required`, or
+`blocked`) and only a short non-secret context label. Never include URLs,
+domains, credentials, repository content, raw errors, or personal data, and do
+not send repeated notifications for the same blocker. Continue only independent
+work that cannot change the candidate or bypass the live-proof gate. Resume the
+same identified candidate when the user returns; if it changed, mark the receipt
+`STALE` and restart the scenario.
+
 Use one proof owner and one running candidate. Scheduled turns and parallel
 agents must not restart the app, mutate the worktree, consume the fixture, or
 run a competing scenario; keep them read-only or stop them until proof ends.
