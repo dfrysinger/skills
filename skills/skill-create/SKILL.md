@@ -83,7 +83,13 @@ The mechanical checks below are the ones a script can settle. The skill is
 
    The body then opens with a single H1 that is exactly the slug — `# <slug>`, lowercase, no Title Case and no prose title. That heading is what the agent reads as the skill's identity when the body is injected into context, so it must match the name the user types to invoke it.
 
-7. **Name is short, filesystem-safe, and globally distinct across BOTH roots.** Prefer one word (`scout`, `explain`, `prototype`); use two when the second word earns its place by disambiguating (`dual-review`, `self-compact`, `visual-proof`). Avoid naming a skill after a CLI command it drives — `/compact` and `/autopilot` are typed by the user, and a skill sharing that name reads as the command. Slug regex `^[a-z0-9][a-z0-9._-]*$`. Check for collisions everywhere:
+7. **Name is short, distinct, and reachable in 3-4 keystrokes.** Prefer one word (`scout`, `explain`, `prototype`); use two when the second word earns its place by disambiguating (`dual-review`, `self-compact`, `visual-proof`). Avoid naming a skill after a CLI command it drives — `/compact` and `/autopilot` are typed by the user, and a skill sharing that name reads as the command.
+
+   The name must also autocomplete: some word in it needs a 3- or 4-character prefix that reaches this skill and nothing else installed, and the leading word is the one worth spending that prefix on. Slug regex `^[a-z0-9][a-z0-9._-]*$`. Check the name and its collisions in one pass:
+   ```bash
+   ~/code/skills/skills/skill-manage/scripts/check-name-prefix.sh <slug>
+   ```
+   Exit 1 prints what the candidate collides with, so the next candidate can step around it. Then confirm the slug itself is unused across both roots:
    ```bash
    grep -lr "^name: <slug>$" \
      ~/code/skills/skills/ ~/.copilot/skills/ \

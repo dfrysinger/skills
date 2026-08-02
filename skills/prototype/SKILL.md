@@ -1,13 +1,13 @@
 ---
 name: prototype
-description: Prototype what a screen should look like in throwaway HTML before it is built. Use when work introduces an entirely new screen or sweepingly changes existing ones, and when `scout` routes a chosen option here. Send contained or component-level UI changes to `development-loop` instead.
+description: Prototype what a screen should look like in throwaway HTML before it is built. Use when work introduces an entirely new screen or sweepingly changes existing ones, and when `scout` routes a chosen option here. Send contained or component-level UI changes to `ship-loop` instead.
 ---
 
 # prototype
 
 Prototype the interface in a throwaway file, where a change costs seconds,
 rather than in a real implementation, where it costs days. This skill ends when
-the user approves the sketch, and hands that file to `development-loop`
+the user approves the sketch, and hands that file to `ship-loop`
 as the picture its durable record is written against.
 
 Two fidelities, in order. A **wireframe** shows structure only — navigation,
@@ -88,7 +88,7 @@ treat the sketch as final and hand it to development.
 Commit the file at a path that will still make sense in a year, named for the
 screen rather than the round.
 
-Hand off to `development-loop` with the sketch linked at the top of the
+Hand off to `ship-loop` with the sketch linked at the top of the
 durable record its lane produces — the design document for systemic or
 critical work, the change note for bounded work. Every interface claim in that
 record should be checkable against the file.

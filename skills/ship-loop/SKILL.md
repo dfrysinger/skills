@@ -1,9 +1,9 @@
 ---
-name: development-loop
+name: ship-loop
 description: Develop and ship one change at a time through a risk-sized loop instead of applying heavyweight architecture ceremony to every bug. Classify the change as bounded, systemic, or critical; use the smallest durable design and test contract that fits; prove runtime behavior before review; then use risk-gated dual review with a bounded round budget. Use when implementing a non-trivial bug fix, feature, refactor, app/UI change, service change, agent workflow, pipeline, or SDK change that must be tested and landed without review rabbit holes.
 ---
 
-# development-loop
+# ship-loop
 
 Ship one coherent change through a process sized to its actual risk. The loop
 must prevent regressions without turning a bounded bug into a speculative
@@ -182,7 +182,7 @@ without the conversation that produced it. Take one of these exits into
 implementation:*
 
 - *Unattended, or long enough that the context will compact before the plan is
-  done — run `autopilot-loop` against the approved doc. It arms the recurring
+  done — run `unattended-run` against the approved doc. It arms the recurring
   charter re-brief that holds the run on course through compaction, and points
   its Definition of Done at the one this doc already carries. It performs the
   handoff itself, so do not also run `handoff`.*

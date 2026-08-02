@@ -80,7 +80,7 @@ The subagent runs the same prompt the daemon does, scoped to whatever pattern yo
 
 ### Workflow
 
-- **[development-loop](./skills/development-loop/SKILL.md)** : Size development process to the actual risk: bounded bug fixes use focused regression tests and a short review path; systemic and critical changes add durable design, architecture guards, and final live proof. Uses [`dual-review`](./skills/dual-review/SKILL.md)'s material-risk gate rather than requiring literal zero comments.
+- **[ship-loop](./skills/ship-loop/SKILL.md)** : Size development process to the actual risk: bounded bug fixes use focused regression tests and a short review path; systemic and critical changes add durable design, architecture guards, and final live proof. Uses [`dual-review`](./skills/dual-review/SKILL.md)'s material-risk gate rather than requiring literal zero comments.
 - **[git-history-recovery](./skills/git-history-recovery/SKILL.md)** : Recover lost or displaced Git work after an accidental reset/checkout/rebase/stash using reflog, dangling commits, and path-scoped restore.
 - **[explain](./skills/explain/SKILL.md)** : Explain technical work in plain language scoped to the user's actual context — context before the point, no unexplained jargon, no assumed codebase knowledge.
 - **[github-api-integration](./skills/github-api-integration/SKILL.md)** : Class-level playbook for integrating against the GitHub REST + GraphQL APIs — query-complexity limits, OAuth-App vs GitHub-App scope behavior, SAML-SSO null-node redaction, pagination, rate limits, and turning raw API errors into actionable UX.
