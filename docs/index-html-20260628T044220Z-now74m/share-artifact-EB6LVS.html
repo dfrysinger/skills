@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>👋 Hello, Ridiculous World!</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-family: "Comic Sans MS", "Comic Sans", cursive, sans-serif;
+      background: linear-gradient(270deg, #ff6b6b, #feca57, #48dbfb, #1dd1a1, #f368e0, #ff9ff3);
+      background-size: 1200% 1200%;
+      animation: rainbow 10s ease infinite;
+      overflow: hidden;
+      position: relative;
+    }
+    @keyframes rainbow {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+    h1 {
+      font-size: 4rem;
+      color: white;
+      text-shadow: 3px 3px 0 #333, 6px 6px 0 rgba(0,0,0,0.2);
+      animation: wobble 1.2s ease-in-out infinite;
+      cursor: grab;
+      z-index: 5;
+      text-align: center;
+    }
+    @keyframes wobble {
+      0%, 100% { transform: rotate(-4deg) scale(1); }
+      50% { transform: rotate(4deg) scale(1.12); }
+    }
+    p {
+      font-size: 1.5rem;
+      color: #fff;
+      text-shadow: 2px 2px 0 #333;
+      z-index: 5;
+      text-align: center;
+    }
+    .buttons { display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; z-index: 5; }
+    button {
+      font-family: inherit;
+      font-size: 1.2rem;
+      padding: 0.8rem 1.6rem;
+      border: none;
+      border-radius: 999px;
+      background: #fff;
+      color: #ff6b6b;
+      cursor: pointer;
+      box-shadow: 0 6px 0 rgba(0,0,0,0.25);
+      transition: transform 0.1s;
+    }
+    button:active { transform: translateY(6px); box-shadow: 0 0 0 rgba(0,0,0,0.2); }
+    .danger { color: #fff; background: #ee5253; }
+    .emoji-hero { font-size: 5rem; animation: spin 4s linear infinite; z-index: 5; }
+    @keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+    .floater { position: fixed; top: -60px; font-size: 2.5rem; pointer-events: none; z-index: 1; }
+    @keyframes fall { to { transform: translateY(110vh) rotate(720deg); } }
+    #mascot {
+      position: fixed; font-size: 3.5rem; pointer-events: none; z-index: 10;
+      transition: transform 0.12s ease-out; transform: translate(-50%, -50%);
+    }
+    .confetti { position: fixed; width: 10px; height: 16px; z-index: 9; pointer-events: none; }
+    @keyframes confettiFall { to { transform: translateY(110vh) rotate(900deg); opacity: 0; } }
+  </style>
+</head>
+<body>
+  <div id="mascot">👀</div>
+  <div class="emoji-hero" id="hero">🌍</div>
+  <h1 id="greeting">Hello, Ridiculous World!</h1>
+  <p id="subtitle">Welcome to the goofiest page in the known universe.</p>
+  <div class="buttons">
+    <button onclick="silly()">Make it sillier 🤪</button>
+    <button onclick="party()">PARTY 🎉</button>
+    <button class="danger" onclick="doNotPush()">DO NOT PUSH ⛔</button>
+  </div>
+
+  <script>
+    const phrases = [
+      "Hello, Ridiculous World!", "Howdy, Wacky Planet! 🤠", "Greetings, Earthlings! 👽",
+      "Beep boop, hello! 🤖", "Bonjour, Banana! 🍌", "Wassup, Universe! 🚀",
+      "Ahoy, Goofballs! 🏴‍☠️", "Yo, Marshmallow People! 🌝", "Salutations, Squishes! 🪼"
+    ];
+    const subs = [
+      "Welcome to the goofiest page in the known universe.",
+      "No bugs here, only giggles. 🐛➡️🦋",
+      "100% organic, free-range nonsense.",
+      "Powered by spaghetti and good vibes. 🍝",
+      "You found the secret silly zone! 🎉",
+      "Certified 11/10 by the Bureau of Silliness.",
+      "This page runs on snacks. 🍪"
+    ];
+    const heroes = ["🌍","🌎","🌏","🪐","🌝","🌈","🦄","🍕","🐙","🦖"];
+    const rainEmojis = ["🎉","🍌","🦄","🍕","⭐","🐸","🤪","🪩","🍭","👽","🦖","🧦","🫧","🎈"];
+
+    // Audio (synthesized so no files needed)
+    let audioCtx;
+    function beep(freq, dur) {
+      try {
+        audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+        const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+        o.type = "square"; o.frequency.value = freq;
+        o.connect(g); g.connect(audioCtx.destination);
+        g.gain.setValueAtTime(0.08, audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + dur);
+        o.start(); o.stop(audioCtx.currentTime + dur);
+      } catch(e) {}
+    }
+
+    function silly() {
+      const g = document.getElementById('greeting'), s = document.getElementById('subtitle'), h = document.getElementById('hero');
+      g.textContent = phrases[Math.floor(Math.random()*phrases.length)];
+      s.textContent = subs[Math.floor(Math.random()*subs.length)];
+      h.textContent = heroes[Math.floor(Math.random()*heroes.length)];
+      document.body.style.filter = `hue-rotate(${Math.random()*360}deg)`;
+      beep(300 + Math.random()*500, 0.15);
+    }
+
+    // Emoji rain
+    function dropEmoji() {
+      const e = document.createElement('div');
+      e.className = 'floater';
+      e.textContent = rainEmojis[Math.floor(Math.random()*rainEmojis.length)];
+      e.style.left = Math.random()*100 + 'vw';
+      const dur = 4 + Math.random()*5;
+      e.style.animation = `fall ${dur}s linear forwards`;
+      e.style.fontSize = (1.5 + Math.random()*3) + 'rem';
+      document.body.appendChild(e);
+      setTimeout(() => e.remove(), dur*1000);
+    }
+    setInterval(dropEmoji, 350);
+
+    // Confetti party
+    function party() {
+      beep(660, 0.1); setTimeout(()=>beep(880,0.1),100); setTimeout(()=>beep(1100,0.15),200);
+      for (let i=0;i<120;i++){
+        const c = document.createElement('div');
+        c.className = 'confetti';
+        c.style.left = Math.random()*100 + 'vw';
+        c.style.top = '-20px';
+        c.style.background = `hsl(${Math.random()*360},90%,60%)`;
+        const dur = 2 + Math.random()*2;
+        c.style.animation = `confettiFall ${dur}s linear forwards`;
+        c.style.transform = `rotate(${Math.random()*360}deg)`;
+        document.body.appendChild(c);
+        setTimeout(()=>c.remove(), dur*1000);
+      }
+    }
+
+    // DO NOT PUSH
+    let pushes = 0;
+    const dares = [
+      "I TOLD you not to push it! 😱",
+      "Now look what you did. 🫠",
+      "Seriously? Again?! 🙄",
+      "Okay you clearly love chaos. 🌪️",
+      "Fine. FULL SILLY MODE. 🤡"
+    ];
+    function doNotPush() {
+      pushes++;
+      silly(); party();
+      document.getElementById('subtitle').textContent = dares[Math.min(pushes-1, dares.length-1)];
+      document.body.style.transform = `rotate(${(Math.random()-0.5)*6}deg)`;
+      setTimeout(()=>document.body.style.transform='', 300);
+      beep(120, 0.3);
+    }
+
+    // Cursor-chasing googly mascot
+    const mascot = document.getElementById('mascot');
+    let mx = window.innerWidth/2, my = window.innerHeight/2, tx = mx, ty = my;
+    window.addEventListener('mousemove', e => { tx = e.clientX; ty = e.clientY; });
+    function followCursor() {
+      mx += (tx - mx) * 0.08; my += (ty - my) * 0.08;
+      mascot.style.left = mx + 'px'; mascot.style.top = my + 'px';
+      mascot.textContent = (Math.abs(tx-mx)+Math.abs(ty-my) > 200) ? "😲" : "👀";
+      requestAnimationFrame(followCursor);
+    }
+    followCursor();
+  </script>
+</body>
+</html>

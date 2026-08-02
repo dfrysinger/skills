@@ -1,0 +1,141 @@
+---
+name: skill-manage
+description: Patch, archive, restore, pin, or extend an existing personal skill in dfrysinger/skills. Use when the user wants to modify a skill, when skill-curator proposes a consolidation, or when a skill needs a new supporting file. For brand-new skills use skill-create instead.
+---
+
+> **Paths note:** Paths below are the defaults; `$SKILLS_REPO_ROOT`, `$SKILLS_LOCAL_ROOT` and `$SKILLS_STATE_DIR` override them. See README "Forking and portability".
+
+
+# skill-manage
+
+## When to use
+
+- User says "edit the X skill", "patch X to handle Y", "archive X", "pin X", "add a reference file to X".
+- `skill-curator` proposes a consolidation (merge sibling skills into an umbrella) and the user approves the live run.
+- You need to add a `references/`, `templates/`, `scripts/`, or `assets/` file to an existing skill.
+
+For **creating** a new skill from scratch, use `/skill-create` instead.
+
+## Prerequisites
+
+- macOS (scripts use `mv`, `git`, standard POSIX tools).
+- Two skill roots (see `/skill-create` for the model):
+  - PUBLIC repo `~/code/skills/` (clone of `dfrysinger/skills`, pushable)
+  - LOCAL native `~/.copilot/skills/` (local git repo, NO remote; agent-managed)
+- `find-skill.sh`, `archive-skill.sh`, `restore-skill.sh`, and `promote-skill.sh`
+  are all root-aware: they search both roots and operate inside whichever root
+  owns the skill.
+- Never edit the installed cache under `~/.copilot/installed-plugins/`.
+
+> **Attribution.** Ported from [Hermes Agent](https://github.com/NousResearch/hermes-agent)'s
+> `skill_manage` tool (`tools/skill_manager_tool.py`), adapted to Copilot CLI.
+
+## Actions
+
+All actions operate on a skill identified by its `<name>` (slug). The script `scripts/find-skill.sh <name>` resolves a name to its directory; you'll need it for everything below.
+
+| Action | What it does | Reversible? |
+|---|---|---|
+| `patch` | Find-and-replace inside `SKILL.md` or any support file | yes (git revert) |
+| `edit` | Full rewrite of `SKILL.md` | yes (git revert) |
+| `write-file` | Add/overwrite a `references/<f>.md`, `templates/<f>.<ext>`, `scripts/<f>.<ext>`, or `assets/<f>` | yes (git revert) |
+| `remove-file` | Delete a supporting file | yes (git revert) |
+| `archive` | Move skill dir to `<root>/.archive/<name>/` and commit (in its owning root) | yes (`restore`) |
+| `restore` | Move from `.archive/` back to live in the same root | yes (`archive`) |
+| `pin` | Touch `.pinned` in the skill dir — curator skips it | yes (`unpin`) |
+| `unpin` | Remove `.pinned` | yes (`pin`) |
+| `promote` | Move a LOCAL skill into the PUBLIC repo (strip provenance, register, commit both) | yes (manual) |
+
+**Hard rule**: **no `delete`**. Archive is the maximum destructive action. `.archive/` is git-tracked, fully recoverable, and survives plugin sync.
+
+## Workflow
+
+### patch (the most common)
+
+1. Resolve target file path with `find-skill.sh`.
+2. Use the `edit` tool (NOT a shell `sed`) — Copilot CLI's `edit` tool verifies uniqueness of `old_str` and won't silently match the wrong block.
+3. After edit, re-run validator:
+   ```bash
+   ~/code/skills/skills/skill-manage/scripts/validate-skill.sh \
+     "$(scripts/find-skill.sh <name>)/SKILL.md"
+   ```
+4. Commit with the user's per-clone author config (already set):
+   ```bash
+   cd ~/code/skills && git add -A && git commit -m "skills/<name>: <change>
+
+   Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+   ```
+
+### archive
+
+1. Verify the skill is **not pinned** (`.pinned` file absent). Pinned skills refuse archive — surface a clear message and stop.
+2. Run:
+   ```bash
+   scripts/archive-skill.sh <name> [--absorbed-into <umbrella>]
+   ```
+   `--absorbed-into <umbrella>` is required when the curator merged this skill's content into another — it gets recorded in the commit message so consolidation history stays traceable. The script auto-detects which root the skill lives in: PUBLIC repo archives commit to `~/code/skills` and unregister from `plugin.json`; LOCAL native archives commit to `~/.copilot/skills` (no registry touch). Tombstones for agent-created skills always go to `~/.copilot/skill-state/skill-review/tombstones/`.
+
+3. Verify: skill dir is now under `<root>/.archive/<name>/`, and `git log -1` in the owning root shows the move.
+
+### restore
+
+```bash
+scripts/restore-skill.sh <name>
+```
+Searches both roots' `.archive/` and restores within the same root. Clears any
+matching tombstone in the state dir. Re-registers in `plugin.json` only when
+restoring into the public repo.
+
+### promote (LOCAL → PUBLIC)
+
+```bash
+scripts/promote-skill.sh <name>
+```
+Moves `~/.copilot/skills/<name>` into `~/code/skills/skills/<name>`, strips the
+`.agent-created` provenance markers (it becomes a curated skill), registers in
+`plugin.json`, validates, and commits BOTH repos. USER-RUN ONLY — the
+unattended daemon never promotes.
+
+**Clear the publishability gate first** (`skill-create`, PUBLIC procedure step
+0): `~/code/skills` is a public GitHub repo, so a skill naming an
+employer-internal codebase, repo, org, host, team, or person stays LOCAL. A
+local skill earned its detail from private work, so this gate bites hardest
+exactly here.
+
+### pin / unpin
+
+```bash
+scripts/pin-skill.sh <name>     # touch <skill-dir>/.pinned
+scripts/pin-skill.sh <name> --unpin
+```
+
+Pin protects from **archive only**. Patch/edit/write-file still work — pinning preserves a skill while letting it evolve.
+
+### write-file
+
+Add a supporting file under one of `references/`, `templates/`, `scripts/`, `assets/`:
+
+1. Validate the destination is one of the allowed subdirs (script `scripts/check-subdir.sh`).
+2. Validate the file path has no `..` traversal and stays inside the skill dir.
+3. Validate size ≤ 1 MiB.
+4. Use the `create` tool (errors if file exists — overwrite uses `edit`).
+5. `chmod +x` if it's a script.
+6. Commit.
+
+## Pitfalls
+
+- **Editing the installed cache.** Always operate under `~/code/skills/` (PUBLIC) or `~/.copilot/skills/` (LOCAL). The installed cache at `~/.copilot/installed-plugins/_direct/dfrysinger--skills/` gets wiped on every plugin sync.
+- **Trying to push the LOCAL repo.** `~/.copilot/skills` is a local git repo with NO remote — commits stay machine-local on purpose. `git push` will fail. Use `promote-skill.sh` if you want a local skill published.
+- **Patching a pinned skill is fine; archiving it is not.** If you need to archive a pinned skill, ask the user to unpin first. Don't unpin → archive on your own — pin is the user's explicit signal "preserve this".
+- **Skipping the validator after a patch.** Frontmatter is easy to break (missing `---`, malformed YAML, description that grew past 1024 chars). Always re-validate.
+- **Forgetting to push.** PUBLIC-repo commits aren't shared until `git push origin main` — the user's other clones won't see the change. LOCAL-repo commits never push (no remote); that's intentional.
+- **Consolidation without preserving support files.** If you're absorbing skill X into umbrella Y, X may have `references/`, `templates/`, or `scripts/` that the absorbed content references. Re-home those files into Y's matching subdirs and update the destination paths in Y's prose. (See `references/curator-prompt.md` in `skill-curator`.)
+
+## Verification
+
+After any mutating action:
+
+1. `git -C <owning-root> status` shows the change staged or committed (PUBLIC: `~/code/skills`; LOCAL: `~/.copilot/skills`).
+2. `validate-skill.sh` on the changed SKILL.md returns zero errors.
+3. `scripts/find-skill.sh <name>` resolves to the expected path (archived skills resolve to `.archive/...`).
+4. For archive/restore: directory listing matches the new location, the old location is gone.

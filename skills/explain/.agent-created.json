@@ -1,0 +1,8 @@
+{
+  "skill": "explain",
+  "created_by": "skill-manage",
+  "derived_from": "legible-communication",
+  "source_session_id": "3970a38d-2dc4-4993-afcb-bcc64d3276f6",
+  "split_reason": "user-requested split of legible-communication into talk-to-user vs durable-writing",
+  "created_at": "2026-06-03T18:18:27.618553+00:00"
+}

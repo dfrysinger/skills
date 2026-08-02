@@ -1,0 +1,13 @@
+{
+  "name": "dfrysinger-skills",
+  "version": "0.26.0",
+  "description": "Agent skills I use day-to-day with GitHub Copilot CLI and other coding agents.",
+  "author": {
+    "name": "Daniel Frysinger",
+    "url": "https://github.com/dfrysinger"
+  },
+  "homepage": "https://github.com/dfrysinger/skills",
+  "repository": "https://github.com/dfrysinger/skills",
+  "license": "MIT",
+  "skills": "./skills/"
+}

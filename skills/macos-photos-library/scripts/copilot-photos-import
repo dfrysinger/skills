@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+album="${COPILOT_PHOTOS_ALBUM:-Copilot App Tests}"
+staging_dir="${COPILOT_PHOTOS_STAGING:-$HOME/Pictures/Copilot-App-Test-Screenshots}"
+mkdir -p "$staging_dir"
+
+if [[ "$#" -eq 0 ]]; then
+  shot="$staging_dir/copilot-app-test-$(date +%Y%m%d-%H%M%S).png"
+  screencapture -x "$shot"
+  set -- "$shot"
+fi
+
+for file in "$@"; do
+  if [[ ! -f "$file" ]]; then
+    echo "Not a file: $file" >&2
+    exit 1
+  fi
+
+  osascript - "$album" "$file" <<'APPLESCRIPT'
+on run argv
+  set albumName to item 1 of argv
+  set imagePath to item 2 of argv
+  tell application "Photos"
+    try
+      set targetAlbum to album albumName
+    on error
+      set targetAlbum to make new album named albumName
+    end try
+    -- Let Photos do its own duplicate check: this script is re-run after a
+    -- partial import, and skipping the check turns every retry into a second
+    -- copy of everything that already landed.
+    import {POSIX file imagePath} into targetAlbum
+  end tell
+end run
+APPLESCRIPT
+  echo "Imported to Photos album '$album': $file"
+done
