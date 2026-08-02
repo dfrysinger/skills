@@ -27,6 +27,8 @@ LOCK_TOKEN=""
 MOVED=0
 PUBLIC_COMMITTED=0
 PROVENANCE_BACKUP=""
+MANIFEST_BACKUP=""
+MANIFEST_PATHS=()
 
 cleanup() {
   if [[ "$MOVED" == "1" && "$PUBLIC_COMMITTED" == "0" && -d "$DEST" && ! -e "$SRC" ]]; then
@@ -40,6 +42,17 @@ cleanup() {
   fi
   if [[ -n "$PROVENANCE_BACKUP" && -d "$PROVENANCE_BACKUP" ]]; then
     rm -rf "$PROVENANCE_BACKUP"
+  fi
+  if [[ "$PUBLIC_COMMITTED" == "0" && -n "$MANIFEST_BACKUP" && -d "$MANIFEST_BACKUP" ]]; then
+    for manifest in "${MANIFEST_PATHS[@]:-}"; do
+      if [[ -f "$MANIFEST_BACKUP/$manifest" ]]; then
+        mkdir -p "$REPO_ROOT/$(dirname "$manifest")"
+        cp -p "$MANIFEST_BACKUP/$manifest" "$REPO_ROOT/$manifest"
+      fi
+    done
+  fi
+  if [[ -n "$MANIFEST_BACKUP" && -d "$MANIFEST_BACKUP" ]]; then
+    rm -rf "$MANIFEST_BACKUP"
   fi
   if [[ -n "$LOCK_TOKEN" ]]; then
     "$LOCK_SCRIPT" release "$LOCK_TOKEN" >/dev/null || true
@@ -82,10 +95,20 @@ fi
 rm -f "$DEST/.promotion-reviewed.json"
 
 # Register in plugin.json (public root only).
-MANIFEST_PATHS=()
+MANIFEST_OUTPUT="$("$SCRIPT_DIR/registry.sh" --manifest-paths)"
 while IFS= read -r manifest; do
+  [[ -n "$manifest" ]] || continue
   MANIFEST_PATHS+=("$manifest")
-done < <("$SCRIPT_DIR/registry.sh" --manifest-paths)
+done <<< "$MANIFEST_OUTPUT"
+[[ "${#MANIFEST_PATHS[@]}" -gt 0 ]] || {
+  echo "REFUSED: registry returned no manifest paths" >&2
+  exit 1
+}
+MANIFEST_BACKUP="$(mktemp -d "${TMPDIR:-/tmp}/skill-promotion-manifests.XXXXXX")"
+for manifest in "${MANIFEST_PATHS[@]}"; do
+  mkdir -p "$MANIFEST_BACKUP/$(dirname "$manifest")"
+  cp -p "$REPO_ROOT/$manifest" "$MANIFEST_BACKUP/$manifest"
+done
 "$SCRIPT_DIR/registry.sh" register "$NAME"
 
 # Commit the public repo (addition + registration). Stage only this promotion's

@@ -104,6 +104,36 @@ PY
   fail "promotion did not keep manifest versions aligned: $versions"
 pass "promotion strips provenance and the local review manifest"
 
+make_skill "$LOCAL" registry-failure-skill
+git -C "$LOCAL" add registry-failure-skill
+git -C "$LOCAL" commit -qm "add registry failure skill"
+"$SCRIPT_DIR/promotion-review.py" approve "$LOCAL/registry-failure-skill" \
+  --reviewer claude --reviewer gpt >/dev/null
+git -C "$LOCAL" add registry-failure-skill/.promotion-reviewed.json
+git -C "$LOCAL" commit -qm "approve registry failure skill"
+echo 'NOT JSON' > "$PUBLIC/.codex-plugin/plugin.json"
+before_manifests="$(shasum -a 256 \
+  "$PUBLIC/.claude-plugin/plugin.json" \
+  "$PUBLIC/.claude-plugin/marketplace.json" \
+  "$PUBLIC/.codex-plugin/plugin.json")"
+if SKILLS_LOCAL_ROOT="$LOCAL" SKILLS_REPO_ROOT="$PUBLIC" SKILLS_STATE_DIR="$TMP/state" \
+  SKILLS_COAUTHOR_TRAILER="Reviewed-by: fixture" \
+  "$SCRIPT_DIR/promote-skill.sh" registry-failure-skill >/dev/null 2>&1; then
+  fail "malformed registry manifest returned success"
+fi
+after_manifests="$(shasum -a 256 \
+  "$PUBLIC/.claude-plugin/plugin.json" \
+  "$PUBLIC/.claude-plugin/marketplace.json" \
+  "$PUBLIC/.codex-plugin/plugin.json")"
+[[ "$after_manifests" == "$before_manifests" ]] ||
+  fail "registry failure changed public manifests"
+[[ -f "$LOCAL/registry-failure-skill/.agent-created.json" ]] ||
+  fail "registry failure did not restore local provenance"
+[[ ! -e "$PUBLIC/skills/registry-failure-skill" ]] ||
+  fail "registry failure left the skill in the public tree"
+git -C "$PUBLIC" restore -- .codex-plugin/plugin.json
+pass "registry failure restores every public manifest"
+
 make_skill "$LOCAL" rollback-skill
 git -C "$LOCAL" add rollback-skill
 git -C "$LOCAL" commit -qm "add rollback skill"
