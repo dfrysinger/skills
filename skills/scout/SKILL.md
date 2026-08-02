@@ -153,8 +153,8 @@ searches returned nothing, with the surface above.
 **Everything this tier finds is confidential.** Summarise it; do not paste
 internal content, quotes, or links wholesale. Keep it to a section of the
 report marked internal, and keep that report on local disk, where the skills
-downstream can read it. It must never reach a public
-repository, an upstream issue, a commit message, or anything published.
+downstream can read it. It must never reach a public repository, an upstream
+issue, a commit message, or anything published.
 
 **In the wild** (`research`) — find who has already **shipped** this, not who
 has theorised about it.
@@ -164,8 +164,7 @@ questions carry both kinds; where yours does, write the two out as separate
 subquestions — one stated as an outcome a user could observe, one as a
 mechanism inside the code — and hold each to its own bar. Where it carries
 only one, say which, and hold it to that bar alone. Tag every source to the
-subquestion
-it answers:
+subquestion it answers:
 
 - **A capability** — a feature a user would notice. Require **shipped products
   at scale**: generally available or in public preview, from an organisation
