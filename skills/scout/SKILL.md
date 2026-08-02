@@ -66,9 +66,9 @@ apart from legwork skipped.
 
 Issue all four `task` calls in a single response so the tiers run at once.
 Each brief carries the outcome sentence, the repository, and the point scout's
-terms, names, and stack. It also carries that tier's **Returns** clause and
-evidence bar verbatim, since a scout judged against a bar it was never given
-will come back short. Every search runs against the names as well as the
+terms, names, and stack. It also carries that tier's **Returns** clause,
+evidence bar, and sourcing rule verbatim, since a scout judged against a bar
+it was never given will come back short. Every search runs against the names as well as the
 mechanisms. Each scout reports; none of them recommends.
 
 Match each tier's agent type to the evidence it must **reach**: `explore`
@@ -187,7 +187,8 @@ rounds of the five best-evidenced names each. A shipped product is indexed
 under its own name, so the first mechanism search rarely reaches it — but it
 is what surfaces the name that does.
 
-Returns, for each of at least two independent sources: who shipped it, its
+Returns, for each of at least two independent sources **the scout opened**:
+who shipped it, its
 date or version, **how they built it** — the architecture, the data flow, and
 the specific mechanism, in enough detail to be copied or deliberately rejected,
 chasing the architecture post behind the launch announcement and the design
@@ -197,8 +198,25 @@ capability, its shipping status and rough scale of use. Plus where consensus
 sits, or that the field disagrees. Establishing only *that* someone shipped
 this misses the question, which is who has solved it at scale **and how**.
 
+**Every source must be one the scout opened.** This is the one tier whose
+evidence is recalled rather than machine-produced, and a fabricated vendor
+page, version number, or benchmark figure reads exactly like the proof the
+recommendation is about to rest on. So each source returns the page title and
+one verbatim sentence from it carrying the version, date, or figure being
+claimed — a returnable trace of the fetch, since an assertion that a page was
+opened reads the same whether it was. A source the scout could not open is
+still worth reporting: return it marked **unverified**, with what it was
+expected to show and what blocked it. Unverified leads sit alongside the two
+opened sources rather than counting as them, and a tier that has run out of
+reachable sources returns that access limit rather than being redispatched
+for it.
+
 Complete when all four scouts have returned and each has met the bar above.
-Redispatch any scout that came back short, naming what was missing.
+Redispatch any scout that came back short, naming what was missing. Open the
+two in-the-wild sources the recommendation will rest on yourself: a page that
+does not carry the sentence quoted from it comes back **unverified**. Those
+two fetches are the only check in the chain sitting outside the context that
+produced the claim.
 
 ## 4. Triage what came back
 
@@ -238,7 +256,9 @@ Follow `explain` for the register.
 Complete when all five sections are present, the recommendation names its
 tradeoff and says why the balance sits there rather than one rung cheaper or
 one rung better, and every claim traces to a specific pull request, file path,
-channel, or source from the scout reports.
+channel, or source from the scout reports, with any source returned
+**unverified** still labelled that way and never the basis of a
+recommendation.
 
 ## 6. Align, then route
 
