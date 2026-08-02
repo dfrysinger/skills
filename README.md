@@ -72,7 +72,7 @@ The subagent runs the same prompt the daemon does, scoped to whatever pattern yo
 
 ### Code Review
 
-- **[dual-review](./skills/dual-review/SKILL.md)** : Run latest Claude Opus and latest non-mini/non-codex GPT independently, then verify and risk-triage their findings. Only material defects introduced by the current change block landing; adjacent, hypothetical, and medium suggestions become follow-ups. After the bounded discovery rounds, finding-scoped autonomous closure fixes or removes remaining blockers before escalating only at explicit effort or authority limits.
+- **[review](./skills/review/SKILL.md)** : Run latest Claude Opus and latest non-mini/non-codex GPT independently, then verify and risk-triage their findings. Only material defects introduced by the current change block landing; adjacent, hypothetical, and medium suggestions become follow-ups. After the bounded discovery rounds, finding-scoped autonomous closure fixes or removes remaining blockers before escalating only at explicit effort or authority limits.
 
 ### Browsing
 
@@ -80,7 +80,7 @@ The subagent runs the same prompt the daemon does, scoped to whatever pattern yo
 
 ### Workflow
 
-- **[feature-development-loop](./skills/feature-development-loop/SKILL.md)** : Size development process to the actual risk: bounded bug fixes use focused regression tests and a short review path; systemic and critical changes add durable design, architecture guards, and final live proof. Uses [`dual-review`](./skills/dual-review/SKILL.md)'s material-risk gate rather than requiring literal zero comments.
+- **[develop](./skills/develop/SKILL.md)** : Size development process to the actual risk: bounded bug fixes use focused regression tests and a short review path; systemic and critical changes add durable design, architecture guards, and final live proof. Uses [`review`](./skills/review/SKILL.md)'s material-risk gate rather than requiring literal zero comments.
 - **[git-history-recovery](./skills/git-history-recovery/SKILL.md)** : Recover lost or displaced Git work after an accidental reset/checkout/rebase/stash using reflog, dangling commits, and path-scoped restore.
 - **[explain](./skills/explain/SKILL.md)** : Explain technical work in plain language scoped to the user's actual context — context before the point, no unexplained jargon, no assumed codebase knowledge.
 - **[github-api-integration](./skills/github-api-integration/SKILL.md)** : Class-level playbook for integrating against the GitHub REST + GraphQL APIs — query-complexity limits, OAuth-App vs GitHub-App scope behavior, SAML-SSO null-node redaction, pagination, rate limits, and turning raw API errors into actionable UX.
@@ -94,12 +94,12 @@ The subagent runs the same prompt the daemon does, scoped to whatever pattern yo
 See [skills/NOTICE.md](./skills/NOTICE.md) for attribution.
 
 - **[caveman](./skills/caveman/SKILL.md)** : Ultra-compressed communication mode. Cuts token usage ~75% by dropping filler, articles, and pleasantries while keeping full technical accuracy. Triggers on "caveman mode", "be brief", etc.
-- **[grill-me](./skills/grill-me/SKILL.md)** : Get relentlessly interviewed about a plan or design until every branch of the decision tree is resolved, with a recommended answer for each question.
+- **[grill](./skills/grill/SKILL.md)** : Get relentlessly interviewed about a plan or design until every branch of the decision tree is resolved, with a recommended answer for each question.
 - **[handoff](./skills/handoff/SKILL.md)** : Compact the current conversation into a handoff document (written to OS temp dir) so another agent can pick up the work; includes a "suggested skills" section. **Wired to [`mailbox`](./skills/mailbox/SKILL.md)**: when the user names a recipient session (e.g. "hand off to juliett"), the doc is auto-delivered via the mailbox queue with a tmux-wakeup so the recipient picks it up on their next turn.
 - **[rotate-session](./skills/rotate-session/SKILL.md)** : Retire a session that has grown too large to reload and start a fresh one seeded to rebuild context from the old session's plan, checkpoints, todos, and transcript on disk. Nothing is deleted; the old session stays resumable. The manual equivalent of the size-based rotation offer in [`ca`](https://github.com/dfrysinger/remote-agent-stack).
 
 Three skills are **user-invoked** — they carry no model-facing trigger, so they
-cost nothing until you type their name: `caveman`, `grill-me`, and
+cost nothing until you type their name: `caveman`, `grill`, and
 `writing-great-skills`.
 
 ## Layout

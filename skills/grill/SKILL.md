@@ -1,10 +1,10 @@
 ---
-name: grill-me
+name: grill
 description: Relentless interview that walks every branch of a plan until it is settled.
 disable-model-invocation: true
 ---
 
-# grill-me
+# grill
 
 Interview me relentlessly about every aspect of this plan until we reach a shared understanding. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.
 

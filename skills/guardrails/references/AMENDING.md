@@ -57,10 +57,10 @@ a reviewer or the user approves it.
 The agent proposing the change is the agent under pressure to make the build
 green, so the case gets an outside read before anything moves.
 
-`dual-review` is the default. `rubber-duck` is available only for an invariant
+`review` is the default. `rubber-duck` is available only for an invariant
 whose boundary lives in a single module, and taking it means citing that scope
 in the request. An invariant that is cross-cutting, guards a security or data
-contract, or is the reason another guard exists takes `dual-review`.
+contract, or is the reason another guard exists takes `review`.
 
 Give the reviewer the four artifacts from step 1, the proposed change, and the
 argument that intent moved or the boundary was drawn wrong. Ask directly

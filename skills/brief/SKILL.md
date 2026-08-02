@@ -1,9 +1,9 @@
 ---
-name: autopilot-brief
+name: brief
 description: Keep a long, unattended Copilot CLI run on course. Autonomously arm an `/every` charter re-brief (via manage_schedule) that re-anchors the how — worktree, push policy, autonomy mandate, plan hygiene — on each tick so a compacted context doesn't drift, then best-effort self-enqueue the `/autopilot` objective through the current tmux pane. Use when starting a long autopilot or `/goal` run against a plan doc, when writing or sharpening an autopilot objective, or when keeping an unattended run from drifting over many context compactions.
 ---
 
-# autopilot-brief
+# brief
 
 For a long, unattended Copilot CLI run, two things keep the agent on course:
 
@@ -60,7 +60,7 @@ mandate, plan hygiene, subagents, coordination, standing grants) and the
 **objective** (plan doc, scope, one-line outcome, observable done-condition). The
 plan must carry a plain **Definition of Done** covering exactly this run's scope,
 under a unique heading both artifacts point at; if it's missing, write it (or run
-`feature-development-loop`'s design gate) first.
+`develop`'s design gate) first.
 
 **Complete when** no `<SLOT>` remains in either artifact and both point at the
 same Definition-of-Done heading.
@@ -75,7 +75,7 @@ if the planning conversation must remain separately resumable — it starts a
 fresh session, so arm the `/every` re-brief *after* the handoff:
 
 ```
-/new Use /dfrysinger-skills:autopilot-brief against <brief-path>, arm the /every
+/new Use /dfrysinger-skills:brief against <brief-path>, arm the /every
 charter re-brief, and start work.
 ```
 

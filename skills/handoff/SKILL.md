@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Compact the current conversation into a structured handoff document for another agent — or for a fresh instance of yourself — to pick up where this one left off. Use when the user says "hand off to <name>", "do a handoff", "summarize this session for another agent", wants to pass work to a different Copilot CLI session, or when the context-hygiene rule calls for a self-handoff (a null-steered soft-reset `/compact`, or `/new`). If a recipient is named (e.g., "hand off to juliett"), the skill auto-delivers via the mailbox skill after writing the doc.
+description: Compact the current conversation into a structured handoff document for another agent — or for a fresh instance of yourself — to pick up where this one left off. Use when the user says "hand off to <name>", "do a handoff", "summarize this session for another agent", wants to pass work to a different Copilot CLI session, or when the `hygiene` rule calls for a self-handoff (a null-steered soft-reset `/compact`, or `/new`). If a recipient is named (e.g., "hand off to juliett"), the skill auto-delivers via the mailbox skill after writing the doc.
 argument-hint: "What will the next session be used for? Optionally include a recipient name (e.g., 'send to juliett about X') to auto-deliver via the mailbox skill, or say 'self' to restart yourself fresh."
 ---
 

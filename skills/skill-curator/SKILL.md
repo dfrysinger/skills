@@ -11,7 +11,7 @@ description: Periodic self-learning curator that reviews dfrysinger/skills, cons
 A direct port of Hermes Agent's `agent/curator.py` background skill-maintenance system, adapted to Copilot CLI. The umbrella-building consolidation prompt (`references/curator-prompt.md`) is lifted **verbatim** from upstream — same hard rules, same dry-run banner, same structured YAML output.
 
 This skill does NOT touch:
-- Skills installed from other plugins (dual-review, builtin marketplace skills) — only the two skill roots managed by this system are in scope: PUBLIC `~/code/skills/skills/` (curated/recommend-only for hand-made content) and LOCAL `~/.copilot/skills/` (agent-managed, mutable).
+- Skills installed from other plugins (builtin marketplace skills) — only the two skill roots managed by this system are in scope: PUBLIC `~/code/skills/skills/` (curated/recommend-only for hand-made content) and LOCAL `~/.copilot/skills/` (agent-managed, mutable).
 - Pinned skills (those with a `.pinned` file in their dir).
 
 ## When to use
@@ -159,7 +159,7 @@ orchestrator bypasses it because one shared cadence governs all three passes.
 
 9. **A merged umbrella is a new draft.** Whenever `--live` absorbs one skill
    into another, the resulting SKILL.md must meet `writing-great-skills` in
-   this repo and go through `dual-review` before the commit. Merging is where
+   this repo and go through `review` before the commit. Merging is where
    duplication and sprawl enter the library, and no human reads the diff.
 
 ## Pitfalls

@@ -30,7 +30,7 @@ pass, then continue with the operating prompt below.
 >
 > **Hard rules — do not violate:**
 >
-> 1. DO NOT touch skills outside `~/code/skills/skills/`. Other plugins' skills (dual-review, builtin marketplace) are off-limits.
+> 1. DO NOT touch skills outside `~/code/skills/skills/`. Other plugins' skills (builtin marketplace) are off-limits.
 > 2. DO NOT delete any skill. Archiving (moving the skill's directory into `~/code/skills/skills/.archive/`) is the maximum destructive action. Archives are recoverable; deletion is not.
 > 3. DO NOT touch skills shown as pinned=yes. Skip them entirely.
 > 4. DO NOT use usage counters as a reason to skip consolidation. The counters are new and often mostly zero. Judge overlap on CONTENT, not on use_count. 'use=0' is not evidence a skill is valuable; it's absence of evidence either way.
@@ -38,7 +38,7 @@ pass, then continue with the operating prompt below.
 >
 > **How to work — not optional:**
 >
-> 1. Scan the full candidate list. Identify PREFIX CLUSTERS (skills sharing a first word or domain keyword). Examples you are likely to find: `gh-*`, `pr-*`, `skill-*`, `dual-review-*`, etc. Expect 0-15 clusters in a personal library.
+> 1. Scan the full candidate list. Identify PREFIX CLUSTERS (skills sharing a first word or domain keyword). Examples you are likely to find: `gh-*`, `pr-*`, `skill-*`, etc. Expect 0-15 clusters in a personal library.
 >
 > 2. For each cluster with 2+ members, do NOT ask 'are these pairs overlapping?' — ask 'what is the UMBRELLA CLASS these skills all serve? Would a maintainer name that class and write one skill for it?' If yes, pick (or create) the umbrella and absorb the siblings into it.
 >

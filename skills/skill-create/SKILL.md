@@ -43,7 +43,7 @@ A user can later promote local→public with `skill-manage/scripts/promote-skill
 choice, the information hierarchy, completion criteria, and the failure modes
 rather than being repaired into shape afterwards.
 
-Then run `dual-review` on the draft before committing, and apply what the
+Then run `review` on the draft before committing, and apply what the
 reviewers agree on. Where they conflict, take the reading that removes an
 escape hatch or an unobservable completion criterion.
 

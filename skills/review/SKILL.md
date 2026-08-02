@@ -1,9 +1,9 @@
 ---
-name: dual-review
+name: review
 description: Bound dual review by evidence, scope, material risk, and a fixed round budget. Runs latest Claude Opus and latest non-mini/non-codex GPT in parallel, with finding-level verification only for disputed blockers. Use when a non-trivial diff needs review before landing, or a systemic or critical design and its guards need pre-implementation review.
 ---
 
-# dual-review
+# review
 
 Run two independent reviewers against the same change, then use evidence and
 risk to decide what actually blocks landing. The goal is **no verified,

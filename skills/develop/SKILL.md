@@ -1,9 +1,9 @@
 ---
-name: feature-development-loop
+name: develop
 description: Develop and ship one change at a time through a risk-sized loop instead of applying heavyweight architecture ceremony to every bug. Classify the change as bounded, systemic, or critical; use the smallest durable design and test contract that fits; prove runtime behavior before review; then use risk-gated dual review with a bounded round budget. Use when implementing a non-trivial bug fix, feature, refactor, app/UI change, service change, agent workflow, pipeline, or SDK change that must be tested and landed without review rabbit holes.
 ---
 
-# feature-development-loop
+# develop
 
 Ship one coherent change through a process sized to its actual risk. The loop
 must prevent regressions without turning a bounded bug into a speculative
@@ -15,8 +15,8 @@ The governing rule is:
 > realistic blast radius. Promote to a heavier lane only when concrete evidence
 > requires it.
 
-This skill orchestrates `rubber-duck`, `architecture-guardrails`,
-`dual-review`, project-specific development/testing skills, and live validation.
+This skill orchestrates `rubber-duck`, `guardrails`,
+`review`, project-specific development/testing skills, and live validation.
 
 The phase order is fail-closed:
 
@@ -60,7 +60,7 @@ ships on an undistinguished hypothesis says so in its durable record and is
 reviewed as a hypothesis at section 7. Carry on rather than stopping for the
 user.
 
-When the failure is visual, capture it here through `visual-proof` while it
+When the failure is visual, capture it here through `proof` while it
 still fails. After the edit lands there is no before to pair the fix against.
 
 Complete when you can point at the observed failure, the traced path to it, and
@@ -147,7 +147,7 @@ Write or update a durable design document containing:
 - deterministic check definitions;
 - short Definition of Done.
 
-Use `architecture-guardrails` only for cross-cutting rules likely to
+Use `guardrails` only for cross-cutting rules likely to
 drift and poorly expressed by types or functional tests. Prefer:
 
 1. types/schemas that make invalid states impossible;
@@ -182,7 +182,7 @@ without the conversation that produced it. Take one of these exits into
 implementation:*
 
 - *Unattended, or long enough that the context will compact before the plan is
-  done — run `autopilot-brief` against the approved doc. It arms the recurring
+  done — run `brief` against the approved doc. It arms the recurring
   charter re-brief that holds the run on course through compaction, and points
   its Definition of Done at the one this doc already carries. It performs the
   handoff itself, so do not also run `handoff`.*
@@ -197,7 +197,7 @@ Encode the failure established in section 0 as the smallest functional test,
 before or alongside the fix. Red-first is preferred when practical, but do not
 build a large test harness solely to obtain a red phase.
 
-Do not dual-review the tests separately. They are reviewed with the
+Do not run `review` on the tests separately. They are reviewed with the
 implementation after the behavior works.
 
 ### Systemic/critical
@@ -210,11 +210,11 @@ or guard, state:
 - the expected pass and failure signal;
 - why that failure proves the intended contract.
 
-Before implementation, run one paired `dual-review` discovery round over the
+Before implementation, run one paired `review` discovery round over the
 design and this check contract. Include executable guard code only when it must
 exist before implementation to constrain the work; otherwise review executable
 tests and guards once with the completed implementation. Fix only `must-fix`
-findings under the dual-review risk gate. Run one fix-verification round only if
+findings under `review`'s risk gate. Run one fix-verification round only if
 material findings were found. This pre-build gate has no third round.
 
 Do not require literal zero reviewer comments before building. Medium,
@@ -299,7 +299,7 @@ happened are not evidence.
 Run a real end-to-end check when the change affects runtime behavior that unit
 tests cannot fully prove.
 
-- UI: exercise the running app and capture it through `visual-proof`, which
+- UI: exercise the running app and capture it through `proof`, which
   owns the capture surface, the settle, and what makes an image evidence.
 - Service/API: call the running service and inspect the actual state/result.
 - Agent/LLM: use the real backend/model when behavior depends on it.
@@ -380,7 +380,7 @@ Do not manufacture an expensive external E2E without added evidence value.
 
 ## 7. Risk-gated static review
 
-Invoke `dual-review` after the change works.
+Invoke `review` after the change works.
 
 Before dispatching, verify the live-proof receipt is present and still matches
 or explicitly covers the reviewed tree. If runtime work has no passing receipt,
@@ -402,7 +402,7 @@ Tests and guards are reviewed as part of the same coherent change. Reviewers
 must check that tests fail for the intended reason, assertions prove observable
 behavior, and guards neither pass vacuously nor reject valid architecture.
 
-Use the dual-review bounded loop:
+Use `review`'s bounded loop:
 
 - round 1: broad discovery;
 - round 2: prior-fix verification plus fix delta;
@@ -492,7 +492,7 @@ must-fix even when reproduction is difficult.
 
 ## Context hygiene
 
-At every **Compaction point** marked above, invoke `context-hygiene`, which
+At every **Compaction point** marked above, invoke `hygiene`, which
 owns the depth choice, the steer, and verified self-submission. Naming the
 skill is the instruction; a general intention to compact is not one, and is why
 agents arrive at review with a context full of resolved work.
@@ -524,7 +524,7 @@ Stop and re-scope when any occurs:
   design invariant, and E2E without each layer adding distinct evidence.
 
 At that point, land if the material gate is clear, record important follow-ups,
-or send any remaining `must-fix` risk through `dual-review`'s autonomous
+or send any remaining `must-fix` risk through `review`'s autonomous
 completion ladder. Escalate only when that skill's explicit effort, authority,
 or irreversibility threshold is reached. Do not continue merely to obtain a
 literal `findings: []`.

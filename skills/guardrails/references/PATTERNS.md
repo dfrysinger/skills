@@ -1,10 +1,10 @@
 # Guardrail patterns
 
-Worked examples for `architecture-guardrails`. Read when writing a guard.
+Worked examples for `guardrails`. Read when writing a guard.
 
 ## Structure drift guards, strongest first
 
-The order matters: it follows the contract ladder in `feature-development-loop`.
+The order matters: it follows the contract ladder in `develop`.
 Reach for the weakest technique only when the stronger ones cannot express the
 rule.
 

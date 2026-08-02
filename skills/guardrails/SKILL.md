@@ -1,9 +1,9 @@
 ---
-name: architecture-guardrails
+name: guardrails
 description: Compile a codebase's prose architecture rules into deterministic CI guards — architecture fitness functions — so an agent cannot quietly break a global invariant while every local test stays green. Use when a fast-moving or agent-written codebase is drifting from its intended architecture, when you want the rules in AGENTS.md or a design spec actually enforced, or when reviewing whether a refactor preserved a system's global contracts.
 ---
 
-# architecture-guardrails
+# guardrails
 
 Compile the architecture you *want* into checks that fail the build when the
 codebase **drifts** away from it.
@@ -29,7 +29,7 @@ red on a deliberate violation and green on the restored tree. Step 4 owns how.
 
 **A cheaper contract displaces a guard only by name.** A guard is permanent
 maintenance, so it earns its place only when the rule is cross-cutting and
-likely to drift; `feature-development-loop` owns the ranking of contracts. When
+likely to drift; `develop` owns the ranking of contracts. When
 a type, schema, or behavioral test carries the rule instead, record which one,
 where it lives, and how it covers the cross-boundary failure the rule names.
 Judging a guard unnecessary without naming its replacement leaves the rule
@@ -138,7 +138,7 @@ an agent does when a guard fires: read the invariant id in the failure, inspect
 the boundary it names, then either restore conformance or open
 [`references/AMENDING.md`](references/AMENDING.md).
 
-Invoke `context-hygiene` before handing back. The register and the guards are
+Invoke `hygiene` before handing back. The register and the guards are
 the baton; the drift survey and the red/green proof runs are not.
 
 Complete when every proven guard runs in CI, each failure message names its
