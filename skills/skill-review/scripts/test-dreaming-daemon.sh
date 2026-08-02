@@ -307,6 +307,14 @@ pass "non-object cadence remains observable as an aborted tick"
 new_case public-baseline
 PUBLIC="$CASE/public"
 mkdir -p "$PUBLIC"
+# Keep the guard off the real baseline: this suite re-snapshots repeatedly, and
+# the live baseline belongs to whatever run currently owns it.
+export SKILLS_PUBLIC_BASELINE="$CASE/public.baseline"
+# The baseline is write-once, so a fresh one needs an explicit reset first.
+resnapshot() {
+  SKILLS_REPO_ROOT="$PUBLIC" "$SCRIPT_DIR/verify-repo-unchanged.sh" reset >/dev/null
+  SKILLS_REPO_ROOT="$PUBLIC" "$SCRIPT_DIR/verify-repo-unchanged.sh" snapshot >/dev/null
+}
 git -C "$PUBLIC" init -q
 git -C "$PUBLIC" config user.email test@example.com
 git -C "$PUBLIC" config user.name Test
@@ -315,7 +323,7 @@ printf '.DS_Store\n__pycache__/\n' > "$PUBLIC/.gitignore"
 git -C "$PUBLIC" add -- file .gitignore
 git -C "$PUBLIC" commit -qm base
 echo human >> "$PUBLIC/file"
-SKILLS_REPO_ROOT="$PUBLIC" "$SCRIPT_DIR/verify-repo-unchanged.sh" snapshot >/dev/null
+resnapshot
 SKILLS_REPO_ROOT="$PUBLIC" "$SCRIPT_DIR/verify-repo-unchanged.sh" check >/dev/null
 echo daemon-injected >> "$PUBLIC/file"
 if SKILLS_REPO_ROOT="$PUBLIC" "$SCRIPT_DIR/verify-repo-unchanged.sh" check >/dev/null 2>&1; then
@@ -323,25 +331,74 @@ if SKILLS_REPO_ROOT="$PUBLIC" "$SCRIPT_DIR/verify-repo-unchanged.sh" check >/dev
 fi
 git -C "$PUBLIC" restore -- file
 echo human >> "$PUBLIC/file"
-SKILLS_REPO_ROOT="$PUBLIC" "$SCRIPT_DIR/verify-repo-unchanged.sh" snapshot >/dev/null
+resnapshot
 echo ignored > "$PUBLIC/.DS_Store"
 SKILLS_REPO_ROOT="$PUBLIC" "$SCRIPT_DIR/verify-repo-unchanged.sh" check >/dev/null
 OUT1="$CASE/outside-one"
 OUT2="$CASE/outside-two"
 mkdir -p "$OUT1" "$OUT2"
 ln -s "$OUT1" "$PUBLIC/linkdir"
-SKILLS_REPO_ROOT="$PUBLIC" "$SCRIPT_DIR/verify-repo-unchanged.sh" snapshot >/dev/null
+resnapshot
 ln -sfn "$OUT2" "$PUBLIC/linkdir"
 if SKILLS_REPO_ROOT="$PUBLIC" "$SCRIPT_DIR/verify-repo-unchanged.sh" check >/dev/null 2>&1; then
   fail "public baseline missed directory symlink retarget"
 fi
 rm -f "$PUBLIC/linkdir"
-SKILLS_REPO_ROOT="$PUBLIC" "$SCRIPT_DIR/verify-repo-unchanged.sh" snapshot >/dev/null
+resnapshot
 echo daemon > "$PUBLIC/other"
 if SKILLS_REPO_ROOT="$PUBLIC" "$SCRIPT_DIR/verify-repo-unchanged.sh" check >/dev/null 2>&1; then
   fail "public baseline missed a new change"
 fi
 pass "public guard preserves pre-existing dirt and catches new changes"
+
+new_case public-baseline-write-once
+PUBLIC="$CASE/public"
+LOCAL="$CASE/local"
+mkdir -p "$PUBLIC" "$LOCAL"
+export SKILLS_PUBLIC_BASELINE="$CASE/public.baseline"
+for R in "$PUBLIC" "$LOCAL"; do
+  git -C "$R" init -q
+  git -C "$R" config user.email test@example.com
+  git -C "$R" config user.name Test
+  echo base > "$R/file"
+  git -C "$R" add -- file
+  git -C "$R" commit -qm base
+done
+
+# A second snapshot must fail rather than re-baseline away damage already done.
+SKILLS_REPO_ROOT="$PUBLIC" "$SCRIPT_DIR/verify-repo-unchanged.sh" snapshot >/dev/null
+echo daemon >> "$PUBLIC/file"
+if SKILLS_REPO_ROOT="$PUBLIC" "$SCRIPT_DIR/verify-repo-unchanged.sh" snapshot >/dev/null 2>&1; then
+  fail "snapshot overwrote an existing baseline"
+fi
+if SKILLS_REPO_ROOT="$PUBLIC" "$SCRIPT_DIR/verify-repo-unchanged.sh" check >/dev/null 2>&1; then
+  fail "check passed after the run dirtied the public repo"
+fi
+git -C "$PUBLIC" restore -- file
+
+# A baseline captured after the run's own commit is out of order, so it cannot
+# have witnessed anything and must fail even though the public repo is clean.
+SKILLS_REPO_ROOT="$PUBLIC" "$SCRIPT_DIR/verify-repo-unchanged.sh" reset >/dev/null
+PRE_LOCAL="$(git -C "$LOCAL" rev-parse HEAD)"
+echo work >> "$LOCAL/file"
+git -C "$LOCAL" commit -qam "run work"
+sleep 1
+SKILLS_REPO_ROOT="$PUBLIC" SKILLS_LOCAL_ROOT="$LOCAL" \
+  "$SCRIPT_DIR/verify-repo-unchanged.sh" snapshot >/dev/null
+/usr/bin/python3 - "$SKILLS_PUBLIC_BASELINE" "$PRE_LOCAL" <<'PY'
+import json, sys
+path, pre = sys.argv[1], sys.argv[2]
+d = json.load(open(path))
+d["local_head"] = pre
+json.dump(d, open(path, "w"), sort_keys=True)
+open(path, "a").write("\n")
+PY
+if SKILLS_REPO_ROOT="$PUBLIC" SKILLS_LOCAL_ROOT="$LOCAL" \
+   "$SCRIPT_DIR/verify-repo-unchanged.sh" check >/dev/null 2>&1; then
+  fail "check accepted a baseline captured after the run's own commit"
+fi
+unset SKILLS_PUBLIC_BASELINE
+pass "public baseline is write-once and must predate the run's commits"
 
 new_case installer-migration
 DEST="$CASE/LaunchAgents"

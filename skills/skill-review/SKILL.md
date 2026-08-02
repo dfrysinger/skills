@@ -114,9 +114,13 @@ upstream loop keeps in memory.
       `created`, `patched`, `skipped`, `routed`, and `watermark_ts` = that
       session's last ts.
 4. **Guards (both required):**
-   - Capture `scripts/verify-repo-unchanged.sh snapshot` before work, then run
-     `scripts/verify-repo-unchanged.sh check` — public repo must match the
-     baseline, while unrelated pre-existing work is allowed.
+   - Capture `scripts/verify-repo-unchanged.sh snapshot` **before the first
+     action**, then run `scripts/verify-repo-unchanged.sh check` after the last
+     one — public repo must match the baseline, while unrelated pre-existing
+     work is allowed. The baseline is write-once: a second `snapshot` fails
+     rather than re-baselining away a change the run already made, and `check`
+     rejects a baseline captured after the run's own commits. Clear a baseline
+     left by a crashed run with `reset`.
    - `scripts/verify-diff-scope.sh` — local-repo changes must stay within
     `<name>/**`, `README.md`.
    On any exit 3, run the **UNWIND** procedure in

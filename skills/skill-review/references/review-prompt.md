@@ -224,7 +224,10 @@ add provenance to make a hand-made patch writable by the curator.
 9. **Guards:** before any action, record the starting commit of each root and
    snapshot the public repo with `verify-repo-unchanged.sh snapshot`:
    `PRE_RUN_HEAD=$(git -C <root> rev-parse HEAD)`. Recovery is impossible
-   without it. After all actions, run BOTH guards. (a)
+   without it. Snapshot FIRST — the baseline is write-once, so a later
+   `snapshot` fails instead of silently re-baselining, and `check` rejects a
+   baseline captured after this run's own commits. After all actions, run BOTH
+   guards. (a)
    `verify-repo-unchanged.sh check` — the public repo `~/code/skills/` must
    match its pre-run snapshot; unrelated pre-existing human work is allowed,
    but any run-caused change is untrusted. (b) `verify-diff-scope.sh` — the
