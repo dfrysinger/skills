@@ -1,9 +1,9 @@
 ---
-name: shipping
+name: development-loop
 description: Develop and ship one change at a time through a risk-sized loop instead of applying heavyweight architecture ceremony to every bug. Classify the change as bounded, systemic, or critical; use the smallest durable design and test contract that fits; prove runtime behavior before review; then use risk-gated dual review with a bounded round budget. Use when implementing a non-trivial bug fix, feature, refactor, app/UI change, service change, agent workflow, pipeline, or SDK change that must be tested and landed without review rabbit holes.
 ---
 
-# shipping
+# development-loop
 
 Ship one coherent change through a process sized to its actual risk. The loop
 must prevent regressions without turning a bounded bug into a speculative

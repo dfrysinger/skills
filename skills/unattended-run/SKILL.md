@@ -60,7 +60,7 @@ mandate, plan hygiene, subagents, coordination, standing grants) and the
 **objective** (plan doc, scope, one-line outcome, observable done-condition). The
 plan must carry a plain **Definition of Done** covering exactly this run's scope,
 under a unique heading both artifacts point at; if it's missing, write it (or run
-`shipping`'s design gate) first.
+`development-loop`'s design gate) first.
 
 **Complete when** no `<SLOT>` remains in either artifact and both point at the
 same Definition-of-Done heading.

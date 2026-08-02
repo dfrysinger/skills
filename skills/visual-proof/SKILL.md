@@ -134,7 +134,7 @@ and the written claim matches what you saw.
 ## 5. Pair the after against a baseline
 
 A **fix** earns an after only against a before. Capture the failure while it
-still fails — `shipping` establishes it at section 0, before
+still fails — `development-loop` establishes it at section 0, before
 any edit — and keep its path, route, viewport, and theme for the after. When
 editing has already begun, reach the failing revision through a separate
 worktree, or stash the fix, capture, reapply, and recheck the intended diff.

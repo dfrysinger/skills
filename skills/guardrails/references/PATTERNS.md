@@ -4,7 +4,7 @@ Worked examples for `guardrails`. Read when writing a guard.
 
 ## Structure drift guards, strongest first
 
-The order matters: it follows the contract ladder in `shipping`.
+The order matters: it follows the contract ladder in `development-loop`.
 Reach for the weakest technique only when the stronger ones cannot express the
 rule.
 
