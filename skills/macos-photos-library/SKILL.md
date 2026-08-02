@@ -4,7 +4,7 @@ description: Query a local macOS Photos library with osxphotos and import screen
 platforms: [macos]
 ---
 
-# macOS Photos Library
+# macos-photos-library
 
 Use `osxphotos` for read-only Photos library metadata and `copilot-photos-import` for writing screenshots or image files into Photos. Do not browse photo contents unless the user explicitly asks for a specific album, image, or metadata query.
 

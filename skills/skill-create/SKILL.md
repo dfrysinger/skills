@@ -81,7 +81,9 @@ The mechanical checks below are the ones a script can settle. The skill is
    ```
    Optional: `version`, `author`, `license`, `platforms: [macos]`.
 
-7. **Name is filesystem-safe and globally distinct across BOTH roots.** Slug regex `^[a-z0-9][a-z0-9._-]*$`. Check for collisions everywhere:
+   The body then opens with a single H1 that is exactly the slug — `# <slug>`, lowercase, no Title Case and no prose title. That heading is what the agent reads as the skill's identity when the body is injected into context, so it must match the name the user types to invoke it.
+
+7. **Name is filesystem-safe and globally distinct across BOTH roots.** Prefer one word (`scout`, `explain`, `prototype`); reach for a second only when one word would collide or mislead. Slug regex `^[a-z0-9][a-z0-9._-]*$`. Check for collisions everywhere:
    ```bash
    grep -lr "^name: <slug>$" \
      ~/code/skills/skills/ ~/.copilot/skills/ \

@@ -3,7 +3,7 @@ name: memory-curator
 description: Audit the GitHub Copilot memory store, roll durable facts into skills, and delete migrated/duplicate memories to cut always-loaded context. Use when curating Copilot memories, when the memory list at github.com/settings/copilot/memory has grown large, when memories duplicate existing skills, or when running the weekly automated memory-curation job.
 ---
 
-# Memory Curator
+# memory-curator
 
 GitHub Copilot **memories** load in full on every turn; **skills** load only
 their one-line description until invoked. So a fact that lives as a memory costs

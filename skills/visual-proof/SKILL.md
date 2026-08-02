@@ -3,7 +3,7 @@ name: visual-proof
 description: Capture visual evidence that running software behaves as intended, and validate it is real rather than blank, stale, or unfalsifiable. Use when verifying a UI change end to end, when a change note claims a screenshot, or when another skill needs runtime proof a human can see.
 ---
 
-# Visual Proof
+# visual-proof
 
 Seeing the software work is a separate claim from the tests passing, and a
 screenshot has to earn it. A file that was written is not a capture, and a

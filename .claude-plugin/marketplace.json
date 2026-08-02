@@ -2,7 +2,7 @@
   "name": "dfrysinger-skills",
   "metadata": {
     "description": "Agent skills I use day-to-day with GitHub Copilot CLI and other coding agents.",
-    "version": "0.66.0"
+    "version": "0.67.0"
   },
   "owner": {
     "name": "Daniel Frysinger"
@@ -11,7 +11,7 @@
     {
       "name": "dfrysinger-skills",
       "description": "Agent skills I use day-to-day with GitHub Copilot CLI and other coding agents.",
-      "version": "0.66.0",
+      "version": "0.67.0",
       "source": "./"
     }
   ]

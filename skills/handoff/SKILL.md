@@ -4,6 +4,8 @@ description: Compact the current conversation into a structured handoff document
 argument-hint: "What will the next session be used for? Optionally include a recipient name (e.g., 'send to juliett about X') to auto-deliver via the mailbox skill, or say 'self' to restart yourself fresh."
 ---
 
+# handoff
+
 Write a handoff document summarising the current conversation so a fresh agent can continue the work. Save to the temporary directory of the user's OS - not the current workspace.
 
 Include a "suggested skills" section in the document, which suggests skills that the agent should invoke.

@@ -4,6 +4,8 @@ description: Rotate a long-lived Copilot CLI session into a fresh one that rebui
 argument-hint: "Optionally, what the fresh session should focus on first."
 ---
 
+# rotate-session
+
 Copilot replays a session's whole event log on resume, so a session carried for
 weeks grows into the gigabytes and eventually fails to load, leaving an agent
 with no history. Rotating early avoids that. The old session keeps its own

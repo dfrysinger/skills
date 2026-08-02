@@ -3,6 +3,8 @@ name: writing-great-skills
 description: The vocabulary and principles that make a skill predictable — invocation, information hierarchy, pruning, leading words, and failure modes. Use when writing, editing, reviewing, or critiquing a skill, or deciding how to structure or split one.
 ---
 
+# writing-great-skills
+
 A skill exists to wrangle determinism out of a stochastic system. **Predictability** — the agent taking the same _process_ every run, not producing the same output — is the root virtue; every lever below serves it.
 
 **Bold terms** are defined in [`references/GLOSSARY.md`](references/GLOSSARY.md); look them up there for the full meaning.

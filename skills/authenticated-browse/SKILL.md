@@ -3,7 +3,7 @@ name: authenticated-browse
 description: Read websites that need a login. Use when a URL is behind SSO/MFA/auth that the agent can't do itself — internal repos, wikis, dashboards, vendor portals. User logs in once, agent browses after.
 ---
 
-# Authenticated Browse
+# authenticated-browse
 
 A two-phase protocol for letting the user hand off an authenticated browser session to the agent.
 

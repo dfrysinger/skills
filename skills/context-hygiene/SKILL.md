@@ -3,7 +3,7 @@ name: context-hygiene
 description: Keep Copilot CLI working context lean while preserving decisions, active state, and session-bound resources through deliberate compaction. Use when a task finishes, work changes phase, a review round ends, tool history grows, the agent becomes stuck or repetitive, a durable work order enables a soft reset, or a long-lived session needs retirement.
 ---
 
-# Context Hygiene
+# context-hygiene
 
 Keep the working context small without losing the state needed to continue.
 Choose the lightest reset that fits; cross-agent handoffs remain owned by

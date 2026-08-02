@@ -3,7 +3,7 @@ name: autopilot-brief
 description: Keep a long, unattended Copilot CLI run on course. Autonomously arm an `/every` charter re-brief (via manage_schedule) that re-anchors the how — worktree, push policy, autonomy mandate, plan hygiene — on each tick so a compacted context doesn't drift, then best-effort self-enqueue the `/autopilot` objective through the current tmux pane. Use when starting a long autopilot or `/goal` run against a plan doc, when writing or sharpening an autopilot objective, or when keeping an unattended run from drifting over many context compactions.
 ---
 
-# Autopilot brief
+# autopilot-brief
 
 For a long, unattended Copilot CLI run, two things keep the agent on course:
 

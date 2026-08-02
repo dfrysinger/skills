@@ -3,7 +3,7 @@ name: prototype
 description: Prototype what a screen should look like in throwaway HTML before it is built. Use when work introduces an entirely new screen or sweepingly changes existing ones, and when `scout` routes a chosen option here. Send contained or component-level UI changes to `feature-development-loop` instead.
 ---
 
-# Prototype
+# prototype
 
 Prototype the interface in a throwaway file, where a change costs seconds,
 rather than in a real implementation, where it costs days. This skill ends when
