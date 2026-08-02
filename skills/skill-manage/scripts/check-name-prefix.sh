@@ -2,11 +2,19 @@
 # Report the shortest typeable prefix that reaches a candidate skill name and
 # nothing else, across every skill installed on this machine.
 #
-#   check-name-prefix.sh <candidate-name> [more-candidates...]
+#   check-name-prefix.sh [--agent-only] <candidate-name> [more-candidates...]
 #
-# Exit 0 when every candidate has a unique 3- or 4-character prefix; exit 1 when
-# one does not, printing what it collides with.
+# The prefix only has to be short for a skill a human types. A skill reached
+# solely by an agent, a script, or a scheduled job spends no keystrokes, so it
+# is exempt: pass --agent-only for a name not yet on disk, or set
+# `hand-invoked: false` in its frontmatter once it exists.
+#
+# Exit 0 when every candidate that needs a prefix has one; exit 1 when one does
+# not, printing what it collides with. An exempt candidate never fails.
 set -uo pipefail
+
+agent_only=0
+[ "${1:-}" = "--agent-only" ] && { agent_only=1; shift; }
 
 roots=(
   "$HOME/.copilot/skills"
@@ -25,6 +33,24 @@ installed=$(
 
 status=0
 for cand in "$@"; do
+  # A skill nobody types spends no keystrokes, so it needs no short prefix.
+  exempt=$agent_only
+  if [ "$exempt" -eq 0 ]; then
+    for r in "${roots[@]}"; do
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        if sed -n '1,/^---$/p' "$f" | grep -qi '^hand-invoked: *false'; then
+          exempt=1
+        fi
+      done < <(find "$r" -maxdepth 5 -path "*/$cand/SKILL.md" 2>/dev/null |
+                 grep -v '/\.archive/')
+    done
+  fi
+  if [ "$exempt" -eq 1 ]; then
+    echo "n/a  $cand — hand-invoked: false, so no prefix needed"
+    continue
+  fi
+
   # A candidate already on disk is its own match, not a collision.
   others=$(printf '%s\n' "$installed" | grep -vx "$cand")
   best=""

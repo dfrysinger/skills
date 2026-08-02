@@ -1,6 +1,7 @@
 ---
 name: skill-curator
 description: Periodic self-learning curator that reviews dfrysinger/skills, consolidates narrow siblings into umbrella skills, and archives unused ones. Default dry-run. Use when invoked by the dreaming orchestrator, when the user says "curate skills" / "clean up skills" / "skill cleanup", or after noticing many narrow agent-created skills.
+hand-invoked: false
 ---
 
 > **Paths note:** Paths below are the defaults; `$SKILLS_REPO_ROOT`, `$SKILLS_LOCAL_ROOT` and `$SKILLS_STATE_DIR` override them. See README "Forking and portability".

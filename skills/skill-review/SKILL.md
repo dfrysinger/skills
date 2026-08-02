@@ -1,6 +1,7 @@
 ---
 name: skill-review
 description: Autonomous per-session skill reflection — reviews recent work and creates/patches skills WITHOUT asking. Use when invoked by the dreaming orchestrator, dispatched as an end-of-task subagent, or when the user says "review for skills" / "learn from this session". Distinct from skill-curator (which consolidates the library); skill-review is the creation/patching loop.
+hand-invoked: false
 ---
 
 > **Paths note:** Paths below are the defaults; `$SKILLS_REPO_ROOT`, `$SKILLS_LOCAL_ROOT` and `$SKILLS_STATE_DIR` override them. See README "Forking and portability".

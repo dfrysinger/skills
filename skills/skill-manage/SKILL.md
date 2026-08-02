@@ -43,6 +43,7 @@ All actions operate on a skill identified by its `<name>` (slug). The script `sc
 | `archive` | Move skill dir to `<root>/.archive/<name>/` and commit (in its owning root) | yes (`restore`) |
 | `restore` | Move from `.archive/` back to live in the same root | yes (`archive`) |
 | `pin` | Touch `.pinned` in the skill dir — curator skips it | yes (`unpin`) |
+| `rename` | Move the skill to a new slug and rewrite every reference in both roots | yes (rename back) |
 | `unpin` | Remove `.pinned` | yes (`pin`) |
 | `promote` | Move a LOCAL skill into the PUBLIC repo (strip provenance, register, commit both) | yes (manual) |
 
@@ -101,6 +102,20 @@ unattended daemon never promotes.
 employer-internal codebase, repo, org, host, team, or person stays LOCAL. A
 local skill earned its detail from private work, so this gate bites hardest
 exactly here.
+
+### rename
+
+A rename is not a `git mv`. The slug appears in the directory name, the frontmatter, the H1, every other skill that names this one, the PUBLIC plugin manifest, and the README — and references cross roots, so renaming a PUBLIC skill can require a commit in the LOCAL repo too. Do the whole set at once:
+
+```bash
+scripts/rename-skill.sh <old-name> <new-name>     # add --no-commit to inspect first
+```
+
+It refuses a name that is taken or malformed, rewrites only the forms that name a skill (backticked mentions, `skills/<name>/` paths, `/dfrysinger-skills:<name>`, and `[<name>](…)` links) so prose containing the same words survives, re-registers the skill in the manifest, validates, and fails if any stale reference is left. Prose that describes a *process* rather than naming a skill is the caller's judgment call — after `dual-review` was briefly renamed, phrases like "note dual-reviewed in the commit message" were correct to leave alone.
+
+Before choosing the new name, run `scripts/check-name-prefix.sh <new-name>`; `skill-create` rule 7 covers what makes a name good.
+
+**Complete when** the script reports the rename, the version is bumped, the PUBLIC repo is pushed, and the plugin cache is re-synced. Until that sync, other sessions still hold the old name.
 
 ### pin / unpin
 

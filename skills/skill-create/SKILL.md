@@ -85,11 +85,15 @@ The mechanical checks below are the ones a script can settle. The skill is
 
 7. **Name is short, distinct, and reachable in 3-4 keystrokes.** Prefer one word (`scout`, `explain`, `prototype`); use two when the second word earns its place by disambiguating (`dual-review`, `self-compact`, `visual-proof`). Avoid naming a skill after a CLI command it drives — `/compact` and `/autopilot` are typed by the user, and a skill sharing that name reads as the command.
 
-   The name must also autocomplete: some word in it needs a 3- or 4-character prefix that reaches this skill and nothing else installed, and the leading word is the one worth spending that prefix on. Slug regex `^[a-z0-9][a-z0-9._-]*$`. Check the name and its collisions in one pass:
+   A name the user types has to autocomplete: some word in it needs a 3- or 4-character prefix that reaches this skill and nothing else installed, and the leading word is the one worth spending that prefix on. A skill reached only by an agent, a script, or a scheduled job spends no keystrokes and is exempt — give it the clearest name and set `hand-invoked: false` in its frontmatter. Slug regex `^[a-z0-9][a-z0-9._-]*$`. Check the name and its collisions in one pass:
    ```bash
    ~/code/skills/skills/skill-manage/scripts/check-name-prefix.sh <slug>
    ```
-   Exit 1 prints what the candidate collides with, so the next candidate can step around it. Then confirm the slug itself is unused across both roots:
+   Exit 1 prints what the candidate collides with. Read that list before renaming the candidate, because the fix is often to **move the squatter instead**: an accurate name is worth more than a free prefix, and a prefix held by a rarely used skill can usually be freed. `development-loop` was briefly renamed to dodge `/loo`, when the actual blocker was a Microsoft Loop skill that had no claim to the generic word. Renaming that one gave the loop skill its name back. Move the squatter only when it is genuinely the worse claim to the prefix and nothing external is wired to its name — a daemon's name is not worth a keystroke.
+
+   Name the skill from its contents, then test the prefix. Reaching for whatever prefix happens to be free produces a name that has to be justified afterward from a stray phrase in the description: a Nexus skill that is 900 lines of build traps and known bugs was briefly called `nexus-map`, for the `/map` nobody else had taken.
+
+   Then confirm the slug itself is unused across both roots:
    ```bash
    grep -lr "^name: <slug>$" \
      ~/code/skills/skills/ ~/.copilot/skills/ \
