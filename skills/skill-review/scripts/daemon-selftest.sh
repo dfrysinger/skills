@@ -51,14 +51,33 @@ else
   bad "curator completed-project policy missing"
 fi
 
-for script in daemon-pass.sh daemon-run.sh daemon-lock.sh daemon-lock.py dreaming-run.sh dreaming-state.py test-dreaming-daemon.sh; do
+for script in daemon-pass.sh daemon-run.sh daemon-lock.sh daemon-lock.py \
+  dreaming-run.sh dreaming-state.py test-dreaming-daemon.sh \
+  evidence-envelope.py append-skill-evidence.sh mark-agent-created.sh \
+  test-evidence-envelope.sh; do
   [[ -x "$SCRIPT_DIR/$script" ]] && ok "executable: $script" || bad "not executable: $script"
+done
+
+MANAGE_SCRIPT_DIR="$REPO/skills/skill-manage/scripts"
+for script in promotion-review.py promote-skill.sh test-promotion-review.sh; do
+  [[ -x "$MANAGE_SCRIPT_DIR/$script" ]] && ok "executable: skill-manage/$script" ||
+    bad "not executable: skill-manage/$script"
 done
 
 if "$SCRIPT_DIR/test-dreaming-daemon.sh" --quick >>"$RESULT" 2>&1; then
   ok "deterministic dreaming checks"
 else
   bad "deterministic dreaming checks"
+fi
+if "$SCRIPT_DIR/test-evidence-envelope.sh" >>"$RESULT" 2>&1; then
+  ok "deterministic evidence-envelope checks"
+else
+  bad "deterministic evidence-envelope checks"
+fi
+if "$MANAGE_SCRIPT_DIR/test-promotion-review.sh" >>"$RESULT" 2>&1; then
+  ok "deterministic promotion checks"
+else
+  bad "deterministic promotion checks"
 fi
 
 if [[ -d "$LOCAL_ROOT/.git" && -z "$(git -C "$LOCAL_ROOT" remote 2>/dev/null)" ]]; then
