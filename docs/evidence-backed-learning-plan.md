@@ -497,7 +497,7 @@ Do not build a second memory store solely to create a budget.
 
 ## Live acceptance
 
-### M1 Definition of Done
+### M1 live acceptance
 
 Run a real end-of-task review against three controlled sessions:
 
@@ -546,19 +546,19 @@ run, and roll it back without touching unrelated fixtures.
       privacy boundary, milestones, tests, live acceptance, rollout, and
       rollback are explicit.
 
-### M1
+### M1 Definition of Done
 
-- [ ] Artifact-routing contract is one shared source of truth.
-- [ ] Evidence-envelope schema and helper are implemented and documented.
-- [ ] Legacy provenance is backward compatible.
-- [ ] Dispatch, sweep, creation, and memory-roll paths use the routing contract.
-- [ ] Evidence deduplication counts independent tasks rather than mentions.
-- [ ] Malformed evidence fails closed before autonomous mutation.
-- [ ] Deterministic routing, schema, migration, and guard tests pass.
-- [ ] Real three-case acceptance produces skill, factual-memory recommendation,
+- [x] Artifact-routing contract is one shared source of truth.
+- [x] Evidence-envelope schema and helper are implemented and documented.
+- [x] Legacy provenance is backward compatible.
+- [x] Dispatch, sweep, creation, and memory-roll paths use the routing contract.
+- [x] Evidence deduplication counts independent tasks rather than mentions.
+- [x] Malformed evidence fails closed before autonomous mutation.
+- [x] Deterministic routing, schema, migration, and guard tests pass.
+- [x] Real three-case acceptance produces skill, factual-memory recommendation,
       and discard outcomes with no public mutation.
-- [ ] Dual review has no verified in-scope material finding.
-- [ ] M1 is pushed, installed, and observed through the existing self-test.
+- [x] Dual review has no verified in-scope material finding.
+- [x] M1 is pushed, installed, and observed through the existing self-test.
 
 ### Later milestones
 
