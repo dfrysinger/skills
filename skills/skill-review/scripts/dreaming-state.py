@@ -124,7 +124,7 @@ def seed(args: argparse.Namespace) -> None:
     atomic_json(cadence_path(), value)
 
 
-def due(_: argparse.Namespace) -> None:
+def due(args: argparse.Namespace) -> None:
     try:
         cadence = read_json(cadence_path(), {"last_success_bucket": -1})
         if not isinstance(cadence, dict):
@@ -133,7 +133,7 @@ def due(_: argparse.Namespace) -> None:
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
         print(f"cadence state invalid: {error}", file=sys.stderr)
         raise SystemExit(3)
-    raise SystemExit(0 if bucket() > last_bucket else 1)
+    raise SystemExit(0 if bucket(args.epoch) > last_bucket else 1)
 
 
 def parse_passes(path: str | None) -> list[dict]:
@@ -258,7 +258,9 @@ def build_parser() -> argparse.ArgumentParser:
     seed_parser.add_argument("--run-id")
     seed_parser.set_defaults(func=seed)
 
-    sub.add_parser("due").set_defaults(func=due)
+    due_parser = sub.add_parser("due")
+    due_parser.add_argument("--epoch", type=int, default=now_epoch())
+    due_parser.set_defaults(func=due)
 
     record_parser = sub.add_parser("record")
     record_parser.add_argument("--run-id", required=True)

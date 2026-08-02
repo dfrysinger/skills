@@ -169,6 +169,26 @@ PY
 )" "$current_bucket" "daily consolidate changed weekly cadence"
 pass "consolidate runs daily while roll and prune remain weekly"
 
+new_case daily-consolidate-halt
+current_bucket="$("$SCRIPT_DIR/dreaming-state.py" bucket)"
+"$SCRIPT_DIR/dreaming-state.py" seed --bucket "$current_bucket" --epoch "$NOW"
+export FAKE_HALT_AFTER=skills-consolidate
+"$SCRIPT_DIR/dreaming-run.sh"
+latest="$("$SCRIPT_DIR/dreaming-state.py" latest)"
+assert_eq "$(printf '%s' "$latest" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')" "ok" "post-consolidate halt status"
+assert_eq "$(printf '%s' "$latest" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["reason"])')" "consolidate-only" "post-consolidate halt reason"
+pass "halt after the only scheduled pass preserves consolidate-only success"
+
+new_case anchored-due
+"$SCRIPT_DIR/dreaming-state.py" seed --bucket 40 --epoch "$((40 * WEEK))"
+export DREAMING_NOW_EPOCH="$((41 * WEEK + 1))"
+if "$SCRIPT_DIR/dreaming-state.py" due --epoch "$((40 * WEEK + WEEK - 1))"; then
+  fail "anchored due check crossed into the next bucket"
+fi
+"$SCRIPT_DIR/dreaming-state.py" due --epoch "$((41 * WEEK + 1))" ||
+  fail "current-bucket due check did not advance"
+pass "weekly due evaluation uses the run start bucket"
+
 new_case single-pass-parent-lock
 PROMPT="$CASE/prompt.txt"
 echo prompt > "$PROMPT"

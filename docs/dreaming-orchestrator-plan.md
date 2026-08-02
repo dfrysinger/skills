@@ -2,8 +2,9 @@
 
 ## Objective
 
-Replace the independently scheduled skill-maintenance jobs with one effective
-weekly owner that runs the existing passes in a fixed order:
+Replace the independently scheduled skill-maintenance jobs with one daily owner
+that runs session consolidation every day and gates the heavier maintenance
+passes to one run per weekly bucket:
 
 1. consolidate recent sessions into skills;
 2. roll durable memories into skills;
@@ -176,10 +177,12 @@ For a successful due run, atomically write its per-run result, atomically commit
 cadence referencing that run id, then mark the per-run result committed.
 Reports and the JSONL ledger are derived from per-run results. On startup,
 repair an unmarked result referenced by cadence and any missing report or ledger
-record before evaluating cadence. A success result not referenced by cadence is
-an interrupted uncommitted attempt and does not suppress retry. Run ids make
-repair and append deduplication idempotent. Existing review and memory ledgers
-remain authoritative for content idempotency.
+record before evaluating cadence. An `ok: consolidate-only` result is a
+cadence-neutral terminal success and intentionally is not referenced by weekly
+cadence. Any other success result not referenced by cadence is an interrupted
+uncommitted weekly attempt and does not suppress retry. Run ids make repair and
+append deduplication idempotent. Existing review and memory ledgers remain
+authoritative for content idempotency.
 
 Cadence skips, active halt switches, and lock contention are explicit healthy
 skip states. The watchdog evaluates pass engagement only when a pipeline was
@@ -197,8 +200,8 @@ fresh daily skip records.
    their installed plist files.
 6. Run the updated self-test under launchd.
 7. Run deterministic orchestration tests.
-8. Kickstart a non-destructive launchd canary while cadence is not due and
-   verify the recorded cadence-skip result.
+8. Kickstart a non-destructive launchd canary while weekly cadence is not due
+   and verify `ok: consolidate-only` with roll and prune not scheduled.
 9. Exercise a forced-due canary with fake pass commands outside the live skill
    and memory stores.
 10. Remove the halt switch only after all checks pass.
@@ -234,8 +237,13 @@ in git. State and reports are additive; rollback does not delete them.
 
 ### Cadence tests
 
-- A not-due tick records `skipped: cadence-not-due`, runs no pass, and preserves
-  the successful bucket and timestamp.
+- A weekly-not-due tick runs consolidation, records `ok: consolidate-only` with
+  pass statuses `ok`, `not_scheduled`, `not_scheduled`, and preserves the
+  successful bucket and timestamp.
+- Due evaluation is anchored to the run-start bucket even when consolidation
+  crosses a weekly boundary.
+- A halt switch appearing after a successful consolidation does not abort a
+  tick whose weekly passes were not scheduled.
 - Simulated daily ticks across several weeks run once in each stable weekly
   bucket without accumulating completion-time drift.
 - A fully successful due run advances the successful bucket once.

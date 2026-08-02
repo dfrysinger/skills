@@ -132,15 +132,6 @@ NAMES=(skills-consolidate skills-roll skills-prune)
 
 for index in 0 1 2; do
   pass="${PASSES[$index]}"
-  if [[ -e "$HALT_SWITCH" ]]; then
-    log "halt switch appeared before $pass"
-    append_pass "$pass" "not_started" "" "" "" "halt-switch"
-    if (( index < 2 )); then
-      mark_remaining "upstream-halted" "${PASSES[@]:$((index + 1))}"
-    fi
-    record_terminal aborted "halt-before-$pass"
-    exit 1
-  fi
   if ! skills_lock_renew "$LOCK_TOKEN"; then
     log "lost writer lock before $pass"
     append_pass "$pass" "not_started" "" "" "" "lock-lost"
@@ -153,7 +144,7 @@ for index in 0 1 2; do
 
   if (( index == 1 )) && [[ "${DREAMING_FORCE_DUE:-0}" != "1" ]]; then
     set +e
-    "$STATE_TOOL" due
+    "$STATE_TOOL" due --epoch "$START_EPOCH"
     due_rc=$?
     set -e
     if (( due_rc == 1 )); then
@@ -168,6 +159,16 @@ for index in 0 1 2; do
       append_pass "prune" "not_started" "" "" "" "cadence-eval-failed"
       abort_with_record "cadence-eval-failed" "cadence state could not be evaluated"
     fi
+  fi
+
+  if [[ -e "$HALT_SWITCH" ]]; then
+    log "halt switch appeared before $pass"
+    append_pass "$pass" "not_started" "" "" "" "halt-switch"
+    if (( index < 2 )); then
+      mark_remaining "upstream-halted" "${PASSES[@]:$((index + 1))}"
+    fi
+    record_terminal aborted "halt-before-$pass"
+    exit 1
   fi
 
   pass_started_epoch="${DREAMING_NOW_EPOCH:-$(date +%s)}"
