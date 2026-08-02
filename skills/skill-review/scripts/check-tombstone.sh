@@ -31,7 +31,7 @@ if [[ -f "$TOMB_DIR/$NAME.json" ]]; then
 fi
 
 # Fuzzy: candidate shares the leading token with a tombstoned name, or vice
-# versa (e.g. 'gh-token-load' vs tombstoned 'gh-auth-macos' both 'gh-*').
+# versa (e.g. 'gh-token-load' vs a tombstoned 'gh-auth-fix', both 'gh-*').
 python3 - "$TOMB_DIR" "$NAME" <<'PY'
 import json, os, sys
 tdir, name = sys.argv[1], sys.argv[2]

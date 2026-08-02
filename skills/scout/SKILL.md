@@ -63,8 +63,9 @@ attempt at this feature is the highest-value thing this tier can find. When
 the remote is not GitHub, use that host's equivalent searches and name which
 ran. Returns every phrasing searched, and each candidate with its number,
 state, url, and one line on whether it overlaps — or that the searches
-returned nothing. If `gh` reports an invalid token inside the agent shell,
-see `gh-auth-macos`.
+returned nothing. When `gh` reports an invalid token inside the agent shell,
+the login keychain is not visible to this process: restart the tmux server
+from a GUI Terminal session so it inherits one.
 
 **In tree** (`explore`) — read what the codebase already does toward this
 outcome, searching on the point scout's terms, and the orienting docs

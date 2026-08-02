@@ -14,7 +14,7 @@
 #     the token is never written to logs. Token sources, first valid wins:
 #       1. `gh auth token` — authoritative (correct account/push rights).
 #       2. explicit login-keychain read (`security -w`, base64-decoded) — the
-#          gh-auth-macos technique; survives the restricted launchd keychain
+#          reads the token directly; survives the restricted launchd keychain
 #          search list where (1) can fail. Fallback only.
 #
 #  B. A completion-aware bounded copilot runner (skills_run_copilot_bounded).
