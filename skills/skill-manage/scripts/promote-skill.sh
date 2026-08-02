@@ -82,13 +82,17 @@ fi
 rm -f "$DEST/.promotion-reviewed.json"
 
 # Register in plugin.json (public root only).
-"$SCRIPT_DIR/registry.sh" register "$NAME" || true
+MANIFEST_PATHS=()
+while IFS= read -r manifest; do
+  MANIFEST_PATHS+=("$manifest")
+done < <("$SCRIPT_DIR/registry.sh" --manifest-paths)
+"$SCRIPT_DIR/registry.sh" register "$NAME"
 
 # Commit the public repo (addition + registration). Stage only this promotion's
 # own paths: a bare `git add -A` sweeps unrelated working-tree changes into the
 # commit, and a revert of that commit would take the unrelated work with it.
 cd "$REPO_ROOT"
-git add -- "skills/$NAME" ".claude-plugin/plugin.json"
+git add -- "skills/$NAME" "${MANIFEST_PATHS[@]}"
 git commit -m "skills/$NAME: promote from local (agent-created -> curated)
 
 Promoted ~/.copilot/skills/$NAME into the public plugin repo by the user.

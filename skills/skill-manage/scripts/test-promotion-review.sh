@@ -30,15 +30,18 @@ EOF
 
 LOCAL="$TMP/local"
 PUBLIC="$TMP/public"
-mkdir -p "$LOCAL" "$PUBLIC/skills" "$PUBLIC/.claude-plugin"
+mkdir -p "$LOCAL" "$PUBLIC/skills" "$PUBLIC/.claude-plugin" "$PUBLIC/.codex-plugin"
 git -C "$LOCAL" init -q
 git -C "$PUBLIC" init -q
 for root in "$LOCAL" "$PUBLIC"; do
   git -C "$root" config user.email test@example.com
   git -C "$root" config user.name Test
 done
-echo '{"skills":[]}' > "$PUBLIC/.claude-plugin/plugin.json"
-git -C "$PUBLIC" add .claude-plugin/plugin.json
+echo '{"name":"fixture","version":"0.1.0","skills":[]}' > "$PUBLIC/.claude-plugin/plugin.json"
+echo '{"name":"fixture","metadata":{"version":"0.1.0"},"plugins":[{"name":"fixture","version":"0.1.0"}]}' \
+  > "$PUBLIC/.claude-plugin/marketplace.json"
+echo '{"name":"fixture","version":"0.1.0"}' > "$PUBLIC/.codex-plugin/plugin.json"
+git -C "$PUBLIC" add .claude-plugin/plugin.json .claude-plugin/marketplace.json .codex-plugin/plugin.json
 git -C "$PUBLIC" commit -qm base
 
 make_skill "$LOCAL" private-skill
@@ -86,6 +89,19 @@ if find "$PUBLIC/skills/safe-skill" -name '.agent-created*' -print -quit | grep 
 fi
 [[ ! -f "$PUBLIC/skills/safe-skill/.promotion-reviewed.json" ]] ||
   fail "public skill retained private review manifest"
+grep -q '"./skills/safe-skill"' "$PUBLIC/.claude-plugin/plugin.json" ||
+  fail "promoted skill was not registered"
+versions="$(python3 - "$PUBLIC" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+plugin = json.load(open(root / ".claude-plugin/plugin.json"))["version"]
+market = json.load(open(root / ".claude-plugin/marketplace.json"))["metadata"]["version"]
+codex = json.load(open(root / ".codex-plugin/plugin.json"))["version"]
+print(f"{plugin}:{market}:{codex}")
+PY
+)"
+[[ "$versions" == "0.2.0:0.2.0:0.2.0" ]] ||
+  fail "promotion did not keep manifest versions aligned: $versions"
 pass "promotion strips provenance and the local review manifest"
 
 make_skill "$LOCAL" rollback-skill
