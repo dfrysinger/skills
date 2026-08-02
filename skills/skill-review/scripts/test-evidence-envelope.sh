@@ -217,6 +217,13 @@ assert_eq "$("$SCRIPT_DIR/evidence-envelope.py" validate "$SKILLS_LOCAL_ROOT/imp
   "0" "implicit task certainty"
 pass "auto-minted task keys remain unverified"
 
+make_skill forced-certainty
+SKILLS_LOCK_HELD_BY_PARENT=1 "$SCRIPT_DIR/mark-agent-created.sh" \
+  forced-certainty forced-session dispatch --independence verified >/dev/null
+assert_eq "$("$SCRIPT_DIR/evidence-envelope.py" validate "$SKILLS_LOCAL_ROOT/forced-certainty/.agent-created.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["verified_task_count"])')" \
+  "0" "forced implicit task certainty"
+pass "explicit certainty cannot bless an auto-minted task key"
+
 CONCURRENT="$TMP/concurrent.json"
 "$SCRIPT_DIR/evidence-envelope.py" upsert "$CONCURRENT" \
   --skill concurrent --session-id concurrent-one --source-mode dispatch \

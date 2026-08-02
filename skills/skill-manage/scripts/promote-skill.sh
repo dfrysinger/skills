@@ -26,10 +26,20 @@ LOCK_SCRIPT="$SCRIPT_DIR/../../skill-review/scripts/daemon-lock.sh"
 LOCK_TOKEN=""
 MOVED=0
 PUBLIC_COMMITTED=0
+PROVENANCE_BACKUP=""
 
 cleanup() {
   if [[ "$MOVED" == "1" && "$PUBLIC_COMMITTED" == "0" && -d "$DEST" && ! -e "$SRC" ]]; then
     mv "$DEST" "$SRC" || true
+    if [[ -n "$PROVENANCE_BACKUP" && -d "$PROVENANCE_BACKUP" ]]; then
+      for sidecar in .agent-created .agent-created.json .promotion-reviewed.json; do
+        [[ -f "$PROVENANCE_BACKUP/$sidecar" ]] &&
+          cp -p "$PROVENANCE_BACKUP/$sidecar" "$SRC/$sidecar"
+      done
+    fi
+  fi
+  if [[ -n "$PROVENANCE_BACKUP" && -d "$PROVENANCE_BACKUP" ]]; then
+    rm -rf "$PROVENANCE_BACKUP"
   fi
   if [[ -n "$LOCK_TOKEN" ]]; then
     "$LOCK_SCRIPT" release "$LOCK_TOKEN" >/dev/null || true
@@ -54,14 +64,21 @@ mkdir -p "$(dirname "$DEST")"
 mv "$SRC" "$DEST"
 MOVED=1
 
+"$SCRIPT_DIR/promotion-review.py" verify "$DEST"
+
+# Preserve local-only sidecars until the public commit succeeds so a failed
+# promotion can restore the exact local authority state.
+PROVENANCE_BACKUP="$(mktemp -d "${TMPDIR:-/tmp}/skill-promotion.XXXXXX")"
+for sidecar in .agent-created .agent-created.json .promotion-reviewed.json; do
+  [[ -f "$DEST/$sidecar" ]] && cp -p "$DEST/$sidecar" "$PROVENANCE_BACKUP/$sidecar"
+done
+
 # Strip agent provenance — promoted skills are curated, not agent-managed.
 rm -f "$DEST/.agent-created" "$DEST/.agent-created.json"
-
 if find "$DEST" -name '.agent-created*' -print -quit | grep -q .; then
   echo "REFUSED: provenance remained after promotion" >&2
   exit 1
 fi
-"$SCRIPT_DIR/promotion-review.py" verify "$DEST"
 rm -f "$DEST/.promotion-reviewed.json"
 
 # Register in plugin.json (public root only).

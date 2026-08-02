@@ -88,4 +88,31 @@ fi
   fail "public skill retained private review manifest"
 pass "promotion strips provenance and the local review manifest"
 
+make_skill "$LOCAL" rollback-skill
+git -C "$LOCAL" add rollback-skill
+git -C "$LOCAL" commit -qm "add rollback skill"
+"$SCRIPT_DIR/promotion-review.py" approve "$LOCAL/rollback-skill" \
+  --reviewer claude --reviewer gpt >/dev/null
+git -C "$LOCAL" add rollback-skill/.promotion-reviewed.json
+git -C "$LOCAL" commit -qm "approve rollback skill"
+cat > "$PUBLIC/.git/hooks/pre-commit" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+chmod +x "$PUBLIC/.git/hooks/pre-commit"
+if SKILLS_LOCAL_ROOT="$LOCAL" SKILLS_REPO_ROOT="$PUBLIC" SKILLS_STATE_DIR="$TMP/state" \
+  SKILLS_COAUTHOR_TRAILER="Reviewed-by: fixture" \
+  "$SCRIPT_DIR/promote-skill.sh" rollback-skill >/dev/null 2>&1; then
+  fail "forced public commit failure returned success"
+fi
+[[ -f "$LOCAL/rollback-skill/.agent-created" ]] ||
+  fail "failed promotion lost authority marker"
+[[ -f "$LOCAL/rollback-skill/.agent-created.json" ]] ||
+  fail "failed promotion lost evidence envelope"
+[[ -f "$LOCAL/rollback-skill/.promotion-reviewed.json" ]] ||
+  fail "failed promotion lost review manifest"
+[[ ! -e "$PUBLIC/skills/rollback-skill" ]] ||
+  fail "failed promotion left the skill in the public tree"
+pass "failed promotion restores local provenance"
+
 echo "PASS  $passes deterministic promotion checks"

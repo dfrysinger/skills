@@ -58,7 +58,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$TASK_KEY" ]] || TASK_KEY="task:$(python3 -c 'import uuid; print(uuid.uuid4())')"
-if [[ -z "$INDEPENDENCE" ]]; then
+if [[ "$TASK_KEY_EXPLICIT" != "1" ]]; then
+  INDEPENDENCE="unverified"
+elif [[ -z "$INDEPENDENCE" ]]; then
   if [[ "$TASK_KEY_EXPLICIT" == "1" && "$MODE" == "dispatch" ]]; then
     INDEPENDENCE="verified"
   else
