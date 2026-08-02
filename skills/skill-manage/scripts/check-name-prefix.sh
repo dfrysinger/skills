@@ -18,6 +18,7 @@ installed=$(
   for r in "${roots[@]}"; do
     [ -d "$r" ] || continue
     find "$r" -name SKILL.md -maxdepth 5 2>/dev/null |
+      grep -v '/\.archive/' |
       sed 's|/SKILL.md$||; s|.*/||'
   done | sort -u
 )

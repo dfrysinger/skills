@@ -29,7 +29,7 @@ red on a deliberate violation and green on the restored tree. Step 4 owns how.
 
 **A cheaper contract displaces a guard only by name.** A guard is permanent
 maintenance, so it earns its place only when the rule is cross-cutting and
-likely to drift; `ship-loop` owns the ranking of contracts. When
+likely to drift; `shipping` owns the ranking of contracts. When
 a type, schema, or behavioral test carries the rule instead, record which one,
 where it lives, and how it covers the cross-boundary failure the rule names.
 Judging a guard unnecessary without naming its replacement leaves the rule

@@ -53,7 +53,7 @@ Charter slots:
 - **`<WORKSPACE>`** — where the work happens (e.g. "your feature worktree"), so
   a reminded agent re-confirms it's in the right tree.
 - **`<DEV_SKILLS>`** — the development skill(s) this project uses, always
-  including the shipping loop (`/dfrysinger-skills:ship-loop`)
+  including the shipping loop (`/dfrysinger-skills:shipping`)
   plus any project dev skill (e.g. a language- or framework-specific dev skill).
 - **`<TEST_SKILL>`** — the project's end-to-end testing skill (e.g. your
   project's E2E skill), or the loop's own E2E gate when none is separate.
@@ -84,7 +84,7 @@ Charter slots:
 **Charter** (persisted; re-fed on the reminder):
 
 > Keep building against the plan at `docs/checkout-refactor-plan.md` in your
-> worktree using `/dfrysinger-skills:ship-loop` for development
+> worktree using `/dfrysinger-skills:shipping` for development
 > and end-to-end testing. Use rubber-duck to brainstorm solutions and align on
 > paths forward whenever you get stuck. Keep the plan up to date so future agents
 > can pick it up. Use subagents liberally to parallelize work whenever possible.
