@@ -9,7 +9,8 @@ own state to).
 | `interval_hours` | 168 (7 days) | How often the weekly schedule fires `/skill-curator --dry-run`. |
 | `min_idle_hours` | 2 | (Hermes-only) idle requirement before background trigger. N/A in Copilot CLI — we use `manage_schedule` instead. |
 | `stale_after_days` | 30 | A skill marked `stale` after this many days without activity. Stale skills surface in `status` output but are not auto-archived. |
-| `archive_after_days` | 90 | A skill becomes archive-eligible after this many days. The curator's live mode will archive it unless pinned. |
+| `archive_after_days` | 90 | Age-only fallback for archive eligibility; it is not a minimum for completed-project pruning. |
+| `completed_project_cooldown_days` | 14 | Minimum time since both creation and last use before an agent-created skill from a demonstrably completed bounded project may be proposed for pruning. |
 | `prune_builtins` | N/A | Hermes-only — distinguishes built-in vs agent-created. In Copilot CLI all skills in `~/code/skills/` are user-controlled; treat the whole repo as eligible. |
 
 ## Override file shape
@@ -27,7 +28,8 @@ own state to).
   "config_overrides": {
     "interval_hours": 168,
     "stale_after_days": 30,
-    "archive_after_days": 90
+    "archive_after_days": 90,
+    "completed_project_cooldown_days": 14
   }
 }
 ```

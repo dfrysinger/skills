@@ -28,7 +28,8 @@ DEFAULT_JSON='{
   "config_overrides": {
     "interval_hours": 168,
     "stale_after_days": 30,
-    "archive_after_days": 90
+    "archive_after_days": 90,
+    "completed_project_cooldown_days": 14
   }
 }'
 

@@ -70,6 +70,10 @@ orchestrator bypasses it because one shared cadence governs all three passes.
    - active: used in last 30 days OR new (no activity yet)
    - stale: unused 30-90 days
    - archive-eligible: unused > 90 days
+   - completed-project candidate: agent-created, idle for at least
+     `config_overrides.completed_project_cooldown_days` (default 14), tied to a
+     demonstrably finished bounded project, and not reusable or suitable for
+     consolidation
    - pinned: ignored regardless
 4. Render a table: `name | root | use_count | last_used | state | pinned`. Highlight pinned + archive-eligible rows.
 
@@ -83,8 +87,14 @@ orchestrator bypasses it because one shared cadence governs all three passes.
    - Pinned set (skills with `.pinned`).
 4. Identify **prefix clusters** (skills sharing a first word or domain keyword — `pr-*`, `gh-*`, etc.). A mature library tends toward 10-25 clusters; smaller ones have only a few.
 5. For each cluster with 2+ members, decide: **merge into existing umbrella**, **create new umbrella**, or **demote to references/templates/scripts** of an existing skill. The curator prompt has the full decision tree.
-6. **Do NOT mutate.** Produce a report that describes what you WOULD do.
-7. The report must end with the structured YAML block (see prompt for exact shape):
+6. Evaluate the completed-project lane for agent-created skills even when they
+   are younger than 90 days. Read
+   `config_overrides.completed_project_cooldown_days` from `curator.json`
+   (default 14), then require explicit evidence that the bounded project ended,
+   the configured period since both creation and last use, and no reusable
+   procedure or umbrella destination. Uncertainty means keep, not prune.
+7. **Do NOT mutate.** Produce a report that describes what you WOULD do.
+8. The report must end with the structured YAML block (see prompt for exact shape):
    ```yaml
    consolidations:
      - from: <old-skill-name>
@@ -94,7 +104,7 @@ orchestrator bypasses it because one shared cadence governs all three passes.
      - name: <skill-name>
        reason: <one sentence — why archive with no merge target>
    ```
-8. Save the report to `~/.copilot/skill-state/reports/{YYYYMMDD-HHMMSS}-curator-report.md` and update `curator.json` with `last_run_at`, `run_count++`, `last_report_path`.
+9. Save the report to `~/.copilot/skill-state/reports/{YYYYMMDD-HHMMSS}-curator-report.md` and update `curator.json` with `last_run_at`, `run_count++`, `last_report_path`.
 
 ### Mode: `--live`
 
@@ -136,14 +146,18 @@ orchestrator bypasses it because one shared cadence governs all three passes.
 2. **Never delete.** Archive is the maximum destructive action. `.archive/` is git-tracked.
 3. **Never touch a pinned skill.** Pin = "preserve this", and it bypasses every transition.
 4. **`use_count == 0` is not evidence of low value.** Usage telemetry is new and sparse. Judge consolidation on CONTENT, not on counters.
-5. **Pairwise distinctness is not the bar.** The bar is: "would a human maintainer write this as N separate skills, or as one skill with N labeled subsections?" Lean toward umbrella.
-6. **`keep` is legitimate only when the skill is already a class-level umbrella.** "Narrow but distinct" is a reason to demote, not a reason to keep.
-7. **Tiered authority by provenance.** A skill is *agent-created* when its directory contains a `.agent-created` marker (written by skill-review). Authority differs by tier:
+5. **Ninety days is a fallback, not a minimum.** An agent-created skill from a
+   completed bounded project may be proposed after
+   `config_overrides.completed_project_cooldown_days` (default 14), but only
+   with explicit completion evidence and no reusable or mergeable content.
+6. **Pairwise distinctness is not the bar.** The bar is: "would a human maintainer write this as N separate skills, or as one skill with N labeled subsections?" Lean toward umbrella.
+7. **`keep` is legitimate only when the skill is already a class-level umbrella.** "Narrow but distinct" is a reason to demote, not a reason to keep.
+8. **Tiered authority by provenance.** A skill is *agent-created* when its directory contains a `.agent-created` marker (written by skill-review). Authority differs by tier:
    - **Agent-created skills** are within the curator's autonomous authority. Dry-run may place them in `consolidations:` / `prunings:`, and `--live` may archive/absorb them after the standard approve gate. Archiving an agent-created skill writes a tombstone (via `archive-skill.sh`) so skill-review will not recreate it.
    - **Hand-made skills** (no `.agent-created` marker) are **recommend-only**. The curator may SURFACE them in a separate `manual_review:` list with a rationale, but MUST NOT put them in `consolidations:` / `prunings:` and MUST NOT archive or otherwise mutate them — not even in `--live`. A hand-made skill may still serve as an absorption *target* (`into:`): patching a hand-made umbrella to absorb an agent-created sibling enriches it and is allowed. The restriction is only on archiving/pruning hand-made skills.
 
 
-8. **A merged umbrella is a new draft.** Whenever `--live` absorbs one skill
+9. **A merged umbrella is a new draft.** Whenever `--live` absorbs one skill
    into another, the resulting SKILL.md must meet `writing-great-skills` in
    this repo and go through `dual-review` before the commit. Merging is where
    duplication and sprawl enter the library, and no human reads the diff.

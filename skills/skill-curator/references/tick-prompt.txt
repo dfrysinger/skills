@@ -23,6 +23,13 @@ SEQUENCE (follow ~/code/skills/skills/skill-curator/SKILL.md tick mode):
    - Print the dry-run banner (references/dry-run-banner.md).
    - Load the verbatim CURATOR_REVIEW_PROMPT from references/curator-prompt.md.
    - Identify prefix clusters across BOTH skill roots — public ~/code/skills/skills/ and local ~/.copilot/skills/ (scripts/list-clusters.sh scans both).
+   - Apply the completed-project pruning lane: an unpinned agent-created skill
+     may be proposed before 90 days only after reading
+     `config_overrides.completed_project_cooldown_days` from `curator.json`
+     (default 14), with direct evidence the bounded project ended and no
+     reusable or mergeable content. Uncertainty means keep. Its pruning reason
+     must disclose that archiving writes a permanent exact/fuzzy name-family
+     tombstone; a live two-token name collision means keep or consolidate.
    - Produce a markdown report ending with the structured YAML block
      (consolidations + prunings). Respect the tiered-authority rule: agent-created
      skills may be proposed for consolidation/pruning; hand-made skills are

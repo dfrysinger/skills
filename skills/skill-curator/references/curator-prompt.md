@@ -124,6 +124,34 @@ Before placing ANY skill in `consolidations:` or `prunings:`, check for a
   decides. A hand-made skill MAY still be an absorption *target* (`into:`);
   patching it to absorb an agent-created sibling is allowed.
 
+### Completed-project pruning lane
+
+The 90-day archive threshold is a fallback for age-only decisions, not a
+minimum. An agent-created skill may appear in `prunings:` after a shorter
+cooling period only when ALL of these are true:
+
+1. At least `completed_project_cooldown_days` have elapsed since both creation
+   and last use. Read the override from `curator.json`; default to 14 days.
+2. The skill belongs to a bounded project or deliverable that is explicitly
+   complete, retired, archived, merged, or abandoned. A completed source task
+   alone is not proof that the broader project ended.
+3. The skill contains no class-level procedure worth retaining and no useful
+   content that belongs in an umbrella skill, reference, template, or script.
+4. The skill is unpinned and agent-created under the provenance rule above.
+
+Use `.agent-created.json` for creation time and source session identity, the
+usage report for last use, and only direct evidence from the skill or source
+session for project completion. Name that evidence in the pruning reason.
+Project-specific naming alone is insufficient. If completion, cooling age, or
+reuse value is uncertain, keep the skill and explain why; do not guess.
+
+Archiving writes a permanent tombstone that blocks recreation of the exact
+skill and may also block names sharing multiple tokens. Before proposing an
+early pruning, compare the candidate name with live skills. If another live
+skill shares two or more name tokens, keep or consolidate instead. Every
+completed-project pruning reason must state that permanent tombstone effect so
+the approval prompt exposes the future name-family consequence.
+
 ### Extended structured block
 
 Emit the verbatim `consolidations:` / `prunings:` block, then append a third

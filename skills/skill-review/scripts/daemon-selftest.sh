@@ -39,6 +39,18 @@ for prompt in "${PROMPTS[@]}"; do
   fi
 done
 
+CURATOR_PROMPT="$REPO/skills/skill-curator/references/curator-prompt.md"
+CURATOR_TICK="$REPO/skills/skill-curator/references/tick-prompt.txt"
+if grep -q 'Completed-project pruning lane' "$CURATOR_PROMPT" &&
+    grep -q 'default to 14 days' "$CURATOR_PROMPT" &&
+    grep -q 'completed-project pruning lane' "$CURATOR_TICK" &&
+    grep -q 'config_overrides.completed_project_cooldown_days' "$CURATOR_TICK" &&
+    grep -q 'permanent exact/fuzzy name-family' "$CURATOR_TICK"; then
+  ok "curator completed-project policy"
+else
+  bad "curator completed-project policy missing"
+fi
+
 for script in daemon-pass.sh daemon-run.sh daemon-lock.sh daemon-lock.py dreaming-run.sh dreaming-state.py test-dreaming-daemon.sh; do
   [[ -x "$SCRIPT_DIR/$script" ]] && ok "executable: $script" || bad "not executable: $script"
 done
