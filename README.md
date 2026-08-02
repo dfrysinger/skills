@@ -93,14 +93,12 @@ The subagent runs the same prompt the daemon does, scoped to whatever pattern yo
 
 See [skills/NOTICE.md](./skills/NOTICE.md) for attribution.
 
-- **[caveman](./skills/caveman/SKILL.md)** : Ultra-compressed communication mode. Cuts token usage ~75% by dropping filler, articles, and pleasantries while keeping full technical accuracy. Triggers on "caveman mode", "be brief", etc.
 - **[grill-me](./skills/grill-me/SKILL.md)** : Get relentlessly interviewed about a plan or design until every branch of the decision tree is resolved, with a recommended answer for each question.
 - **[handoff](./skills/handoff/SKILL.md)** : Compact the current conversation into a handoff document (written to OS temp dir) so another agent can pick up the work; includes a "suggested skills" section. **Wired to [`mailbox`](./skills/mailbox/SKILL.md)**: when the user names a recipient session (e.g. "hand off to juliett"), the doc is auto-delivered via the mailbox queue with a tmux-wakeup so the recipient picks it up on their next turn.
 - **[rotate-session](./skills/rotate-session/SKILL.md)** : Retire a session that has grown too large to reload and start a fresh one seeded to rebuild context from the old session's plan, checkpoints, todos, and transcript on disk. Nothing is deleted; the old session stays resumable. The manual equivalent of the size-based rotation offer in [`ca`](https://github.com/dfrysinger/remote-agent-stack).
 
-Three skills are **user-invoked** — they carry no model-facing trigger, so they
-cost nothing until you type their name: `caveman`, `grill-me`, and
-`writing-great-skills`.
+Two skills are **user-invoked** — they carry no model-facing trigger, so they
+cost nothing until you type their name: `grill-me` and `writing-great-skills`.
 
 ## Layout
 
