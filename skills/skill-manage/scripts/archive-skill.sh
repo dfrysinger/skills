@@ -121,21 +121,22 @@ rollback() {
   fi
 }
 
-# Stage only this retirement's own paths: a bare `git add -A` sweeps unrelated
-# working-tree changes into the commit, and a revert of that commit would then
-# take the unrelated work down with it.
+# git rm already staged the deletion, so only the manifests still need adding.
+# Stage them by name rather than with a bare `git add -A`, which would sweep
+# unrelated working-tree changes into the commit and make a revert of this
+# commit take that unrelated work down with it.
 STAGE=("$SRC_REL")
 if [[ "$USE_REGISTRY" -eq 1 ]]; then
   # Every versioned manifest moves together; staging a subset leaves the repo
   # failing validate-plugin-manifests.mjs.
-  while IFS= read -r M; do STAGE+=("$M"); done < <("$SCRIPT_DIR/registry.sh" --manifest-paths)
-fi
-# -A is required: git rm already removed the path from the tree, so a plain
-# `git add -- <path>` fails on a pathspec that no longer matches anything.
-if ! git add -A -- "${STAGE[@]}"; then
-  rollback
-  echo "REFUSED: could not stage retirement paths; working tree restored." >&2
-  exit 1
+  MANIFESTS=()
+  while IFS= read -r M; do MANIFESTS+=("$M"); done < <("$SCRIPT_DIR/registry.sh" --manifest-paths)
+  STAGE+=("${MANIFESTS[@]}")
+  if ! git add -- "${MANIFESTS[@]}"; then
+    rollback
+    echo "REFUSED: could not stage manifests; working tree restored." >&2
+    exit 1
+  fi
 fi
 if git diff --cached --quiet; then
   rollback
