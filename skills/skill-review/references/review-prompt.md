@@ -15,6 +15,10 @@ whitelist, daemon isolation), the verbatim criteria are wrapped in a
 **Copilot execution contract** (last section). The contract is binding: it
 defines what this review pass may and may not do in our environment.
 
+Before applying the preference order, route the candidate through
+[`artifact-routing.md`](artifact-routing.md). Its destination vocabulary and
+caller boundaries are the single artifact-routing authority.
+
 ---
 
 ## Selection criteria (verbatim — Hermes `_SKILL_REVIEW_PROMPT`)
@@ -145,7 +149,8 @@ revert its own changes.**
 
 2. **Allowed operations:** `view`, `grep`, `glob`, `git` (within the LOCAL
    skills repo only), subagent dispatch for `dual-review`, and the skill scripts (`/skill-create`, `/skill-manage`,
-   `validate-skill.sh`, `mark-agent-created.sh`, `verify-diff-scope.sh`,
+   `validate-skill.sh`, `mark-agent-created.sh`, `evidence-envelope.py`,
+   `verify-diff-scope.sh`,
    `verify-repo-unchanged.sh`, `check-tombstone.sh`, `review-ledger.sh`).
    Do NOT call `registry.sh` (native skills need no registry). Do NOT run
    network calls, do NOT run shell commands unrelated to skill authoring, do NOT
@@ -195,10 +200,18 @@ revert its own changes.**
    ledger.
 
 7. **Provenance on every CREATE:** after `/skill-create`, run
-   `mark-agent-created.sh <name> <session_id> <mode>` to stamp frontmatter
-   `author: skill-review`, drop the `.agent-created` marker, and record
-   metadata. This is what lets the curator manage agent-created skills
-   autonomously while leaving hand-made skills alone.
+   `mark-agent-created.sh <name> <session_id> <mode>` with the task key,
+   independence, evidence kind, privacy-safe summary, and routing reason. It
+   writes and validates schema-v2 evidence before stamping frontmatter
+   `author: skill-review` and dropping the `.agent-created` authority marker.
+   This lets the curator manage agent-created skills autonomously while leaving
+   hand-made skills alone. A dispatch continuation reuses its baton task key; a
+   sweep observation with uncertain independence is `unverified`.
+
+7a. **Evidence on every agent-created PATCH:** before committing a patch or
+support file to a marker-backed skill, run `append-skill-evidence.sh` with the
+same route record and task identity. The helper refuses hand-made skills; never
+add provenance to make a hand-made patch writable by the curator.
 
 8. **Hand-made skills:** you MAY patch a hand-made skill (no `.agent-created`
    marker) to add a pitfall/step, exactly as Hermes patches any skill — but you

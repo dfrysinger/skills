@@ -31,13 +31,19 @@ DEST="$REPO_ROOT/skills/$NAME"
 
 # Validate before moving anything.
 "$SCRIPT_DIR/validate-skill.sh" "$SRC/SKILL.md"
+"$SCRIPT_DIR/promotion-review.py" verify "$SRC"
 
 # Move into the public repo.
 mkdir -p "$(dirname "$DEST")"
 mv "$SRC" "$DEST"
 
 # Strip agent provenance — promoted skills are curated, not agent-managed.
-rm -f "$DEST/.agent-created" "$DEST/.agent-created.json"
+rm -f "$DEST/.agent-created" "$DEST/.agent-created.json" "$DEST/.promotion-reviewed.json"
+
+if find "$DEST" -name '.agent-created*' -print -quit | grep -q .; then
+  echo "REFUSED: provenance remained after promotion" >&2
+  exit 1
+fi
 
 # Register in plugin.json (public root only).
 "$SCRIPT_DIR/registry.sh" register "$NAME" || true

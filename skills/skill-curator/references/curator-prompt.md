@@ -139,7 +139,11 @@ cooling period only when ALL of these are true:
    content that belongs in an umbrella skill, reference, template, or script.
 4. The skill is unpinned and agent-created under the provenance rule above.
 
-Use `.agent-created.json` for creation time and source session identity, the
+Use `.agent-created.json` for creation time and source session identity. An
+absent `schema_version` is legacy v1; schema v2 retains `created_at` and the
+top-level `source_session_id` compatibility mirror while adding `evidence`.
+Malformed marker-backed provenance fails closed: keep the skill and report the
+invalid envelope rather than proposing mutation. Use the
 usage report for last use, and only direct evidence from the skill or source
 session for project completion. Name that evidence in the pruning reason.
 Project-specific naming alone is insufficient. If completion, cooling age, or

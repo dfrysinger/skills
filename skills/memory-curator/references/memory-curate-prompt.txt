@@ -66,6 +66,11 @@ keepers remain, max 5 loops per run):
    genuinely new topic with >=3 related facts; prefer broad umbrella skills over
    micro-skills (skill-curator preference). New daemon-created skills go in the
    LOCAL root with a `.agent-created` marker.
+   This four-way categorization is the sole deletion authority. For `roll`
+   items only, read
+   ~/code/skills/skills/skill-review/references/artifact-routing.md and use its
+   skill/support-file decision rules. Artifact `discard` never moves an
+   obsolete or keep memory into the delete list.
 
 4. ROLL — STITCH INTO PROSE, DO NOT APPEND A LOG. Weave each fact into the most
    relevant existing section of the target skill (a rule, pitfall, workflow
@@ -80,6 +85,10 @@ keepers remain, max 5 loops per run):
    the prose. Then validate:
    `bash ~/code/skills/skills/skill-manage/scripts/validate-skill.sh <SKILL.md>`.
    Fix any validation failure before continuing.
+   For a new local skill, use mark-agent-created.sh with
+   `--created-by memory-curator`, a privacy-safe summary, task key, and source
+   mode `memory-roll`. For an existing marker-backed skill, use
+   append-skill-evidence.sh. Do not add an authority marker to a hand-made skill.
 
 5. REVIEW before committing. Rolling grows skills, and no human reads this
    diff. Hold each edited skill to the rubric at

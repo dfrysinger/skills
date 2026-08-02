@@ -57,6 +57,12 @@ contract** (allowed paths, idempotency, tombstone/collision checks, provenance,
 diff-scope guard, no-confirm) is binding for every autonomous run. Everything
 below operationalizes that contract.
 
+Route each candidate through
+[`references/artifact-routing.md`](references/artifact-routing.md) before
+writing. A valid outcome may be an instruction or factual-memory
+recommendation, a skill/support-file change, or discard. Record the route in the
+ledger even when it creates no artifact.
+
 Draft and judge every SKILL.md against `writing-great-skills` in this repo —
 its `SKILL.md` and `references/GLOSSARY.md` are the library's rubric. Read it before
 writing, not after, so the draft arrives shaped rather than needing repair.
@@ -96,11 +102,17 @@ upstream loop keeps in memory.
    e. Execute via `/skill-create` or `/skill-manage` writing into the LOCAL
       root `~/.copilot/skills/<name>/` (each action its own git commit). On
       CREATE, immediately run
-      `scripts/mark-agent-created.sh <name> <session_id> sweep`. Do NOT call
+      `scripts/mark-agent-created.sh <name> <session_id> sweep` with an explicit
+      task key when the session carries one. Sweep-only observations whose task
+      independence cannot be proved remain `unverified`. When PATCH targets an
+      agent-created skill, run `scripts/append-skill-evidence.sh` before commit;
+      hand-made patches remain recommendation/content-only and gain no agent
+      authority. Do NOT call
       `registry.sh` — native local skills load without a plugin entry.
    f. **Append a ledger entry** (always, even for "Nothing to save"):
       `scripts/review-ledger.sh append '<json>'` with `session_id`, `mode:"sweep"`,
-      `created`, `patched`, `skipped`, and `watermark_ts` = that session's last ts.
+      `created`, `patched`, `skipped`, `routed`, and `watermark_ts` = that
+      session's last ts.
 4. **Guards (both required):**
    - Capture `scripts/verify-repo-unchanged.sh snapshot` before work, then run
      `scripts/verify-repo-unchanged.sh check` — public repo must match the
@@ -123,7 +135,8 @@ fork). This is the **primary** autonomous path: the main agent fires it after a
 qualifying heavy task per the `copilot-instructions.md` Tier-2 trigger, without
 asking. Same machinery as the sweep, scoped to a single session:
 
-1. The dispatcher passes the current `session_id` (and may inline the salient
+1. The dispatcher passes the current `session_id`, the platform or baton
+   `task_key` when available, and may inline the salient
    transcript). Acquire the shared session lease from the binding contract
    before the first mutation; renew it immediately before each write, stage,
    commit, or ledger append. If acquisition or renewal fails, defer without
@@ -144,7 +157,9 @@ only does real work for sessions the dispatch missed.
 
 Every skill this skill creates gets a `.agent-created` marker +
 `.agent-created.json` + `author: skill-review` frontmatter (via
-`mark-agent-created.sh`). `skill-curator` reads that marker:
+`mark-agent-created.sh`). The helper writes and validates schema-v2 evidence
+before creating the authority marker; legacy schema-v1 envelopes migrate lazily.
+`skill-curator` reads that marker:
 - **agent-created** skills → curator may archive/consolidate autonomously, and
   on archive it writes a tombstone here so we never recreate them.
 - **hand-made** skills (no marker) → you may PATCH (add a pitfall/step) but never
@@ -186,6 +201,10 @@ After a run:
 - `scripts/review-ledger.sh` — idempotency ledger (has / watermark / append / list).
 - `scripts/score-sessions.sh` — emit the session-scoring DuckDB query.
 - `scripts/mark-agent-created.sh` — stamp provenance on a created skill.
+- `scripts/evidence-envelope.py` — validate, migrate, and atomically append
+  schema-v2 evidence.
+- `scripts/append-skill-evidence.sh` — append evidence to an existing
+  marker-backed skill while refusing hand-made targets.
 - `scripts/check-tombstone.sh` — block recreation of curator-archived skills.
 - `scripts/verify-diff-scope.sh` — containment guard (allowed paths only).
 - `scripts/daemon-lock.sh` — token-fenced shared writer lease used by dispatch.

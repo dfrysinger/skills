@@ -5,51 +5,103 @@
 # marker, ContextVar-based there; a marker file + frontmatter here).
 #
 # Effects:
-#   1. Drops a `.agent-created` marker file in the skill dir.
-#   2. Writes `.agent-created.json` metadata (session, mode, prompt version, ts).
+#   1. Writes and validates `.agent-created.json` evidence atomically.
+#   2. Drops the `.agent-created` authority marker after the envelope is valid.
 #   3. Adds `author: skill-review` to SKILL.md frontmatter if not present.
 #
 # Usage:
-#   mark-agent-created.sh <name> <session_id> <mode> [prompt_version]
+#   mark-agent-created.sh <name> <session_id> <mode> [prompt_version] [flags]
 
 set -euo pipefail
 
 if [[ $# -lt 3 ]]; then
-  echo "usage: $(basename "$0") <name> <session_id> <mode> [prompt_version]" >&2
+  echo "usage: $(basename "$0") <name> <session_id> <mode> [prompt_version] [flags]" >&2
   exit 2
 fi
 
-NAME="$1"; SID="$2"; MODE="$3"; PV="${4:-skill-review-1}"
+NAME="$1"; SID="$2"; MODE="$3"; PV="skill-review-2"
+shift 3
+if [[ $# -gt 0 && "$1" != --* ]]; then
+  PV="$1"
+  shift
+fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIND="$SCRIPT_DIR/../../skill-manage/scripts/find-skill.sh"
+ENVELOPE="$SCRIPT_DIR/evidence-envelope.py"
+TASK_KEY=""
+INDEPENDENCE=""
+EVIDENCE_KIND="successful-procedure"
+SUMMARY="Agent-created reusable procedure"
+ROUTING_REASON="Reusable procedure justified skill creation"
+CREATED_BY="skill-review"
+LEASE_TOKEN="${SKILLS_LOCK_TOKEN:-}"
+OWN_LEASE=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --task-key) TASK_KEY="$2"; shift 2 ;;
+    --independence) INDEPENDENCE="$2"; shift 2 ;;
+    --evidence-kind) EVIDENCE_KIND="$2"; shift 2 ;;
+    --summary) SUMMARY="$2"; shift 2 ;;
+    --routing-reason) ROUTING_REASON="$2"; shift 2 ;;
+    --created-by) CREATED_BY="$2"; shift 2 ;;
+    --lease-token) LEASE_TOKEN="$2"; shift 2 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+[[ -n "$TASK_KEY" ]] || TASK_KEY="task:$(python3 -c 'import uuid; print(uuid.uuid4())')"
+if [[ -z "$INDEPENDENCE" ]]; then
+  [[ "$MODE" == "dispatch" ]] && INDEPENDENCE="verified" || INDEPENDENCE="unverified"
+fi
 
 DIR="$("$FIND" "$NAME")" || { echo "skill not found: $NAME" >&2; exit 1; }
 SKILL_MD="$DIR/SKILL.md"
 [[ -f "$SKILL_MD" ]] || { echo "no SKILL.md in $DIR" >&2; exit 1; }
 
-# 1. marker
+renew() {
+  if [[ "${SKILLS_LOCK_HELD_BY_PARENT:-0}" == "1" ]]; then
+    return
+  fi
+  "$SCRIPT_DIR/daemon-lock.sh" renew "$LEASE_TOKEN" >/dev/null
+}
+
+cleanup() {
+  if [[ "$OWN_LEASE" == "1" && -n "$LEASE_TOKEN" ]]; then
+    "$SCRIPT_DIR/daemon-lock.sh" release "$LEASE_TOKEN" >/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+if [[ "${SKILLS_LOCK_HELD_BY_PARENT:-0}" != "1" && -z "$LEASE_TOKEN" ]]; then
+  LEASE_TOKEN="$("$SCRIPT_DIR/daemon-lock.sh" acquire --mode session --owner "mark-agent-created:$SID")"
+  OWN_LEASE=1
+fi
+
+# 1. metadata
+renew
+"$ENVELOPE" upsert "$DIR/.agent-created.json" \
+  --skill "$NAME" \
+  --created-by "$CREATED_BY" \
+  --session-id "$SID" \
+  --source-mode "$MODE" \
+  --prompt-version "$PV" \
+  --task-key "$TASK_KEY" \
+  --independence "$INDEPENDENCE" \
+  --evidence-kind "$EVIDENCE_KIND" \
+  --summary "$SUMMARY" \
+  --destination skill \
+  --reason "$ROUTING_REASON" >/dev/null
+
+# 2. marker
+renew
 touch "$DIR/.agent-created"
 
-# 2. metadata
-python3 - "$DIR/.agent-created.json" "$NAME" "$SID" "$MODE" "$PV" <<'PY'
-import json, sys
-from datetime import datetime, timezone
-out, name, sid, mode, pv = sys.argv[1:6]
-json.dump({
-    "skill": name,
-    "created_by": "skill-review",
-    "source_session_id": sid,
-    "source_mode": mode,
-    "review_prompt_version": pv,
-    "created_at": datetime.now(timezone.utc).isoformat(),
-}, open(out, "w"), indent=2)
-open(out, "a").write("\n")
-PY
-
 # 3. frontmatter author (only if absent)
-python3 - "$SKILL_MD" <<'PY'
+renew
+python3 - "$SKILL_MD" "$CREATED_BY" <<'PY'
 import sys, re
-p = sys.argv[1]
+p, author = sys.argv[1:3]
 src = open(p).read()
 m = re.match(r'^---\n(.*?\n)---\n', src, re.S)
 if not m:
@@ -57,8 +109,8 @@ if not m:
 fm = m.group(1)
 if re.search(r'(?m)^author:', fm):
     sys.exit(0)
-new_fm = fm + "author: skill-review\n"
+new_fm = fm + f"author: {author}\n"
 open(p, "w").write(src[:m.start(1)] + new_fm + src[m.end(1):])
 PY
 
-echo "marked agent-created: $NAME (session=$SID mode=$MODE)"
+echo "marked agent-created: $NAME (creator=$CREATED_BY session=$SID mode=$MODE task=$TASK_KEY independence=$INDEPENDENCE)"

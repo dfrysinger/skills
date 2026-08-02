@@ -14,7 +14,10 @@ description: Create a new personal skill in dfrysinger/skills, enforcing HARDLIN
 - You (the agent) just solved a non-trivial task with reusable steps and the user confirms it should become a skill.
 - You're following the auto-create trigger in `$HOME/.copilot/copilot-instructions.md` (see `## Skill self-learning`).
 
-Do **not** invoke this for one-off tasks, throwaway scripts, or facts that belong in memory (`store_memory`) rather than a reusable procedure.
+Route the request through
+[`../skill-review/references/artifact-routing.md`](../skill-review/references/artifact-routing.md)
+before authoring. Do **not** invoke this for one-off tasks, throwaway scripts,
+or fact-only requests.
 
 ## Two-root skill layout (where new skills go)
 
@@ -142,6 +145,8 @@ agent-created skill. NO git push, NO plugin.json registration.
    ~/code/skills/skills/skill-review/scripts/mark-agent-created.sh \
      <name> <session_id> <mode>
    ```
+   Pass the current task key and privacy-safe evidence summary. Continuations
+   reuse the handoff/rotation task key.
 
 8. **Commit in the LOCAL repo only:**
    ```bash
@@ -202,6 +207,16 @@ NOT default to this path for autonomous creation.
 If the skill already exists in the LOCAL root and you just want to publish it,
 use `~/code/skills/skills/skill-manage/scripts/promote-skill.sh <name>` instead
 — it moves, strips provenance, registers, and commits both repos.
+Before promotion, run the normal independent review over every file, then seal
+the exact reviewed inventory:
+
+```bash
+skill-manage/scripts/promotion-review.py approve ~/.copilot/skills/<name> \
+  --reviewer <claude-review-id> --reviewer <gpt-review-id>
+```
+
+Promotion refuses a missing, stale, single-reviewer, or private-sentinel
+inventory.
 
 ## Pitfalls
 

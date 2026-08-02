@@ -75,6 +75,10 @@ with the current `mem-lib.sh`.
 3. **Categorize** each memory: `roll` (durable, belongs in a skill), `dup`
    (exact duplicate of another memory or an existing skill fact), `obsolete`
    (no longer true), or `keep` (a live preference you want as a memory).
+   This categorization remains the deletion authority. For each `roll`, apply
+   [`../skill-review/references/artifact-routing.md`](../skill-review/references/artifact-routing.md)
+   only to choose its skill or support-file destination; an artifact-router
+   discard never makes `obsolete` or `keep` deletable.
    Map each `roll` to a target skill (`ls ~/code/skills/skills
    ~/.copilot/skills`).
 4. **Roll — stitch into the prose, never append a log.** Weave each fact into
@@ -91,6 +95,12 @@ with the current `mem-lib.sh`.
    Local skills may keep personal/build-specific detail. Drop facts already
    covered by the skill's prose. Validate each skill:
    `skill-manage/scripts/validate-skill.sh`.
+   For a new local skill, stamp schema-v2 provenance with
+   `skill-review/scripts/mark-agent-created.sh --created-by memory-curator`
+   using `memory-curator` as the evidence source. For an existing marker-backed
+   skill, append the rolled
+   evidence with `skill-review/scripts/append-skill-evidence.sh`. Never add an
+   authority marker to a hand-made skill.
 5. **Review before committing.** Rolling grows skills, so hold each edited
    skill to `writing-great-skills` in this repo and run `dual-review` on the
    diff. Rolls are where sediment accumulates and no human reads the diff.

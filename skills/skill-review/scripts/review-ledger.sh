@@ -20,7 +20,8 @@
 # Append payload shape (caller builds it):
 #   {"session_id","reviewed_at","mode","prompt_version",
 #    "created":[...],"patched":[...],"skipped":[...],
-#    "candidate_hashes":[...],"watermark_ts":"<max event ts in window>"}
+#    "candidate_hashes":[...],"routed":[{"destination","reason","task_key"}],
+#    "watermark_ts":"<max event ts in window>"}
 
 set -euo pipefail
 
@@ -92,6 +93,14 @@ obj = json.loads(sys.argv[2])
 assert obj.get("session_id"), "session_id required"
 obj.setdefault("reviewed_at", datetime.now(timezone.utc).isoformat())
 sid, mode = obj["session_id"], obj.get("mode")
+destinations = {"instruction", "factual_memory", "skill", "support_file", "discard"}
+for index, route in enumerate(obj.get("routed", [])):
+    assert isinstance(route, dict), "routed[%d] must be an object" % index
+    assert route.get("destination") in destinations, "routed[%d].destination invalid" % index
+    assert isinstance(route.get("reason"), str) and route["reason"].strip(), \
+        "routed[%d].reason required" % index
+    assert isinstance(route.get("task_key"), str) and route["task_key"].strip(), \
+        "routed[%d].task_key required" % index
 
 fd = os.open(ledger, os.O_RDWR | os.O_CREAT, 0o600)
 with os.fdopen(fd, "r+") as f:
