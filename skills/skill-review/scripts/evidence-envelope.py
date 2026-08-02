@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -117,7 +118,19 @@ def validate_envelope(data: Any) -> dict[str, Any]:
     evaluation = data.get("evaluation")
     if not isinstance(evaluation, dict) or evaluation.get("status") not in EVALUATION_STATES:
         raise EnvelopeError("evaluation.status is invalid")
+    if evaluation["status"] in {"pass", "regression", "inconclusive"}:
+        parse_timestamp(evaluation.get("evaluated_at"), "evaluation.evaluated_at")
+        require_text(evaluation.get("candidate_id"), "evaluation.candidate_id")
+        require_text(evaluation.get("run_id"), "evaluation.run_id")
+        require_text(evaluation.get("receipt_sha256"), "evaluation.receipt_sha256")
+        require_text(evaluation.get("case_manifest_sha256"), "evaluation.case_manifest_sha256")
+        require_text(evaluation.get("model"), "evaluation.model")
+        require_text(evaluation.get("source_case"), "evaluation.source_case")
+        require_text(evaluation.get("sibling_case"), "evaluation.sibling_case")
     if evaluation["status"] == "waived":
+        parse_timestamp(evaluation.get("evaluated_at"), "evaluation.evaluated_at")
+        require_text(evaluation.get("candidate_id"), "evaluation.candidate_id")
+        require_text(evaluation.get("receipt_sha256"), "evaluation.receipt_sha256")
         if evaluation.get("waiver_class") not in WAIVER_CLASSES:
             raise EnvelopeError("evaluation.waiver_class is invalid")
         require_text(evaluation.get("waiver_reason"), "evaluation.waiver_reason")
@@ -267,6 +280,58 @@ def upsert(args: argparse.Namespace) -> dict[str, Any]:
         os.close(directory_fd)
 
 
+def set_evaluation(args: argparse.Namespace) -> dict[str, Any]:
+    path = Path(args.file)
+    receipt = load_json(Path(args.receipt))
+    receipt_bytes = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+    receipt_sha = hashlib.sha256(receipt_bytes).hexdigest()
+    if Path(args.receipt).name != f"{receipt_sha}.json":
+        raise EnvelopeError("evaluation receipt path is not content-addressed")
+    status = receipt.get("status")
+    if status not in EVALUATION_STATES - {"not_evaluated", "pending"}:
+        raise EnvelopeError("evaluation receipt status is invalid")
+    if receipt.get("kind") == "evaluation":
+        evaluation = {
+            "status": status,
+            "evaluated_at": receipt.get("evaluated_at"),
+            "candidate_id": receipt.get("candidate_id"),
+            "run_id": receipt.get("run_id"),
+            "receipt_sha256": receipt_sha,
+            "case_manifest_sha256": receipt.get("case_manifest_sha256"),
+            "model": receipt.get("runtime", {}).get("model"),
+            "source_case": receipt.get("source_case_id"),
+            "sibling_case": receipt.get("sibling_case_id"),
+            "waiver_class": None,
+            "waiver_reason": None,
+        }
+    elif receipt.get("kind") == "waiver":
+        evaluation = {
+            "status": status,
+            "evaluated_at": receipt.get("evaluated_at"),
+            "candidate_id": receipt.get("candidate_id"),
+            "run_id": None,
+            "receipt_sha256": receipt_sha,
+            "case_manifest_sha256": None,
+            "model": None,
+            "source_case": None,
+            "sibling_case": None,
+            "waiver_class": receipt.get("waiver_class"),
+            "waiver_reason": receipt.get("waiver_reason"),
+        }
+    else:
+        raise EnvelopeError("evaluation receipt kind is invalid")
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        fcntl.flock(directory_fd, fcntl.LOCK_EX)
+        data = legacy_to_v2(load_json(path))
+        data["evaluation"] = evaluation
+        validate_envelope(data)
+        atomic_write(path, data, directory_fd)
+        return data
+    finally:
+        os.close(directory_fd)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -288,6 +353,9 @@ def build_parser() -> argparse.ArgumentParser:
     upsert_parser.add_argument("--destination", choices=sorted(DESTINATIONS), required=True)
     upsert_parser.add_argument("--reason", required=True)
     upsert_parser.add_argument("--observed-at")
+    evaluation_parser = subparsers.add_parser("set-evaluation")
+    evaluation_parser.add_argument("file")
+    evaluation_parser.add_argument("receipt")
     return parser
 
 
@@ -296,8 +364,10 @@ def main() -> int:
     try:
         if args.command == "validate":
             data = validate_envelope(legacy_to_v2(load_json(Path(args.file))))
-        else:
+        elif args.command == "upsert":
             data = upsert(args)
+        else:
+            data = set_evaluation(args)
         verified = {
             entry["task_key"]
             for entry in data["evidence"]

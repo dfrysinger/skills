@@ -106,6 +106,23 @@ employer-internal codebase, repo, org, host, team, or person stays LOCAL. A
 local skill earned its detail from private work, so this gate bites hardest
 exactly here.
 
+Promotion is also an effect gate, not only a content review. Create the local
+source/sibling manifest described in
+`../skill-review/references/evaluation-cases.md`, run
+`skill-review/scripts/run-skill-evaluation.sh <skill-dir> --model
+<exact-model>`, and require `skill-evaluation.py gate <skill-dir>` to pass
+before sealing the promotion inventory. The receipt binds the exact candidate,
+cases, model, CLI, and evaluator contract; any edit makes it stale.
+
+For an umbrella consolidation, evaluate the changed destination before
+archiving a source. `archive-skill.sh --absorbed-into` enforces this and refuses
+the archive when the destination is unevaluated, stale, regressing, or
+inconclusive. A `SKILL.md` or normal reference change cannot be waived. The
+only behavior-changing waiver is a scripts-only deterministic helper diff with
+an unchanged test script that passes and emits a JSON map from every changed
+helper path to its current SHA-256, anchored to an earlier passing
+source/sibling receipt for the same skill.
+
 ### rename
 
 A rename is not a `git mv`. The slug appears in the directory name, the frontmatter, the H1, every other skill that names this one, the PUBLIC plugin manifest, and the README — and references cross roots, so renaming a PUBLIC skill can require a commit in the LOCAL repo too. Do the whole set at once:
@@ -148,6 +165,9 @@ Add a supporting file under one of `references/`, `templates/`, `scripts/`, `ass
 - **Skipping the validator after a patch.** Frontmatter is easy to break (missing `---`, malformed YAML, description that grew past 1024 chars). Always re-validate.
 - **Forgetting to push.** PUBLIC-repo commits aren't shared until `git push origin main` — the user's other clones won't see the change. LOCAL-repo commits never push (no remote); that's intentional.
 - **Consolidation without preserving support files.** If you're absorbing skill X into umbrella Y, X may have `references/`, `templates/`, or `scripts/` that the absorbed content references. Re-home those files into Y's matching subdirs and update the destination paths in Y's prose. (See `references/curator-prompt.md` in `skill-curator`.)
+- **Evaluating after archive.** The destination umbrella must pass before
+  `archive-skill.sh --absorbed-into`; the script intentionally refuses to
+  remove the source otherwise.
 
 ## Verification
 

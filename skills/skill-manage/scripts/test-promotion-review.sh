@@ -10,6 +10,15 @@ passes=0
 pass() { echo "PASS  $*"; passes=$((passes + 1)); }
 fail() { echo "FAIL  $*" >&2; exit 1; }
 
+FAKE_COPILOT="$TMP/copilot"
+cat > "$FAKE_COPILOT" <<'SH'
+#!/usr/bin/env bash
+[[ "${1:-}" == "--version" ]] && { echo "copilot fixture 1.0"; exit 0; }
+exit 1
+SH
+chmod +x "$FAKE_COPILOT"
+export COPILOT_BIN="$FAKE_COPILOT"
+
 make_skill() {
   local root="$1" name="$2"
   mkdir -p "$root/$name/references"
@@ -25,7 +34,87 @@ Safe procedure.
 EOF
   echo "Safe reference." > "$root/$name/references/example.md"
   touch "$root/$name/.agent-created"
-  echo '{}' > "$root/$name/.agent-created.json"
+  cat > "$root/$name/.agent-created.json" <<EOF
+{
+  "schema_version": 2,
+  "skill": "$name",
+  "created_by": "skill-review",
+  "source_session_id": "fixture-session",
+  "source_mode": "dispatch",
+  "review_prompt_version": "skill-review-2",
+  "created_at": "2026-01-01T00:00:00+00:00",
+  "evidence": [{
+    "task_key": "task:11111111-1111-1111-1111-111111111111",
+    "session_id": "fixture-session",
+    "observed_at": "2026-01-01T00:00:00+00:00",
+    "independence": "verified",
+    "evidence_kind": "successful-procedure",
+    "summary": "Promotion fixture"
+  }],
+  "routing": {"destination": "skill", "reason": "Promotion fixture"},
+  "claims": [],
+  "evaluation": {
+    "status": "not_evaluated",
+    "evaluated_at": null,
+    "candidate_id": null,
+    "model": null,
+    "source_case": null,
+    "sibling_case": null,
+    "waiver_class": null,
+    "waiver_reason": null
+  }
+}
+EOF
+  cat > "$root/$name/.skill-evaluation-cases.json" <<'JSON'
+{
+  "schema_version": 1,
+  "source": {
+    "task_id": "source:promotion-0001",
+    "prompt": "Produce the source result.",
+    "required_regex": [{"id": "right", "pattern": "\\bRIGHT\\b"}],
+    "forbidden_regex": [],
+    "friction_regex": []
+  },
+  "sibling": {
+    "task_id": "sibling:promotion-0002",
+    "prompt": "Produce the sibling result.",
+    "required_regex": [{"id": "safe", "pattern": "\\bSAFE\\b"}],
+    "forbidden_regex": [],
+    "friction_regex": []
+  }
+}
+JSON
+}
+
+approve_evaluation() {
+  local skill="$1"
+  local run="$TMP/eval-$(basename "$skill")"
+  local plugin="$TMP/eval-plugin-$(basename "$skill")"
+  rm -rf "$run"
+  mkdir -p "$run"
+  SKILLS_STATE_DIR="$TMP/state" \
+    "$SCRIPT_DIR/../../skill-review/scripts/skill-evaluation.py" prepare "$skill" \
+      --model gpt-5.4 --run-dir "$run" --plugin-dir "$plugin" >/dev/null
+  python3 - "$run" "$(basename "$skill")" <<'PY'
+import json, pathlib, sys
+run, skill = pathlib.Path(sys.argv[1]), sys.argv[2]
+def write(name, answer, load=False):
+    events = []
+    if load:
+        events.append({"type": "tool.execution_start", "data": {"toolName": "skill", "arguments": {"skill": skill}}})
+    events += [
+        {"type": "assistant.message", "data": {"content": answer, "model": "gpt-5.4"}},
+        {"type": "result", "exitCode": 0},
+    ]
+    (run / name).write_text("".join(json.dumps(e) + "\n" for e in events))
+write("source-baseline.jsonl", "not yet")
+write("source-candidate.jsonl", "RIGHT", True)
+write("sibling-baseline.jsonl", "SAFE")
+write("sibling-candidate.jsonl", "SAFE", True)
+PY
+  SKILLS_STATE_DIR="$TMP/state" \
+    "$SCRIPT_DIR/../../skill-review/scripts/skill-evaluation.py" finalize \
+      --run-dir "$run" >/dev/null
 }
 
 LOCAL="$TMP/local"
@@ -78,6 +167,7 @@ git -C "$LOCAL" add safe-skill
 git -C "$LOCAL" commit -qm "add safe skill"
 "$SCRIPT_DIR/promotion-review.py" approve "$LOCAL/safe-skill" \
   --reviewer claude --reviewer gpt >/dev/null
+approve_evaluation "$LOCAL/safe-skill"
 git -C "$LOCAL" add safe-skill/.promotion-reviewed.json
 git -C "$LOCAL" commit -qm "approve safe skill"
 SKILLS_LOCAL_ROOT="$LOCAL" SKILLS_REPO_ROOT="$PUBLIC" SKILLS_STATE_DIR="$TMP/state" \
@@ -109,6 +199,7 @@ git -C "$LOCAL" add registry-failure-skill
 git -C "$LOCAL" commit -qm "add registry failure skill"
 "$SCRIPT_DIR/promotion-review.py" approve "$LOCAL/registry-failure-skill" \
   --reviewer claude --reviewer gpt >/dev/null
+approve_evaluation "$LOCAL/registry-failure-skill"
 git -C "$LOCAL" add registry-failure-skill/.promotion-reviewed.json
 git -C "$LOCAL" commit -qm "approve registry failure skill"
 echo 'NOT JSON' > "$PUBLIC/.codex-plugin/plugin.json"
@@ -139,6 +230,7 @@ git -C "$LOCAL" add rollback-skill
 git -C "$LOCAL" commit -qm "add rollback skill"
 "$SCRIPT_DIR/promotion-review.py" approve "$LOCAL/rollback-skill" \
   --reviewer claude --reviewer gpt >/dev/null
+approve_evaluation "$LOCAL/rollback-skill"
 git -C "$LOCAL" add rollback-skill/.promotion-reviewed.json
 git -C "$LOCAL" commit -qm "approve rollback skill"
 cat > "$PUBLIC/.git/hooks/pre-commit" <<'SH'
@@ -157,6 +249,8 @@ fi
   fail "failed promotion lost evidence envelope"
 [[ -f "$LOCAL/rollback-skill/.promotion-reviewed.json" ]] ||
   fail "failed promotion lost review manifest"
+[[ -f "$LOCAL/rollback-skill/.skill-evaluation-cases.json" ]] ||
+  fail "failed promotion lost evaluation cases"
 [[ ! -e "$PUBLIC/skills/rollback-skill" ]] ||
   fail "failed promotion left the skill in the public tree"
 pass "failed promotion restores local provenance"

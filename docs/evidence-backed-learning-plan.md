@@ -139,6 +139,9 @@ The `.agent-created` file remains the curator authority marker.
     "status": "not_evaluated",
     "evaluated_at": null,
     "candidate_id": null,
+    "run_id": null,
+    "receipt_sha256": null,
+    "case_manifest_sha256": null,
     "model": null,
     "source_case": null,
     "sibling_case": null,
@@ -243,7 +246,8 @@ reference-only, or deterministic helper change whose effect is already fully
 proved by existing tests. The waiver carries a reason.
 
 Promotion and major rewrites use an allowlist: only `pass`, or `waived` with a
-valid enumerated waiver class and non-empty reason, may proceed.
+valid enumerated waiver class, non-empty reason, and a content-addressed
+passing evaluation anchor, may proceed.
 `not_evaluated` triggers a fresh evaluation; `pending`, `regression`, and
 `inconclusive` remain local.
 
@@ -530,8 +534,8 @@ run, and roll it back without touching unrelated fixtures.
 - Schema v2 is written only after its reader and validator are installed.
 - Existing skills are migrated lazily when new evidence is appended.
 - No bulk migration is required to deploy M1.
-- Evaluation begins advisory, then becomes mandatory for promotion and major
-  rewrites only after the live acceptance suite passes.
+- Evaluation is mandatory for promotion and consolidation rewrites after the
+  M2 live acceptance suite passed.
 - M1-created envelopes begin as `not_evaluated`. Once M2 ships, promotion of a
   pre-gate skill triggers a fresh evaluation rather than requiring a bulk
   backfill.
@@ -562,7 +566,7 @@ run, and roll it back without touching unrelated fixtures.
 
 ### Later milestones
 
-- [ ] M2 evaluation gate is implemented and rejects an overfitted skill.
+- [x] M2 evaluation gate is implemented and rejects an overfitted skill.
 - [ ] M3 scheduled dependency protection and run rollback are implemented.
 - [ ] M4 is either implemented against a real platform boundary or explicitly
       closed as unnecessary.
@@ -570,7 +574,7 @@ run, and roll it back without touching unrelated fixtures.
 ### All phases Definition of Done
 
 - [x] M1 routing and evidence envelopes are released and installed.
-- [ ] M2 measures source benefit and sibling regressions, and gates promotion
+- [x] M2 measures source benefit and sibling regressions, and gates promotion
       or major rewrites.
 - [ ] M3 protects scheduled dependencies and reverses a complete multi-root
       curator run without overwriting unrelated work.

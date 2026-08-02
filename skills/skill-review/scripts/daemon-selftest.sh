@@ -54,7 +54,8 @@ fi
 for script in daemon-pass.sh daemon-run.sh daemon-lock.sh daemon-lock.py \
   dreaming-run.sh dreaming-state.py test-dreaming-daemon.sh \
   evidence-envelope.py append-skill-evidence.sh mark-agent-created.sh \
-  test-evidence-envelope.sh; do
+  test-evidence-envelope.sh skill-evaluation.py run-skill-evaluation.sh \
+  test-skill-evaluation.sh; do
   [[ -x "$SCRIPT_DIR/$script" ]] && ok "executable: $script" || bad "not executable: $script"
 done
 
@@ -73,6 +74,11 @@ if "$SCRIPT_DIR/test-evidence-envelope.sh" >>"$RESULT" 2>&1; then
   ok "deterministic evidence-envelope checks"
 else
   bad "deterministic evidence-envelope checks"
+fi
+if "$SCRIPT_DIR/test-skill-evaluation.sh" >>"$RESULT" 2>&1; then
+  ok "deterministic skill-evaluation checks"
+else
+  bad "deterministic skill-evaluation checks"
 fi
 if "$MANAGE_SCRIPT_DIR/test-promotion-review.sh" >>"$RESULT" 2>&1; then
   ok "deterministic promotion checks"

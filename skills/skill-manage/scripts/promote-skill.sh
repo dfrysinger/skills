@@ -23,6 +23,7 @@ REPO_ROOT="${SKILLS_REPO_ROOT:-$HOME/code/skills}"
 LOCAL_ROOT="${SKILLS_LOCAL_ROOT:-$HOME/.copilot/skills}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCK_SCRIPT="$SCRIPT_DIR/../../skill-review/scripts/daemon-lock.sh"
+EVALUATION_SCRIPT="$SCRIPT_DIR/../../skill-review/scripts/skill-evaluation.py"
 LOCK_TOKEN=""
 MOVED=0
 PUBLIC_COMMITTED=0
@@ -34,7 +35,8 @@ cleanup() {
   if [[ "$MOVED" == "1" && "$PUBLIC_COMMITTED" == "0" && -d "$DEST" && ! -e "$SRC" ]]; then
     mv "$DEST" "$SRC" || true
     if [[ -n "$PROVENANCE_BACKUP" && -d "$PROVENANCE_BACKUP" ]]; then
-      for sidecar in .agent-created .agent-created.json .promotion-reviewed.json; do
+      for sidecar in .agent-created .agent-created.json .promotion-reviewed.json \
+        .skill-evaluation-cases.json; do
         [[ -f "$PROVENANCE_BACKUP/$sidecar" ]] &&
           cp -p "$PROVENANCE_BACKUP/$sidecar" "$SRC/$sidecar"
       done
@@ -70,6 +72,7 @@ LOCK_TOKEN="$("$LOCK_SCRIPT" acquire --mode session --owner "promote-skill:$NAME
 
 # Validate before moving anything.
 "$SCRIPT_DIR/validate-skill.sh" "$SRC/SKILL.md"
+"$EVALUATION_SCRIPT" gate "$SRC"
 "$SCRIPT_DIR/promotion-review.py" verify "$SRC"
 
 # Move into the public repo.
@@ -82,7 +85,8 @@ MOVED=1
 # Preserve local-only sidecars until the public commit succeeds so a failed
 # promotion can restore the exact local authority state.
 PROVENANCE_BACKUP="$(mktemp -d "${TMPDIR:-/tmp}/skill-promotion.XXXXXX")"
-for sidecar in .agent-created .agent-created.json .promotion-reviewed.json; do
+for sidecar in .agent-created .agent-created.json .promotion-reviewed.json \
+  .skill-evaluation-cases.json; do
   [[ -f "$DEST/$sidecar" ]] && cp -p "$DEST/$sidecar" "$PROVENANCE_BACKUP/$sidecar"
 done
 
@@ -92,7 +96,7 @@ if find "$DEST" -name '.agent-created*' -print -quit | grep -q .; then
   echo "REFUSED: provenance remained after promotion" >&2
   exit 1
 fi
-rm -f "$DEST/.promotion-reviewed.json"
+rm -f "$DEST/.promotion-reviewed.json" "$DEST/.skill-evaluation-cases.json"
 
 # Register in plugin.json (public root only).
 MANIFEST_OUTPUT="$("$SCRIPT_DIR/registry.sh" --manifest-paths)"

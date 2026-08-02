@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any
 
 MANIFEST = ".promotion-reviewed.json"
-EXCLUDED = {".agent-created", ".agent-created.json", MANIFEST}
+CASE_MANIFEST = ".skill-evaluation-cases.json"
+EXCLUDED = {".agent-created", ".agent-created.json", MANIFEST, CASE_MANIFEST}
 PRIVATE_PATTERNS = {
     "explicit private sentinel": re.compile(r"\b(?:PRIVATE_SENTINEL|BEGIN PRIVATE|TASK-SPECIFIC PRIVATE)\b", re.I),
     "credential-shaped token": re.compile(

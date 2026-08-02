@@ -124,6 +124,10 @@ orchestrator bypasses it because one shared cadence governs all three passes.
 6. For each `consolidations[].from → into` pair:
    - Use `/skill-manage patch` to add the absorbed content as a labeled section in `<into>/SKILL.md` (or as a `references/<from>.md` file if it's session-specific detail).
    - If `<from>` has support files (`references/`, `templates/`, `scripts/`, `assets/`), re-home them into `<into>`'s matching subdirs and rewrite the destination paths in `<into>/SKILL.md`. Never leave dangling references.
+   - Author distinct source and sibling cases for the changed umbrella and run
+     `skill-review/scripts/run-skill-evaluation.sh <into-dir> --model
+     <exact-model>`. Continue only when `skill-evaluation.py gate <into-dir>`
+     passes.
    - Use `/skill-manage archive <from> --absorbed-into <into>`.
 7. For each `prunings[].name`:
    - Use `/skill-manage archive <name>` (no `--absorbed-into`).
@@ -160,8 +164,10 @@ orchestrator bypasses it because one shared cadence governs all three passes.
 
 9. **A merged umbrella is a new draft.** Whenever `--live` absorbs one skill
    into another, the resulting SKILL.md must meet `writing-great-skills` in
-   this repo and go through `dual-review` before the commit. Merging is where
-   duplication and sprawl enter the library, and no human reads the diff.
+   this repo, pass the source/sibling effect gate, and go through `dual-review`
+   before the commit. `archive-skill.sh --absorbed-into` machine-enforces the
+   current destination receipt. Merging is where duplication and sprawl enter
+   the library, and no human reads the diff.
 
 ## Pitfalls
 

@@ -214,15 +214,20 @@ If the skill already exists in the LOCAL root and you just want to publish it,
 use `~/code/skills/skills/skill-manage/scripts/promote-skill.sh <name>` instead
 — it moves, strips provenance, registers, and commits both repos.
 Before promotion, run the normal independent review over every file, then seal
-the exact reviewed inventory:
+the exact reviewed inventory. Promotion also requires a current source/sibling
+evaluation; author the local case manifest using
+`skill-review/references/evaluation-cases.md`, then run:
 
 ```bash
+skill-review/scripts/run-skill-evaluation.sh ~/.copilot/skills/<name> \
+  --model <exact-model>
+skill-review/scripts/skill-evaluation.py gate ~/.copilot/skills/<name>
 skill-manage/scripts/promotion-review.py approve ~/.copilot/skills/<name> \
   --reviewer <claude-review-id> --reviewer <gpt-review-id>
 ```
 
-Promotion refuses a missing, stale, single-reviewer, or private-sentinel
-inventory.
+Promotion refuses a missing, stale, regressing, or inconclusive evaluation, as
+well as a missing, stale, single-reviewer, or private-sentinel inventory.
 
 ## Pitfalls
 

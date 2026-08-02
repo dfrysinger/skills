@@ -76,6 +76,7 @@ pass, then continue with the operating prompt below.
 > - `/skill-manage patch` — add sections to the umbrella
 > - `/skill-create` — create a new umbrella SKILL.md
 > - `/skill-manage write-file` — add a `references/`, `templates/`, or `scripts/` file under an existing skill (the skill must already exist)
+> - `skill-review/scripts/run-skill-evaluation.sh <umbrella-dir> --model <exact-model>` — prove the changed umbrella improves a source case without regressing a sibling before archiving any absorbed source
 > - `/skill-manage archive <name> --absorbed-into <umbrella>` — archive a sibling. **MUST** pass `--absorbed-into <umbrella>` when you've merged its content into another skill, or omit `--absorbed-into` when you're truly pruning with no forwarding target. This drives downstream traceability — guessing from the YAML summary after the fact is fragile.
 > - `bash` (with `mv`) — only for relocating support files between skills; never for archive (use the wrapper).
 >
@@ -123,6 +124,16 @@ Before placing ANY skill in `consolidations:` or `prunings:`, check for a
   `manual_review:` list below with a one-line rationale and STOP — the human
   decides. A hand-made skill MAY still be an absorption *target* (`into:`);
   patching it to absorb an agent-created sibling is allowed.
+
+### Evaluation gate for umbrella changes
+
+An absorption target is a changed behavioral candidate even when it is
+hand-made. Before calling `archive-skill.sh --absorbed-into`, create the
+root-only `.skill-evaluation-cases.json`, run the source/sibling evaluation
+with an explicit model, and require `skill-evaluation.py gate` to pass.
+`archive-skill.sh` verifies the exact current destination inventory and refuses
+stale, inconclusive, or regressing receipts. Do not weaken this to a prose
+review or a broad waiver.
 
 ### Completed-project pruning lane
 

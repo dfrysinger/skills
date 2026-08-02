@@ -71,6 +71,28 @@ else
   exit 1
 fi
 
+# Consolidation changes the destination umbrella's behavior. Refuse to retire
+# the source until the exact current destination in the same root has passed.
+if [[ -n "$ABSORBED" ]]; then
+  [[ "$ABSORBED" != "$NAME" ]] || {
+    echo "REFUSED: a skill cannot be absorbed into itself." >&2
+    exit 1
+  }
+  DESTINATION=$("$SCRIPT_DIR/find-skill.sh" "$ABSORBED") || exit 1
+  if [[ "$USE_REGISTRY" -eq 1 ]]; then
+    [[ "$DESTINATION" == "$REPO_ROOT/skills/"* ]] || {
+      echo "REFUSED: public '$NAME' cannot be replaced by local-only '$ABSORBED'." >&2
+      exit 1
+    }
+  else
+    [[ "$DESTINATION" == "$LOCAL_ROOT/"* ]] || {
+      echo "REFUSED: local '$NAME' cannot be consolidated into public '$ABSORBED'." >&2
+      exit 1
+    }
+  fi
+  "$SCRIPT_DIR/../../skill-review/scripts/skill-evaluation.py" gate "$DESTINATION"
+fi
+
 # A retirement is only recoverable if the tree is committed first: the restore
 # point is HEAD, and uncommitted edits to this skill would not be in it.
 if [[ -n "$(git -C "$GIT_ROOT" status --porcelain -- "${SRC#$GIT_ROOT/}")" ]]; then

@@ -107,7 +107,7 @@ if [[ -d "$SKILL_DIR" ]]; then
       *" $TOP "*) ;;
       *)
         # Allow SKILL.md and root metadata sidecars used by skill tooling.
-        if [[ "$REL" != "SKILL.md" && "$REL" != ".pinned" && "$REL" != ".agent-created" && "$REL" != ".agent-created.json" && "$REL" != ".promotion-reviewed.json" ]]; then
+        if [[ "$REL" != "SKILL.md" && "$REL" != ".pinned" && "$REL" != ".agent-created" && "$REL" != ".agent-created.json" && "$REL" != ".promotion-reviewed.json" && "$REL" != ".skill-evaluation-cases.json" ]]; then
           err "stray file '$REL' — supporting files must be under one of: $ALLOWED"
         fi
         ;;
