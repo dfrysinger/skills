@@ -184,8 +184,10 @@ implementation:*
 - *Unattended, or long enough that the context will compact before the plan is
   done — run `unattended-run` against the approved doc. It arms the recurring
   charter re-brief that holds the run on course through compaction, and points
-  its Definition of Done at the one this doc already carries. It performs the
-  handoff itself, so do not also run `handoff`.*
+  its Definition of Done at the one this doc already carries. Register
+  `development-loop` as the charter's governing skill, project-specific
+  development and testing skills as execution skills, and `self-compact` as its
+  context skill. It performs the handoff itself, so do not also run `handoff`.*
 - *Attended and finishing in one sitting, but designing took a long run —
   self-hand-off into implementation via the `handoff` skill.*
 

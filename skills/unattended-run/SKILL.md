@@ -1,6 +1,6 @@
 ---
 name: unattended-run
-description: Keep a long, unattended Copilot CLI run on course. Autonomously arm an `/every` charter re-brief (via manage_schedule) that re-anchors the how — worktree, push policy, autonomy mandate, plan hygiene — on each tick so a compacted context doesn't drift, then best-effort self-enqueue the `/autopilot` objective through the current tmux pane. Use when starting a long autopilot or `/goal` run against a plan doc, when writing or sharpening an autopilot objective, or when keeping an unattended run from drifting over many context compactions.
+description: Keep a long, unattended Copilot CLI run on course. Autonomously arm an `/every` charter re-brief (via manage_schedule) that restores the run's operating rules on each tick so a compacted context doesn't drift, then best-effort self-enqueue the `/autopilot` objective through the current tmux pane. Use when starting a long autopilot or `/goal` run against a plan doc, when writing or sharpening an autopilot objective, or when keeping an unattended run from drifting over many context compactions.
 ---
 
 # unattended-run
@@ -8,8 +8,9 @@ description: Keep a long, unattended Copilot CLI run on course. Autonomously arm
 For a long, unattended Copilot CLI run, two things keep the agent on course:
 
 - A recurring **charter re-brief** — an `/every` reminder that re-anchors the
-  *how* (worktree, push policy, autonomy mandate, plan hygiene) on each tick, so
-  a compacted context doesn't drift. **You arm this yourself with
+  *how* (governing skills, worktree, push policy, autonomy mandate, plan
+  hygiene, compaction discipline) on each tick, so a compacted context doesn't
+  drift. **You arm this yourself with
   `manage_schedule`. It is the load-bearing deliverable of this skill.**
 - An **optional `/autopilot` objective** that drives the *what* until the agent
   determines the task is complete. `/autopilot` is not an agent tool, but when
@@ -55,15 +56,29 @@ work autonomously. If self-enqueue is unavailable, print the objective instead.
 
 ### 1. Draft the charter and the objective
 Fill both artifacts in [`references/brief-template.md`](references/brief-template.md):
-the **charter** (the standing *how* — dev/test skills, push policy, autonomy
-mandate, plan hygiene, subagents, coordination, standing grants) and the
-**objective** (plan doc, scope, one-line outcome, observable done-condition). The
-plan must carry a plain **Definition of Done** covering exactly this run's scope,
-under a unique heading both artifacts point at; if it's missing, write it (or run
-`development-loop`'s design gate) first.
+the **charter** (the standing *how* — required process skills, push policy,
+autonomy mandate, plan hygiene, subagents, coordination, standing grants) and
+the **objective** (plan doc, scope, one-line outcome, observable done-condition).
+The charter's skill manifest records:
 
-**Complete when** no `<SLOT>` remains in either artifact and both point at the
-same Definition-of-Done heading.
+- one **governing skill** that owns the run's process and completion gates;
+- **execution skills** needed only in the phases they own;
+- `self-compact` as the **context skill** that owns compaction.
+
+When another skill hands work to `unattended-run`, make that caller the
+governing skill. Otherwise choose the skill whose process owns the Definition
+of Done. Do not preserve every currently loaded skill: planning, explanation,
+and one-time investigation skills are not standing process dependencies.
+`unattended-run` itself never belongs in the manifest, because re-invoking it
+could create another schedule.
+
+The plan must carry a plain **Definition of Done** covering exactly this run's
+scope, under a unique heading both artifacts point at; if it's missing, write it
+(or run `development-loop`'s design gate) first.
+
+**Complete when** no `<SLOT>` remains in either artifact, both point at the same
+Definition-of-Done heading, and every skill in the manifest owns work or a gate
+that remains in this run.
 
 **Handoff point.** The finished brief is a complete work order — it says what to
 do without the conversation that produced it. If a long planning run produced
@@ -85,23 +100,37 @@ See the `handoff` skill for both recipes.
 This is the deliverable that keeps the run on course, and you can do it without
 the user. Persist the charter to a durable file the run and its reminder both
 read — alongside the plan (e.g. `docs/<feature>-autopilot.md`) so a future agent
-inherits it, or a session file for a throwaway run. Then arm the reminder with
-`manage_schedule` (the tool `/every` runs), pointed at that file so each tick
-re-reads the authoritative copy:
+inherits it, or a session file for a throwaway run. The persisted file includes
+the charter prose and its complete **Required process skills** manifest.
+
+Before creating a reminder, run `manage_schedule action=list`. Reuse the one
+live charter re-brief already pointed at this file only when its prompt also
+tells the agent to follow the charter's **Required process skills** protocol.
+Treat a matching reminder with any other prompt as stale. Stop stale or
+duplicate reminders for this objective and create one replacement; leave
+unrelated schedules untouched. When no current matching reminder exists, arm
+one with `manage_schedule` (the tool `/every` runs), pointed at the file so each
+tick re-reads the authoritative copy:
 
 ```
 manage_schedule action=create interval=1h \
-  prompt="Re-read your autopilot charter at <charter-path>. Confirm you're still
-  on that course — right worktree, push policy, autonomy mandate, plan kept
-  updated — and correct any drift before continuing. Stop this schedule once the
-  objective's Definition of Done is met."
+  prompt="Re-read your autopilot charter at <charter-path> and its current plan
+  baton. Follow the charter's Required process skills protocol exactly and
+  reconcile the current work against it; execute any skill invocation or
+  compaction action the charter says is due now rather than merely acknowledging
+  it. Confirm the workspace, push policy, objective, and current phase, and
+  correct any drift before continuing. Stop this schedule once the charter's
+  referenced Definition of Done is verifiably met."
 ```
 
-The tick carries its own off-switch: it stops the schedule once the Definition
-of Done is met, so it disengages on arrival rather than nagging forever.
+The charter remains authoritative for skill and compaction policy; the schedule
+only points to it and requires due actions to happen. The tick also carries its
+own off-switch, so it disengages on arrival rather than nagging forever.
 
-**Complete when** the charter file exists on disk and `manage_schedule
-action=list` shows the reminder live and pointed at that file.
+**Complete when** the charter file names its governing, execution, and context
+skills, and `manage_schedule action=list` shows exactly one reminder for this
+objective live, pointed at that file, with a prompt that follows the charter's
+**Required process skills** protocol.
 
 ### 3. Best-effort self-enqueue `/autopilot`, then proceed autonomously
 After the charter exists and the `/every` reminder is live, enqueue the

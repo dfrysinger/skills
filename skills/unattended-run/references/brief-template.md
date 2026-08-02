@@ -38,25 +38,42 @@ Objective slots:
 
 The standing operating rules. This is the *how*; the objective owns the *what*
 and the stop condition, so the charter closes by pointing back at `<DOD_REF>`.
+Keep the skill manifest structured so the hourly reminder can restore the
+process after compaction without copying each skill's rules.
 
 > Keep building against the plan at `<PLAN_DOC>`[ through `<SCOPE>`] in your
-> `<WORKSPACE>` using `<DEV_SKILLS>` and `<TEST_SKILL>` for end-to-end testing.
+> `<WORKSPACE>`. Follow the required process skills below.
 > Use rubber-duck to brainstorm solutions and align on paths forward whenever
 > you get stuck. Keep the plan up to date so future agents can pick it up. Use
 > subagents liberally to parallelize work whenever possible. `<PUSH_POLICY>`.
 > Decide every reversible question yourself with rubber-duck rather than asking
 > me. `<COORDINATION>`. `<GRANTS>`. Stay on this course until the objective's
 > Definition of Done (the "`<DOD_REF>`" section) is met.
+>
+> ### Required process skills
+>
+> - **Governing:** `<GOVERNING_SKILL>` — owns the run's phase order, gates, and
+>   completion process. Invoke it at run start and after compaction when it is no
+>   longer active.
+> - **Execution:** `<EXECUTION_SKILLS>` — invoke each only when the current
+>   phase reaches the work it owns. Use `None` when the governing skill needs no
+>   project-specific companion.
+> - **Context:** `/dfrysinger-skills:self-compact` — at the governing workflow's
+>   compaction points, or when context becomes noisy or repetitive, persist the
+>   complete baton and invoke and follow this skill as the final action. Do not
+>   compact merely because the hourly reminder fired or while active live proof
+>   is in progress.
 
 Charter slots:
 
 - **`<WORKSPACE>`** — where the work happens (e.g. "your feature worktree"), so
   a reminded agent re-confirms it's in the right tree.
-- **`<DEV_SKILLS>`** — the development skill(s) this project uses, always
-  including the shipping loop (`/dfrysinger-skills:development-loop`)
-  plus any project dev skill (e.g. a language- or framework-specific dev skill).
-- **`<TEST_SKILL>`** — the project's end-to-end testing skill (e.g. your
-  project's E2E skill), or the loop's own E2E gate when none is separate.
+- **`<GOVERNING_SKILL>`** — the skill that handed work to `unattended-run`, or
+  otherwise the one process that owns the Definition of Done. For product work
+  this is normally `/dfrysinger-skills:development-loop`.
+- **`<EXECUTION_SKILLS>`** — only project or domain skills that own a remaining
+  implementation, testing, deployment, or review phase. Do not include every
+  skill currently loaded, and never include `unattended-run` itself.
 - **`<PUSH_POLICY>`** — the one policy most worth pinning, pick one:
   - `Don't push — keep working locally for this run`
   - `Push to remote and merge when each phase is done, tested E2E and reviewed clean`
@@ -84,11 +101,17 @@ Charter slots:
 **Charter** (persisted; re-fed on the reminder):
 
 > Keep building against the plan at `docs/checkout-refactor-plan.md` in your
-> worktree using `/dfrysinger-skills:development-loop` for development
-> and end-to-end testing. Use rubber-duck to brainstorm solutions and align on
+> worktree. Follow the required process skills below. Use rubber-duck to
+> brainstorm solutions and align on
 > paths forward whenever you get stuck. Keep the plan up to date so future agents
 > can pick it up. Use subagents liberally to parallelize work whenever possible.
 > Push to remote and merge when each phase is done, tested E2E and reviewed
 > clean. Decide every reversible question yourself with rubber-duck rather than
 > asking me. Stay on this course until the objective's Definition of Done (the
 > "Definition of Done" section) is met.
+>
+> **Required process skills**
+>
+> - **Governing:** `/dfrysinger-skills:development-loop`
+> - **Execution:** `None`
+> - **Context:** `/dfrysinger-skills:self-compact`
