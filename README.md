@@ -32,18 +32,23 @@ Skills register as `dfrysinger-skills` and become available to invoke from your 
 
 The daemon runs three per-user LaunchAgents under your login session:
 
-- `com.${USER}.skills.sweep` (daily 09:15) — autonomous skill creation into the LOCAL root only.
-- `com.${USER}.skills.curator` (daily 09:30) — dry-run consolidation report; never mutates.
+- `com.${USER}.skills.dreaming` (daily 09:15, effective weekly) — one ordered owner for transcript consolidation, memory roll, then dry-run pruning.
 - `com.${USER}.skills.selftest` (manual) — preflight check.
+- `com.${USER}.skills.watchdog` (daily 12:15) — freshness, failure, halt, and overdue-success alerts.
 
 Install + verify:
 
 ```sh
 ~/code/skills/skills/skill-review/scripts/daemon-install.sh install
 ~/code/skills/skills/skill-review/scripts/daemon-install.sh selftest
+~/code/skills/skills/skill-review/scripts/daemon-install.sh enable
 ```
 
-Other commands: `status`, `uninstall`. Halt switch: any file at `~/.copilot/skill-state/skill-review/disable-daemon` makes both autonomous jobs no-op until removed.
+Other commands: `status`, `uninstall`, `rollback`. Install backs up and removes
+the legacy `sweep`, `curator`, and independently provisioned `memory` agents,
+then leaves the shared halt switch active until self-test succeeds. Any file at
+`~/.copilot/skill-state/skill-review/disable-daemon` makes autonomous
+maintenance no-op.
 
 The daemon writes only to `~/.copilot/skills/` (local, no remote) and the state dir `~/.copilot/skill-state/`. It never modifies this public repo, even on disk — `verify-repo-unchanged.sh` is the post-run guard.
 
@@ -51,13 +56,15 @@ The daemon writes only to `~/.copilot/skills/` (local, no remote) and the state 
 
 ### Self-learning skill system — a port of [Hermes Agent](https://github.com/NousResearch/hermes-agent) to Copilot CLI
 
-A port of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)'s autonomous self-learning machinery (MIT). Agents create skills from real work without being asked, and the library is routinely consolidated or pruned. Because Copilot CLI has no code-enforced post-turn fork like Hermes, the autonomous-creation trigger is reimplemented as an end-of-task subagent dispatch plus a daily scheduled sweep, both gated by a durable ledger. The [two-root layout](#layout) provides the containment Hermes gets from forking. Full attribution and the verbatim-vs-adapted breakdown: [skills/skill-review/references/NOTICE.md](./skills/skill-review/references/NOTICE.md).
+A port of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)'s autonomous self-learning machinery (MIT). Agents create skills from real work without being asked, and the library is routinely consolidated or pruned. Because Copilot CLI has no code-enforced post-turn fork like Hermes, the autonomous-creation trigger is reimplemented as an end-of-task subagent dispatch plus the first pass of one effective-weekly dreaming job. Both paths share a writer lease and durable ledger. The [two-root layout](#layout) provides the containment Hermes gets from forking. Full attribution and the verbatim-vs-adapted breakdown: [skills/skill-review/references/NOTICE.md](./skills/skill-review/references/NOTICE.md).
 
 - **[skill-review](./skills/skill-review/SKILL.md)** : Autonomous per-session reflection that creates/patches skills WITHOUT asking — a port of Hermes's `background_review.py` (`_SKILL_REVIEW_PROMPT` lifted verbatim, wrapped in a binding Copilot execution contract). Writes only to the LOCAL root.
 - **[skill-curator](./skills/skill-curator/SKILL.md)** : Periodic curator (Hermes `curator.py`) that consolidates narrow sibling skills into umbrellas and archives unused ones on a 7-day cadence; agent-created skills are autonomous, hand-made skills are recommend-only.
 - **[skill-create](./skills/skill-create/SKILL.md)** / **[skill-manage](./skills/skill-manage/SKILL.md)** : Copilot-native re-expression of Hermes's skill-management tool surface — create, patch, archive, restore, pin, promote, or extend a skill with enforced authoring standards and a validator.
 
-To trigger an autonomous skill-creation pass on demand (instead of waiting for the daily 09:15 sweep), drop a scoped prompt like this into a fresh Copilot CLI session:
+To trigger an autonomous skill-creation pass on demand instead of waiting for
+the dreaming backstop, drop a scoped prompt like this into a fresh Copilot CLI
+session:
 
 > Dispatch skill-review subagent to scan my last 30 days of sessions for any procedure I had to explain to an agent more than twice that isn't already covered by a skill in `~/code/skills/skills/` or `~/.copilot/skills/`.
 

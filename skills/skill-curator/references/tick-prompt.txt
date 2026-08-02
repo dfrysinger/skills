@@ -11,11 +11,13 @@ NEVER pushes git. Its only side effects are writing a report and updating the
 curator state file, both under ~/.copilot/skill-state/ (outside the repo).
 
 SEQUENCE (follow ~/code/skills/skills/skill-curator/SKILL.md tick mode):
-1. Halt switch. If ~/.copilot/skill-state/skill-review/disable-daemon exists, STOP.
-2. Interval gate. Run
+1. Halt switch. If ~/.copilot/skill-state/skill-review/disable-daemon exists,
+   print `DREAM_PASS_RESULT: aborted halt-switch` and STOP.
+2. Interval gate. If DREAMING_ORCHESTRATED=1, the outer orchestrator already
+   owns cadence and you MUST skip this gate. Otherwise run
    ~/code/skills/skills/skill-curator/scripts/should-run-now.sh.
-   If it exits non-zero, print the one-line skip reason from stderr and STOP
-   (it self-gates to a 7-day cadence; daily ticks are expected to usually skip).
+   If it exits non-zero, print the one-line skip reason from stderr, then print
+   `DREAM_PASS_RESULT: ok skipped=cadence-not-due` and STOP.
 3. If the gate passes (>= 7 days since last run, not paused), run the full
    --dry-run workflow from the skill:
    - Print the dry-run banner (references/dry-run-banner.md).
@@ -29,4 +31,7 @@ SEQUENCE (follow ~/code/skills/skills/skill-curator/SKILL.md tick mode):
 
 Finish by writing a one-paragraph summary (counts of proposed consolidations /
 prunings, or the skip reason) to stdout for the daemon log, then exit. Do not
-apply anything — a human runs `/skill-curator --live` to apply.
+apply anything — a human runs `/skill-curator --live` to apply. The LAST line
+must be `DREAM_PASS_RESULT: ok consolidations=<N> prunings=<M>`. On any guard,
+prompt, report, or state failure, print
+`DREAM_PASS_RESULT: aborted <one-line reason>` instead.

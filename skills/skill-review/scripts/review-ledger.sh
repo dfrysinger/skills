@@ -80,7 +80,7 @@ PY
     [[ $# -eq 1 ]] || { echo "usage: $(basename "$0") append '<json>'" >&2; exit 2; }
     PAYLOAD="$1"
     # Append under an exclusive lock, re-checking for an existing entry while the
-    # lock is held. The in-session dispatch and the daily sweep can run at the
+    # lock is held. The in-session dispatch and scheduled sweep can run at the
     # same time: without the lock, both pass `has` and both append, and the old
     # two-step write (record, then newline) could interleave into a corrupt line.
     python3 - "$LEDGER" "$PAYLOAD" <<'PY'

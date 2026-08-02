@@ -1,6 +1,6 @@
 ---
 name: skill-review
-description: Autonomous per-session skill reflection — reviews recent work and creates/patches skills WITHOUT asking. Use when invoked by the daily sweep schedule, dispatched as an end-of-task subagent, or when the user says "review for skills" / "learn from this session". Distinct from skill-curator (which consolidates the library on a 7-day cadence); skill-review is the creation/patching loop.
+description: Autonomous per-session skill reflection — reviews recent work and creates/patches skills WITHOUT asking. Use when invoked by the dreaming orchestrator, dispatched as an end-of-task subagent, or when the user says "review for skills" / "learn from this session". Distinct from skill-curator (which consolidates the library); skill-review is the creation/patching loop.
 ---
 
 > **Paths note:** Paths below are the defaults; `$SKILLS_REPO_ROOT`, `$SKILLS_LOCAL_ROOT` and `$SKILLS_STATE_DIR` override them. See README "Forking and portability".
@@ -13,10 +13,12 @@ confirmation**. Upstream fires a
 tool-restricted forked agent after ~10 tool iterations per turn; Copilot CLI has
 no end-of-turn hook, so this skill's **primary path is an end-of-task dispatch**
 (the main agent dispatches a `skill-review` subagent right after a qualifying
-heavy task) plus a **daily scheduled
-sweep** that acts as the deterministic backstop for sessions the in-session
-dispatch missed (interrupted runs, judgment-call misses). Both are gated by a
-durable ledger so they never double-create.
+heavy task) plus a **scheduled sweep** that acts as the deterministic backstop
+for sessions the in-session
+dispatch missed (interrupted runs, judgment-call misses). The scheduled backstop
+runs as the first pass of the effective-weekly dreaming pipeline. Both paths are
+gated by a durable ledger and the shared writer lease so they neither
+double-create nor mutate the skill roots concurrently.
 
 It does NOT consolidate or archive the library at scale — that is
 `skill-curator`. It does NOT touch other plugins' skills.
@@ -31,8 +33,8 @@ It does NOT consolidate or archive the library at scale — that is
 - **dispatch** (primary) — the main agent dispatches a `skill-review` subagent
   at the end of a qualifying heavy task (the `copilot-instructions.md` trigger),
   no-ask. This is the real-time path.
-- **sweep** (backstop) — the daily `manage_schedule` job runs `/skill-review
-  sweep` to catch sessions the in-session dispatch missed.
+- **sweep** (backstop) — the dreaming orchestrator runs `/skill-review sweep`
+  before memory roll and library pruning.
 - Manual: user says "review this session for skills", "learn from this".
 
 ## Prerequisites
@@ -98,7 +100,9 @@ upstream loop keeps in memory.
       `scripts/review-ledger.sh append '<json>'` with `session_id`, `mode:"sweep"`,
       `created`, `patched`, `skipped`, and `watermark_ts` = that session's last ts.
 4. **Guards (both required):**
-   - `scripts/verify-repo-unchanged.sh` — public repo must be pristine.
+   - Capture `scripts/verify-repo-unchanged.sh snapshot` before work, then run
+     `scripts/verify-repo-unchanged.sh check` — public repo must match the
+     baseline, while unrelated pre-existing work is allowed.
    - `scripts/verify-diff-scope.sh` — local-repo changes must stay within
     `<name>/**`, `.archive/**`, `README.md`.
    On any exit 3, run the **UNWIND** procedure in
@@ -118,15 +122,20 @@ qualifying heavy task per the `copilot-instructions.md` Tier-2 trigger, without
 asking. Same machinery as the sweep, scoped to a single session:
 
 1. The dispatcher passes the current `session_id` (and may inline the salient
-   transcript). `scripts/review-ledger.sh has <session_id>` → skip if the sweep
-   already got it.
+   transcript). Acquire the shared session lease from the binding contract
+   before the first mutation; renew it immediately before each write, stage,
+   commit, or ledger append. If acquisition or renewal fails, defer without
+   mutating or ledgering. Then `scripts/review-ledger.sh has <session_id>` →
+   skip if the sweep already got it.
 2. Run steps 3c–3f above for that one session, with `mode:"dispatch"` in the
    ledger entry.
-3. Guards (verify-repo-unchanged + verify-diff-scope) → ledger append → one-line summary, exactly as sweep. No push (local root has no remote).
+3. Guards (verify-repo-unchanged + verify-diff-scope) → ledger append → release
+   the token-matched lease → one-line summary, exactly as sweep. No push (local
+   root has no remote).
 
 Because the ledger is shared, whichever path runs first wins; the other skips.
 In normal operation the in-session dispatch runs first (right after the work);
-the daily sweep then finds the session already ledgered and skips it — the sweep
+the scheduled sweep then finds the session already ledgered and skips it — the sweep
 only does real work for sessions the dispatch missed.
 
 ## Provenance & the curator handshake
@@ -157,17 +166,17 @@ Every skill this skill creates gets a `.agent-created` marker +
   prefer `regexp_matches(column, pattern)` so anchored alternations do not
   silently return zero candidates.
 - **Pushing a guard failure or touching the public repo.** If
-  `verify-repo-unchanged.sh` or `verify-diff-scope.sh` exits 3, reset the LOCAL
-  repo hard and abort. The autonomous daemon must never modify
-  `~/code/skills/`; that path is the user's curated/promoted-only territory.
+  `verify-repo-unchanged.sh check` or `verify-diff-scope.sh` exits 3, run the
+  path-scoped UNWIND procedure from the binding contract and abort. The
+  autonomous daemon must leave the public repo exactly as it found it.
 
 ## Verification
 
 After a run:
 - New/patched skills are committed in the LOCAL repo `~/.copilot/skills`; each CREATE has a `.agent-created` marker.
 - `scripts/review-ledger.sh list` shows one entry per session reviewed this run.
-- `scripts/verify-repo-unchanged.sh` and `scripts/verify-diff-scope.sh` both exit 0.
-- `git -C ~/code/skills status` is pristine (the daemon never touched the public repo).
+- `scripts/verify-repo-unchanged.sh check` and `scripts/verify-diff-scope.sh` both exit 0.
+- The public repo matches its pre-run status (the daemon never touched it).
 - `git -C ~/.copilot/skills log --oneline -n 5` shows the new commits (no remote — nothing is pushed).
 
 ## Scripts
@@ -177,3 +186,4 @@ After a run:
 - `scripts/mark-agent-created.sh` — stamp provenance on a created skill.
 - `scripts/check-tombstone.sh` — block recreation of curator-archived skills.
 - `scripts/verify-diff-scope.sh` — containment guard (allowed paths only).
+- `scripts/daemon-lock.sh` — token-fenced shared writer lease used by dispatch.

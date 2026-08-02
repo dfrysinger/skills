@@ -7,19 +7,19 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>__REPO__/skills/skill-review/scripts/daemon-watchdog.sh</string>
+    <string>__REPO__/skills/skill-review/scripts/dreaming-run.sh</string>
   </array>
   <key>StartCalendarInterval</key>
   <dict>
-    <key>Hour</key><integer>12</integer>
+    <key>Hour</key><integer>9</integer>
     <key>Minute</key><integer>15</integer>
   </dict>
   <key>RunAtLoad</key>
   <false/>
   <key>StandardOutPath</key>
-  <string>__HOME__/.copilot/skill-state/daemon-logs/launchd-watchdog.out</string>
+  <string>__HOME__/.copilot/skill-state/daemon-logs/launchd-dreaming.out</string>
   <key>StandardErrorPath</key>
-  <string>__HOME__/.copilot/skill-state/daemon-logs/launchd-watchdog.err</string>
+  <string>__HOME__/.copilot/skill-state/daemon-logs/launchd-dreaming.err</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key><string>__HOME__</string>

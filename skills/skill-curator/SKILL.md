@@ -1,6 +1,6 @@
 ---
 name: skill-curator
-description: Periodic self-learning curator that reviews dfrysinger/skills, consolidates narrow siblings into umbrella skills, and archives unused ones. Default dry-run. Use when invoked by the weekly schedule, when the user says "curate skills" / "clean up skills" / "skill cleanup", or as the first step after noticing many narrow agent-created skills.
+description: Periodic self-learning curator that reviews dfrysinger/skills, consolidates narrow siblings into umbrella skills, and archives unused ones. Default dry-run. Use when invoked by the dreaming orchestrator, when the user says "curate skills" / "clean up skills" / "skill cleanup", or after noticing many narrow agent-created skills.
 ---
 
 > **Paths note:** Paths below are the defaults; `$SKILLS_REPO_ROOT`, `$SKILLS_LOCAL_ROOT` and `$SKILLS_STATE_DIR` override them. See README "Forking and portability".
@@ -16,7 +16,7 @@ This skill does NOT touch:
 
 ## When to use
 
-- Invoked by the weekly `manage_schedule` job (`/skill-curator --dry-run`).
+- Invoked as the prune pass of the effective-weekly dreaming job.
 - User asks for skill cleanup / consolidation.
 - After several `/skill-create` invocations in a short period — sibling clustering becomes likely.
 
@@ -35,9 +35,8 @@ This skill does NOT touch:
 # Status: usage report + curator state
 /skill-curator status
 
-# Tick (daily-scheduled gate): runs --dry-run only if >= interval_hours since
-# last run; otherwise silent skip. Used by the weekly cadence on top of a
-# daily schedule (Copilot CLI's manage_schedule maxes at 1d).
+# Tick (foreground/legacy gate): runs --dry-run only if >= interval_hours since
+# last run; otherwise silent skip. Scheduled cadence belongs to dreaming.
 /skill-curator tick
 
 # Dry-run consolidation pass (default — produces a report, does not mutate)
@@ -52,7 +51,8 @@ This skill does NOT touch:
 
 ### Mode: `tick` (scheduled gate)
 
-The daily `manage_schedule` job runs `/skill-curator tick`. This mode is the interval gate: Copilot CLI caps a schedule at 1d but the curator wants 7d, so `tick` bridges the gap.
+This mode remains available for foreground and legacy callers. The dreaming
+orchestrator bypasses it because one shared cadence governs all three passes.
 
 1. Run `scripts/should-run-now.sh`. It returns exit 0 if `≥ interval_hours` (default 168h = 7d) have passed since `last_run_at`, OR exit 1 (skip) otherwise.
 2. **First-run behavior**: when `last_run_at` is null, seed it to now and skip. The first real dry-run happens after one full interval.
@@ -103,15 +103,20 @@ The daily `manage_schedule` job runs `/skill-curator tick`. This mode is the int
    set to stop the curator must stop it here above all. (`should-run-now.sh`
    checks this on the scheduled path, but `--live` is invoked directly and
    never passes through it.)
-2. Re-read the most recent dry-run report. If none exists or it's >7 days old, abort and tell the user to run dry-run first. Live consolidation is **only** valid as the execution of a freshly-approved dry-run.
-3. Ask the user to confirm: show the consolidations + prunings YAML, ask for "approve" / "abort" / "edit". Do not proceed on silence.
-4. For each `consolidations[].from → into` pair:
+2. Honour the shared halt switch
+   `~/.copilot/skill-state/skill-review/disable-daemon` before any mutation.
+   It is the global stop for autonomous and live maintenance paths.
+3. Re-read the most recent dry-run report. If none exists or it's >7 days old, abort and tell the user to run dry-run first. Live consolidation is **only** valid as the execution of a freshly-approved dry-run.
+4. Ask the user to confirm: show the consolidations + prunings YAML, ask for "approve" / "abort" / "edit". Do not proceed on silence.
+5. Re-check the shared halt switch immediately before applying the first
+   archive or patch. Abort without mutation if it appeared after approval.
+6. For each `consolidations[].from → into` pair:
    - Use `/skill-manage patch` to add the absorbed content as a labeled section in `<into>/SKILL.md` (or as a `references/<from>.md` file if it's session-specific detail).
    - If `<from>` has support files (`references/`, `templates/`, `scripts/`, `assets/`), re-home them into `<into>`'s matching subdirs and rewrite the destination paths in `<into>/SKILL.md`. Never leave dangling references.
    - Use `/skill-manage archive <from> --absorbed-into <into>`.
-5. For each `prunings[].name`:
+7. For each `prunings[].name`:
    - Use `/skill-manage archive <name>` (no `--absorbed-into`).
-6. After all mutations, commit each change individually in its OWNING root with messages of the form:
+8. After all mutations, commit each change individually in its OWNING root with messages of the form:
    ```
    skill-curator: consolidate <from> into <into>
 
@@ -121,9 +126,9 @@ The daily `manage_schedule` job runs `/skill-curator tick`. This mode is the int
 
    Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
    ```
-7. Push the PUBLIC repo only: `git -C ~/code/skills push origin main`. The
+9. Push the PUBLIC repo only: `git -C ~/code/skills push origin main`. The
    LOCAL repo `~/.copilot/skills` has no remote — its commits stay local.
-8. Update curator state: `last_run_at`, `run_count++`, `last_run_summary` = "consolidated N, pruned M".
+10. Update curator state: `last_run_at`, `run_count++`, `last_run_summary` = "consolidated N, pruned M".
 
 ## Hard rules (non-negotiable)
 

@@ -26,7 +26,11 @@ TWO-ROOT MODEL (read first):
 
 SEQUENCE:
 1. Pre-flight. Stop if ~/.copilot/skill-state/skill-review/disable-daemon exists
-   (halt switch). Confirm the LOCAL root exists at ~/.copilot/skills. Then
+   (halt switch), printing `DREAM_PASS_RESULT: aborted halt-switch` before
+   exiting. Confirm the LOCAL root exists at ~/.copilot/skills. Capture the
+   public-repo baseline with
+   `~/code/skills/skills/skill-review/scripts/verify-repo-unchanged.sh snapshot`.
+   Then
    SNAPSHOT pre-existing dirty paths via
    `git -C ~/.copilot/skills status --porcelain` and remember them — they
    represent OTHER skills (or scratch the user dropped in) and are OUT OF
@@ -65,8 +69,9 @@ SEQUENCE:
       with mark-agent-created.sh, and validate with validate-skill.sh. Do NOT
       call registry.sh — native skills need no plugin entry.
 6. Guard. Run two guards and abort the run if either fails:
-   - ~/code/skills/skills/skill-review/scripts/verify-repo-unchanged.sh — the
-     public repo must be pristine (the daemon must never touch it).
+   - ~/code/skills/skills/skill-review/scripts/verify-repo-unchanged.sh check —
+     the public repo must match its pre-run baseline (the daemon must never
+     touch it, but unrelated pre-existing human work is allowed).
    - ~/code/skills/skills/skill-review/scripts/verify-diff-scope.sh — local
      changes must stay within <name>/**, .archive/**, README.md. On any
      violation run the UNWIND procedure (contract item 9 of
@@ -109,8 +114,8 @@ output, print exactly one status sentinel — the daemon reads this line to deci
 whether the run succeeded, because the session footer only proves the process
 stopped, not that the work was done:
 
-  SKILL_REVIEW_RESULT: ok created=<N> patched=<M> reviewed=<K>
+  DREAM_PASS_RESULT: ok created=<N> patched=<M> reviewed=<K>
 
-Print `SKILL_REVIEW_RESULT: aborted <one-line reason>` instead whenever a guard
+Print `DREAM_PASS_RESULT: aborted <one-line reason>` instead whenever a guard
 fired, UNWIND ran, or you stopped early. A clean no-op run is still `ok` with
 zeros.

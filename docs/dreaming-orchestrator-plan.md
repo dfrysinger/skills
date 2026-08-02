@@ -296,29 +296,29 @@ in git. State and reports are additive; rollback does not delete them.
 
 ## M1 Definition of Done
 
-- [ ] One scheduled owner replaces the legacy sweep, memory, and curator jobs.
-- [ ] The owner holds one fail-closed lock across the entire ordered pipeline.
-- [ ] Autonomous end-of-task dispatch participates in the same writer lease.
-- [ ] Consolidate, roll, and prune run only in that order.
-- [ ] A failed or halted pass prevents every downstream pass.
-- [ ] Cadence advances only after all three passes succeed.
-- [ ] Weekly cadence is bucket-anchored and does not drift with pass duration.
-- [ ] Every pass uses the common daemon marker and result-sentinel contract.
-- [ ] Every tick produces one parseable report and one orchestration ledger
+- [x] One scheduled owner replaces the legacy sweep, memory, and curator jobs.
+- [x] The owner holds one fail-closed lock across the entire ordered pipeline.
+- [x] Autonomous end-of-task dispatch participates in the same writer lease.
+- [x] Consolidate, roll, and prune run only in that order.
+- [x] A failed or halted pass prevents every downstream pass.
+- [x] Cadence advances only after all three passes succeed.
+- [x] Weekly cadence is bucket-anchored and does not drift with pass duration.
+- [x] Every pass uses the common daemon marker and result-sentinel contract.
+- [x] Every tick produces one parseable report and one orchestration ledger
       record, including healthy skips.
-- [ ] The watchdog distinguishes healthy weekly cadence skips from failures.
-- [ ] The watchdog alerts on an over-age successful cadence and retains halt
+- [x] The watchdog distinguishes healthy weekly cadence skips from failures.
+- [x] The watchdog alerts on an over-age successful cadence and retains halt
       advisories.
-- [ ] Installer migration removes all legacy labels and plist files.
-- [ ] Rollback restores the exact backed-up legacy LaunchAgents.
-- [ ] Authoritative state, reports, and ledger records recover consistently
+- [x] Installer migration removes all legacy labels and plist files.
+- [x] Rollback restores the exact backed-up legacy LaunchAgents.
+- [x] Authoritative state, reports, and ledger records recover consistently
       after interrupted persistence.
-- [ ] Concurrent owner and contention ticks cannot overwrite each other's
+- [x] Concurrent owner and contention ticks cannot overwrite each other's
       records or cadence state.
-- [ ] Deterministic lock, cadence, ordering, failure, reporting, installer, and
+- [x] Deterministic lock, cadence, ordering, failure, reporting, installer, and
       watchdog checks pass.
-- [ ] The launchd self-test and non-destructive live canary pass on the reviewed
+- [x] The launchd self-test and non-destructive live canary pass on the reviewed
       tree.
-- [ ] Directly affected skills validate successfully.
-- [ ] Dual review has no verified in-scope material finding.
-- [ ] Public and local repositories are clean; the public commit is pushed.
+- [x] Directly affected skills validate successfully.
+- [x] Dual review has no verified in-scope material finding.
+- [x] Public and local repositories are clean; the public commit is pushed.

@@ -57,6 +57,41 @@ skills_setup_git_auth() {
   return 0
 }
 
+skills_process_identity() {
+  local pid="$1"
+  /bin/ps -o lstart= -p "$pid" 2>/dev/null | /usr/bin/awk '{$1=$1; print}'
+}
+
+skills_lock_tool() {
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  printf '%s\n' "$script_dir/daemon-lock.py"
+}
+
+skills_lock_acquire() {
+  local mode="$1" owner="$2"
+  if [[ "$mode" == "process" ]]; then
+    "$(skills_lock_tool)" acquire --mode process --owner "$owner" \
+      --pid "$$" --process-identity "$(skills_process_identity "$$")"
+  else
+    "$(skills_lock_tool)" acquire --mode "$mode" --owner "$owner"
+  fi
+}
+
+skills_lock_assert() {
+  "$(skills_lock_tool)" assert "$1" --pid "$$" \
+    --process-identity "$(skills_process_identity "$$" || true)"
+}
+
+skills_lock_renew() {
+  "$(skills_lock_tool)" renew "$1" --pid "$$" \
+    --process-identity "$(skills_process_identity "$$" || true)"
+}
+
+skills_lock_release() {
+  "$(skills_lock_tool)" release "$1"
+}
+
 # Run copilot headlessly but DON'T trust it to exit (see header note B). Watch
 # LOGFILE for DONE_RE; once seen, allow GRACE_SECS for final flushing then
 # terminate the whole process GROUP (copilot spawns a --server child and git

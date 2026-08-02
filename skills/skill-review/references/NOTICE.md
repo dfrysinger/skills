@@ -12,7 +12,7 @@ below per the license terms.
 
 | This repo | Upstream Hermes source | Relationship |
 |-----------|------------------------|--------------|
-| [`skill-review`](../SKILL.md) | [`agent/background_review.py`](https://github.com/NousResearch/hermes-agent/blob/main/agent/background_review.py) (`_SKILL_REVIEW_PROMPT`) | Selection criteria lifted **verbatim** (see [`references/review-prompt.md`](./review-prompt.md)); the autonomous create/patch loop is reimplemented as a Copilot CLI end-of-task dispatch + daily sweep because Copilot CLI has no code-enforced post-turn fork. |
+| [`skill-review`](../SKILL.md) | [`agent/background_review.py`](https://github.com/NousResearch/hermes-agent/blob/main/agent/background_review.py) (`_SKILL_REVIEW_PROMPT`) | Selection criteria lifted **verbatim** (see [`references/review-prompt.md`](./review-prompt.md)); the autonomous create/patch loop is reimplemented as a Copilot CLI end-of-task dispatch plus the consolidate pass of the dreaming orchestrator because Copilot CLI has no code-enforced post-turn fork. |
 | [`skill-curator`](../../skill-curator/SKILL.md) | [`agent/curator.py`](https://github.com/NousResearch/hermes-agent/blob/main/agent/curator.py) | Curator prompt + consolidation/prune logic adapted (see [`../skill-curator/references/curator-prompt.md`](../../skill-curator/references/curator-prompt.md) and [`../skill-curator/references/hermes-curator-config.md`](../../skill-curator/references/hermes-curator-config.md)). |
 | [`skill-create`](../../skill-create/SKILL.md), [`skill-manage`](../../skill-manage/SKILL.md) | Hermes `skill_manage` / `skill_view` / `skills_list` tools | Copilot-native re-expression of Hermes's skill-management tool surface as skills (Copilot CLI has no equivalent built-in tool). |
 

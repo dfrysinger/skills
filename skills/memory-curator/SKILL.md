@@ -12,8 +12,9 @@ until the skill is opened. This skill moves durable memory content into the
 right skills and then deletes the migrated memories — the memory analog of the
 `skill-review` daemon that curates transcripts.
 
-It is designed to run **both** interactively (you, now) and as an unattended
-weekly launchd job (see `references/memory-curate-prompt.txt`).
+It is designed to run **both** interactively (you, now) and as the roll pass of
+the unattended effective-weekly dreaming job (see
+`references/memory-curate-prompt.txt`).
 
 ## Hard safety rails (deletion is irreversible)
 
@@ -50,7 +51,7 @@ delete → re-extract, repeating until the window is empty or only keepers remai
 | `mem-extract.sh [-o FILE]` | Headless authenticated-browse dump of all visible memories as JSON `[{body,subject}]`. Detects logout (exit 5). Repairs mojibake. |
 | `mem-delete.sh -f bodies.json` | Signature-matched deleter. Only removes rows matching a first-55-char signature of a supplied body. Loops passes until 0. |
 | `mem-ledger.sh {hash\|seen\|add\|filter-new\|stats}` | Content-hash ledger to dedupe processed memories across runs. |
-| `should-run-now.sh` | Weekly self-gate (mirrors skill-curator): exit 0 if ≥ interval since last run, else exit 1. |
+| `should-run-now.sh` | Foreground/legacy weekly self-gate. The dreaming orchestrator owns scheduled cadence. |
 
 `mem-lib.sh` provides `mem_browse_eval` (retry-on-profile-lock), `mem_unwrap`
 (double-JSON decode **+ latin1←utf8 mojibake repair**), `mem_logged_in`,

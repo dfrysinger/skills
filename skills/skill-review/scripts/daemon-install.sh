@@ -1,34 +1,23 @@
 #!/usr/bin/env bash
-# daemon-install.sh — install/uninstall the skills self-learning LaunchAgents.
-#
-#   daemon-install.sh install     # render templates, load, enable all 3 agents
-#   daemon-install.sh uninstall   # bootout + remove all 3 agents
-#   daemon-install.sh status      # show load state + next-run info
-#   daemon-install.sh selftest    # run the self-test UNDER launchd context
-#
-# Portability: the LaunchAgent label prefix defaults to com.${USER}.skills, so
-# a forker on a different macOS account gets unique labels with no edits.
-# Override via SKILLS_LAUNCHD_PREFIX. Repo path defaults to ~/code/skills,
-# override via SKILLS_REPO_ROOT.
-#
-# LaunchAgents installed (kind suffix appended to the prefix):
-#   ${PREFIX}.sweep     daily 09:15  (autonomous skill creation)
-#   ${PREFIX}.curator   daily 09:30  (dry-run consolidation report)
-#   ${PREFIX}.selftest  manual       (kickstart-only preflight)
+# Install, migrate, inspect, or roll back the dreaming LaunchAgents.
 
-set -u
+set -euo pipefail
 REPO="${SKILLS_REPO_ROOT:-$HOME/code/skills}"
 TPL_DIR="$REPO/skills/skill-review/assets/launchd"
-DEST_DIR="$HOME/Library/LaunchAgents"
-DOMAIN="gui/$(id -u)"
+DEST_DIR="${SKILLS_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
+STATE_DIR="${SKILLS_STATE_DIR:-$HOME/.copilot/skill-state}"
+DOMAIN="${SKILLS_LAUNCHD_DOMAIN:-gui/$(id -u)}"
+LAUNCHCTL="${LAUNCHCTL_BIN:-launchctl}"
 LABEL_PREFIX="${SKILLS_LAUNCHD_PREFIX:-com.${USER}.skills}"
-KINDS=(sweep curator selftest watchdog)
+KINDS=(dreaming selftest watchdog)
+LEGACY_KINDS=(sweep curator memory)
+PREVIOUS_KINDS=(sweep curator memory selftest watchdog)
+HALT_SWITCH="$STATE_DIR/skill-review/disable-daemon"
 
 label_for() { echo "${LABEL_PREFIX}.$1"; }
 
-render() {  # render one template -> $DEST_DIR/<label>.plist
-  local kind="$1"
-  local label
+render() {
+  local kind="$1" label
   label="$(label_for "$kind")"
   sed -e "s#__HOME__#$HOME#g" \
       -e "s#__REPO__#$REPO#g" \
@@ -36,37 +25,132 @@ render() {  # render one template -> $DEST_DIR/<label>.plist
       "$TPL_DIR/$kind.plist.tpl" > "$DEST_DIR/$label.plist"
 }
 
+bootout_kind() {
+  local kind="$1" label
+  label="$(label_for "$kind")"
+  "$LAUNCHCTL" bootout "$DOMAIN/$label" 2>/dev/null || true
+}
+
+backup_previous() {
+  local stamp backup kind label src copied=0 legacy_copied=0
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  backup="$STATE_DIR/dreaming/migration-backups/$stamp"
+  mkdir -p "$backup"
+  for kind in "${PREVIOUS_KINDS[@]}"; do
+    label="$(label_for "$kind")"
+    src="$DEST_DIR/$label.plist"
+    if [[ -f "$src" ]]; then
+      cp "$src" "$backup/"
+      copied=$((copied + 1))
+      if [[ " ${LEGACY_KINDS[*]} " == *" $kind "* ]]; then
+        legacy_copied=$((legacy_copied + 1))
+      fi
+    fi
+  done
+  if (( legacy_copied > 0 )); then
+    printf '%s\n' "$backup" > "$STATE_DIR/dreaming/latest-migration-backup"
+    echo "backed up $copied pre-migration plist(s), including $legacy_copied legacy owner(s), to $backup"
+  else
+    echo "backed up $copied current plist(s) to $backup; preserved existing legacy rollback pointer"
+  fi
+}
+
+remove_legacy() {
+  local kind label
+  for kind in "${LEGACY_KINDS[@]}"; do
+    label="$(label_for "$kind")"
+    bootout_kind "$kind"
+    rm -f "$DEST_DIR/$label.plist"
+  done
+}
+
 cmd_install() {
-  mkdir -p "$DEST_DIR" "$HOME/.copilot/skill-state/daemon-logs"
-  chmod +x "$REPO"/skills/skill-review/scripts/daemon-*.sh
+  mkdir -p "$DEST_DIR" "$STATE_DIR/daemon-logs" "$STATE_DIR/skill-review" "$STATE_DIR/dreaming"
+  touch "$HALT_SWITCH"
+  chmod +x "$REPO"/skills/skill-review/scripts/daemon-*.sh \
+    "$REPO"/skills/skill-review/scripts/daemon-lock.py \
+    "$REPO"/skills/skill-review/scripts/dreaming-*.sh \
+    "$REPO"/skills/skill-review/scripts/dreaming-state.py
+  backup_previous
+  remove_legacy
   for kind in "${KINDS[@]}"; do
     local label
     label="$(label_for "$kind")"
     render "$kind"
-    launchctl bootout "$DOMAIN/$label" 2>/dev/null || true
-    launchctl bootstrap "$DOMAIN" "$DEST_DIR/$label.plist" \
-      && echo "loaded  $label" || { echo "FAILED to load $label" >&2; return 1; }
-    launchctl enable "$DOMAIN/$label" 2>/dev/null || true
+    bootout_kind "$kind"
+    "$LAUNCHCTL" bootstrap "$DOMAIN" "$DEST_DIR/$label.plist"
+    "$LAUNCHCTL" enable "$DOMAIN/$label" 2>/dev/null || true
+    echo "loaded  $label"
   done
-  echo "installed 4 agents (prefix: $LABEL_PREFIX). Run: daemon-install.sh selftest"
+  echo "installed ${#KINDS[@]} agents; halt remains active until: daemon-install.sh enable"
+}
+
+cmd_enable() {
+  rm -f "$HALT_SWITCH"
+  echo "dreaming daemon enabled"
 }
 
 cmd_uninstall() {
-  for kind in "${KINDS[@]}"; do
-    local label
+  mkdir -p "$STATE_DIR/dreaming"
+  backup_previous
+  local kind label
+  for kind in "${KINDS[@]}" "${LEGACY_KINDS[@]}"; do
     label="$(label_for "$kind")"
-    launchctl bootout "$DOMAIN/$label" 2>/dev/null && echo "booted out $label" || echo "not loaded: $label"
+    bootout_kind "$kind"
     rm -f "$DEST_DIR/$label.plist"
   done
-  echo "uninstalled."
+  echo "uninstalled dreaming and all known legacy agents"
+}
+
+cmd_rollback() {
+  local backup="${1:-}" kind label plist lock_path
+  if [[ -z "$backup" ]]; then
+    [[ -f "$STATE_DIR/dreaming/latest-migration-backup" ]] || {
+      echo "no migration backup recorded" >&2
+      return 1
+    }
+    backup="$(<"$STATE_DIR/dreaming/latest-migration-backup")"
+  fi
+  [[ -d "$backup" ]] || { echo "backup directory not found: $backup" >&2; return 1; }
+  local legacy_found=0
+  for kind in "${LEGACY_KINDS[@]}"; do
+    label="$(label_for "$kind")"
+    [[ -f "$backup/$label.plist" ]] && legacy_found=$((legacy_found + 1))
+  done
+  (( legacy_found > 0 )) || {
+    echo "backup contains no legacy owner plist; refusing incomplete rollback: $backup" >&2
+    return 1
+  }
+  for kind in "${KINDS[@]}"; do
+    label="$(label_for "$kind")"
+    bootout_kind "$kind"
+    rm -f "$DEST_DIR/$label.plist"
+  done
+  lock_path="$STATE_DIR/daemon.lock"
+  if [[ -f "$lock_path" ]]; then
+    mv "$lock_path" "$STATE_DIR/dreaming/daemon.lock.sqlite-before-rollback"
+    [[ -f "${lock_path}-wal" ]] && mv "${lock_path}-wal" "$STATE_DIR/dreaming/daemon.lock.sqlite-wal-before-rollback"
+    [[ -f "${lock_path}-shm" ]] && mv "${lock_path}-shm" "$STATE_DIR/dreaming/daemon.lock.sqlite-shm-before-rollback"
+  fi
+  for plist in "$backup"/*.plist; do
+    [[ -e "$plist" ]] || continue
+    cp "$plist" "$DEST_DIR/"
+    label="$(basename "$plist" .plist)"
+    "$LAUNCHCTL" bootstrap "$DOMAIN" "$DEST_DIR/$label.plist"
+    "$LAUNCHCTL" enable "$DOMAIN/$label" 2>/dev/null || true
+    echo "restored $label"
+  done
+  rm -f "$HALT_SWITCH"
+  echo "rollback complete from $backup"
 }
 
 cmd_status() {
-  for kind in "${KINDS[@]}"; do
-    local label
+  local kind label
+  for kind in "${KINDS[@]}" "${LEGACY_KINDS[@]}"; do
     label="$(label_for "$kind")"
     echo "--- $label ---"
-    launchctl print "$DOMAIN/$label" 2>/dev/null | grep -E 'state|runs|last exit|program =' || echo "  (not loaded)"
+    "$LAUNCHCTL" print "$DOMAIN/$label" 2>/dev/null |
+      grep -E 'state|runs|last exit|program =' || echo "  (not loaded)"
   done
 }
 
@@ -74,17 +158,21 @@ cmd_selftest() {
   local label
   label="$(label_for selftest)"
   echo "kickstarting $label under launchd ($DOMAIN)..."
-  launchctl kickstart -k "$DOMAIN/$label" 2>/dev/null || {
-    echo "selftest agent not loaded; run 'daemon-install.sh install' first" >&2; return 1; }
-  sleep 25
-  echo "=== $HOME/.copilot/skill-state/daemon-selftest.out ==="
-  cat "$HOME/.copilot/skill-state/daemon-selftest.out" 2>/dev/null || echo "(no result file yet)"
+  "$LAUNCHCTL" kickstart -k "$DOMAIN/$label" 2>/dev/null || {
+    echo "selftest agent not loaded; run 'daemon-install.sh install' first" >&2
+    return 1
+  }
+  sleep "${SKILLS_SELFTEST_WAIT_SECS:-25}"
+  echo "=== $STATE_DIR/daemon-selftest.out ==="
+  cat "$STATE_DIR/daemon-selftest.out" 2>/dev/null || echo "(no result file yet)"
 }
 
 case "${1:-}" in
-  install)   cmd_install ;;
+  install) cmd_install ;;
+  enable) cmd_enable ;;
   uninstall) cmd_uninstall ;;
-  status)    cmd_status ;;
-  selftest)  cmd_selftest ;;
-  *) echo "usage: daemon-install.sh {install|uninstall|status|selftest}" >&2; exit 2 ;;
+  rollback) shift; cmd_rollback "${1:-}" ;;
+  status) cmd_status ;;
+  selftest) cmd_selftest ;;
+  *) echo "usage: daemon-install.sh {install|enable|uninstall|rollback [backup]|status|selftest}" >&2; exit 2 ;;
 esac
