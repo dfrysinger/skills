@@ -66,7 +66,9 @@ apart from legwork skipped.
 
 Issue all four `task` calls in a single response so the tiers run at once.
 Each brief carries the outcome sentence, the repository, and the point scout's
-terms, names, and stack. Every search runs against the names as well as the
+terms, names, and stack. It also carries that tier's **Returns** clause and
+evidence bar verbatim, since a scout judged against a bar it was never given
+will come back short. Every search runs against the names as well as the
 mechanisms. Each scout reports; none of them recommends.
 
 Match each tier's agent type to the evidence it must **reach**: `explore`
