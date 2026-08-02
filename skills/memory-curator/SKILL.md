@@ -1,16 +1,16 @@
 ---
 name: memory-curator
-description: Audit the GitHub Copilot memory store, roll durable facts into skills, and delete migrated/duplicate memories to cut always-loaded context. Use when curating Copilot memories, when the memory list at github.com/settings/copilot/memory has grown large, when memories duplicate existing skills, or when running the weekly automated memory-curation job.
+description: Audit the GitHub Copilot memory store, roll durable facts into skills, and delete migrated or duplicate memories to reduce stale retrieved context. Use when curating Copilot memories, when the memory list at github.com/settings/copilot/memory has grown large, when memories duplicate existing skills, or when running the weekly automated memory-curation job.
 ---
 
 # memory-curator
 
-GitHub Copilot **memories** load in full on every turn; **skills** load only
-their one-line description until invoked. So a fact that lives as a memory costs
-context every single turn, while the same fact woven into a skill costs nothing
-until the skill is opened. This skill moves durable memory content into the
-right skills and then deletes the migrated memories — the memory analog of the
-`skill-review` daemon that curates transcripts.
+GitHub Copilot retrieves a bounded, relevant subset of **memories** into a
+session and validates repository facts against their citations before use.
+**Skills** use progressive disclosure: their descriptions support discovery,
+while full instructions and references load only when selected. This skill
+moves durable procedural knowledge into versioned skills, removes migrated or
+duplicate memories, and leaves live preferences in the memory store.
 
 It is designed to run **both** interactively (you, now) and as the roll pass of
 the unattended effective-weekly dreaming job (see

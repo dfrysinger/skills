@@ -5,10 +5,11 @@ in an interactive session. There is no human to ask. Execute the memory-curator
 procedure autonomously and conservatively, then exit. This is a complete
 runbook; you have no custom instructions loaded.
 
-GOAL: reduce always-loaded Copilot context by migrating durable facts out of the
-memory store (loaded in full every turn) into skills (load only their
-description), then deleting the migrated + duplicate memories. This is the
-memory analog of the skill-review sweep.
+GOAL: reduce stale or duplicate retrieved Copilot context by migrating durable
+procedural facts into versioned skills, then deleting only the migrated and
+duplicate memories. Keep live preferences and facts that benefit from Copilot
+Memory's relevance-based retrieval and citation validation. This is the memory
+analog of the skill-review sweep.
 
 BINDING SAFETY CONTRACT (deletion is irreversible; the store has no undelete):
 - Roll a memory into a skill and `git commit` it BEFORE deleting that memory.

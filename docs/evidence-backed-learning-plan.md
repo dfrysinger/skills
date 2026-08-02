@@ -451,11 +451,33 @@ Investigate the available Copilot memory surfaces before implementation.
 
 Deliver only if the platform exposes an enforceable local boundary:
 
-- a visible budget for always-loaded personal instructions and memory;
+- a visible budget for always-loaded personal instructions and service-injected
+  memory context;
 - routing pressure that moves procedure detail into skills;
 - warnings rather than silent truncation.
 
 Do not build a second memory store solely to create a budget.
+
+Investigation result:
+
+- Copilot CLI exposes aggregate context visibility through `/context`, source
+  discovery and toggles through `/instructions`, and path-specific modular
+  instructions.
+- Copilot Memory is relevance-retrieved and service-managed. It does not expose
+  a local token allocation, count limit, write rejection threshold, or
+  machine-readable injected-memory budget.
+- The CLI exposes no local setting or API that can reserve, reject, or warn on
+  a combined personal-instruction and memory allocation.
+- Products with enforceable budgets own the loading boundary. A repository
+  script here could count source files, but it could not observe or enforce
+  what Copilot Memory retrieves, so it would be a second policy store rather
+  than a platform budget.
+
+Decision: close M4 without implementation. Continue using progressive
+disclosure, modular instructions, memory curation, `/instructions`, and
+`/context`. Reopen only when Copilot exposes a machine-readable local boundary
+that can reject or warn before personal instruction or memory context is
+loaded.
 
 ## Deterministic check contract
 
@@ -586,7 +608,7 @@ run, and roll it back without touching unrelated fixtures.
 
 - [x] M2 evaluation gate is implemented and rejects an overfitted skill.
 - [x] M3 scheduled dependency protection and run rollback are implemented.
-- [ ] M4 is either implemented against a real platform boundary or explicitly
+- [x] M4 is either implemented against a real platform boundary or explicitly
       closed as unnecessary.
 
 ### All phases Definition of Done
@@ -596,10 +618,10 @@ run, and roll it back without touching unrelated fixtures.
       or major rewrites.
 - [x] M3 protects scheduled dependencies and reverses a complete multi-root
       curator run without overwriting unrelated work.
-- [ ] M4 either enforces a real visible hot-context budget or records evidence
+- [x] M4 either enforces a real visible hot-context budget or records evidence
       that no enforceable local boundary exists and closes without a second
       memory store.
-- [ ] Every implemented milestone has deterministic coverage, a matching live
+- [x] Every implemented milestone has deterministic coverage, a matching live
       proof, clean dual review, a released version, and installed self-test
       evidence.
 
