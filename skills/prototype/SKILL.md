@@ -1,11 +1,11 @@
 ---
-name: interface-mockup
-description: Settle what a screen should look like in throwaway HTML sketches before it is built. Use when the work introduces an entirely new screen or sweepingly changes existing ones, and when `scout` routes a chosen option to prototyping. Send contained or component-level UI changes to `feature-development-loop` instead.
+name: prototype
+description: Prototype interface direction in throwaway HTML before building it. Use when work introduces an entirely new screen, sweepingly changes existing screens, or when `scout` routes a chosen option here; send screens assembled from existing components and contained or component-level UI changes to `feature-development-loop`.
 ---
 
-# interface-mockup
+# Prototype
 
-Explore the interface in a throwaway file, where a change costs seconds,
+Prototype the interface in a throwaway file, where a change costs seconds,
 rather than in a real implementation, where it costs days. This skill ends when
 the user approves the sketch, and hands that file to `feature-development-loop`
 as the picture its durable record is written against.

@@ -267,7 +267,7 @@ Present the report and get an explicit choice before routing.
 Route on the chosen option's interface surface:
 
 - **An entirely new screen, or a sweeping change to existing screens** — hand
-  off to `interface-mockup`, which settles the interface in throwaway HTML
+  off to `prototype`, which settles the interface in throwaway HTML
   before any durable design work begins.
 - **Everything else** — a screen assembled from existing components, a
   contained change to one, or no interface at all. Hand off to

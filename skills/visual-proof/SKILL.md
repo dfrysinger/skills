@@ -140,7 +140,7 @@ editing has already begun, reach the failing revision through a separate
 worktree, or stash the fix, capture, reapply, and recheck the intended diff.
 
 **New behavior** has no before. Pair the after against the approved
-`interface-mockup` sketch or the acceptance criteria, and name which one in the
+`prototype` sketch or the acceptance criteria, and name which one in the
 durable record.
 
 A lone after labelled `no baseline` is a report, not a pair, and does not
