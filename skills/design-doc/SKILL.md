@@ -1,6 +1,6 @@
 ---
 name: design-doc
-description: Write the durable design document that turns a systemic or critical change into a complete work order — objective, reuse contract, failure model, invariants, deterministic check contract, Definition of Done — and get it reviewed before any code exists. Owns the scope and architecture call, and stamps the change's lane into the document. Use when asked for a design doc, design document, architecture doc, or technical spec for a change that alters shared state, persistence, a public contract, cross-component architecture, or a security or fail-closed boundary, or when `development-loop` triages work as more than bounded. Send bounded bug fixes and small features to `development-loop` instead.
+description: Write and review the durable work order for a systemic or critical change before code exists. Use when asked for a design or architecture document for work that alters shared state, persistence, a public contract, cross-component architecture, security, or a fail-closed boundary, or when `development-loop` triages work as more than bounded. Send bounded fixes and small features to `development-loop`.
 ---
 
 # design-doc
@@ -123,7 +123,7 @@ brainstorming agent will always have another suggestion; a literal zero is not
 the target, and chasing it is how a design becomes an architecture project.
 
 **Complete when** every finding that threatened an acceptance criterion is
-either folded in or recorded as a non-goal.
+folded in, rejected with evidence, or recorded as a non-goal.
 
 ## 6. Review the design before it becomes code
 
@@ -134,11 +134,12 @@ gate. Run one fix-verification round only if material findings were found.
 This gate has no third round, and it reviews the contract — not an
 implementation claimed to work.
 
-Medium, hypothetical, and adjacent suggestions are recorded, not resolved. A
-design held hostage to reviewer preference never reaches code.
+Medium, hypothetical, and adjacent suggestions are non-blocking. Preserve one
+only when losing it would be irresponsible or the repository workflow requires
+it. A design held hostage to reviewer preference never reaches code.
 
-**Complete when** no `must-fix` finding remains and any deferred suggestion is
-written down.
+**Complete when** no `must-fix` finding remains and every preserved follow-up
+is written down.
 
 ## 7. Stop
 
@@ -179,11 +180,11 @@ invoked if an instruction to continue already exists.
 The document is done when:
 
 1. the objective is one sentence and the non-goals are explicit;
-2. it names one lane, with rollback when critical;
+2. it names one lane, with rollback and fail-closed evidence when critical;
 3. the reuse contract explains why anything new exists;
 4. acceptance criteria are observable;
 5. every acceptance criterion has a check that would fail if violated;
 6. it carries a Definition of Done under a unique heading;
-7. `rubber-duck` and one bounded `dual-review` round left no `must-fix`
+7. `rubber-duck` and the bounded `dual-review` process left no `must-fix`
    finding;
 8. someone who was not in the conversation could build from it.

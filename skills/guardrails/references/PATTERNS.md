@@ -4,9 +4,9 @@ Worked examples for `guardrails`. Read when writing a guard.
 
 ## Structure drift guards, strongest first
 
-The order matters: it follows the contract ladder in `development-loop`.
-Reach for the weakest technique only when the stronger ones cannot express the
-rule.
+The order matters: it follows the check-contract ladder in `design-doc` for
+systemic and critical work. Reach for the weakest technique only when the
+stronger ones cannot express the rule.
 
 **Dependency contract.** "The core layer never imports an infrastructure
 adapter" → an import-linter contract that fails the build on a forbidden

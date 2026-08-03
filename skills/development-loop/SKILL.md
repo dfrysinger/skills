@@ -1,6 +1,6 @@
 ---
 name: development-loop
-description: Develop and ship one change at a time through a risk-sized loop instead of applying heavyweight architecture ceremony to every bug. Triage the change as bounded or larger, send anything larger to `design-doc` first, prove runtime behavior before review, then use risk-gated dual review with a bounded round budget. Owns forward motion for every change — arming an unattended run, and every gate from build through land. Use when implementing a non-trivial bug fix, feature, refactor, app/UI change, service change, agent workflow, pipeline, or SDK change that must be tested and landed without review rabbit holes.
+description: Develop and ship one non-trivial code change through a risk-sized loop — establish the failure, triage the blast radius, prove runtime behavior, review, and land. Use for bug fixes, features, refactors, app or service changes, agent workflows, pipelines, and SDK changes. When triage finds shared state, persistence, public contracts, cross-component architecture, security, or fail-closed boundaries, invoke `design-doc` before coding.
 ---
 
 # development-loop
@@ -27,7 +27,9 @@ The phase order is fail-closed:
 
 Targeted tests, type checks, and builds needed to make the live candidate
 runnable may happen first. They are development diagnostics, not acceptance
-evidence.
+evidence. The conditional pre-build guard review in section 4 is the only
+implementation-review exception; it reviews a guard that constrains the work,
+not an implementation claimed to work.
 
 ## 0. Establish the failure
 
@@ -73,9 +75,11 @@ Use when the change:
 
 - fixes a localized behavior or adds a small capability;
 - reuses established architecture and data flow;
-- does not change authentication, authorization, public contracts, schemas,
-  migrations, durable storage semantics, shared concurrency, or a fail-closed
+- changes no authentication or authorization behavior, public contract, schema,
+  migration, durable storage semantics, shared concurrency, or fail-closed
   boundary;
+- carries no security, data-loss or corruption, privacy or compliance,
+  production-infrastructure, or audited-control risk;
 - has a clear regression test or observable runtime proof.
 
 Examples: a restored UI loading stale state, a missing button state, a local
@@ -135,21 +139,19 @@ Larger work carries the contract its design document already defines.
 
 ## 3. Design and self-review
 
-For bounded work, inspect the existing path and state the smallest fix. Use a
-`rubber-duck` pass when the solution is ambiguous, crosses ownership
-boundaries, or risks broadening.
-
-Larger work arrives with these questions already answered by its design
-document. Implement what it specifies; reopening scope or architecture here
-discards a review that has already happened. A design that turns out to be
-wrong goes back to `design-doc` rather than getting revised in place.
-
-Always ask:
+For bounded work, inspect the existing path, state the smallest fix, and ask:
 
 - Can an existing helper, state owner, API, or error pattern carry this?
 - What code and behavior are explicitly outside this change?
 - What observable proof would fail if the fix were wrong?
 - Is the proposed generalization required by a supported caller today?
+
+Use a `rubber-duck` pass when the bounded solution is ambiguous, crosses
+ownership boundaries, or risks broadening.
+
+Larger work arrives with these questions answered by its reviewed design
+document. Implement what it specifies. A design that turns out to be wrong goes
+back to `design-doc`; do not reopen scope or architecture here.
 
 *Handoff point: a design document, or a bug report with recorded acceptance
 criteria and a Definition of Done under its own heading, is a complete work
@@ -169,14 +171,22 @@ one, then take one of these exits into implementation:*
 
 ## 4. Tests and guards
 
-Encode the failure established in section 0 as the smallest functional test,
-before or alongside the fix. Red-first is preferred when practical, but do not
-build a large test harness solely to obtain a red phase.
+For a bug, encode the failure established in section 0 as the smallest
+functional test, before or alongside the fix. Red-first is preferred when
+practical, but do not build a large test harness solely to obtain a red phase.
+For new behavior, encode the acceptance criterion that would regress most
+silently.
 
 For systemic and critical work, implement the check contract the design
 document defines; `design-doc` already reviewed it. Write executable tests and
 guards alongside the implementation unless the document required a guard to
 exist first.
+
+When a guard must exist first, write it and prove that it goes red on a
+deliberate violation and green on the restored tree. Before implementation,
+run one paired `dual-review` round over that guard and the relevant design and
+check-contract material. Fix `must-fix` findings; run one fix-verification
+round only if material findings were found.
 
 Do not run `dual-review` on the tests separately. They are reviewed with the
 implementation after the behavior works.
