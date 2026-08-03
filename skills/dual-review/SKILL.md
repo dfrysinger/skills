@@ -53,10 +53,15 @@ dual review as incomplete. Never call a single-family result a dual review.
 Before dispatch, prepare a packet containing:
 
 - repository and base commit;
+- the complete review subject and its path;
 - current diff path and changed-file list;
 - the user-visible objective and acceptance criteria;
 - explicit non-goals;
+- the governing skill or process contract when it supplies review or
+  completion rules;
 - directly relevant design/invariant documents;
+- directly relevant discovery evidence, such as a Scout report, issue
+  decisions, or repository conventions that constrained the chosen direction;
 - latest targeted tests and live proof, when available;
 - prior kept findings for round 2 or 3;
 - for later rounds, the delta since the preceding review round.
@@ -242,11 +247,12 @@ review packet bounded.
 
 Default budget: **two substantive rounds plus one resolution-only round**.
 
-For pre-implementation review of a systemic/critical design and its guards, use
-a narrower budget: **one discovery round plus one fix-verification round only**.
-There is no third pre-build round. Remaining non-material suggestions become
-follow-ups; unresolved material design defects enter the autonomous completion
-ladder below before implementation.
+Design documents use the default budget. For an executable guard that must
+exist before implementation, use a narrower budget: **one discovery round plus
+one fix-verification round only**. There is no third pre-build guard round.
+Remaining non-material suggestions become follow-ups; unresolved material
+guard defects enter the autonomous completion ladder below before
+implementation.
 
 ```text
 round 1: broad independent review

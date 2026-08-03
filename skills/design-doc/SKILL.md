@@ -113,35 +113,26 @@ Everything else is written alongside the implementation and reviewed with it.
 **Complete when** every acceptance criterion in section 3 has at least one
 check that would fail if the criterion were violated.
 
-## 5. Rubber-duck once
+## 5. Review the work order
 
-Run one `rubber-duck` pass over the design and the check contract. Fold
-material findings in.
+Run `dual-review`'s normal bounded loop over the complete design document and
+its check contract.
 
-Stop when no unresolved design issue threatens the acceptance criteria. A
-brainstorming agent will always have another suggestion; a literal zero is not
-the target, and chasing it is how a design becomes an architecture project.
+Start with `dual-review`'s standard packet. For this review, both reviewers also
+receive:
 
-**Complete when** every finding that threatened an acceptance criterion is
-folded in, rejected with evidence, or recorded as a non-goal.
+- this `design-doc` skill as the authoring and completion rubric;
+- the Scout report, when one informed the chosen direction;
+- the issue, user decisions, architecture documents, ADRs, invariants, or
+  repository conventions that directly constrain the design.
 
-## 6. Review the design before it becomes code
+The design document is the subject under review; the other artifacts are
+evidence and rubric. Keep unrelated discovery, rejected alternatives, and
+historical discussion out of the packet.
 
-Run one paired `dual-review` discovery round over the design and the check
-contract together. Fix only `must-fix` findings under `dual-review`'s risk
-gate. Run one fix-verification round only if material findings were found.
+**Complete when** `dual-review`'s verification criteria are met.
 
-This gate has no third round, and it reviews the contract — not an
-implementation claimed to work.
-
-Medium, hypothetical, and adjacent suggestions are non-blocking. Preserve one
-only when losing it would be irresponsible or the repository workflow requires
-it. A design held hostage to reviewer preference never reaches code.
-
-**Complete when** no `must-fix` finding remains and every preserved follow-up
-is written down.
-
-## 7. Stop
+## 6. Stop
 
 The work order is finished. Present it.
 
@@ -168,9 +159,6 @@ invoked if an instruction to continue already exists.
   or fail. Each criterion names a checkable state.
 - **Check contract as a test list.** Naming tests without stating what each
   proves produces coverage that passes while the invariant is broken.
-- **Reviewing to zero.** Section 6 is bounded on purpose. Rounds without a
-  round budget are how a design phase consumes the schedule it was meant to
-  protect.
 - **Building.** Writing code here skips every gate `development-loop` owns —
   live proof, implementation review, landing — because none of them have run
   yet.
@@ -185,6 +173,5 @@ The document is done when:
 4. acceptance criteria are observable;
 5. every acceptance criterion has a check that would fail if violated;
 6. it carries a Definition of Done under a unique heading;
-7. `rubber-duck` and the bounded `dual-review` process left no `must-fix`
-   finding;
+7. the bounded `dual-review` process met its verification criteria;
 8. someone who was not in the conversation could build from it.
