@@ -68,8 +68,8 @@ tmux send-keys -t "$TMUX_PANE" -l -- 'continue'
 Then end the turn. Caveats: this overwrites the live conversation in place, so
 unlike `/new` there is no old session to resume; and the command lands at the
 **next turn boundary**, so end your turn to let it run rather than continuing to
-make tool calls. Under autopilot no trigger word is needed — autopilot supplies
-its own continuation, which picks the standing brief up automatically.
+make tool calls. Always queue and verify the trigger word shown above; selected
+autopilot mode is not a reliable post-compact wakeup.
 
 ### `/new` (exception): when the old conversation must survive
 

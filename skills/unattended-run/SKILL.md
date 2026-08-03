@@ -37,9 +37,9 @@ verifiable as a tool. This is expected and is **NOT a blocker**:
   affects only how the next prompt is handled; do not turn it off as cleanup.
 - A slash command you inject lands at the **next turn boundary**, like any user
   message — including mid-run under autopilot. To self-compact during a run,
-  send it and then end your turn; it runs immediately after. Autopilot supplies
-  its own continuation afterward, so a standing-brief compact resumes the
-  objective with no trigger word needed.
+  use `self-compact`, which queues both the compact and an explicit continuation,
+  then end your turn. Selected autopilot mode alone does not reliably create the
+  post-compact turn.
 - The run does **not** need `/autopilot` to proceed — the `/every` re-brief you
   arm yourself is what keeps it on course.
 

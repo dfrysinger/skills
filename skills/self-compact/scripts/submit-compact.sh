@@ -12,6 +12,8 @@ if [ -z "$STEER" ]; then
 fi
 
 COMMAND="/compact $STEER"
+CONTINUATION="proceed"
+COMPACT_SUBMITTED=false
 
 case "$STEER" in
   *$'\n'*)
@@ -63,61 +65,87 @@ clear_input() {
 
 abort_after_send() {
   local reason="$1"
+  local prefix="submit-compact.sh:"
+  if [ "$COMPACT_SUBMITTED" = true ]; then
+    prefix="$prefix compact is already queued; do not rerun the helper; send 'proceed' manually."
+  fi
   if clear_input; then
-    echo "submit-compact.sh: $reason; input cleared" >&2
+    echo "$prefix $reason; input cleared" >&2
   else
-    echo "submit-compact.sh: $reason; input cleanup failed" >&2
+    echo "$prefix $reason; input cleanup failed" >&2
   fi
   exit 1
 }
 
-if ! input_is_empty; then
-  echo "submit-compact.sh: Copilot input is not empty; refusing to append" >&2
+submit_command() {
+  local command="$1"
+  local label="$2"
+  local detect_scroll="$3"
+  local expected actual rendered scrolled attempt
+
+  if ! input_is_empty; then
+    if [ "$COMPACT_SUBMITTED" = true ]; then
+      echo "submit-compact.sh: compact is already queued; do not rerun the helper; send 'proceed' manually. Copilot input is not empty; refusing to append $label" >&2
+    else
+      echo "submit-compact.sh: Copilot input is not empty; refusing to append $label" >&2
+    fi
+    return 1
+  fi
+
+  expected=$(printf '%s' "$command" | squash)
+  if ! tmux send-keys -t "$PANE" -l -- "$command"; then
+    abort_after_send "could not type $label"
+  fi
+
+  rendered=false
+  scrolled=false
+  for ((attempt = 1; attempt <= 40; attempt++)); do
+    actual=$(normalized_input || true)
+    if [ "$actual" = "$expected" ]; then
+      rendered=true
+      break
+    fi
+    if [ "$detect_scroll" = true ] &&
+      [ -n "$actual" ] &&
+      [ "${#actual}" -lt "${#expected}" ] &&
+      [[ "$expected" == *"$actual" ]]; then
+      scrolled=true
+      break
+    fi
+    sleep 0.5
+  done
+
+  if [ "$scrolled" = true ]; then
+    abort_after_send "steer is too long to verify; shorten it or reference the durable artifact"
+  fi
+
+  if [ "$rendered" != true ]; then
+    abort_after_send "$label never rendered exactly"
+  fi
+
+  for ((attempt = 1; attempt <= 10; attempt++)); do
+    if ! tmux send-keys -t "$PANE" Enter; then
+      abort_after_send "could not submit $label"
+    fi
+    sleep 1.5
+    if input_is_empty; then
+      return 0
+    fi
+    if [ "$(normalized_input)" != "$expected" ]; then
+      break
+    fi
+  done
+
+  abort_after_send "$label submission was not confirmed"
+}
+
+submit_command "$COMMAND" "compact command" true
+COMPACT_SUBMITTED=true
+
+# Compaction produces context, not a user turn. Queue an explicit continuation
+# behind it instead of relying on autopilot to generate another turn.
+if ! submit_command "$CONTINUATION" "continuation prompt" false; then
   exit 1
 fi
 
-expected=$(printf '%s' "$COMMAND" | squash)
-if ! tmux send-keys -t "$PANE" -l -- "$COMMAND"; then
-  abort_after_send "could not type the command"
-fi
-
-rendered=false
-scrolled=false
-for ((attempt = 1; attempt <= 40; attempt++)); do
-  actual=$(normalized_input || true)
-  if [ "$actual" = "$expected" ]; then
-    rendered=true
-    break
-  fi
-  if [ -n "$actual" ] &&
-    [ "${#actual}" -lt "${#expected}" ] &&
-    [[ "$expected" == *"$actual" ]]; then
-    scrolled=true
-    break
-  fi
-  sleep 0.5
-done
-
-if [ "$scrolled" = true ]; then
-  abort_after_send "steer is too long to verify; shorten it or reference the durable artifact"
-fi
-
-if [ "$rendered" != true ]; then
-  abort_after_send "command never rendered exactly"
-fi
-
-for ((attempt = 1; attempt <= 10; attempt++)); do
-  if ! tmux send-keys -t "$PANE" Enter; then
-    abort_after_send "could not send Enter"
-  fi
-  sleep 1.5
-  if input_is_empty; then
-    echo "submitted"
-    exit 0
-  fi
-  if [ "$(normalized_input)" != "$expected" ]; then
-    break
-  fi
-done
-
-abort_after_send "submission was not confirmed"
+echo "submitted compact and continuation"
