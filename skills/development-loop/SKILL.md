@@ -1,6 +1,6 @@
 ---
 name: development-loop
-description: Develop and ship one change at a time through a risk-sized loop instead of applying heavyweight architecture ceremony to every bug. Triage the change as bounded or larger, send anything larger to `design-doc` first, prove runtime behavior before review, then use risk-gated dual review with a bounded round budget. Owns forward motion for every change: arming an unattended run, and every gate from build through land. Use when implementing a non-trivial bug fix, feature, refactor, app/UI change, service change, agent workflow, pipeline, or SDK change that must be tested and landed without review rabbit holes.
+description: Develop and ship one change at a time through a risk-sized loop instead of applying heavyweight architecture ceremony to every bug. Triage the change as bounded or larger, send anything larger to `design-doc` first, prove runtime behavior before review, then use risk-gated dual review with a bounded round budget. Owns forward motion for every change — arming an unattended run, and every gate from build through land. Use when implementing a non-trivial bug fix, feature, refactor, app/UI change, service change, agent workflow, pipeline, or SDK change that must be tested and landed without review rabbit holes.
 ---
 
 # development-loop

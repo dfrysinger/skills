@@ -13,6 +13,21 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 };
 
+function assertParsableFrontmatter(frontmatter, label) {
+  const lines = frontmatter.split("\n");
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const match = /^([A-Za-z0-9_-]+):[ \t]+(.*)$/.exec(line);
+    if (!match) continue;
+    const value = match[2];
+    if (/^["'>|]/.test(value)) continue;
+    assert(
+      !/:\s/.test(value),
+      `${label} frontmatter key "${match[1]}" has an unquoted value containing ": ", which breaks YAML parsing and silently unloads the skill`,
+    );
+  }
+}
+
 function hasNonEmptyFrontmatterField(frontmatter, field) {
   const lines = frontmatter.split("\n");
   const index = lines.findIndex((line) => line.startsWith(`${field}:`));
@@ -141,6 +156,7 @@ for (const directory of skillDirectories) {
     hasNonEmptyFrontmatterField(frontmatter[1], "description"),
     `skills/${directory}/SKILL.md must have a non-empty description`,
   );
+  assertParsableFrontmatter(frontmatter[1], `skills/${directory}/SKILL.md`);
 }
 
 console.log("Plugin manifests are consistent.");
