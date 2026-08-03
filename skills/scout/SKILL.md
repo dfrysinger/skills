@@ -271,7 +271,7 @@ Route on the chosen option's interface surface:
   before any durable design work begins.
 - **Everything else** — a screen assembled from existing components, a
   contained change to one, or no interface at all. Hand off to
-  `development-loop`, which classifies the lane and writes the durable
+  `development-loop`, which triages the change and owns the durable
   contract.
 
 Invoke `self-compact` before handing off. The report is the baton; the

@@ -1,6 +1,6 @@
 ---
 name: development-loop
-description: Develop and ship one change at a time through a risk-sized loop instead of applying heavyweight architecture ceremony to every bug. Classify the change as bounded, systemic, or critical; use the smallest durable design and test contract that fits; prove runtime behavior before review; then use risk-gated dual review with a bounded round budget. Use when implementing a non-trivial bug fix, feature, refactor, app/UI change, service change, agent workflow, pipeline, or SDK change that must be tested and landed without review rabbit holes.
+description: Develop and ship one change at a time through a risk-sized loop instead of applying heavyweight architecture ceremony to every bug. Triage the change as bounded or larger, send anything larger to `design-doc` first, prove runtime behavior before review, then use risk-gated dual review with a bounded round budget. Owns forward motion for every change: arming an unattended run, and every gate from build through land. Use when implementing a non-trivial bug fix, feature, refactor, app/UI change, service change, agent workflow, pipeline, or SDK change that must be tested and landed without review rabbit holes.
 ---
 
 # development-loop
@@ -15,8 +15,8 @@ The governing rule is:
 > realistic blast radius. Promote to a heavier lane only when concrete evidence
 > requires it.
 
-This skill orchestrates `rubber-duck`, `guardrails`,
-`dual-review`, project-specific development/testing skills, and live validation.
+This skill orchestrates `design-doc`, `rubber-duck`, `dual-review`,
+project-specific development/testing skills, and live validation.
 
 The phase order is fail-closed:
 
@@ -27,9 +27,7 @@ The phase order is fail-closed:
 
 Targeted tests, type checks, and builds needed to make the live candidate
 runnable may happen first. They are development diagnostics, not acceptance
-evidence. The systemic/critical pre-build design review in section 4 is the only
-review exception; it reviews the contract, not an implementation claimed to
-work.
+evidence.
 
 ## 0. Establish the failure
 
@@ -67,7 +65,7 @@ Complete when you can point at the observed failure, the traced path to it, and
 a named cause — or at a labeled hypothesis and the check that failed to settle
 it.
 
-## 1. Classify the change before designing it
+## 1. Triage the change before designing it
 
 ### Bounded lane
 
@@ -83,32 +81,35 @@ Use when the change:
 Examples: a restored UI loading stale state, a missing button state, a local
 error-handling bug, or a well-understood adapter correction.
 
-### Systemic lane
+### Anything else
 
-Use when the change intentionally alters:
+A change that fails any bounded condition — or that alters cross-component
+architecture, a reusable framework, a central data-access boundary, or multiple
+independent user flows — does not proceed past this section without a reviewed
+design document carrying its lane, invariants, acceptance criteria, check
+contract, and Definition of Done.
 
-- shared state or concurrency;
-- persistence or version authority;
-- a public API, schema, migration, or protocol;
-- cross-component architecture;
-- a reusable framework or central data-access boundary;
-- multiple independent user flows.
-
-### Critical lane
-
-Use for security/authentication/authorization, data-loss or corruption,
-privacy/compliance, production infrastructure, audited controls, or fail-closed
-enforcement.
+If a document exists, confirm it is finished and reviewed on `design-doc`'s
+terms before reading its lane and continuing. A draft, a stale document
+describing different work, or one that never cleared review is not one. If none
+exists or it falls short, write or finish it with `design-doc` and return here.
+That skill owns the scope and architecture call, decides systemic versus
+critical, and reviews the design before any code exists.
 
 ### Promotion rule
 
 Start bounded when uncertain. Promote only after code tracing, a failing test,
-or a live reproduction proves the fix requires a systemic or critical change.
-Do not generalize in anticipation of hypothetical future callers.
+or a live reproduction proves the fix requires a larger change. Do not
+generalize in anticipation of hypothetical future callers.
+
+The rule keeps small work small. A change touching a listed boundary stays
+larger even when the document is inconvenient, and a run whose recorded lane is
+systemic or critical with no document path in its baton is misclassified.
 
 Record the selected lane, objective, acceptance criteria, and explicit
-non-goals before editing. Non-goals are a review boundary, not an invitation for
-reviewers to add requirements.
+non-goals before editing — from the design document where one exists, and in
+the existing issue, plan, or session artifact for bounded work. Non-goals are a
+review boundary, not an invitation for reviewers to add requirements.
 
 For runtime work, turn the acceptance criteria into a short live scenario now.
 Name the trigger, each user-visible checkpoint, the terminal success state, and
@@ -117,12 +118,8 @@ silently become the proof contract.
 
 ## 2. Choose the durable contract
 
-### Bounded lane contract
-
 Do not require a standalone architecture document or permanent invariant guard
-for every bug.
-
-Use:
+for every bug. For bounded work, use:
 
 - a short change note in the existing issue, plan, or relevant design document
   when needed;
@@ -134,40 +131,18 @@ A regression test is usually the right durable guard for a bounded behavior
 bug. Do not create a structural grep guard, invariant row, or new framework
 merely to prove one local branch.
 
-### Systemic and critical contract
-
-Write or update a durable design document containing:
-
-- objective and non-goals;
-- reuse contract;
-- affected data flow and existing connection points;
-- realistic failure model;
-- hard invariants and acceptance criteria;
-- migration/rollback when relevant;
-- deterministic check definitions;
-- short Definition of Done.
-
-Use `guardrails` only for cross-cutting rules likely to
-drift and poorly expressed by types or functional tests. Prefer:
-
-1. types/schemas that make invalid states impossible;
-2. behavioral tests;
-3. dependency/architecture checks;
-4. text matching only as a temporary ratchet.
-
-An invariant that is useful but not needed to ship this change is
-`REGISTER-ONLY` or follow-up work, not a blocker.
+Larger work carries the contract its design document already defines.
 
 ## 3. Design and self-review
 
 For bounded work, inspect the existing path and state the smallest fix. Use a
-rubber-duck pass only when the solution is ambiguous, crosses ownership
+`rubber-duck` pass when the solution is ambiguous, crosses ownership
 boundaries, or risks broadening.
 
-For systemic/critical work, rubber-duck the design once. Fold material findings
-into the design, but do not loop until a brainstorming agent has literally zero
-suggestions. Stop when no unresolved design issue threatens the acceptance
-criteria.
+Larger work arrives with these questions already answered by its design
+document. Implement what it specifies; reopening scope or architecture here
+discards a review that has already happened. A design that turns out to be
+wrong goes back to `design-doc` rather than getting revised in place.
 
 Always ask:
 
@@ -176,51 +151,35 @@ Always ask:
 - What observable proof would fail if the fix were wrong?
 - Is the proposed generalization required by a supported caller today?
 
-*Handoff point (systemic/critical): once the design is settled and the user has
-approved it, the design doc is a complete work order — it says what to build
-without the conversation that produced it. Take one of these exits into
-implementation:*
+*Handoff point: a design document, or a bug report with recorded acceptance
+criteria and a Definition of Done under its own heading, is a complete work
+order — it says what to build without the conversation that produced it. When
+the work ahead is long, write that Definition of Done if bounded work lacks
+one, then take one of these exits into implementation:*
 
 - *Unattended, or long enough that the context will compact before the plan is
-  done — run `unattended-run` against the approved doc. It arms the recurring
+  done — run `unattended-run` against the work order. It arms the recurring
   charter re-brief that holds the run on course through compaction, and points
-  its Definition of Done at the one this doc already carries. Register
+  its Definition of Done at the one the work order already carries. Register
   `development-loop` as the charter's governing skill, project-specific
   development and testing skills as execution skills, and `self-compact` as its
   context skill. It performs the handoff itself, so do not also run `handoff`.*
-- *Attended and finishing in one sitting, but designing took a long run —
+- *Attended and finishing in one sitting, but the run so far has been long —
   self-hand-off into implementation via the `handoff` skill.*
 
 ## 4. Tests and guards
-
-### Bounded
 
 Encode the failure established in section 0 as the smallest functional test,
 before or alongside the fix. Red-first is preferred when practical, but do not
 build a large test harness solely to obtain a red phase.
 
+For systemic and critical work, implement the check contract the design
+document defines; `design-doc` already reviewed it. Write executable tests and
+guards alongside the implementation unless the document required a guard to
+exist first.
+
 Do not run `dual-review` on the tests separately. They are reviewed with the
 implementation after the behavior works.
-
-### Systemic/critical
-
-Define the deterministic check contract from the design. For each proposed test
-or guard, state:
-
-- the behavior or invariant it protects;
-- the setup, input, or state transition that exercises it;
-- the expected pass and failure signal;
-- why that failure proves the intended contract.
-
-Before implementation, run one paired `dual-review` discovery round over the
-design and this check contract. Include executable guard code only when it must
-exist before implementation to constrain the work; otherwise review executable
-tests and guards once with the completed implementation. Fix only `must-fix`
-findings under `dual-review`'s risk gate. Run one fix-verification round only if
-material findings were found. This pre-build gate has no third round.
-
-Do not require literal zero reviewer comments before building. Medium,
-hypothetical, and adjacent suggestions do not hold the implementation hostage.
 
 ## 5. Build a small coherent diff
 
@@ -515,24 +474,23 @@ answer why, and the user may want to interrogate it.*
 
 ### Systemic change
 
-1. Durable design + one rubber-duck pass.
-2. Load-bearing test/guard contract.
-3. One paired design/check-contract review; one verification round if needed.
-4. Implement and run only enough targeted validation to produce a runnable
-   candidate.
-5. Pass the section 6 live-proof gate.
-6. Run the broader suite, then risk-gated dual review of implementation, tests,
+1. Arrive with a reviewed design document from `design-doc`; read its lane.
+2. Implement its check contract and run only enough targeted validation to
+   produce a runnable candidate.
+3. Pass the section 6 live-proof gate.
+4. Run the broader suite, then risk-gated dual review of implementation, tests,
    and guards together.
-7. Final real E2E.
-8. Land.
+5. Final real E2E.
+6. Land.
 
 ### Critical change
 
-Use the systemic lane plus the relevant specialist review, explicit rollback,
-and fail-closed evidence. Security specialist findings use the same
-evidence/scope process but critical security/auth/data-integrity risks remain
-must-fix even when reproduction is difficult. Where a missed defect is
-unrecoverable after landing, escalate section 7 to ensemble review.
+Use the systemic lane plus the relevant specialist review, and the rollback
+path and fail-closed evidence the design document carries. Security specialist
+findings use the same evidence/scope process but critical
+security/auth/data-integrity risks remain must-fix even when reproduction is
+difficult. Where a missed defect is unrecoverable after landing, escalate
+section 7 to ensemble review.
 
 ## Context hygiene
 
@@ -610,7 +568,8 @@ literal `findings: []`.
 
 The change is complete when:
 
-1. its lane matches its demonstrated risk;
+1. its lane matches its demonstrated risk, and systemic or critical work has a
+   reviewed design document carrying that lane;
 2. objective, acceptance criteria, and non-goals are explicit;
 3. the durable contract is proportional to the lane;
 4. functional behavior is tested;

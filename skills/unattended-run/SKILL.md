@@ -74,7 +74,8 @@ could create another schedule.
 
 The plan must carry a plain **Definition of Done** covering exactly this run's
 scope, under a unique heading both artifacts point at; if it's missing, write it
-(or run `development-loop`'s design gate) first.
+first — with `design-doc` for systemic or critical work, or at
+`development-loop`'s handoff point for bounded work.
 
 **Complete when** no `<SLOT>` remains in either artifact, both point at the same
 Definition-of-Done heading, and every skill in the manifest owns work or a gate
