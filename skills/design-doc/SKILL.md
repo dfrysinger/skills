@@ -122,7 +122,7 @@ Start with `dual-review`'s standard packet. For this review, both reviewers also
 receive:
 
 - this `design-doc` skill as the authoring and completion rubric;
-- the Scout report, when one informed the chosen direction;
+- the `scout` report, when one informed the chosen direction;
 - the issue, user decisions, architecture documents, ADRs, invariants, or
   repository conventions that directly constrain the design.
 

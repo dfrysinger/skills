@@ -60,7 +60,7 @@ Before dispatch, prepare a packet containing:
 - the governing skill or process contract when it supplies review or
   completion rules;
 - directly relevant design/invariant documents;
-- directly relevant discovery evidence, such as a Scout report, issue
+- directly relevant discovery evidence, such as a `scout` report, issue
   decisions, or repository conventions that constrained the chosen direction;
 - latest targeted tests and live proof, when available;
 - prior kept findings for round 2 or 3;
