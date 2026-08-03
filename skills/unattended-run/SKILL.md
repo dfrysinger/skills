@@ -11,7 +11,8 @@ For a long, unattended Copilot CLI run, two things keep the agent on course:
   *how* (governing skills, worktree, push policy, autonomy mandate, plan
   hygiene, compaction discipline) on each tick, so a compacted context doesn't
   drift. **You arm this yourself with
-  `manage_schedule`. It is the load-bearing deliverable of this skill.**
+  `manage_schedule` before any same-session compact. It is the load-bearing
+  deliverable of this skill.**
 - An **optional `/autopilot` objective** that drives the *what* until the agent
   determines the task is complete. `/autopilot` is not an agent tool, but when
   the CLI is running inside tmux you can best-effort enqueue it into your own
@@ -81,14 +82,28 @@ first — with `design-doc` for systemic or critical work, or at
 Definition-of-Done heading, and every skill in the manifest owns work or a gate
 that remains in this run.
 
-**Handoff point.** The finished brief is a complete work order — it says what to
-do without the conversation that produced it. If a long planning run produced
-it, self-hand-off here with a **soft reset**: a null-steered `/compact` whose
-entire summary is a standing brief pointing at the brief path, followed by a
-queued trigger word. That empties the conversation while keeping the session, so
-a re-brief armed either before or after it stays live. Use `/new` instead only
-if the planning conversation must remain separately resumable — it starts a
-fresh session, so arm the `/every` re-brief *after* the handoff:
+**Handoff gate.** The finished brief is a complete work order, but do not
+compact yet. A bare compact returns to an idle prompt; before step 2 there is no
+schedule or objective to create the next turn.
+
+For a same-session handoff, complete step 2 first. Once the re-brief is
+confirmed live, self-hand-off with a **soft reset**: a null-steered `/compact`
+whose entire summary is a standing brief pointing at the brief path. Follow it
+with a queued continuation prompt that says:
+
+```
+Continue `unattended-run` at step 3 using <brief-path>; enqueue the objective,
+as the last action of this turn, then end the turn so it fires.
+```
+
+The live schedule is the durable recovery path; the continuation prompt resumes
+the handoff immediately and makes step 3 reachable after the reset. Autopilot's
+queued turn resumes the work. Missing either the schedule or continuation
+prompt makes the handoff incomplete.
+
+Use `/new` instead only if the planning conversation must remain separately
+resumable. It starts a fresh session, so the new-session prompt itself must
+invoke `unattended-run` and arm the `/every` re-brief before doing any work:
 
 ```
 /new Use /dfrysinger-skills:unattended-run against <brief-path>, arm the /every
@@ -131,7 +146,8 @@ own off-switch, so it disengages on arrival rather than nagging forever.
 **Complete when** the charter file names its governing, execution, and context
 skills, and `manage_schedule action=list` shows exactly one reminder for this
 objective live, pointed at that file, with a prompt that follows the charter's
-**Required process skills** protocol.
+**Required process skills** protocol. A same-session compact is forbidden until
+this criterion passes.
 
 ### 3. Best-effort self-enqueue `/autopilot`, then proceed autonomously
 After the charter exists and the `/every` reminder is live, enqueue the

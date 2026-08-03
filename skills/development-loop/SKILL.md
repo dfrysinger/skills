@@ -165,7 +165,9 @@ one, then take one of these exits into implementation:*
   its Definition of Done at the one the work order already carries. Register
   `development-loop` as the charter's governing skill, project-specific
   development and testing skills as execution skills, and `self-compact` as its
-  context skill. It performs the handoff itself, so do not also run `handoff`.*
+  context skill. Complete its live-schedule gate before any phase-boundary
+  compact. It performs the handoff and compact itself, so do not invoke
+  `self-compact` or `handoff` first.*
 - *Attended and finishing in one sitting, but the run so far has been long —
   self-hand-off into implementation via the `handoff` skill.*
 
@@ -193,7 +195,11 @@ implementation after the behavior works.
 
 ## 5. Build a small coherent diff
 
-*Compaction point: persist the plan/lane/acceptance state, then compact.*
+*Compaction point: persist the plan/lane/acceptance state. For a long or
+unattended run, section 3's `unattended-run` handoff must already have armed
+its live re-brief and owns this reset; a bare compact returns to an idle prompt.
+If the re-brief is not live, run `unattended-run` now instead of compacting.
+For an attended run, invoke `self-compact`.*
 
 Branch from current main and implement one behavior at a time.
 
@@ -504,10 +510,13 @@ section 7 to ensemble review.
 
 ## Context hygiene
 
-At every **Compaction point** marked above, invoke `self-compact`, which
-owns the depth choice, the steer, and verified self-submission. Naming the
-skill is the instruction; a general intention to compact is not one, and is why
-agents arrive at review with a context full of resolved work.
+At every **Compaction point** marked above, invoke `self-compact`, except the
+first implementation handoff for a long or unattended run. Until that run has a
+confirmed live re-brief, invoke `unattended-run` instead and let it own the
+reset. Once its schedule is live, later compaction points use `self-compact`
+normally. Naming the skill is the instruction; a general intention to compact
+is not one, and is why agents arrive at review with a context full of resolved
+work.
 
 The baton this loop hands forward is the plan path, lane, objective, acceptance
 criteria, non-goals, remaining Definition-of-Done items, branch, what has
