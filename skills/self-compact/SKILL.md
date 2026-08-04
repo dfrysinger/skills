@@ -95,25 +95,26 @@ phase and every named dropped item is safe to forget.
 
 Run `scripts/submit-compact.sh` as the final tool action, passing a single-line
 steer. The helper fails closed unless the Copilot input is empty, the full
-command renders exactly, and Enter clears the input. It then queues and verifies
-an explicit `proceed` prompt behind the compact because compaction produces
-context, not a user turn; selected autopilot mode is not a reliable wakeup. It
-clears any typed command before reporting a failure. After it reports success,
-end the turn so the queued compact and continuation can run at the turn
-boundary.
+command renders exactly, and Enter clears the input. Before submitting, it arms
+a detached watcher against the active session's `summary_count` and a unique
+marker that the compact must preserve in its checkpoint. The helper queues only
+`/compact`; plain text sent during an active turn is steering, not a FIFO message
+behind the slash command. After both the count and marker prove that specific
+compact landed, the watcher submits `proceed`. Selected autopilot mode is not a
+reliable wakeup.
+
+After the helper reports that the compact was submitted and the watcher armed,
+end the turn. Its log is written under the active session's `files/` directory.
 
 When `$TMUX_PANE` is unavailable, print the exact steered `/compact` command for
 the user instead of claiming it ran. If the helper says the steer is too long to
 verify, shorten it by pointing to the durable artifact and run it again as the
 final action.
 
-This step is complete only when both compact and continuation submissions are
-confirmed, or the user has the exact compact command and knows to send
-`proceed` after it finishes.
-
-If the helper says the compact is already queued but continuation failed, do not
-run it again. End the turn, then send `proceed` manually; rerunning would queue a
-second compact.
+This step is complete when the compact submission and watcher are both armed, or
+the user has the exact compact command and knows to send `proceed` after it
+finishes. A watcher failure after compaction is recorded in its log; send
+`proceed` manually rather than rerunning the helper and queuing a second compact.
 
 ## Pitfalls
 
@@ -123,8 +124,10 @@ second compact.
   reference its path instead.
 - A soft reset immediately after landing erases useful rationale the user may
   still want to question.
-- Autopilot can remain visibly selected without generating a post-compact turn;
-  every self-compact needs its own queued continuation.
+- Plain text submitted while the agent is active becomes steering and can run
+  before a queued `/compact`; continuation must wait for that compact's unique
+  checkpoint marker and `summary_count` advance.
+- Autopilot can remain visibly selected without generating a post-compact turn.
 - `/new` strands session-bound state; use it only when preserving the old
   conversation matters.
 - `/clear` destroys session state rather than cleaning working context.
@@ -133,5 +136,5 @@ second compact.
 
 - Load-bearing state exists outside the conversation when needed.
 - The steer names both what survives and what disappears.
-- The helper reports `submitted compact and continuation` and no later tool call
-  runs in that turn.
+- The helper reports `submitted compact; post-compact continuation watcher
+  armed`, names its log, and no later tool call runs in that turn.

@@ -37,9 +37,10 @@ verifiable as a tool. This is expected and is **NOT a blocker**:
   affects only how the next prompt is handled; do not turn it off as cleanup.
 - A slash command you inject lands at the **next turn boundary**, like any user
   message — including mid-run under autopilot. To self-compact during a run,
-  use `self-compact`, which queues both the compact and an explicit continuation,
-  then end your turn. Selected autopilot mode alone does not reliably create the
-  post-compact turn.
+  use `self-compact`, which queues the compact and arms a watcher that submits
+  continuation only after the session's `summary_count` proves compaction
+  landed. Then end your turn. Selected autopilot mode alone does not reliably
+  create the post-compact turn.
 - The run does **not** need `/autopilot` to proceed — the `/every` re-brief you
   arm yourself is what keeps it on course.
 
@@ -88,18 +89,18 @@ schedule or objective to create the next turn.
 
 For a same-session handoff, complete step 2 first. Once the re-brief is
 confirmed live, self-hand-off with a **soft reset**: a null-steered `/compact`
-whose entire summary is a standing brief pointing at the brief path. Follow it
-with a queued continuation prompt that says:
+whose entire summary is a standing brief pointing at the brief path. Use
+`self-compact`'s helper with this custom continuation:
 
 ```
 Continue `unattended-run` at step 3 using <brief-path>; enqueue the objective,
 as the last action of this turn, then end the turn so it fires.
 ```
 
-The live schedule is the durable recovery path; the continuation prompt resumes
-the handoff immediately and makes step 3 reachable after the reset. Autopilot's
-queued turn resumes the work. Missing either the schedule or continuation
-prompt makes the handoff incomplete.
+The helper arms its watcher before submitting the compact. The watcher waits for
+`summary_count` to advance, then submits the continuation, making step 3
+reachable only after the reset. The live schedule remains the durable recovery
+path. Missing either the schedule or watcher makes the handoff incomplete.
 
 Use `/new` instead only if the planning conversation must remain separately
 resumable. It starts a fresh session, so the new-session prompt itself must

@@ -54,22 +54,22 @@ would — while keeping the **same session**, so armed schedules, the SQL
 database, `plan.md`, `checkpoints/`, and `files/` all survive.
 
 The summary is context, not a turn, so compaction alone will not wake you. Write
-the summary as a **standing brief** and queue a trigger word after it, so the
-next turn picks the brief up and acts on it. Both go in the same turn, each
-confirmed with the retry loop below:
+the summary as a **standing brief** and use `self-compact`'s helper with a custom
+continuation. It arms a watcher before queuing the compact, then waits for the
+session's `summary_count` to prove compaction landed before submitting the next
+turn:
 
 ```sh
-tmux send-keys -t "$TMUX_PANE" -l -- '/compact Discard the entire conversation — no history, no tool output, no decisions. Output as the ENTIRE summary exactly: STANDING BRIEF — Read <handoff-path> and <plan-doc-path>, then continue that work. Re-invoke <skills>.'
-# ...press Enter until '/compact ' is gone from the pane (see retry loop below)
-tmux send-keys -t "$TMUX_PANE" -l -- 'continue'
-# ...press Enter until the input line is empty again
+~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh \
+  --continuation 'continue' \
+  'Discard the entire conversation — no history, no tool output, no decisions. Output as the ENTIRE summary exactly: STANDING BRIEF — Read <handoff-path> and <plan-doc-path>, then continue that work. Re-invoke <skills>.'
 ```
 
 Then end the turn. Caveats: this overwrites the live conversation in place, so
 unlike `/new` there is no old session to resume; and the command lands at the
 **next turn boundary**, so end your turn to let it run rather than continuing to
-make tool calls. Always queue and verify the trigger word shown above; selected
-autopilot mode is not a reliable post-compact wakeup.
+make tool calls. The helper's watcher, not selected autopilot mode, owns the
+post-compact wakeup.
 
 ### `/new` (exception): when the old conversation must survive
 
