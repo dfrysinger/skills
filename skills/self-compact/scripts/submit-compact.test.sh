@@ -49,6 +49,9 @@ case "$command" in
       if [ -n "$input" ]; then
         printf '%s' "$input" > "$FAKE_TMUX_STASH"
         : > "$FAKE_TMUX_INPUT"
+      elif [ -s "$FAKE_TMUX_STASH" ]; then
+        cat "$FAKE_TMUX_STASH" > "$FAKE_TMUX_INPUT"
+        : > "$FAKE_TMUX_STASH"
       fi
     elif [ "$last" = "C-u" ]; then
       : > "$FAKE_TMUX_INPUT"
@@ -60,7 +63,16 @@ case "$command" in
         case "$input" in
           /compact\ *)
             (
-              sleep 0.3
+              for _ in $(seq 1 100); do
+                armed="$(find "${FAKE_WORKSPACE%/workspace.yaml}/files" \
+                  -name 'self-compact-*.armed' -print -quit)"
+                [ -n "$armed" ] && break
+                sleep 0.1
+              done
+              if [ -s "$FAKE_TMUX_STASH" ]; then
+                cat "$FAKE_TMUX_STASH" > "$FAKE_TMUX_INPUT"
+                : > "$FAKE_TMUX_STASH"
+              fi
               marker="$(printf '%s' "$input" | grep -o 'SELF_COMPACT_RUN_ID:[^ .]*')"
               sed 's/^summary_count: .*/summary_count: 2/' \
                 "$FAKE_WORKSPACE" > "$FAKE_WORKSPACE.tmp"
@@ -168,7 +180,6 @@ case "$output" in
     ;;
 esac
 
-grep -qF 'already queued' "$TMP_DIR/stash"
 grep -qF '|| true' "$TMP_DIR/run-shell-command"
 
 for _ in $(seq 1 100); do
@@ -181,6 +192,7 @@ printf '%s\n' \
   "$(head -1 "$TMP_DIR/queue")" \
   "proceed" > "$expected"
 cmp "$expected" "$TMP_DIR/queue"
+grep -qF 'already queued' "$TMP_DIR/stash"
 
 log="$(find "$session/files" -type f -name 'self-compact-*.log' -print -quit)"
 for _ in $(seq 1 50); do

@@ -95,8 +95,15 @@ normalized_input() {
 
 stash_input() {
   tmux send-keys -t "$PANE" C-s || return 1
-  for ((attempt = 1; attempt <= 20; attempt++)); do
-    input_is_empty && return 0
+  sleep 0.25
+  local stable=0
+  for ((attempt = 1; attempt <= 30; attempt++)); do
+    if input_is_empty; then
+      stable=$((stable + 1))
+      [ "$stable" -ge 3 ] && return 0
+    else
+      stable=0
+    fi
     sleep 0.1
   done
   return 1
@@ -223,11 +230,6 @@ cleanup_unarmed_watcher() {
 }
 trap cleanup_unarmed_watcher EXIT
 
-if ! stash_input; then
-  echo "submit-compact.sh: could not stash Copilot input; compact not submitted" >&2
-  exit 1
-fi
-
 # The watcher records failures in its own log. Keep its detached exit status
 # from becoming a tmux status message over the Copilot interface.
 watcher_command="$watcher_command || true"
@@ -248,8 +250,8 @@ if [ ! -e "$READY" ]; then
   exit 1
 fi
 
-# Stash again in case input arrived while the watcher was starting. Ctrl-S is
-# a no-op on an empty Copilot input.
+# Press Ctrl-S exactly once after watcher startup. A second press would restore
+# the same draft because Copilot's stash key is a toggle.
 if ! stash_input; then
   echo "submit-compact.sh: could not stash Copilot input; compact not submitted" >&2
   exit 1

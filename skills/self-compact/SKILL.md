@@ -94,8 +94,11 @@ phase and every named dropped item is safe to forget.
 ### 4. Submit and stop
 
 Run `scripts/submit-compact.sh` as the final tool action, passing a single-line
-steer. The helper presses Ctrl-S first, which safely stashes any draft and is a
-no-op when the Copilot input is empty. It then fails closed unless the full
+steer. The helper starts the watcher, then presses Ctrl-S exactly once
+immediately before typing the command. Ctrl-S safely stashes any draft and is a
+no-op when both the input and stash are empty; it is a toggle, so pressing it a
+second time would restore the draft. The helper requires the input to remain
+empty across several captures after stashing, then fails closed unless the full
 command renders exactly and Enter clears the input. Before submitting, it arms a detached watcher against
 the active session's `summary_count` and a unique marker that the compact must
 preserve in its checkpoint. Watcher failures remain in the per-run log instead
