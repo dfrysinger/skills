@@ -41,12 +41,12 @@ permission, destructive-action, or user-only visual-confirmation blocker.
 
 ## Current phase
 
-The first Tango live lifecycle exposed an event-log visibility race: Copilot
-can start the helper subprocess before the immediately preceding
-`assistant.message` is readable. The helper now waits up to two seconds for
-that current-turn message before any lock or editor mutation. Deterministic
-validation and a complete replacement live lifecycle are required before
-implementation review.
+The first implementation review found four material defects: the current-turn
+gate scanned the complete event history, malformed foreground-lock metadata
+could be reclaimed, the ambiguous-render wait accepted values outside its
+20-30 second safety bound, and two caller templates violated the parser's
+same-line requirement. The bounded repair set and finding-specific regression
+coverage are in progress.
 
 ## Phase order
 
@@ -71,6 +71,7 @@ draft isolation, or treat deterministic shell tests as the real-model proof.
 - Candidate version is v0.101.0; the installed plugin remains v0.100.0.
 - SQL todos `brief-protocol-code` through `brief-protocol-land` track the
   remaining phases.
-- The complete script syntax and deterministic protocol suite pass.
-- The next action is the complete real Sierra scenario using the repository
-  helper directly, not the installed v0.100.0 copy.
+- The pre-review deterministic suite and Tango lifecycle passed.
+- Round 1 implementation review produced four verified material findings.
+- The next action is to validate the bounded fixes, run round 2 closure, and
+  rerun the final reviewed Tango lifecycle.

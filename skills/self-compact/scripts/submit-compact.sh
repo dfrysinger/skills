@@ -71,6 +71,11 @@ if ! sc_input_init "$TMUX_BIN" "$PANE"; then
   echo "submit-compact.sh: could not verify a UTF-8 locale; compact not submitted" >&2
   exit 1
 fi
+AMBIGUOUS_WAIT_SECONDS="${SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS:-25}"
+if ! sc_ambiguous_wait_is_bounded "$AMBIGUOUS_WAIT_SECONDS"; then
+  echo "submit-compact.sh: ambiguous render wait must be between 20 and 30 seconds; compact not submitted" >&2
+  exit 1
+fi
 
 resolve_workspace() {
   local pane_cwd pane_pid ws this_cwd lock lock_pid parent
@@ -148,20 +153,57 @@ current_turn_has_brief() {
     use warnings;
     my $path = shift;
     open my $fh, "<", $path or exit 1;
+    binmode $fh;
+    my $size = (stat($fh))[7];
+    defined $size or exit 1;
+    my $maximum = 8 * 1024 * 1024;
+    my $floor = $size > $maximum ? $size - $maximum : 0;
+    my $position = $size;
+    my $carry = "";
     my @messages;
-    while (my $line = <$fh>) {
+    my $found_start = 0;
+    my $inspect = sub {
+      my ($line) = @_;
+      return 0
+        unless index($line, "\"type\":\"assistant.turn_start\"") >= 0 ||
+          index($line, "\"type\":\"assistant.message\"") >= 0;
       my $event = eval { decode_json($line) };
-      next unless $event && ref($event) eq "HASH";
+      return 0 unless $event && ref($event) eq "HASH";
       my $type = $event->{type} // "";
       if ($type eq "assistant.turn_start") {
-        @messages = ();
-        next;
+        return 1;
       }
       if ($type eq "assistant.message") {
-        my $content = $event->{data}{content};
-        push @messages, $content if defined $content && length $content;
+        my $data = $event->{data};
+        if ($data && ref($data) eq "HASH") {
+          my $content = $data->{content};
+          unshift @messages, $content
+            if defined $content && length $content;
+        }
+      }
+      return 0;
+    };
+    while ($position > $floor && !$found_start) {
+      my $take = $position - $floor;
+      $take = 65536 if $take > 65536;
+      $position -= $take;
+      seek($fh, $position, 0) or exit 1;
+      read($fh, my $chunk, $take) == $take or exit 1;
+      my $data = $chunk . $carry;
+      my @parts = split /\n/, $data, -1;
+      $carry = shift @parts;
+      for (my $index = $#parts; $index >= 0; $index--) {
+        next unless length $parts[$index];
+        if ($inspect->($parts[$index])) {
+          $found_start = 1;
+          last;
+        }
       }
     }
+    if (!$found_start && $position == 0 && length $carry) {
+      $found_start = $inspect->($carry);
+    }
+    exit 1 unless $found_start;
     for my $content (@messages) {
       next unless $content =~ /\ASELF_COMPACT_BRIEF\n/;
       next unless $content =~ /\nKeep:[ \t]*(\S[^\n]*)/;
@@ -175,18 +217,39 @@ current_turn_has_brief() {
   ' "$EVENTS"
 }
 
-wait_for_current_turn_brief() {
-  local attempts="${SELF_COMPACT_BRIEF_WAIT_ATTEMPTS:-40}"
-  local delay="${SELF_COMPACT_BRIEF_WAIT_DELAY_SECONDS:-0.05}"
+brief_epoch_milliseconds() {
+  /usr/bin/perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000'
+}
 
-  case "$attempts" in
-    ''|*[!0-9]*|0) return 1 ;;
-  esac
-  for ((attempt = 1; attempt <= attempts; attempt++)); do
+wait_for_current_turn_brief() {
+  local wait_seconds="${SELF_COMPACT_BRIEF_WAIT_SECONDS:-2}"
+  local poll_seconds="${SELF_COMPACT_BRIEF_WAIT_DELAY_SECONDS:-0.05}"
+  local wait_milliseconds poll_milliseconds started deadline now remaining
+  local sleep_milliseconds sleep_seconds
+
+  wait_milliseconds="$(sc_seconds_to_milliseconds "$wait_seconds")" ||
+    return 1
+  poll_milliseconds="$(sc_seconds_to_milliseconds "$poll_seconds")" ||
+    return 1
+  started="$(brief_epoch_milliseconds)"
+  case "$started" in ''|*[!0-9]*) return 1 ;; esac
+  deadline=$((started + wait_milliseconds))
+
+  while :; do
     current_turn_has_brief && return 0
-    [ "$attempt" -lt "$attempts" ] && sleep "$delay"
+    now="$(brief_epoch_milliseconds)"
+    case "$now" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$now" -lt "$deadline" ] || return 1
+    remaining=$((deadline - now))
+    sleep_milliseconds="$poll_milliseconds"
+    [ "$sleep_milliseconds" -le "$remaining" ] ||
+      sleep_milliseconds="$remaining"
+    sleep_seconds="$(
+      awk -v milliseconds="$sleep_milliseconds" \
+        'BEGIN { printf "%.3f\n", milliseconds / 1000 }'
+    )"
+    sleep "$sleep_seconds"
   done
-  return 1
 }
 
 if ! wait_for_current_turn_brief; then
@@ -238,16 +301,42 @@ pid_is_live() {
 }
 
 reclaim_stale_foreground_lock() {
-  local state owner_pid
+  local state owner_pid existing_token existing_run_id existing_stamp
+  local run_files expected_run_files ready armed cancelled log
   [ -d "$LOCK_DIR" ] || return 1
   state="$(lock_state)"
   [ "$state" = foreground ] || return 1
-  [ -r "$LOCK_DIR/token" ] && [ -r "$LOCK_DIR/submitter.pid" ] || return 1
+  [ -r "$LOCK_DIR/token" ] &&
+    [ -r "$LOCK_DIR/submitter.pid" ] &&
+    [ -r "$LOCK_DIR/created" ] &&
+    [ -r "$LOCK_DIR/run-files" ] || return 1
   [ ! -e "$LOCK_DIR/watcher.pid" ] &&
     [ ! -e "$LOCK_DIR/watcher-launching" ] &&
     [ ! -e "$LOCK_DIR/ready" ] &&
     [ ! -e "$LOCK_DIR/armed" ] || return 1
+  existing_token="$(cat "$LOCK_DIR/token")"
+  printf '%s\n' "$existing_token" |
+    grep -Eq '^[0-9a-f]{8}-[0-9]{8}T[0-9]{6}Z-[1-9][0-9]*$' || return 1
+  existing_run_id="${existing_token#*-}"
+  existing_stamp="${existing_run_id%-*}"
   owner_pid="$(cat "$LOCK_DIR/submitter.pid")"
+  case "$owner_pid" in ''|*[!0-9]*|0|1) return 1 ;; esac
+  [ "${existing_run_id##*-}" = "$owner_pid" ] || return 1
+  [ "$(cat "$LOCK_DIR/created")" = "$existing_stamp" ] || return 1
+  ready="$FILES_DIR/self-compact-$existing_run_id.ready"
+  armed="$FILES_DIR/self-compact-$existing_run_id.armed"
+  cancelled="$FILES_DIR/self-compact-$existing_run_id.cancelled"
+  log="$FILES_DIR/self-compact-$existing_run_id.log"
+  expected_run_files="$(printf '%s\n%s\n%s\n%s' \
+    "$ready" "$armed" "$cancelled" "$log")"
+  run_files="$(cat "$LOCK_DIR/run-files")"
+  [ "$run_files" = "$expected_run_files" ] || return 1
+  [ "$(wc -l < "$LOCK_DIR/run-files" | tr -d '[:space:]')" -eq 4 ] ||
+    return 1
+  [ ! -e "$ready" ] &&
+    [ ! -e "$armed" ] &&
+    [ ! -e "$cancelled" ] &&
+    [ ! -e "$log" ] || return 1
   pid_is_live "$owner_pid" && return 1
   rm -rf "$LOCK_DIR"
 }

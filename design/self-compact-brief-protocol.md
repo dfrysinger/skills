@@ -165,10 +165,10 @@ submitter reads the event log and finds the latest
 a message with all of this structure:
 
 1. first line exactly `SELF_COMPACT_BRIEF`;
-2. a nonempty `Keep:` section;
+2. nonempty `Keep:` content on the same physical line as its label;
 3. a `Drop:` section; and
-4. a nonempty `After compaction:` section containing the case-sensitive literal
-   `do not compact again`.
+4. a nonempty `After compaction:` instruction on the same physical line as its
+   label, containing the case-sensitive literal `do not compact again`.
 
 The implementation must inspect only `data.content`. A match in
 `toolRequests[].arguments` on the same JSON line does not qualify. The existing
@@ -476,7 +476,7 @@ or retry failed compaction.
 | Criterion | Setup and transition | Pass signal | Failure proves |
 | --- | --- | --- | --- |
 | Long meaning is independent of pane width | Emit a multi-paragraph brief in a 52-column pane and invoke the helper | Fixed 43-column token-bearing compact command reaches submission without shortening the brief | Semantic payload still depends on editor width |
-| Current-turn brief is mandatory | Invoke with no brief, an older-turn brief, a user-message mention, a tool-output mention, a tool-argument mention inside the assistant event, an ordinary assistant bare mention, a structurally incomplete brief, and a semantically similar `After compaction:` section that omits the literal `do not compact again` | Every case exits before lock, watcher, run files, Ctrl-S, typing, or Enter | Stale, non-assistant, non-brief, or template-drifted text can authorize compaction |
+| Current-turn brief is mandatory | Invoke with no brief, an older-turn brief, a user-message mention, a tool-output mention, a tool-argument mention inside the assistant event, an ordinary assistant bare mention, content moved off the `Keep:` or `After compaction:` label line, a structurally incomplete brief, and a semantically similar `After compaction:` section that omits the literal `do not compact again` | Every case exits before lock, watcher, run files, Ctrl-S, typing, or Enter | Stale, non-assistant, non-brief, or template-drifted text can authorize compaction |
 | Current-turn brief visibility may lag tool startup | Start the helper while only the current `assistant.turn_start` is readable, then append the structurally complete assistant message within the bounded visibility interval | The helper authorizes the same turn only after the message becomes readable, without any earlier lock or editor mutation | Event-log write timing can reject a valid immediately preceding brief |
 | Positional steers are retired | Invoke with the old `'<steer>'` syntax | Usage error before workspace resolution or mutation | Unsafe callers can silently retain the old protocol |
 | Caller-selected continuation is retired | Invoke with `--continuation '<prompt>'` and with an unknown option | Usage error before workspace resolution or mutation | Callers can still steer or lengthen the wake |

@@ -47,7 +47,9 @@ After compaction: <exact next action>; do not compact again.
 
 The first line must be exactly `SELF_COMPACT_BRIEF`. `Keep:` must be nonempty.
 `Drop:` must be present. `After compaction:` must be nonempty and contain the
-case-sensitive literal `do not compact again`.
+case-sensitive literal `do not compact again`. `Keep:` content and the complete
+`After compaction:` instruction, including that literal, must be on the same
+physical line as their labels. Additional detail may continue on later lines.
 
 The brief may be long. It is part of the conversation and is not typed into the
 editor.

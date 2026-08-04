@@ -778,8 +778,8 @@ run_submit_command() {
     SELF_COMPACT_RESIZE_HOLD_SECONDS=0.001 \
     SELF_COMPACT_RENDER_WAIT_SECONDS="${SELF_COMPACT_RENDER_WAIT_SECONDS:-0.05}" \
     SELF_COMPACT_RENDER_POLL_SECONDS="${SELF_COMPACT_RENDER_POLL_SECONDS:-0.001}" \
-    SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS="${SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS:-0.05}" \
-    SELF_COMPACT_BRIEF_WAIT_ATTEMPTS="${SELF_COMPACT_BRIEF_WAIT_ATTEMPTS:-3}" \
+    SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS="${SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS:-25}" \
+    SELF_COMPACT_BRIEF_WAIT_SECONDS="${SELF_COMPACT_BRIEF_WAIT_SECONDS:-0.01}" \
     SELF_COMPACT_BRIEF_WAIT_DELAY_SECONDS="${SELF_COMPACT_BRIEF_WAIT_DELAY_SECONDS:-0.001}" \
     SELF_COMPACT_RECOVERY_DELAY_SECONDS=0.05 \
     SELF_COMPACT_NOTICE_MILLISECONDS=20 \
@@ -1421,11 +1421,35 @@ printf '%s\n' '{"type":"assistant.turn_start"}' \
     ' >> "$FAKE_CASE/session/events.jsonl"
 ) &
 printf '%s\n' "$!" >> "$FAKE_BACKGROUND_PIDS"
-SELF_COMPACT_BRIEF_WAIT_ATTEMPTS=200 \
+SELF_COMPACT_BRIEF_WAIT_SECONDS=0.5 \
   SELF_COMPACT_BRIEF_WAIT_DELAY_SECONDS=0.002 \
   run_submit_command >/dev/null
 wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
 assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
+
+setup_case current-turn-brief-large-history
+awk 'BEGIN {
+  payload = sprintf("%1024s", "")
+  gsub(/ /, "x", payload)
+  for (i = 1; i <= 20000; i++)
+    print "{\"type\":\"tool.execution_complete\",\"data\":{\"content\":\"" payload "\"}}"
+}' >> "$FAKE_CASE/session/events.jsonl"
+append_brief_turn \
+  $'SELF_COMPACT_BRIEF\nKeep: large history baton\nDrop: resolved detail\nAfter compaction: continue and do not compact again'
+mkdir "$FAKE_CASE/session/files/self-compact.lock"
+printf '%s\n' watcher-owned \
+  > "$FAKE_CASE/session/files/self-compact.lock/state"
+brief_started="$(/usr/bin/perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000')"
+status=0
+SELF_COMPACT_BRIEF_WAIT_SECONDS=0.5 \
+  run_submit_command > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
+  status=$?
+brief_finished="$(/usr/bin/perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000')"
+[ "$status" -ne 0 ] || fail "large-history lock unexpectedly allowed submission"
+grep -q 'another or ambiguous self-compact run owns' "$FAKE_CASE/submit.err"
+[ "$((brief_finished - brief_started))" -lt 2000 ] ||
+  fail "current-turn brief scan exceeded two seconds on a 20,000-line history"
+assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
 
 setup_case older-turn-brief-rejected
 append_brief_turn \
@@ -1473,8 +1497,10 @@ setup_case timed-fallback-empty-editor
 export FAKE_CAPTURE_MODE_ON_TYPE=unreadable
 export FAKE_CAPTURE_MODE_ON_TYPE_COUNT=1
 export FAKE_POST_COMPACT_MODE=readable
+printf '%s\n' 100000 100020 200000 220000 > "$FAKE_CASE/epoch-milliseconds"
+export FAKE_EPOCH_MILLISECONDS_FILE="$FAKE_CASE/epoch-milliseconds"
 SELF_COMPACT_RENDER_WAIT_SECONDS=0.02 \
-  SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS=0.05 \
+  SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS=20 \
   run_submit >/dev/null
 wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
 assert_count 1 '^TYPE:/compact Use SELF_COMPACT_BRIEF\. B:0123abcd$' \
@@ -1488,7 +1514,7 @@ export FAKE_CAPTURE_MODE_ON_TYPE=unreadable
 export FAKE_CAPTURE_MODE_ON_TYPE_COUNT=1
 status=0
 SELF_COMPACT_RENDER_WAIT_SECONDS=0.02 \
-  SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS=0.05 \
+  SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS=20 \
   run_submit > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
   status=$?
 [ "$status" -ne 0 ] ||
@@ -1496,6 +1522,20 @@ SELF_COMPACT_RENDER_WAIT_SECONDS=0.02 \
 grep -q 'this run handled a draft' "$FAKE_CASE/submit.err"
 assert_count 1 '^TYPE:/compact ' "$FAKE_TMUX_ACTIONS"
 assert_count 0 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
+
+setup_case timed-fallback-wait-out-of-range
+append_brief_turn \
+  $'SELF_COMPACT_BRIEF\nKeep: baton\nDrop: detail\nAfter compaction: continue and do not compact again'
+status=0
+SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS=0.05 \
+  run_submit_command > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
+  status=$?
+[ "$status" -ne 0 ] || fail "out-of-range ambiguous wait was accepted"
+grep -q 'ambiguous render wait must be between 20 and 30 seconds' \
+  "$FAKE_CASE/submit.err"
+assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+[ ! -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
+  fail "out-of-range ambiguous wait acquired the session lock"
 
 # Session-scoped exclusion blocks live and transferred owners, while exactly
 # one well-formed dead foreground owner can be reclaimed.
@@ -1515,12 +1555,41 @@ assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
 
 setup_case stale-foreground-lock-reclaimed
 mkdir "$FAKE_CASE/session/files/self-compact.lock"
-printf '%s\n' stale-owner > "$FAKE_CASE/session/files/self-compact.lock/token"
+stale_run_id="20260804T000000Z-999999"
+printf '%s\n' "deadbeef-$stale_run_id" \
+  > "$FAKE_CASE/session/files/self-compact.lock/token"
 printf '%s\n' foreground > "$FAKE_CASE/session/files/self-compact.lock/state"
 printf '%s\n' 999999 > "$FAKE_CASE/session/files/self-compact.lock/submitter.pid"
+printf '%s\n' 20260804T000000Z \
+  > "$FAKE_CASE/session/files/self-compact.lock/created"
+printf '%s\n%s\n%s\n%s\n' \
+  "$FAKE_CASE/session/files/self-compact-$stale_run_id.ready" \
+  "$FAKE_CASE/session/files/self-compact-$stale_run_id.armed" \
+  "$FAKE_CASE/session/files/self-compact-$stale_run_id.cancelled" \
+  "$FAKE_CASE/session/files/self-compact-$stale_run_id.log" \
+  > "$FAKE_CASE/session/files/self-compact.lock/run-files"
 run_submit >/dev/null
 wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
 assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
+
+setup_case malformed-foreground-lock-fails-closed
+mkdir "$FAKE_CASE/session/files/self-compact.lock"
+printf '%s\n' deadbeef-20260804T000000Z-not-a-pid \
+  > "$FAKE_CASE/session/files/self-compact.lock/token"
+printf '%s\n' foreground > "$FAKE_CASE/session/files/self-compact.lock/state"
+printf '%s\n' not-a-pid \
+  > "$FAKE_CASE/session/files/self-compact.lock/submitter.pid"
+printf '%s\n' 20260804T000000Z \
+  > "$FAKE_CASE/session/files/self-compact.lock/created"
+printf '%s\n' invalid > "$FAKE_CASE/session/files/self-compact.lock/run-files"
+append_brief_turn \
+  $'SELF_COMPACT_BRIEF\nKeep: baton\nDrop: detail\nAfter compaction: continue and do not compact again'
+status=0
+run_submit_command > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
+  status=$?
+[ "$status" -ne 0 ] || fail "malformed foreground lock was reclaimed"
+grep -q 'another or ambiguous self-compact run owns' "$FAKE_CASE/submit.err"
+assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
 
 setup_case launching-lock-fails-closed
 mkdir "$FAKE_CASE/session/files/self-compact.lock"

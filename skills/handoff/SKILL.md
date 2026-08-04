@@ -66,8 +66,7 @@ Keep: Replace the conversation with a standing brief that points at
 Drop: Conversation history, tool output, and decisions already recorded in
 those durable files.
 
-After compaction: Read the handoff and plan, re-invoke <skills>, and continue
-the work; do not compact again.
+After compaction: Read the handoff and plan, re-invoke <skills>, and continue the work; do not compact again.
 ```
 
 Then invoke `self-compact`'s helper with zero arguments and a Bash

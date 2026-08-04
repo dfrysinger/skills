@@ -99,8 +99,7 @@ and its Definition of Done.
 
 Drop: Planning history and tool output already captured by the charter.
 
-After compaction: Continue this charter at step 3, enqueue the objective as the
-last action of that turn, then end the turn so it fires; do not compact again.
+After compaction: Continue this charter at step 3, enqueue the objective as the last action of that turn, then end the turn so it fires; do not compact again.
 ```
 
 Invoke `self-compact`'s helper with zero arguments and a Bash `initial_wait` of

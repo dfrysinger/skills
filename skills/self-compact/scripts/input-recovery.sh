@@ -129,6 +129,14 @@ sc_seconds_to_milliseconds() {
     }'
 }
 
+sc_ambiguous_wait_is_bounded() {
+  awk -v seconds="$1" '
+    BEGIN {
+      if (seconds !~ /^[0-9]+([.][0-9]+)?$/) exit 1
+      exit !(seconds >= 20 && seconds <= 30)
+    }'
+}
+
 sc_text_hex() {
   LC_ALL=C od -An -tx1 | tr -d '[:space:]'
 }
@@ -668,6 +676,7 @@ sc_wait_for_ambiguous_submit() {
   local started_milliseconds deadline_milliseconds now_milliseconds
   local remaining_milliseconds sleep_milliseconds sleep_seconds capture_status
 
+  sc_ambiguous_wait_is_bounded "$wait_seconds" || return 1
   wait_milliseconds="$(sc_seconds_to_milliseconds "$wait_seconds")" ||
     return 1
   poll_milliseconds="$(sc_seconds_to_milliseconds "$poll_seconds")" ||
