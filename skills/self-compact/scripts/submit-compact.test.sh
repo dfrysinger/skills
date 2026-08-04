@@ -55,12 +55,15 @@ case "$command" in
             (
               sleep 0.3
               marker="$(printf '%s' "$input" | grep -o 'SELF_COMPACT_RUN_ID:[^ .]*')"
+              printf '%s' "busy" > "$FAKE_TMUX_INPUT"
               sed 's/^summary_count: .*/summary_count: 2/' \
                 "$FAKE_WORKSPACE" > "$FAKE_WORKSPACE.tmp"
               mv "$FAKE_WORKSPACE.tmp" "$FAKE_WORKSPACE"
               mkdir -p "${FAKE_WORKSPACE%/workspace.yaml}/checkpoints"
               printf '%s\n' "$marker" > \
                 "${FAKE_WORKSPACE%/workspace.yaml}/checkpoints/001-test.md"
+              sleep 0.5
+              : > "$FAKE_TMUX_INPUT"
             ) &
             ;;
         esac

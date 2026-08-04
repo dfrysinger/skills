@@ -81,7 +81,7 @@ normalized_input() {
   input_region | tr -d '❯' | squash
 }
 
-for ((attempt = 1; attempt <= 300; attempt++)); do
+for ((attempt = 1; attempt <= MAX_POLLS; attempt++)); do
   input_is_empty && break
   sleep "$POLL_SECONDS"
 done
