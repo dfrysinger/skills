@@ -206,19 +206,21 @@ same worktree already has a watcher-backed app or service running, classify the
 changed files before editing:
 
 - Hot-loadable frontend, template, style, and copy changes stay in the existing
-  process. Use its watcher, HMR, or built-in Reload recovery; do not restart or
-  invoke a native build.
+  process when its watcher, HMR, or reload path can be shown to apply them.
 - Native code, build configuration, dependencies, generated runtime assets, or
-  another input the watcher cannot apply may require the smallest rebuild or
-  restart that makes the candidate executable.
-- Branch bookkeeping alone is not a runtime change. Rename or create refs
-  without replacing checked-out content when possible.
+  another input the watcher cannot apply requires the smallest rebuild or
+  restart that loads it.
 
-The running process is working state, not disposable setup. A new process is
-justified by changed build inputs, changed identity, a missing process, or a
-demonstrably unhealthy process, not by a new task phase.
+The running process is working state, not disposable setup. Reuse it while its
+identity matches and the current candidate can be shown to be loaded. Create a
+new process when it is missing, unhealthy, the wrong identity, unable to load
+the candidate through its reload path, or unable to apply a required input.
 
 Branch from current main and implement one behavior at a time.
+Branch bookkeeping alone is not a runtime change: when the checked-out content
+already matches the intended base, rename or create refs without replacing it.
+Otherwise update the tree to current main, classify the resulting file changes
+under the rules above, then branch.
 
 - Keep refactoring separate unless required for the fix.
 - Prefer reviewable slices; roughly 200-400 human-written changed lines is a
@@ -277,18 +279,15 @@ Before starting, record a compact **live-proof receipt** using
 - candidate identity: a clean commit, or a full candidate identity that covers
   tracked changes plus every untracked file that can affect the build or
   runtime; branch plus commit alone is valid only for a clean worktree;
-- running identity: process/build identity that proves the app or service was
-  started from that candidate, not a stale installation or another agent's
-  build;
+- running identity: process/build identity that maps the running code to the
+  candidate, not a stale installation or another agent's build. For a reused
+  watcher-backed process, record its existing PID/worktree mapping plus direct
+  runtime evidence that it loaded every changed input exercised by the
+  scenario; the process need not postdate the delta;
 - scenario: the exact trigger, required checkpoints, terminal success state,
   and forbidden errors from the acceptance criteria;
 - evidence source: what the agent can inspect directly and what requires a
   human action or confirmation.
-
-For a reused watcher-backed process, candidate identity includes the worktree
-delta and direct evidence that the changed module was loaded, while running
-identity keeps the existing process ID. Do not turn a same-process hot reload
-into a restart merely to obtain a simpler receipt.
 
 The receipt records evidence; it does not create evidence. Every `PASS` row must
 point to a direct observation, artifact, query result, or explicit human
