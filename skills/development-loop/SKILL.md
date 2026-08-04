@@ -201,6 +201,23 @@ its live re-brief and owns this reset; a bare compact returns to an idle prompt.
 If the re-brief is not live, run `unattended-run` now instead of compacting.
 For an attended run, invoke `self-compact`.*
 
+Preserve a healthy development process before creating another one. When the
+same worktree already has a watcher-backed app or service running, classify the
+changed files before editing:
+
+- Hot-loadable frontend, template, style, and copy changes stay in the existing
+  process. Use its watcher, HMR, or built-in Reload recovery; do not restart or
+  invoke a native build.
+- Native code, build configuration, dependencies, generated runtime assets, or
+  another input the watcher cannot apply may require the smallest rebuild or
+  restart that makes the candidate executable.
+- Branch bookkeeping alone is not a runtime change. Rename or create refs
+  without replacing checked-out content when possible.
+
+The running process is working state, not disposable setup. A new process is
+justified by changed build inputs, changed identity, a missing process, or a
+demonstrably unhealthy process, not by a new task phase.
+
 Branch from current main and implement one behavior at a time.
 
 - Keep refactoring separate unless required for the fix.
@@ -267,6 +284,11 @@ Before starting, record a compact **live-proof receipt** using
   and forbidden errors from the acceptance criteria;
 - evidence source: what the agent can inspect directly and what requires a
   human action or confirmation.
+
+For a reused watcher-backed process, candidate identity includes the worktree
+delta and direct evidence that the changed module was loaded, while running
+identity keeps the existing process ID. Do not turn a same-process hot reload
+into a restart merely to obtain a simpler receipt.
 
 The receipt records evidence; it does not create evidence. Every `PASS` row must
 point to a direct observation, artifact, query result, or explicit human
