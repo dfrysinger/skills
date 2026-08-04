@@ -221,4 +221,43 @@ case "$auto_output" in
 esac
 [ ! -s "$TMP_DIR/auto-queue" ]
 
+queued="$TMP_DIR/session-state/queued-session"
+mkdir -p "$queued/checkpoints" "$queued/files"
+cat > "$queued/workspace.yaml" <<EOF
+id: queued-session
+cwd: $TMP_DIR/workspace
+summary_count: 2
+EOF
+printf '%s\n' \
+  '{"type":"session.compaction_complete","timestamp":"2026-08-04T00:00:01Z"}' \
+  > "$queued/events.jsonl"
+printf '%s\n' 'SELF_COMPACT_RUN_ID:queued-test' > "$queued/checkpoints/001-test.md"
+: > "$queued/ready"
+: > "$queued/armed"
+printf '%s' "automatic continuation" > "$TMP_DIR/input"
+
+queued_output="$(
+  PATH="$TMP_DIR:$PATH" \
+    FAKE_PANE_CWD="$TMP_DIR/workspace" \
+    FAKE_PANE_PID="100" \
+    FAKE_TMUX_INPUT="$TMP_DIR/input" \
+    FAKE_TMUX_QUEUE="$TMP_DIR/queued-queue" \
+    FAKE_WORKSPACE="$queued/workspace.yaml" \
+    SELF_COMPACT_POLL_SECONDS=0.1 \
+    SELF_COMPACT_MAX_POLLS=100 \
+    SELF_COMPACT_RESUME_GRACE_SECONDS=0.1 \
+    "$SCRIPT_DIR/resume-after-compact.sh" \
+    "%1" "$queued/workspace.yaml" 1 0 "$queued/ready" "$queued/armed" \
+    "$queued/cancelled" "SELF_COMPACT_RUN_ID:queued-test" "proceed"
+)"
+
+case "$queued_output" in
+  *"post-compact input is already queued"*) ;;
+  *)
+    echo "watcher did not recognize queued continuation: $queued_output" >&2
+    exit 1
+    ;;
+esac
+[ ! -s "$TMP_DIR/queued-queue" ]
+
 echo "submit-compact test passed"

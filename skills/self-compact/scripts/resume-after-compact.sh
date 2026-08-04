@@ -117,14 +117,9 @@ normalized_input() {
   input_region | tr -d '❯' | squash
 }
 
-for ((attempt = 1; attempt <= 30; attempt++)); do
-  input_is_empty && break
-  sleep 0.1
-done
-
 if ! input_is_empty; then
-  echo "compact landed with no resumed turn, but Copilot input is not empty" >&2
-  exit 1
+  echo "post-compact input is already queued; continuation not needed"
+  exit 0
 fi
 
 expected="$(printf '%s' "$CONTINUATION" | squash)"
