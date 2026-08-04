@@ -60,11 +60,17 @@ Run the helper with no arguments:
 ~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh
 ```
 
+Set the Bash tool's `initial_wait` to at least 120 seconds. The helper may need
+the full draft-recovery and render-verification interval before returning. A
+shorter tool wait can create a synthetic assistant turn while the helper is
+still active, which correctly cancels the submission as concurrent activity.
+
 Old positional steers and `--continuation` are errors. Do not shorten the brief
 or retry with invented instructions when a run fails.
 
-The helper verifies that the current assistant turn contains the complete
-brief, then submits:
+The helper briefly waits for the immediately preceding assistant message to
+become visible in the event log, verifies that the current turn contains the
+complete brief, then submits:
 
 ```text
 /compact Use SELF_COMPACT_BRIEF. B:<8-hex>
@@ -173,7 +179,8 @@ Detached failures remain in the per-run log under the active session's
 ## Verification
 
 - The final assistant message contains the complete brief structure.
-- The helper was invoked with zero arguments as the final tool action.
+- The helper was invoked with zero arguments and `initial_wait` of at least 120
+  seconds as the final tool action.
 - The compact event records this run's token-bearing custom instructions.
 - The checkpoint number advances and its file exists without requiring marker
   prose.

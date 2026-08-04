@@ -779,6 +779,8 @@ run_submit_command() {
     SELF_COMPACT_RENDER_WAIT_SECONDS="${SELF_COMPACT_RENDER_WAIT_SECONDS:-0.05}" \
     SELF_COMPACT_RENDER_POLL_SECONDS="${SELF_COMPACT_RENDER_POLL_SECONDS:-0.001}" \
     SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS="${SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS:-0.05}" \
+    SELF_COMPACT_BRIEF_WAIT_ATTEMPTS="${SELF_COMPACT_BRIEF_WAIT_ATTEMPTS:-3}" \
+    SELF_COMPACT_BRIEF_WAIT_DELAY_SECONDS="${SELF_COMPACT_BRIEF_WAIT_DELAY_SECONDS:-0.001}" \
     SELF_COMPACT_RECOVERY_DELAY_SECONDS=0.05 \
     SELF_COMPACT_NOTICE_MILLISECONDS=20 \
     SELF_COMPACT_POLL_SECONDS=0.02 \
@@ -1394,6 +1396,36 @@ run_submit_command > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
   status=$?
 [ "$status" -ne 0 ] || fail "missing brief unexpectedly authorized compaction"
 assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+
+setup_case current-turn-brief-delayed-visibility
+printf '%s\n' '{"type":"assistant.turn_start"}' \
+  >> "$FAKE_CASE/session/events.jsonl"
+(
+  sleep 0.03
+  CONTENT=$'SELF_COMPACT_BRIEF\nKeep: delayed baton\nDrop: resolved detail\nAfter compaction: continue and do not compact again' \
+    /usr/bin/perl -MJSON::PP -e '
+      print encode_json({
+        type => "assistant.message",
+        data => {
+          content => $ENV{CONTENT},
+          toolRequests => [{
+            name => "bash",
+            arguments => {command => "submit-compact.sh"}
+          }]
+        }
+      }), "\n";
+      print encode_json({
+        type => "tool.execution_start",
+        data => {toolName => "bash"}
+      }), "\n";
+    ' >> "$FAKE_CASE/session/events.jsonl"
+) &
+printf '%s\n' "$!" >> "$FAKE_BACKGROUND_PIDS"
+SELF_COMPACT_BRIEF_WAIT_ATTEMPTS=200 \
+  SELF_COMPACT_BRIEF_WAIT_DELAY_SECONDS=0.002 \
+  run_submit_command >/dev/null
+wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
+assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
 
 setup_case older-turn-brief-rejected
 append_brief_turn \

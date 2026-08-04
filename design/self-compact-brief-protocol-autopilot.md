@@ -41,11 +41,12 @@ permission, destructive-action, or user-only visual-confirmation blocker.
 
 ## Current phase
 
-The implementation, caller migration, v0.101.0 manifests, and expanded
-deterministic shell suite are complete. The suite passes. The current phase is
-the first real Sierra live lifecycle on candidate digest
-`a53cd05fb25db2cf9f8d7a98daaf652efc68ad801cfabc226cae3b42d0d52f49`.
-Implementation review remains gated until its live-proof receipt is PASS.
+The first Tango live lifecycle exposed an event-log visibility race: Copilot
+can start the helper subprocess before the immediately preceding
+`assistant.message` is readable. The helper now waits up to two seconds for
+that current-turn message before any lock or editor mutation. Deterministic
+validation and a complete replacement live lifecycle are required before
+implementation review.
 
 ## Phase order
 

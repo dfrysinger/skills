@@ -175,7 +175,21 @@ current_turn_has_brief() {
   ' "$EVENTS"
 }
 
-if ! current_turn_has_brief; then
+wait_for_current_turn_brief() {
+  local attempts="${SELF_COMPACT_BRIEF_WAIT_ATTEMPTS:-40}"
+  local delay="${SELF_COMPACT_BRIEF_WAIT_DELAY_SECONDS:-0.05}"
+
+  case "$attempts" in
+    ''|*[!0-9]*|0) return 1 ;;
+  esac
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    current_turn_has_brief && return 0
+    [ "$attempt" -lt "$attempts" ] && sleep "$delay"
+  done
+  return 1
+}
+
+if ! wait_for_current_turn_brief; then
   echo "submit-compact.sh: current assistant turn has no complete SELF_COMPACT_BRIEF; compact not submitted" >&2
   exit 1
 fi

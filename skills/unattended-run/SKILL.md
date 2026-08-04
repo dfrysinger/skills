@@ -103,11 +103,11 @@ After compaction: Continue this charter at step 3, enqueue the objective as the
 last action of that turn, then end the turn so it fires; do not compact again.
 ```
 
-Invoke `self-compact`'s helper with zero arguments as the final tool action. The
-helper arms its watcher before submitting the compact and resumes only after
-the matching compaction event and checkpoint land. The live schedule remains
-the durable recovery path. Missing either the schedule or watcher makes the
-handoff incomplete.
+Invoke `self-compact`'s helper with zero arguments and a Bash `initial_wait` of
+at least 120 seconds as the final tool action. The helper arms its watcher
+before submitting the compact and resumes only after the matching compaction
+event and checkpoint land. The live schedule remains the durable recovery
+path. Missing either the schedule or watcher makes the handoff incomplete.
 
 Use `/new` instead only if the planning conversation must remain separately
 resumable. It starts a fresh session, so the new-session prompt itself must

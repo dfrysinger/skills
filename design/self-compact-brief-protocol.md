@@ -147,6 +147,14 @@ The helper accepts zero arguments. A positional steer, `--continuation`, or any
 other argument exits with status 2 before workspace resolution, lock
 acquisition, watcher creation, run files, Ctrl-S, typing, or Enter.
 
+The invoking Bash tool sets `initial_wait` to at least 120 seconds. Draft
+recovery, exact rendering, and the bounded ambiguous-render path can outlive
+the tool's default 30-second foreground wait. If the tool moves to the
+background first, Copilot starts another assistant turn while the helper is
+still active; the helper must treat that as concurrent activity and cancel.
+Callers prevent that synthetic race by keeping the tool call foregrounded for
+the complete bounded submission interval.
+
 ### 2. Prove the current turn contains the brief
 
 After resolving the active workspace and before acquiring the run lock, the
@@ -170,9 +178,13 @@ search the complete event line for the token.
 
 An older brief from another turn does not qualify. A user message, checkpoint,
 tool argument, tool output, quoted design text, or ordinary assistant narration
-that merely mentions the words does not qualify. If the event stream has not
-yet recorded the structurally complete current assistant message or cannot
-establish the boundary, the helper exits without editor mutation.
+that merely mentions the words does not qualify. Because Copilot may start the
+tool subprocess before the preceding `assistant.message` is readable from the
+event log, the helper polls for that message for up to two seconds before
+exiting. The wait occurs before lock acquisition, watcher creation, or editor
+mutation. If the structurally complete message remains unavailable or the
+current-turn boundary cannot be established, the helper exits without editor
+mutation.
 
 The event baseline for compaction identity is recorded only after this check.
 
@@ -465,6 +477,7 @@ or retry failed compaction.
 | --- | --- | --- | --- |
 | Long meaning is independent of pane width | Emit a multi-paragraph brief in a 52-column pane and invoke the helper | Fixed 43-column token-bearing compact command reaches submission without shortening the brief | Semantic payload still depends on editor width |
 | Current-turn brief is mandatory | Invoke with no brief, an older-turn brief, a user-message mention, a tool-output mention, a tool-argument mention inside the assistant event, an ordinary assistant bare mention, a structurally incomplete brief, and a semantically similar `After compaction:` section that omits the literal `do not compact again` | Every case exits before lock, watcher, run files, Ctrl-S, typing, or Enter | Stale, non-assistant, non-brief, or template-drifted text can authorize compaction |
+| Current-turn brief visibility may lag tool startup | Start the helper while only the current `assistant.turn_start` is readable, then append the structurally complete assistant message within the bounded visibility interval | The helper authorizes the same turn only after the message becomes readable, without any earlier lock or editor mutation | Event-log write timing can reject a valid immediately preceding brief |
 | Positional steers are retired | Invoke with the old `'<steer>'` syntax | Usage error before workspace resolution or mutation | Unsafe callers can silently retain the old protocol |
 | Caller-selected continuation is retired | Invoke with `--continuation '<prompt>'` and with an unknown option | Usage error before workspace resolution or mutation | Callers can still steer or lengthen the wake |
 | Concurrent helper runs are excluded | Hold a live session lock and invoke a second helper; separately expose dead `foreground`, `watcher-launching`, `watcher-owned`, malformed, and conflicting run-file states | Only well-formed dead `foreground` with no launch evidence is reclaimed; every live, transferred, or ambiguous state blocks before mutation; each owner token releases only its own lock | Two queued compacts or unsafe stale-lock deletion are possible |
@@ -475,6 +488,7 @@ or retry failed compaction.
 | Timed fallback rejects draft-bearing runs | Begin with visible and hidden unique drafts, prepare to empty, then keep the post-paste capture unreadable through the deadline | Zero Enter; exact rendering remains required | An asynchronously restored private draft can be submitted |
 | Timed fallback rejects known mismatch | After proven empty, render a prefix, suffix, altered byte, restored draft, or second row before deadline | Zero Enter; residual remains or only exact owned text is cleaned | Waiting can submit known wrong text |
 | Activity cancels timed fallback | Record user or assistant activity during every wait boundary | No later capture-driven mutation or Enter | Helper can race a resumed turn |
+| Tool call remains foregrounded | Invoke through Bash with `initial_wait` of at least 120 seconds while exercising the longest draft-recovery and render path | The helper returns or submits before Copilot creates a new assistant turn | The default Bash wait can create a false concurrent-activity cancellation |
 | Menu blocks timed fallback | Show concrete nearby menu chrome after paste | Zero Enter | Ambiguous paste can activate a menu choice |
 | No brief marker is required in prose | Complete with exact event metadata and a checkpoint that omits `SELF_COMPACT_BRIEF` and any run marker | Watcher accepts and continues | Generated prose still controls identity |
 | Exact completion identity | Produce success with this run's token, then variants with another token, untagged or different instructions, failure, missing number, stale count, or missing checkpoint | Only the exact token-bearing complete case continues | Unrelated or incomplete compaction can be claimed |
@@ -554,12 +568,13 @@ This is an intentional breaking change to an internal personal helper.
    submit-compact.sh
    ```
 
-3. Move all steer and continuation meaning into the immediately preceding
+3. Set the invoking Bash tool's `initial_wait` to at least 120 seconds.
+4. Move all steer and continuation meaning into the immediately preceding
    `SELF_COMPACT_BRIEF`.
-4. Keep the old positional syntax and `--continuation` as hard errors with
+5. Keep the old positional syntax and `--continuation` as hard errors with
    migration guidance for one release. Do not interpret or ignore supplied
    text.
-5. Publish and install the new plugin version only after deterministic and live
+6. Publish and install the new plugin version only after deterministic and live
    acceptance pass.
 
 No session data migration is required. Existing checkpoints, schedules, and
@@ -594,6 +609,8 @@ fallback disabled.
   `--continuation`, requires a structurally complete current-turn
   `SELF_COMPACT_BRIEF` from assistant content, proves immediate editor
   emptiness, and submits only the fixed short token-bearing control command.
+- Every documented caller invokes the helper with a Bash `initial_wait` of at
+  least 120 seconds.
 - One session-scoped owner-token lock excludes concurrent helper runs and is
   released safely by foreground and watcher terminal paths.
 - The exact path remains preferred; the compact-only timed fallback satisfies
