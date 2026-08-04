@@ -429,10 +429,7 @@ case "$command" in
         case "$input" in
           /compact\ *)
             printf '%s\n' "$input" >> "$FAKE_TMUX_QUEUE"
-            marker="$(
-              printf '%s' "$input" |
-                grep -Eo 'SCM:[0-9a-f]{8}-[0-9a-f]{5}'
-            )"
+            custom_instructions="${input#/compact }"
             case "${FAKE_COMPACT_MODE:-success}" in
               success)
                 : > "$FAKE_TMUX_INPUT"
@@ -451,9 +448,14 @@ case "$command" in
                     "$FAKE_WORKSPACE" > "$FAKE_WORKSPACE.next"
                   mv "$FAKE_WORKSPACE.next" "$FAKE_WORKSPACE"
                   mkdir -p "${FAKE_WORKSPACE%/workspace.yaml}/checkpoints"
-                  printf '%s\n' "$marker" > \
-                    "${FAKE_WORKSPACE%/workspace.yaml}/checkpoints/001-test.md"
-                  append_event '{"type":"session.compaction_complete","success":true}'
+                  printf '%s\n' "checkpoint without identity prose" > \
+                    "${FAKE_WORKSPACE%/workspace.yaml}/checkpoints/002-test.md"
+                  escaped_instructions="$(
+                    printf '%s' "$custom_instructions" |
+                      sed 's/\\/\\\\/g; s/"/\\"/g'
+                  )"
+                  append_event \
+                    "{\"type\":\"session.compaction_complete\",\"data\":{\"success\":true,\"customInstructions\":\"$escaped_instructions\",\"checkpointNumber\":2}}"
                 ) &
                 printf '%s\n' "$!" >> "$FAKE_BACKGROUND_PIDS"
                 ;;
@@ -468,9 +470,14 @@ case "$command" in
                     "$FAKE_WORKSPACE" > "$FAKE_WORKSPACE.next"
                   mv "$FAKE_WORKSPACE.next" "$FAKE_WORKSPACE"
                   mkdir -p "${FAKE_WORKSPACE%/workspace.yaml}/checkpoints"
-                  printf '%s\n' "$marker" > \
-                    "${FAKE_WORKSPACE%/workspace.yaml}/checkpoints/001-test.md"
-                  append_event '{"type":"session.compaction_complete","success":true}'
+                  printf '%s\n' "checkpoint without identity prose" > \
+                    "${FAKE_WORKSPACE%/workspace.yaml}/checkpoints/002-test.md"
+                  escaped_instructions="$(
+                    printf '%s' "$custom_instructions" |
+                      sed 's/\\/\\\\/g; s/"/\\"/g'
+                  )"
+                  append_event \
+                    "{\"type\":\"session.compaction_complete\",\"data\":{\"success\":true,\"customInstructions\":\"$escaped_instructions\",\"checkpointNumber\":2}}"
                 ) &
                 printf '%s\n' "$!" >> "$FAKE_BACKGROUND_PIDS"
                 ;;
@@ -489,7 +496,25 @@ case "$command" in
                 : > "$FAKE_TMUX_INPUT"
                 append_event '{"type":"session.compaction_start"}'
                 append_event \
-                  '{"type":"session.compaction_complete","success":false,"error":"Nothing to compact"}'
+                  '{"type":"session.compaction_complete","data":{"success":false,"error":"Nothing to compact"}}'
+                ;;
+              mismatched-then-matching)
+                : > "$FAKE_TMUX_INPUT"
+                append_event '{"type":"session.compaction_start"}'
+                sed 's/^summary_count: .*/summary_count: 2/' \
+                  "$FAKE_WORKSPACE" > "$FAKE_WORKSPACE.next"
+                mv "$FAKE_WORKSPACE.next" "$FAKE_WORKSPACE"
+                mkdir -p "${FAKE_WORKSPACE%/workspace.yaml}/checkpoints"
+                printf '%s\n' "checkpoint without identity prose" > \
+                  "${FAKE_WORKSPACE%/workspace.yaml}/checkpoints/002-test.md"
+                append_event \
+                  '{"type":"session.compaction_complete","data":{"success":true,"customInstructions":"Use SELF_COMPACT_BRIEF. B:deadbeef","checkpointNumber":2}}'
+                escaped_instructions="$(
+                  printf '%s' "$custom_instructions" |
+                    sed 's/\\/\\\\/g; s/"/\\"/g'
+                )"
+                append_event \
+                  "{\"type\":\"session.compaction_complete\",\"data\":{\"success\":true,\"customInstructions\":\"$escaped_instructions\",\"checkpointNumber\":2}}"
                 ;;
               *)
                 echo "unexpected compact mode: $FAKE_COMPACT_MODE" >&2
@@ -554,6 +579,11 @@ case "$command" in
             printf '%s' "${FAKE_RENDER_WRONG_VALUE:-}" \
               > "$FAKE_RENDER_OVERRIDE"
           fi
+          if [ -n "${FAKE_CAPTURE_MODE_ON_TYPE:-}" ] &&
+            { [ -z "${FAKE_CAPTURE_MODE_ON_TYPE_COUNT:-}" ] ||
+              [ "$FAKE_CAPTURE_MODE_ON_TYPE_COUNT" -eq "$count" ]; }; then
+            printf '%s' "$FAKE_CAPTURE_MODE_ON_TYPE" > "$FAKE_CAPTURE_MODE"
+          fi
         else
           echo "unexpected send-keys call: $*" >&2
           exit 1
@@ -601,7 +631,7 @@ if [ -n "${FAKE_EPOCH_MILLISECONDS_FILE:-}" ]; then
   if [ "${FAKE_EPOCH_APPEND_EVENTS_AT_CALL:-0}" -eq "$call" ]; then
     printf '%s\n' \
       '{"type":"session.compaction_start"}' \
-      '{"type":"session.compaction_complete","success":true}' \
+      '{"type":"session.compaction_complete","data":{"success":true,"customInstructions":"Use SELF_COMPACT_BRIEF. B:0123abcd","checkpointNumber":2}}' \
       '{"type":"assistant.turn_start"}' >> "$FAKE_EPOCH_EVENTS"
   fi
   printf '%s\n' "$value"
@@ -703,6 +733,7 @@ EOF
   unset FAKE_ACTIVITY_ON_NOTICE
   unset FAKE_RENDER_DELAY_TYPE_COUNT FAKE_RENDER_DELAY_CAPTURES
   unset FAKE_RENDER_WRONG_VALUE
+  unset FAKE_CAPTURE_MODE_ON_TYPE FAKE_CAPTURE_MODE_ON_TYPE_COUNT
   unset FAKE_WINDOW_LINKED FAKE_EPOCH_MILLISECONDS_FILE
   unset FAKE_EPOCH_APPEND_EVENTS_AT_CALL FAKE_EPOCH_EVENTS
 
@@ -747,6 +778,7 @@ run_submit_command() {
     SELF_COMPACT_RESIZE_HOLD_SECONDS=0.001 \
     SELF_COMPACT_RENDER_WAIT_SECONDS="${SELF_COMPACT_RENDER_WAIT_SECONDS:-0.05}" \
     SELF_COMPACT_RENDER_POLL_SECONDS="${SELF_COMPACT_RENDER_POLL_SECONDS:-0.001}" \
+    SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS="${SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS:-0.05}" \
     SELF_COMPACT_RECOVERY_DELAY_SECONDS=0.05 \
     SELF_COMPACT_NOTICE_MILLISECONDS=20 \
     SELF_COMPACT_POLL_SECONDS=0.02 \
@@ -755,24 +787,46 @@ run_submit_command() {
     SELF_COMPACT_RESUME_GRACE_SECONDS=0.01 \
     SELF_COMPACT_CONTINUATION_CONFIRM_DELAY_SECONDS=0.01 \
     SELF_COMPACT_CONTINUATION_CONFIRM_POLLS=100 \
+    SELF_COMPACT_RUN_TOKEN=0123abcd \
     "$SCRIPT_DIR/submit-compact.sh" "$@"
 }
 
 run_submit() {
-  local continuation="${1:-}"
-  local steer="Keep: active baton. Drop: resolved detail."
-  if [ -n "$continuation" ]; then
-    run_submit_command --continuation "$continuation" "$steer"
-  else
-    run_submit_command "$steer"
-  fi
+  append_brief_turn \
+    $'SELF_COMPACT_BRIEF\nKeep: active baton\nDrop: resolved detail\nAfter compaction: continue the task and do not compact again'
+  run_submit_command
+}
+
+append_brief_turn() {
+  local content="$1"
+  CONTENT="$content" /usr/bin/perl -MJSON::PP -e '
+    my $content = $ENV{CONTENT};
+    print encode_json({type => "assistant.turn_start"}), "\n";
+    print encode_json({
+      type => "assistant.message",
+      data => {
+        content => $content,
+        toolRequests => [{
+          name => "bash",
+          arguments => {command => "submit-compact.sh"}
+        }]
+      }
+    }), "\n";
+    print encode_json({
+      type => "tool.execution_start",
+      data => {toolName => "bash"}
+    }), "\n";
+  ' >> "$FAKE_CASE/session/events.jsonl"
 }
 
 wait_for_watcher_log() {
   local pattern="$1"
   local log=""
   for _ in $(seq 1 200); do
-    log="$(find "$FAKE_CASE/session/files" -name 'self-compact-*.log' -print -quit)"
+    log="$(
+      find "$FAKE_CASE/session/files" -name 'self-compact-*.log' \
+        -print -quit 2>/dev/null
+    )"
     [ -n "$log" ] && grep -qE "$pattern" "$log" 2>/dev/null && {
       printf '%s\n' "$log"
       return 0
@@ -1042,14 +1096,18 @@ assert_count 0 '^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
 
 : > "$FAKE_CASE/ready"
 : > "$FAKE_CASE/armed"
+mkdir "$FAKE_CASE/lock"
+printf '%s\n' test-lock > "$FAKE_CASE/lock/token"
 status=0
 (
   export PATH="$invalid_locale_bin:$PATH"
   export SELF_COMPACT_LOCALE=definitely-invalid
   "$SCRIPT_DIR/resume-after-compact.sh" \
     "%1" "$FAKE_WORKSPACE" 1 0 "$FAKE_CASE/ready" "$FAKE_CASE/armed" \
-    "$FAKE_CASE/cancelled" "SCM:00000000-00001" "proceed" \
-    "$FAKE_BIN/tmux" "/compact invalid-locale"
+    "$FAKE_CASE/cancelled" "0123abcd" \
+    "Compaction done; resume, do not compact." \
+    "$FAKE_BIN/tmux" "/compact Use SELF_COMPACT_BRIEF. B:0123abcd" \
+    "Use SELF_COMPACT_BRIEF. B:0123abcd" "$FAKE_CASE/lock" test-lock
 ) > "$FAKE_CASE/watcher.out" 2> "$FAKE_CASE/watcher.err" || status=$?
 [ "$status" -ne 0 ] || fail "invalid-locale watcher unexpectedly continued"
 grep -q 'continuation watcher could not verify a UTF-8 locale' \
@@ -1221,42 +1279,19 @@ assert_count 1 \
 grep -q '^NOTICE:self-compact: input recovery failed; command was not submitted' \
   "$FAKE_TMUX_ACTIONS"
 
-# A readable normal path that exposes a menu after typing #1 must complete the
-# Ctrl-U/Escape/menu-dismiss/Ctrl-U sequence before typing #2 and submitting it.
+# The protocol submitter never retries a known mismatched or menu-bearing
+# command. One literal paste is the complete typing budget.
 setup_case normal-path-menu
 export FAKE_APPEND_ON_TYPE=" menu draft"
 export FAKE_APPEND_ON_TYPE_COUNT=1
 export FAKE_MENU_ON_TYPE_COUNT=1
 export FAKE_ESC_CLOSE_AFTER=2
-SELF_COMPACT_RECOVERY_DELAY_SECONDS=0.01 run_submit
-assert_count 3 '^KEY:C-u:' "$FAKE_TMUX_ACTIONS"
-assert_count 2 '^KEY:Escape:' "$FAKE_TMUX_ACTIONS"
-assert_count 2 '^TYPE:' "$FAKE_TMUX_ACTIONS"
-assert_count 1 '^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
-first_typed="$(grep '^TYPE:' "$FAKE_TMUX_ACTIONS" | sed -n '1s/^TYPE://p')"
-second_typed="$(grep '^TYPE:' "$FAKE_TMUX_ACTIONS" | sed -n '2s/^TYPE://p')"
-[ "$first_typed" = "$second_typed" ] ||
-  fail "normal-path menu retry changed the command"
-first_type_line="$(grep -n '^TYPE:' "$FAKE_TMUX_ACTIONS" | sed -n '1s/:.*//p')"
-first_clear_line="$(grep -n '^KEY:C-u:' "$FAKE_TMUX_ACTIONS" | sed -n '1s/:.*//p')"
-second_clear_line="$(grep -n '^KEY:C-u:' "$FAKE_TMUX_ACTIONS" | sed -n '2s/:.*//p')"
-first_escape_line="$(grep -n '^KEY:Escape:' "$FAKE_TMUX_ACTIONS" | sed -n '1s/:.*//p')"
-second_escape_line="$(grep -n '^KEY:Escape:' "$FAKE_TMUX_ACTIONS" | sed -n '2s/:.*//p')"
-third_clear_line="$(grep -n '^KEY:C-u:' "$FAKE_TMUX_ACTIONS" | sed -n '3s/:.*//p')"
-second_type_line="$(grep -n '^TYPE:' "$FAKE_TMUX_ACTIONS" | sed -n '2s/:.*//p')"
-enter_line="$(grep -n '^KEY:Enter:' "$FAKE_TMUX_ACTIONS" | sed -n '1s/:.*//p')"
-[ "$first_type_line" -lt "$first_clear_line" ] &&
-  [ "$first_clear_line" -lt "$second_clear_line" ] &&
-  [ "$second_clear_line" -lt "$first_escape_line" ] &&
-  [ "$first_escape_line" -lt "$second_escape_line" ] &&
-  [ "$second_escape_line" -lt "$third_clear_line" ] &&
-  [ "$third_clear_line" -lt "$second_type_line" ] &&
-  [ "$second_type_line" -lt "$enter_line" ] ||
-  fail "normal-path menu retry used the wrong recovery order"
-assert_file_equals "$second_typed" "$FAKE_TMUX_QUEUE"
-grep -Fqx "KEY:Enter:$second_typed" "$FAKE_TMUX_ACTIONS" ||
-  fail "normal-path menu did not submit the second exact typing"
-assert_file_equals 0 "$FAKE_MENU"
+status=0
+SELF_COMPACT_RECOVERY_DELAY_SECONDS=0.01 run_submit || status=$?
+[ "$status" -ne 0 ] || fail "known menu mismatch unexpectedly submitted"
+assert_count 0 '^KEY:C-u:|^KEY:Escape:' "$FAKE_TMUX_ACTIONS"
+assert_count 1 '^TYPE:' "$FAKE_TMUX_ACTIONS"
+assert_count 0 '^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
 
 # Activity recorded by the first Escape blocks every later destructive key.
 setup_case activity-after-escape
@@ -1335,6 +1370,140 @@ SELF_COMPACT_CAPTURE_DELAY_SECONDS=0.001 \
 [ "$status" -eq 10 ] || fail "grace activity returned $status instead of 10"
 assert_count 0 '^KEY:C-u:|^KEY:Escape:|^TYPE:' "$FAKE_TMUX_ACTIONS"
 
+# The helper authorizes only a structurally complete brief in the current
+# assistant message content.
+assert_brief_rejected() {
+  local name="$1"
+  local content="$2"
+  setup_case "$name"
+  append_brief_turn "$content"
+  status=0
+  run_submit_command > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
+    status=$?
+  [ "$status" -ne 0 ] || fail "$name unexpectedly authorized compaction"
+  grep -q 'current assistant turn has no complete SELF_COMPACT_BRIEF' \
+    "$FAKE_CASE/submit.err"
+  assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+  [ ! -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
+    fail "$name acquired the session lock"
+}
+
+setup_case current-turn-brief-missing
+status=0
+run_submit_command > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
+  status=$?
+[ "$status" -ne 0 ] || fail "missing brief unexpectedly authorized compaction"
+assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+
+setup_case older-turn-brief-rejected
+append_brief_turn \
+  $'SELF_COMPACT_BRIEF\nKeep: old baton\nDrop: old detail\nAfter compaction: continue and do not compact again'
+printf '%s\n' '{"type":"assistant.turn_start"}' \
+  >> "$FAKE_CASE/session/events.jsonl"
+status=0
+run_submit_command > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
+  status=$?
+[ "$status" -ne 0 ] || fail "older-turn brief unexpectedly authorized compaction"
+assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+
+assert_brief_rejected assistant-bare-mention \
+  $'I will emit SELF_COMPACT_BRIEF later, not now.'
+assert_brief_rejected missing-keep-content \
+  $'SELF_COMPACT_BRIEF\nKeep:\nDrop: detail\nAfter compaction: continue and do not compact again'
+assert_brief_rejected missing-literal \
+  $'SELF_COMPACT_BRIEF\nKeep: baton\nDrop: detail\nAfter compaction: never initiate another compact'
+
+setup_case tool-argument-mention
+CONTENT='ordinary assistant content' /usr/bin/perl -MJSON::PP -e '
+  print encode_json({type => "assistant.turn_start"}), "\n";
+  print encode_json({
+    type => "assistant.message",
+    data => {
+      content => $ENV{CONTENT},
+      toolRequests => [{
+        name => "bash",
+        arguments => {
+          command => "SELF_COMPACT_BRIEF Keep: fake Drop: fake After compaction: do not compact again"
+        }
+      }]
+    }
+  }), "\n";
+' >> "$FAKE_CASE/session/events.jsonl"
+status=0
+run_submit_command > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
+  status=$?
+[ "$status" -ne 0 ] || fail "tool-argument mention authorized compaction"
+assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+
+# The timed fallback is compact-only and available only from a genuinely empty
+# editor with no visible or hidden draft observed during preparation.
+setup_case timed-fallback-empty-editor
+export FAKE_CAPTURE_MODE_ON_TYPE=unreadable
+export FAKE_CAPTURE_MODE_ON_TYPE_COUNT=1
+export FAKE_POST_COMPACT_MODE=readable
+SELF_COMPACT_RENDER_WAIT_SECONDS=0.02 \
+  SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS=0.05 \
+  run_submit >/dev/null
+wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
+assert_count 1 '^TYPE:/compact Use SELF_COMPACT_BRIEF\. B:0123abcd$' \
+  "$FAKE_TMUX_ACTIONS"
+assert_count 1 '^KEY:Enter:/compact Use SELF_COMPACT_BRIEF\. B:0123abcd$' \
+  "$FAKE_TMUX_ACTIONS"
+
+setup_case timed-fallback-rejects-stashed-draft
+printf '%s' "private draft" > "$FAKE_TMUX_INPUT"
+export FAKE_CAPTURE_MODE_ON_TYPE=unreadable
+export FAKE_CAPTURE_MODE_ON_TYPE_COUNT=1
+status=0
+SELF_COMPACT_RENDER_WAIT_SECONDS=0.02 \
+  SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS=0.05 \
+  run_submit > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
+  status=$?
+[ "$status" -ne 0 ] ||
+  fail "draft-bearing timed fallback unexpectedly submitted"
+grep -q 'this run handled a draft' "$FAKE_CASE/submit.err"
+assert_count 1 '^TYPE:/compact ' "$FAKE_TMUX_ACTIONS"
+assert_count 0 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
+
+# Session-scoped exclusion blocks live and transferred owners, while exactly
+# one well-formed dead foreground owner can be reclaimed.
+setup_case concurrent-helper-session-lock
+mkdir "$FAKE_CASE/session/files/self-compact.lock"
+printf '%s\n' other-owner > "$FAKE_CASE/session/files/self-compact.lock/token"
+printf '%s\n' foreground > "$FAKE_CASE/session/files/self-compact.lock/state"
+printf '%s\n' "$$" > "$FAKE_CASE/session/files/self-compact.lock/submitter.pid"
+append_brief_turn \
+  $'SELF_COMPACT_BRIEF\nKeep: baton\nDrop: detail\nAfter compaction: continue and do not compact again'
+status=0
+run_submit_command > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
+  status=$?
+[ "$status" -ne 0 ] || fail "live lock allowed a second helper"
+grep -q 'another or ambiguous self-compact run owns' "$FAKE_CASE/submit.err"
+assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+
+setup_case stale-foreground-lock-reclaimed
+mkdir "$FAKE_CASE/session/files/self-compact.lock"
+printf '%s\n' stale-owner > "$FAKE_CASE/session/files/self-compact.lock/token"
+printf '%s\n' foreground > "$FAKE_CASE/session/files/self-compact.lock/state"
+printf '%s\n' 999999 > "$FAKE_CASE/session/files/self-compact.lock/submitter.pid"
+run_submit >/dev/null
+wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
+assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
+
+setup_case launching-lock-fails-closed
+mkdir "$FAKE_CASE/session/files/self-compact.lock"
+printf '%s\n' stuck-owner > "$FAKE_CASE/session/files/self-compact.lock/token"
+printf '%s\n' watcher-launching > "$FAKE_CASE/session/files/self-compact.lock/state"
+printf '%s\n' 999999 > "$FAKE_CASE/session/files/self-compact.lock/submitter.pid"
+: > "$FAKE_CASE/session/files/self-compact.lock/watcher-launching"
+append_brief_turn \
+  $'SELF_COMPACT_BRIEF\nKeep: baton\nDrop: detail\nAfter compaction: continue and do not compact again'
+status=0
+run_submit_command > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
+  status=$?
+[ "$status" -ne 0 ] || fail "watcher-launching lock was reclaimed"
+assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+
 # A full compact waits for the submitting turn end, accepts a start within the
 # 15-second-relative deadline, preserves the draft, and submits each command
 # with one exact Enter.
@@ -1352,10 +1521,10 @@ grep -qF '|| true' "$FAKE_RUN_SHELL_COMMAND"
 log="$(wait_for_watcher_log 'submitted post-compact continuation')"
 assert_file_equals $'LANG=unset\nLC_ALL=unset' "$FAKE_RUN_SHELL_ENV"
 assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
-assert_count 1 '^KEY:Enter:proceed$' "$FAKE_TMUX_ACTIONS"
-assert_count 1 '^TYPE:proceed$' "$FAKE_TMUX_ACTIONS"
+assert_count 1 '^KEY:Enter:Compaction done; resume, do not compact\.$' "$FAKE_TMUX_ACTIONS"
+assert_count 1 '^TYPE:Compaction done; resume, do not compact\.$' "$FAKE_TMUX_ACTIONS"
 assert_file_equals "already queued" "$FAKE_TMUX_INPUT"
-grep -q 'marked compact advanced summary_count to 2' "$log"
+grep -q 'matching compact advanced summary_count to 2 at checkpoint 2' "$log"
 
 # A delayed compact render is polled read-only until the exact marked command
 # appears. It does not spend another typing, recovery key, or warning.
@@ -1379,85 +1548,61 @@ export FAKE_RENDER_DELAY_TYPE_COUNT=2
 export FAKE_RENDER_DELAY_CAPTURES=3
 SELF_COMPACT_RENDER_WAIT_SECONDS=5 run_submit >/dev/null
 wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
-assert_count 1 '^TYPE:proceed$' "$FAKE_TMUX_ACTIONS"
-assert_count 1 '^KEY:Enter:proceed$' "$FAKE_TMUX_ACTIONS"
+assert_count 1 '^TYPE:Compaction done; resume, do not compact\.$' "$FAKE_TMUX_ACTIONS"
+assert_count 1 '^KEY:Enter:Compaction done; resume, do not compact\.$' "$FAKE_TMUX_ACTIONS"
 assert_count 0 '^KEY:C-u:' "$FAKE_TMUX_ACTIONS"
 assert_count 0 '^KEY:Escape:' "$FAKE_TMUX_ACTIONS"
 assert_count 0 \
   '^NOTICE:self-compact: input changed or unreadable; will clear it in 10 seconds' \
   "$FAKE_TMUX_ACTIONS"
 
-# The fixed marker and instruction leave exactly 31 steer columns in a
-# 68-column pane after the four-column editor margin.
-setup_case exact-one-row-68
-printf '%s\n' "68 40" > "$FAKE_GEOMETRY"
-max_steer="$(printf '%031d' 0 | tr '0' s)"
-run_submit_command "$max_steer" >/dev/null
+# Hotel's 52-column pane safely fits the fixed 43-column token-bearing control
+# without shortening the long assistant-side brief.
+setup_case hotel-long-brief-narrow-pane
+printf '%s\n' "52 40" > "$FAKE_GEOMETRY"
+run_submit >/dev/null
 wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
 assert_count 1 '^TYPE:/compact ' "$FAKE_TMUX_ACTIONS"
 assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
-assert_count 1 '^TYPE:proceed$' "$FAKE_TMUX_ACTIONS"
-assert_count 1 '^KEY:Enter:proceed$' "$FAKE_TMUX_ACTIONS"
+assert_count 1 '^TYPE:Compaction done; resume, do not compact\.$' "$FAKE_TMUX_ACTIONS"
+assert_count 1 '^KEY:Enter:Compaction done; resume, do not compact\.$' "$FAKE_TMUX_ACTIONS"
 one_row_command="$(grep '^TYPE:/compact ' "$FAKE_TMUX_ACTIONS" | sed 's/^TYPE://')"
-[ "${#one_row_command}" -eq 64 ] ||
-  fail "68-column command used ${#one_row_command} safe columns instead of 64"
+[ "${#one_row_command}" -eq 43 ] ||
+  fail "fixed compact command used ${#one_row_command} columns instead of 43"
 grep -Fqx "KEY:Enter:$one_row_command" "$FAKE_TMUX_ACTIONS" ||
   fail "exact one-row compact did not receive its single Enter"
-checkpoint="$FAKE_CASE/session/checkpoints/001-test.md"
-grep -Eq '^SCM:[0-9a-f]{8}-[0-9a-f]{5}$' "$checkpoint" ||
-  fail "concise SCM marker was not retained in the checkpoint"
+checkpoint="$FAKE_CASE/session/checkpoints/002-test.md"
+grep -q 'checkpoint without identity prose' "$checkpoint" ||
+  fail "checkpoint-without-marker lifecycle did not land"
 
-# One extra steer column fails before watcher launch, run files, or Ctrl-S.
-setup_case long-steer-preflight
-printf '%s\n' "68 40" > "$FAKE_GEOMETRY"
-too_long_steer="$(printf '%032d' 0 | tr '0' s)"
+# The old positional steer is a hard error before workspace or editor mutation.
+setup_case positional-steer-retired
 status=0
-run_submit_command "$too_long_steer" \
+run_submit_command "Keep: old inline steer" \
   > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" || status=$?
-[ "$status" -ne 0 ] || fail "overlong steer unexpectedly passed preflight"
-grep -q 'marked compact command is 65 columns, but this pane safely allows 64' \
-  "$FAKE_CASE/submit.err"
+[ "$status" -eq 2 ] || fail "positional steer did not return usage status 2"
+grep -q 'inline steers and --continuation are retired' "$FAKE_CASE/submit.err"
 [ ! -s "$FAKE_RUN_SHELL_COMMAND" ] ||
-  fail "overlong steer launched a watcher"
-assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
-if find "$FAKE_CASE/session/files" -name 'self-compact-*' -print -quit |
-  grep -q .; then
-  fail "overlong steer created run files"
-fi
-
-# An overlong continuation fails at the same preflight boundary.
-setup_case long-continuation-preflight
-printf '%s\n' "68 40" > "$FAKE_GEOMETRY"
-too_long_continuation="$(printf '%065d' 0 | tr '0' c)"
-status=0
-run_submit_command --continuation "$too_long_continuation" x \
-  > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" || status=$?
-[ "$status" -ne 0 ] ||
-  fail "overlong continuation unexpectedly passed preflight"
-grep -q 'continuation is 65 columns, but this pane safely allows 64' \
-  "$FAKE_CASE/submit.err"
-[ ! -s "$FAKE_RUN_SHELL_COMMAND" ] ||
-  fail "overlong continuation launched a watcher"
+  fail "positional steer launched a watcher"
 assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
 
-# Printable ASCII is a fail-closed prerequisite for both commands.
-setup_case non-ascii-steer
+# Caller-selected continuation and unknown options are also hard errors.
+setup_case continuation-retired
 status=0
-run_submit_command "café" \
+run_submit_command --continuation "continue" \
   > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" || status=$?
-[ "$status" -ne 0 ] || fail "non-ASCII steer unexpectedly passed"
-grep -q 'steer must contain only printable ASCII' "$FAKE_CASE/submit.err"
-[ ! -s "$FAKE_RUN_SHELL_COMMAND" ] || fail "non-ASCII steer launched a watcher"
+[ "$status" -eq 2 ] || fail "--continuation did not return usage status 2"
+grep -q 'inline steers and --continuation are retired' "$FAKE_CASE/submit.err"
+[ ! -s "$FAKE_RUN_SHELL_COMMAND" ] ||
+  fail "--continuation launched a watcher"
 assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
 
-setup_case non-ascii-continuation
+setup_case unknown-option
 status=0
-run_submit_command --continuation "procéed" x \
+run_submit_command --unknown \
   > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" || status=$?
-[ "$status" -ne 0 ] || fail "non-ASCII continuation unexpectedly passed"
-grep -q 'continuation must contain only printable ASCII' "$FAKE_CASE/submit.err"
-[ ! -s "$FAKE_RUN_SHELL_COMMAND" ] ||
-  fail "non-ASCII continuation launched a watcher"
+[ "$status" -eq 2 ] || fail "unknown option did not return usage status 2"
+[ ! -s "$FAKE_RUN_SHELL_COMMAND" ] || fail "unknown option launched a watcher"
 assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
 
 # A compaction start before assistant.turn_end is also accepted.
@@ -1466,8 +1611,53 @@ printf '%s' "hidden lifecycle draft" > "$FAKE_TMUX_STASH"
 export FAKE_COMPACT_MODE=start-before-end
 run_submit >/dev/null
 wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
-assert_count 1 '^KEY:Enter:proceed$' "$FAKE_TMUX_ACTIONS"
+assert_count 1 '^KEY:Enter:Compaction done; resume, do not compact\.$' "$FAKE_TMUX_ACTIONS"
 assert_file_equals "hidden lifecycle draft" "$FAKE_TMUX_INPUT"
+
+# Once ARMED exists, foreground cancellation cannot release the watcher-owned
+# session lock. A second helper remains blocked through the no-start deadline.
+setup_case post-enter-foreground-death-lock
+printf '%s\n' '{"type":"assistant.turn_end"}' \
+  > "$FAKE_CASE/session/events.jsonl"
+mkdir "$FAKE_CASE/session/files/self-compact.lock"
+printf '%s\n' post-enter-lock \
+  > "$FAKE_CASE/session/files/self-compact.lock/token"
+printf '%s\n' watcher-launching \
+  > "$FAKE_CASE/session/files/self-compact.lock/state"
+: > "$FAKE_CASE/armed"
+: > "$FAKE_CASE/cancelled"
+(
+  SELF_COMPACT_POLL_SECONDS=0.01 \
+    SELF_COMPACT_MAX_POLLS=20 \
+    SELF_COMPACT_START_GRACE_SECONDS=0.2 \
+    "$SCRIPT_DIR/resume-after-compact.sh" \
+    "%1" "$FAKE_WORKSPACE" 1 0 "$FAKE_CASE/ready" "$FAKE_CASE/armed" \
+    "$FAKE_CASE/cancelled" "0123abcd" \
+    "Compaction done; resume, do not compact." \
+    "$FAKE_BIN/tmux" "/compact Use SELF_COMPACT_BRIEF. B:0123abcd" \
+    "Use SELF_COMPACT_BRIEF. B:0123abcd" \
+    "$FAKE_CASE/session/files/self-compact.lock" post-enter-lock \
+    > "$FAKE_CASE/watcher.out" 2> "$FAKE_CASE/watcher.err"
+) &
+watcher_pid=$!
+printf '%s\n' "$watcher_pid" >> "$FAKE_BACKGROUND_PIDS"
+for _ in $(seq 1 100); do
+  [ -e "$FAKE_CASE/ready" ] && break
+  sleep 0.01
+done
+[ -e "$FAKE_CASE/ready" ] || fail "post-Enter watcher did not become ready"
+append_brief_turn \
+  $'SELF_COMPACT_BRIEF\nKeep: baton\nDrop: detail\nAfter compaction: continue and do not compact again'
+status=0
+run_submit_command > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
+  status=$?
+[ "$status" -ne 0 ] ||
+  fail "post-Enter foreground death released the live watcher lock"
+grep -q 'another or ambiguous self-compact run owns' "$FAKE_CASE/submit.err"
+wait "$watcher_pid" || true
+[ ! -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
+  fail "no-start watcher did not release its completed lock"
+assert_count 0 '^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
 
 # A start arriving when the epoch deadline is observed is accepted by the
 # mandatory final event read rather than being lost after the final interval.
@@ -1476,8 +1666,8 @@ mkdir -p "$FAKE_CASE/session/checkpoints"
 sed 's/^summary_count: .*/summary_count: 2/' \
   "$FAKE_WORKSPACE" > "$FAKE_WORKSPACE.next"
 mv "$FAKE_WORKSPACE.next" "$FAKE_WORKSPACE"
-printf '%s\n' 'SCM:00000000-00002' > \
-  "$FAKE_CASE/session/checkpoints/001-test.md"
+printf '%s\n' 'checkpoint without marker' > \
+  "$FAKE_CASE/session/checkpoints/002-test.md"
 printf '%s\n' '{"type":"assistant.turn_end"}' > \
   "$FAKE_CASE/session/events.jsonl"
 printf '%s\n' 100000 100300 > "$FAKE_CASE/epoch-values"
@@ -1486,6 +1676,8 @@ export FAKE_EPOCH_APPEND_EVENTS_AT_CALL=2
 export FAKE_EPOCH_EVENTS="$FAKE_CASE/session/events.jsonl"
 : > "$FAKE_CASE/ready"
 : > "$FAKE_CASE/armed"
+mkdir "$FAKE_CASE/lock"
+printf '%s\n' test-lock > "$FAKE_CASE/lock/token"
 near_deadline_output="$(
   SELF_COMPACT_POLL_SECONDS=0.01 \
     SELF_COMPACT_MAX_POLLS=20 \
@@ -1493,11 +1685,13 @@ near_deadline_output="$(
     SELF_COMPACT_RESUME_GRACE_SECONDS=0.001 \
     "$SCRIPT_DIR/resume-after-compact.sh" \
     "%1" "$FAKE_WORKSPACE" 1 0 "$FAKE_CASE/ready" "$FAKE_CASE/armed" \
-    "$FAKE_CASE/cancelled" "SCM:00000000-00002" "proceed" \
-    "$FAKE_BIN/tmux" "/compact near-deadline"
+    "$FAKE_CASE/cancelled" "0123abcd" \
+    "Compaction done; resume, do not compact." \
+    "$FAKE_BIN/tmux" "/compact Use SELF_COMPACT_BRIEF. B:0123abcd" \
+    "Use SELF_COMPACT_BRIEF. B:0123abcd" "$FAKE_CASE/lock" test-lock
 )"
 case "$near_deadline_output" in
-  *"marked compact advanced summary_count to 2"*"post-compact activity already present"*) ;;
+  *"matching compact advanced summary_count to 2 at checkpoint 2"*"post-compact activity already present"*) ;;
   *) fail "near-deadline start was not accepted: $near_deadline_output" ;;
 esac
 assert_count 0 '^KEY:|^TYPE:' "$FAKE_TMUX_ACTIONS"
@@ -1554,9 +1748,19 @@ assert_count 0 '^KEY:C-u:' "$FAKE_TMUX_ACTIONS"
 setup_case failed-compact
 export FAKE_COMPACT_MODE=failed
 run_submit >/dev/null
-wait_for_watcher_log 'compact failed before producing the marked checkpoint' \
+wait_for_watcher_log 'first compact completion did not match this run token or failed' \
   >/dev/null
-assert_count 0 '^TYPE:proceed$|^KEY:Enter:proceed$' "$FAKE_TMUX_ACTIONS"
+assert_count 0 '^TYPE:Compaction done;|^KEY:Enter:Compaction done;' "$FAKE_TMUX_ACTIONS"
+
+# The first completion after the observed start owns the verdict. A later
+# matching token cannot rescue an earlier mismatched compact.
+setup_case first-completion-after-start-wins
+export FAKE_COMPACT_MODE=mismatched-then-matching
+run_submit >/dev/null
+wait_for_watcher_log 'first compact completion did not match this run token or failed' \
+  >/dev/null
+assert_count 0 '^TYPE:Compaction done;|^KEY:Enter:Compaction done;' \
+  "$FAKE_TMUX_ACTIONS"
 
 # Activity beginning during post-compact recovery is checked before Esc and
 # typing. No Esc or continuation Enter occurs after the activity event.
@@ -1569,18 +1773,18 @@ run_submit >/dev/null
 wait_for_watcher_log 'post-compact activity started during recovery' >/dev/null
 assert_count 1 '^KEY:C-u:' "$FAKE_TMUX_ACTIONS"
 assert_count 0 '^KEY:Escape:' "$FAKE_TMUX_ACTIONS"
-assert_count 0 '^TYPE:proceed$|^KEY:Enter:proceed$' "$FAKE_TMUX_ACTIONS"
+assert_count 0 '^TYPE:Compaction done;|^KEY:Enter:Compaction done;' "$FAKE_TMUX_ACTIONS"
 grep -q '"type":"assistant.turn_end"' "$FAKE_CASE/session/events.jsonl"
 
 # Activity after continuation typing is caught by render polling. A second
 # captured row prevents cleanup ownership as well as Enter ownership.
 setup_case post-compact-enter-race
 export FAKE_COMPACT_MODE=success
-split_continuation="continue after this deliberately split continuation command"
+split_continuation="Compaction done; resume, do not compact."
 export FAKE_CAPTURE_SPLIT_COLUMNS=20
 export FAKE_CAPTURE_SPLIT_TYPE_COUNT=2
 export FAKE_ACTIVITY_ON_TYPE="$split_continuation"
-run_submit "$split_continuation" >/dev/null
+run_submit >/dev/null
 wait_for_watcher_log 'post-compact activity started during recovery' >/dev/null
 assert_count 1 "^TYPE:$split_continuation$" "$FAKE_TMUX_ACTIONS"
 assert_count 0 "^KEY:Enter:$split_continuation$" "$FAKE_TMUX_ACTIONS"
@@ -1592,23 +1796,27 @@ mkdir -p "$FAKE_CASE/session/checkpoints"
 sed 's/^summary_count: .*/summary_count: 2/' \
   "$FAKE_WORKSPACE" > "$FAKE_WORKSPACE.next"
 mv "$FAKE_WORKSPACE.next" "$FAKE_WORKSPACE"
-printf '%s\n' 'SCM:00000000-00003' > \
-  "$FAKE_CASE/session/checkpoints/001-test.md"
+printf '%s\n' 'checkpoint without marker' > \
+  "$FAKE_CASE/session/checkpoints/002-test.md"
 cat > "$FAKE_CASE/session/events.jsonl" <<'EOF'
 {"type":"session.compaction_start"}
-{"type":"session.compaction_complete","success":true}
+{"type":"session.compaction_complete","data":{"success":true,"customInstructions":"Use SELF_COMPACT_BRIEF. B:0123abcd","checkpointNumber":2}}
 {"type":"assistant.turn_start"}
 EOF
 : > "$FAKE_CASE/ready"
 : > "$FAKE_CASE/armed"
+mkdir "$FAKE_CASE/lock"
+printf '%s\n' test-lock > "$FAKE_CASE/lock/token"
 auto_output="$(
   SELF_COMPACT_POLL_SECONDS=0.01 \
     SELF_COMPACT_MAX_POLLS=20 \
     SELF_COMPACT_RESUME_GRACE_SECONDS=0.01 \
     "$SCRIPT_DIR/resume-after-compact.sh" \
     "%1" "$FAKE_WORKSPACE" 1 0 "$FAKE_CASE/ready" "$FAKE_CASE/armed" \
-    "$FAKE_CASE/cancelled" "SCM:00000000-00003" "proceed" \
-    "$FAKE_BIN/tmux" "/compact auto"
+    "$FAKE_CASE/cancelled" "0123abcd" \
+    "Compaction done; resume, do not compact." \
+    "$FAKE_BIN/tmux" "/compact Use SELF_COMPACT_BRIEF. B:0123abcd" \
+    "Use SELF_COMPACT_BRIEF. B:0123abcd" "$FAKE_CASE/lock" test-lock
 )"
 case "$auto_output" in
   *"post-compact activity already present"*) ;;
