@@ -112,7 +112,9 @@ compact landed, the watcher checks the event log. If autopilot or another prompt
 already started a post-compact turn, it exits. Otherwise it presses Ctrl-S
 again to preserve any draft restored at turn end, then submits `proceed`
 immediately. The stashed draft returns after that continuation turn, so no input
-is discarded. Selected autopilot mode is not assumed to be a reliable wakeup.
+is discarded. A recorded compaction failure, including `Nothing to compact`,
+ends the watcher immediately. Selected autopilot mode is not assumed to be a
+reliable wakeup.
 
 After the helper reports that the compact was submitted and the watcher armed,
 end the turn. Its log is written under the active session's `files/` directory.

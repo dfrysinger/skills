@@ -292,4 +292,45 @@ esac
 grep -qF "automatic continuation" "$TMP_DIR/queued-stash"
 grep -qFx "proceed" "$TMP_DIR/queued-queue"
 
+failed="$TMP_DIR/session-state/failed-session"
+mkdir -p "$failed/checkpoints" "$failed/files"
+cat > "$failed/workspace.yaml" <<EOF
+id: failed-session
+cwd: $TMP_DIR/workspace
+summary_count: 2
+EOF
+printf '%s\n' \
+  '{"type":"session.compaction_complete","data":{"success":false,"error":"Error: Nothing to compact."}}' \
+  > "$failed/events.jsonl"
+: > "$failed/ready"
+: > "$failed/armed"
+: > "$TMP_DIR/input"
+: > "$TMP_DIR/failed-stash"
+
+if failed_output="$(
+  PATH="$TMP_DIR:$PATH" \
+    FAKE_PANE_CWD="$TMP_DIR/workspace" \
+    FAKE_PANE_PID="100" \
+    FAKE_TMUX_INPUT="$TMP_DIR/input" \
+    FAKE_TMUX_QUEUE="$TMP_DIR/failed-queue" \
+    FAKE_TMUX_STASH="$TMP_DIR/failed-stash" \
+    FAKE_WORKSPACE="$failed/workspace.yaml" \
+    SELF_COMPACT_POLL_SECONDS=0.1 \
+    SELF_COMPACT_MAX_POLLS=100 \
+    "$SCRIPT_DIR/resume-after-compact.sh" \
+    "%1" "$failed/workspace.yaml" 2 0 "$failed/ready" "$failed/armed" \
+    "$failed/cancelled" "SELF_COMPACT_RUN_ID:failed-test" "proceed" "$TMP_DIR/tmux" \
+    2>&1
+)"; then
+  echo "watcher accepted failed compaction: $failed_output" >&2
+  exit 1
+fi
+case "$failed_output" in
+  *"compact failed before producing the marked checkpoint"*) ;;
+  *)
+    echo "watcher did not report failed compaction: $failed_output" >&2
+    exit 1
+    ;;
+esac
+
 echo "submit-compact test passed"

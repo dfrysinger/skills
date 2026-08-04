@@ -46,6 +46,16 @@ fi
 
 landed=false
 for ((attempt = 1; attempt <= MAX_POLLS; attempt++)); do
+  if awk -v before="$BEFORE_EVENTS" '
+    NR > before &&
+      /"type":"session.compaction_complete"/ &&
+      /"success":false/ { found = 1; exit }
+    END { exit(found ? 0 : 1) }
+  ' "$EVENTS"; then
+    echo "compact failed before producing the marked checkpoint" >&2
+    exit 1
+  fi
+
   current="$(awk -F': ' '/^summary_count: /{print $2; exit}' "$WORKSPACE" 2>/dev/null || true)"
   case "$current" in
     ''|*[!0-9]*) ;;
