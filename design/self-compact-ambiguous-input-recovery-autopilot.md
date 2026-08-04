@@ -39,7 +39,8 @@ section is met.
 - **Lane:** critical.
 - **Plan:** `design/self-compact-ambiguous-input-recovery.md`.
 - **Definition of Done:** "Definition of Done: Ambiguous Input Recovery".
-- **Published baseline:** self-compact v0.99.0; worktree candidate v0.100.0.
+- **Published version:** self-compact v0.100.0 on `main` at merge commit
+  `d5b2c05`; the installed personal plugin is v0.100.0.
 - **Live proof:** `design/self-compact-v0.100-live-proof.md` records the final
   one-row `SCM:6a71d3cc-03dca` compact, checkpoint, continuation, restored
   draft, and watcher teardown, plus the earlier hidden-draft, locale-scrubbed,
@@ -78,7 +79,10 @@ section is met.
   rejection with fallback to `C.UTF-8`, plugin manifest consistency,
   `git diff --check`, and test scratch/watcher residue checks pass on the
   round-1 candidate.
-- **Next action:** run round-2 critical review closure and final validation,
-  then version, publish, install, and stop the unattended schedule.
+- **Review:** both round-2 reviewer families closed all three round-1 material
+  findings with no remaining findings.
+- **Completion:** deterministic validation passed twice, the final Sierra live
+  lifecycle passed, main was published, and the personal plugin was updated.
+- **Next action:** none. Stop the unattended schedule.
 - **Non-goals:** no Copilot CLI changes, general terminal parser, unrelated
   skill fallback, or relaxation of exact-command verification before Enter.
