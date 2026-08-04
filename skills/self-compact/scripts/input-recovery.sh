@@ -11,6 +11,7 @@ SC_STATE_CURSOR_Y=-1
 SC_STATE_MENU=0
 SC_STATE_RECORD="unknown|unknown|0|-1|-1|0"
 SC_PREPARE_WAS_AMBIGUOUS=false
+SC_PREPARE_HAD_DRAFT=true
 SC_INPUT_LOCALE=""
 SC_EDITOR_MARGIN=4
 
@@ -125,6 +126,14 @@ sc_seconds_to_milliseconds() {
       milliseconds = int((seconds * 1000) + 0.5)
       if (milliseconds < 1) milliseconds = 1
       print milliseconds
+    }'
+}
+
+sc_ambiguous_wait_is_bounded() {
+  awk -v seconds="$1" '
+    BEGIN {
+      if (seconds !~ /^[0-9]+([.][0-9]+)?$/) exit 1
+      exit !(seconds >= 20 && seconds <= 30)
     }'
 }
 
@@ -546,10 +555,18 @@ sc_activity_exists() {
 sc_prepare_empty_input() {
   local activity_callback="${1:-}"
   local before after kind reverse
+  local before_status before_text before_stashed
 
   SC_PREPARE_WAS_AMBIGUOUS=false
+  SC_PREPARE_HAD_DRAFT=true
   sc_capture_state || true
   before="$SC_STATE_RECORD"
+  IFS='|' read -r before_status before_text before_stashed _ <<< "$before"
+  if [ "$before_status" = readable ] &&
+    [ -z "$before_text" ] &&
+    [ "$before_stashed" -eq 0 ]; then
+    SC_PREPARE_HAD_DRAFT=false
+  fi
   if sc_activity_exists "$activity_callback"; then
     return 10
   fi
@@ -567,10 +584,16 @@ sc_prepare_empty_input() {
   fi
 
   case "$kind" in
-    stored|empty)
+    stored)
+      SC_PREPARE_HAD_DRAFT=true
+      return 0
+      ;;
+    empty)
+      SC_PREPARE_HAD_DRAFT=false
       return 0
       ;;
     restored)
+      SC_PREPARE_HAD_DRAFT=true
       if sc_activity_exists "$activity_callback"; then
         return 10
       fi
@@ -582,7 +605,121 @@ sc_prepare_empty_input() {
   esac
 
   SC_PREPARE_WAS_AMBIGUOUS=true
+  SC_PREPARE_HAD_DRAFT=true
   return 2
+}
+
+sc_prepare_empty_editor() {
+  local activity_callback="${1:-}"
+  local prepare_status key_status
+
+  prepare_status=0
+  sc_prepare_empty_input "$activity_callback" || prepare_status=$?
+  case "$prepare_status" in
+    0)
+      sc_capture_state || true
+      sc_state_is_empty && return 0
+      ;;
+    10) return 10 ;;
+    2) ;;
+    *) return 1 ;;
+  esac
+
+  SC_PREPARE_HAD_DRAFT=true
+  sc_notice \
+    "self-compact: input changed or unreadable; will clear it in 10 seconds unless activity starts"
+  sc_sleep "${SELF_COMPACT_RECOVERY_DELAY_SECONDS:-10}"
+  sc_activity_exists "$activity_callback" && return 10
+
+  key_status=0
+  sc_send_recovery_key C-u "$activity_callback" || key_status=$?
+  [ "$key_status" -eq 10 ] && return 10
+  [ "$key_status" -eq 0 ] || return 1
+  sc_capture_state || true
+  sc_state_is_empty && return 0
+
+  key_status=0
+  sc_send_recovery_key C-u "$activity_callback" || key_status=$?
+  [ "$key_status" -eq 10 ] && return 10
+  [ "$key_status" -eq 0 ] || return 1
+  key_status=0
+  sc_send_recovery_key Escape "$activity_callback" || key_status=$?
+  [ "$key_status" -eq 10 ] && return 10
+  [ "$key_status" -eq 0 ] || return 1
+  sc_capture_state || true
+
+  if [ "$SC_STATE_MENU" -eq 1 ]; then
+    key_status=0
+    sc_send_recovery_key Escape "$activity_callback" || key_status=$?
+    [ "$key_status" -eq 10 ] && return 10
+    [ "$key_status" -eq 0 ] || return 1
+    sc_capture_state || true
+  fi
+
+  key_status=0
+  sc_send_recovery_key C-u "$activity_callback" || key_status=$?
+  [ "$key_status" -eq 10 ] && return 10
+  [ "$key_status" -eq 0 ] || return 1
+  sc_capture_state || true
+  sc_state_is_empty && return 0
+
+  sc_notice "self-compact: input recovery failed; command was not submitted"
+  return 1
+}
+
+sc_wait_for_ambiguous_submit() {
+  local expected_hex="$1"
+  local activity_callback="${2:-}"
+  local wait_seconds="${SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS:-25}"
+  local poll_seconds="${SELF_COMPACT_RENDER_POLL_SECONDS:-0.05}"
+  local wait_milliseconds poll_milliseconds
+  local started_milliseconds deadline_milliseconds now_milliseconds
+  local remaining_milliseconds sleep_milliseconds sleep_seconds capture_status
+
+  sc_ambiguous_wait_is_bounded "$wait_seconds" || return 1
+  wait_milliseconds="$(sc_seconds_to_milliseconds "$wait_seconds")" ||
+    return 1
+  poll_milliseconds="$(sc_seconds_to_milliseconds "$poll_seconds")" ||
+    return 1
+  started_milliseconds="$(sc_epoch_milliseconds)"
+  case "$started_milliseconds" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  deadline_milliseconds=$((started_milliseconds + wait_milliseconds))
+
+  while :; do
+    sc_activity_exists "$activity_callback" && return 10
+    capture_status=0
+    sc_capture_stable_state "$activity_callback" || capture_status=$?
+    [ "$capture_status" -eq 10 ] && return 10
+    sc_activity_exists "$activity_callback" && return 10
+
+    if [ "$capture_status" -eq 0 ]; then
+      sc_state_is_exact "$expected_hex" && return 0
+      if [ "$SC_STATE_MENU" -eq 1 ] ||
+        { [ "$SC_STATE_STATUS" = readable ] &&
+          [ -n "$SC_STATE_TEXT_HEX" ]; }; then
+        return 1
+      fi
+    fi
+
+    now_milliseconds="$(sc_epoch_milliseconds)"
+    case "$now_milliseconds" in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$now_milliseconds" -lt "$deadline_milliseconds" ] || return 2
+    remaining_milliseconds=$((deadline_milliseconds - now_milliseconds))
+    sleep_milliseconds="$poll_milliseconds"
+    if [ "$sleep_milliseconds" -gt "$remaining_milliseconds" ]; then
+      sleep_milliseconds="$remaining_milliseconds"
+    fi
+    sleep_seconds="$(
+      awk -v milliseconds="$sleep_milliseconds" \
+        'BEGIN { printf "%.3f\n", milliseconds / 1000 }'
+    )"
+    sc_activity_exists "$activity_callback" && return 10
+    sc_sleep "$sleep_seconds"
+  done
 }
 
 sc_cleanup_exact_command() {

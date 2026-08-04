@@ -53,23 +53,27 @@ steer that preserves nothing empties the conversation as thoroughly as `/new`
 would — while keeping the **same session**, so armed schedules, the SQL
 database, `plan.md`, `checkpoints/`, and `files/` all survive.
 
-The summary is context, not a turn, so compaction alone will not wake you. Write
-the summary as a **standing brief** and use `self-compact`'s helper with a custom
-continuation. It arms a watcher before queuing the compact, then waits for the
-session's `summary_count` to prove compaction landed before submitting the next
-turn:
+The summary is context, not a turn, so compaction alone will not wake you. Emit
+the final assistant message in `self-compact`'s required structure and put the
+standing brief plus resume action in it:
 
-```sh
-~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh \
-  --continuation 'continue' \
-  'Discard the entire conversation — no history, no tool output, no decisions. Output as the ENTIRE summary exactly: STANDING BRIEF — Read <handoff-path> and <plan-doc-path>, then continue that work. Re-invoke <skills>.'
+```text
+SELF_COMPACT_BRIEF
+
+Keep: Replace the conversation with a standing brief that points at
+<handoff-path> and <plan-doc-path> and names <skills>.
+
+Drop: Conversation history, tool output, and decisions already recorded in
+those durable files.
+
+After compaction: Read the handoff and plan, re-invoke <skills>, and continue the work; do not compact again.
 ```
 
-Then end the turn. Caveats: this overwrites the live conversation in place, so
-unlike `/new` there is no old session to resume; and the command lands at the
-**next turn boundary**, so end your turn to let it run rather than continuing to
-make tool calls. The helper's watcher, not selected autopilot mode, owns the
-post-compact wakeup.
+Then invoke `self-compact`'s helper with zero arguments and a Bash
+`initial_wait` of at least 120 seconds as the final tool action, and end the
+turn. This overwrites the live conversation in place, so unlike `/new` there is
+no old session to resume. The helper's watcher, not selected autopilot mode,
+owns the post-compact wakeup.
 
 ### `/new` (exception): when the old conversation must survive
 

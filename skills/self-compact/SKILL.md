@@ -1,249 +1,191 @@
 ---
 name: self-compact
-description: Keep Copilot CLI working context lean while preserving decisions, active state, and session-bound resources through deliberate compaction. Use when a task finishes, work changes phase, a review round ends, tool history grows, the agent becomes stuck or repetitive, a durable work order enables a soft reset, or a long-lived session needs retirement.
+description: Keep Copilot CLI working context lean while preserving decisions, active state, drafts, and session-bound resources through deliberate compaction. Use when a task finishes, work changes phase, a review round ends, tool history grows, the agent becomes stuck or repetitive, a durable work order enables a soft reset, or a long-lived session needs retirement.
 ---
 
 # self-compact
 
-Keep the working context small without losing the state needed to continue.
-Choose the lightest reset that fits; cross-agent handoffs remain owned by
-`handoff`.
-
-## When to use
-
-- A task, implementation phase, debugging phase, or review round has ended.
-- A long run of tool calls has made earlier output more distracting than useful.
-- Progress becomes repetitive, confused, or stuck.
-- A durable plan is complete enough to replace the conversation.
-- A resumed session has become old or slow.
+Compact a Copilot CLI conversation without squeezing the retained state into
+the editor command. The full compaction payload lives in the final assistant
+message. The helper submits one short control and resumes with one fixed wake.
 
 ## Prerequisites
 
-- Copilot CLI.
-- `tmux` and `$TMUX_PANE` for verified self-submission.
-- The `handoff` skill for soft resets, `/new`, or session retirement.
-
-## Quick start
-
-Persist any state that exists only in conversation, then make this the final
-tool action of the turn:
-
-```sh
-~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh \
-  'Keep: <objective, decisions, current state, remaining work>. Drop: <resolved detail, superseded approaches, verbose output>.'
-```
-
-Outside tmux, give the user that `/compact` command to run directly.
+- Copilot CLI running inside tmux.
+- A durable plan, design, issue, handoff, or charter for any state that must
+  survive independently of the conversation.
+- `handoff` for session retirement or a soft reset built around a standing
+  brief.
 
 ## Procedure
 
-### 1. Choose the compaction depth
+### 1. Choose what survives
 
-- **Routine:** Keep the active objective, decisions, current state, and remaining
-  work. Drop resolved detail and tool output.
-- **Phase boundary:** Keep only the baton the next phase needs: durable artifact
-  paths, branch, acceptance criteria, landed work, remaining work, and next
-  action.
-- **Soft reset:** When a durable artifact is a complete work order, invoke
-  `handoff` for its null-steered `/compact` procedure. Keep session-bound
-  schedules, SQL data, checkpoints, and files.
-- **Session retirement:** When a multi-day session is slow or oversized, invoke
-  `handoff` and `rotate-session` so a genuinely fresh session can recover the
-  recorded state.
+Keep only the state needed for the next action:
 
-The chosen branch is complete when it preserves everything needed for the next
-action without retaining resolved history. Prefer routine compaction after
-landing work so the user can still ask why; reserve a soft reset for work that
-already has a complete durable brief.
+- objective, decisions, acceptance criteria, and non-goals;
+- active branch, paths, runtime identity, and session-bound resources;
+- what is complete, what remains, and the next action;
+- durable artifact paths instead of copied artifact contents.
 
-### 2. Persist load-bearing state
+Drop resolved investigation, superseded approaches, repeated explanation, and
+verbose tool output.
 
-For active multi-step work, update the existing plan, design, issue, or other
-durable artifact with:
+### 2. Emit the final brief
 
-- objective and acceptance criteria;
-- decisions and non-goals;
-- branch, relevant paths, and current runtime state;
-- what landed versus what remains;
-- blockers and the exact next action.
-
-Do not create a planning document for a trivial completed task. Git state and
-the resulting commit are sufficient when no unwritten decision or follow-up
-would be lost.
-
-This step is complete when deleting the conversation would not erase any fact
-required to continue correctly.
-
-### 3. Write an explicit steer
-
-Use both halves in one line:
+Make the final assistant prose before the helper call use this exact structure:
 
 ```text
-Keep: <exhaustive load-bearing state>; Drop: <resolved investigation, superseded options, repeated explanations, and verbose tool output>.
+SELF_COMPACT_BRIEF
+
+Keep: <complete load-bearing baton>
+
+Drop: <resolved and disposable context>
+
+After compaction: <exact next action>; do not compact again.
 ```
 
-Keep the baton concise: name durable artifact paths and the next action instead
-of copying the artifact's contents into the steer.
+The first line must be exactly `SELF_COMPACT_BRIEF`. `Keep:` must be nonempty.
+`Drop:` must be present. `After compaction:` must be nonempty and contain the
+case-sensitive literal `do not compact again`. `Keep:` content and the complete
+`After compaction:` instruction, including that literal, must be on the same
+physical line as their labels. Additional detail may continue on later lines.
 
-`/compact` changes chat history only. It does not alter files, git state,
-session SQL, schedules, checkpoints, or session artifacts.
+The brief may be long. It is part of the conversation and is not typed into the
+editor.
 
-This step is complete when every retained item earns its place in the next
-phase and every named dropped item is safe to forget.
+### 3. Submit as the final tool action
 
-### 4. Submit and stop
+Run the helper with no arguments:
 
-Run `scripts/submit-compact.sh` as the final tool action, passing a single-line
-steer. The script first builds:
+```sh
+~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh
+```
+
+Set the Bash tool's `initial_wait` to at least 120 seconds. The helper may need
+the full draft-recovery and render-verification interval before returning. A
+shorter tool wait can create a synthetic assistant turn while the helper is
+still active, which correctly cancels the submission as concurrent activity.
+
+Old positional steers and `--continuation` are errors. Do not shorten the brief
+or retry with invented instructions when a run fails.
+
+The helper briefly waits for the immediately preceding assistant message to
+become visible in the event log, verifies that the current turn contains the
+complete brief, then submits:
 
 ```text
-/compact <steer> Keep SCM:<8-hex-epoch>-<5-hex-pid>
+/compact Use SELF_COMPACT_BRIEF. B:<8-hex>
 ```
 
-It requires printable ASCII and preflights both the complete marked command and
-continuation against the real pane width before workspace resolution, watcher
-launch, run-file creation, Ctrl-S, or typing. The safe limit is
-`pane_width - 4`; on a 68-column pane the fixed syntax leaves exactly 31 steer
-columns. If either command cannot fit, shorten it or point to a shorter durable
-artifact and run the helper again.
+The token identifies this run in `session.compaction_complete`. It is not
+required to appear in checkpoint prose.
 
-Before parsing input, the shared helper selects a UTF-8 locale by trying an
-explicit `SELF_COMPACT_LOCALE` first, then `C.UTF-8`, `en_US.UTF-8`, and
-`UTF-8`. It accepts a candidate only when `locale charmap` succeeds and reports
-UTF-8, and awk can parse and remove Copilot's Unicode prompt prefix and
-recognize a realistic multi-glyph divider. This rejects C/POSIX byte matching
-and nonexistent locale names that silently fall back. The helper exports both
-`LC_ALL` and `LANG`. If none passes, input remains unknown: the foreground
-helper prints a clear error and sends no editor key. The helper then refreshes
-every client
-attached to the target tmux session, requires prompt text, stash footer state,
-and cursor position to remain identical across three captures, and uses a
-trapped one-column resize/restore pulse when the prompt remains unreadable. The
-pulse restores tmux geometry and `window-size` inheritance and skips windows
-linked into another session. Logical input capture preserves Copilot's prompt
-rows structurally after removing only prompt syntax and captured right-padding.
-Exact helper ownership requires exactly one captured prompt row, byte-for-byte
-equal to the expected printable-ASCII command. Any second row or newline,
-including a command-shaped boundary at a space or mid-token, is non-exact.
-Unreadable input is always `unknown`, never empty, and explicit multiline input
-remains nonempty.
+After the helper reports that submission and the watcher are armed, end the
+turn. Do not make another tool call.
 
-Menu detection never scans transcript output. It considers only the four lines
-immediately after the editor divider and requires nearby `↑/↓` navigation,
-`Enter select`, and `Esc close/cancel/dismiss` signals together. Generic prose
-such as `press esc to cancel` or `select an option` does not mark a menu visible.
+## Safety contract
 
-The helper presses Ctrl-S once and classifies the observed transition. A visible
-draft must become empty; a hidden draft that becomes visible is re-stashed with
-one verified reverse toggle; and a truly empty editor must remain empty at the
-same cursor position with no stash change. An inconclusive result is recaptured
-without another toggle. If it remains inconclusive, tmux shows a 10-second
-warning. A normally typed command that becomes non-exact uses the same grace
-instead of being cleared immediately. After every literal typing, the helper
-polls stable captures read-only for up to
-`SELF_COMPACT_RENDER_WAIT_SECONDS` (5 seconds by default), with
-`SELF_COMPACT_RENDER_POLL_SECONDS` available for deterministic tests. It
-returns as soon as the one-row exact gate sees the command. Activity
-is checked before every capture and sleep boundary; no Ctrl-S, Ctrl-U, Esc,
-resize pulse, or other editor action occurs during the render window. New user
-or assistant activity cancels recovery, and the activity check runs
-immediately before every fallback Ctrl-U and Escape. In Copilot's multiline
-editor, Ctrl-U clears only from the cursor to the start of the current logical
-line; it does not clear prior logical lines. A readable nonempty multiline
-residual is therefore not considered cleared. Recovery begins only after the
-render window expires and remains bounded: Ctrl-U first, one Esc when recovery
-requires it, and a second Esc only while the concrete nearby multi-signal menu
-chrome remains visible. Unproven menu state never authorizes the second Esc;
-the later exact gate fails closed if the first did not repair the editor.
-Recovery still allows at most two command typings and best-effort cleanup. The
-helper fails closed unless the exact helper command alone appears on one row,
-and never presses Enter on a multiline residual.
+### Draft isolation
 
-Before submitting, the script starts a detached watcher against the active
-session's `summary_count`, event position, and a unique checkpoint marker. The
-concise `SCM:` marker remains directly greppable in the checkpoint and run
-filenames/logs retain their existing timestamp/PID identity. The
-watcher command receives the verified locale explicitly because
-`tmux run-shell -b` can start on macOS without `LANG` or `LC_ALL`; the watcher
-verifies that locale again before parsing. Locale failure and other unexpected
-watcher failures remain log-only and cannot create a tmux crash overlay.
-The watcher accepts `session.compaction_start` before the submitting
-`assistant.turn_end` or within 15 seconds afterward, with a final event read
-at deadline expiry. If no start arrives, it
-clears only an exactly readable helper-authored command, shows a one-line tmux
-failure notice, and exits. A different draft or unreadable buffer is untouched.
-Detached exit status is also log-only.
+Immediately before typing the control command, the shared input helper:
 
-After the marked compact advances `summary_count`, the watcher exits on any
-recorded failed compaction and checks for post-compact activity. If none exists,
-the watcher first rechecks that `proceed` still fits the current pane, then the
-same bounded helper prepares it with event checks before every Esc, before
-typing, before every render-poll capture or sleep, and immediately before
-Enter. Both callers use the same render wait for a fresh stable one-row exact
-capture at the final Enter gate. Activity always wins; no Esc is sent after it
-appears. The stashed draft returns after the continuation turn on the normal
-readable path. Selected autopilot mode is not assumed to be a reliable wakeup,
-and the watcher remains one-shot.
+- refreshes attached tmux clients and stabilizes the prompt capture;
+- verifies a UTF-8 locale before parsing Copilot's Unicode editor;
+- uses Ctrl-S to classify and stash visible or hidden drafts;
+- requires an observably empty editor before one literal paste;
+- preserves logical row boundaries and rejects multiline ownership;
+- cancels on new user or assistant activity;
+- bounds Ctrl-U and Esc recovery and restores any temporary geometry change.
 
-After the helper reports that the compact was submitted and the watcher armed,
-end the turn. Its log is written under the active session's `files/` directory.
+A restored or modified draft cannot be submitted as the compact command. If
+the run observed or stashed any draft, Enter requires an exact stable one-row
+render of the control command.
 
-When `$TMUX_PANE` is unavailable, print the exact steered `/compact` command for
-the user instead of claiming it ran. If pane-width preflight rejects either
-command, shorten the steer or continuation by pointing to the durable artifact
-and run it again as the final action.
+### Timed ambiguous-render fallback
 
-This step is complete when the compact submission and watcher are both armed, or
-the user has the exact compact command and knows to send `proceed` after it
-finishes. A watcher failure after compaction is recorded in its log; send
-`proceed` manually rather than rerunning the helper and queuing a second compact.
+When the editor was genuinely empty and no visible or hidden draft was observed
+or stashed, the compact command may use a bounded fallback:
 
-## Pitfalls
+1. Paste the fixed command once.
+2. Prefer exact one-row verification for five seconds.
+3. If rendering remains empty, unreadable, or unstable, wait up to a total of
+   30 seconds while checking activity and menu state.
+4. Press Enter once only if no readable mismatch, multiline buffer, menu, or
+   activity appeared.
 
-- A vague steer preserves noise and may discard the real baton.
-- Conversation-only plans can silently narrow during compaction.
-- Repeating a complete durable plan in the steer can exceed the visible input;
-  reference its path instead.
-- A soft reset immediately after landing erases useful rationale the user may
-  still want to question.
-- Plain text submitted while the agent is active becomes steering and can run
-  before a queued `/compact`; continuation must wait for that compact's unique
-  checkpoint marker and `summary_count` advance.
-- If the TUI stays unreadable after the Ctrl-S transition and redraw pulse, the
-  visible warning protects a bounded destructive fallback, not guaranteed draft
-  preservation. Copy or submit an important draft during that 10-second grace.
-- Ctrl-U is line-local in Copilot's multiline editor. If prior logical lines
-  remain visible, exact verification rejects the buffer and recovery ends
-  without Enter.
-- tmux cannot distinguish a Copilot-drawn continuation row from a real logical
-  newline. Never reconstruct row boundaries. Keep both commands within the
-  preflighted one-row limit and reject every additional captured row.
-- A freshly typed literal may remain absent from several otherwise stable
-  captures. Do not classify those stale empty frames as a mismatch before the
-  bounded read-only render window expires.
-- A real detached `tmux run-shell -b` shell can have only `HOME` and a minimal
-  `PATH`, with no locale variables. Never parse the Unicode prompt or divider
-  until the requested locale reports a UTF-8 charmap and awk passes the
-  multi-glyph probe; never fall back to `C`.
-- Ordinary transcript text can mention Esc or selection. Never infer menu state
-  from it; only concrete nearby multi-signal menu chrome can authorize the
-  second Esc.
-- Autopilot can remain visibly selected without generating a post-compact turn.
-- `/new` strands session-bound state; use it only when preserving the old
-  conversation matters.
-- `/clear` destroys session state rather than cleaning working context.
+A known prefix, suffix, altered byte, restored draft, or second prompt row
+always fails closed. The continuation never uses this fallback.
+
+### Run exclusion and completion identity
+
+One session-scoped owner-token lock excludes concurrent helper runs. Ownership
+passes to the detached watcher before editor mutation. Ambiguous transferred
+locks fail closed rather than allowing a second compact.
+
+The watcher accepts only the first completion after the observed compact start
+when all of these match:
+
+- `success` is true;
+- `customInstructions` contains this run's exact token-bearing instruction;
+- `checkpointNumber` advances beyond the baseline summary count;
+- `workspace.yaml` reaches that checkpoint number; and
+- exactly one numbered checkpoint file exists.
+
+Checkpoint prose is not searched for a marker.
+
+### Continuation
+
+When no post-compact activity already exists, the watcher submits this exact
+strictly verified wake:
+
+```text
+Compaction done; resume, do not compact.
+```
+
+The resumed agent reads the generated checkpoint and follows the
+`After compaction:` instruction from the brief. The watcher is one-shot. It
+does not retry compaction or shorten instructions.
+
+## Outside tmux
+
+Do not claim automatic submission. Emit the complete `SELF_COMPACT_BRIEF`, then
+give the user this command:
+
+```text
+/compact Use SELF_COMPACT_BRIEF.
+```
+
+After compaction, the user can send:
+
+```text
+Compaction done; resume, do not compact.
+```
+
+## Failure handling
+
+- Missing or malformed current-turn brief: write the required structure and
+  invoke the helper once more as the final action.
+- Existing or ambiguous session lock: inspect the exact lock path reported by
+  the helper. Do not delete it while a watcher is live.
+- Command mismatch, multiline input, activity, or draft-bearing unreadable
+  rendering: the helper sends no Enter.
+- No compaction start, failed completion, wrong token, missing checkpoint, or
+  continuation mismatch: the watcher exits without retrying.
+- A compact that succeeded without continuation: send the fixed continuation
+  manually. Do not rerun the compact helper.
+
+Detached failures remain in the per-run log under the active session's
+`files/` directory and do not create a tmux crash overlay.
 
 ## Verification
 
-- Load-bearing state exists outside the conversation when needed.
-- The steer names both what survives and what disappears.
-- The helper reports `submitted compact; post-compact continuation watcher
-  armed`, names its log, and no later tool call runs in that turn.
-- Candidate-development note: long-row reconstruction and the prior long
-  Sierra lifecycle were discovery experiments, not final acceptance. A logical
-  newline can produce the same capture, so the final supported path is
-  printable ASCII, concise `SCM:` syntax, pane-width preflight, and exactly one
-  captured row at every ownership/Enter/cleanup gate. The previous live receipt
-  is stale after this executable safety redesign; rerun the complete marked
-  compact, checkpoint, continuation, draft restoration, watcher teardown, and
-  geometry scenario before landing.
+- The final assistant message contains the complete brief structure.
+- The helper was invoked with zero arguments and `initial_wait` of at least 120
+  seconds as the final tool action.
+- The compact event records this run's token-bearing custom instructions.
+- The checkpoint number advances and its file exists without requiring marker
+  prose.
+- The fixed continuation occurs only when no post-compact activity exists.
+- Any preserved draft returns unchanged.
+- No second compact, watcher, or session lock remains after completion.
