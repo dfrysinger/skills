@@ -55,11 +55,27 @@ validate_single_line "continuation" "$CONTINUATION"
 
 input_region() {
   tmux capture-pane -p -t "$PANE" 2>/dev/null | awk '
-    /^─+$/ { n++; sep[n] = NR }
     { line[NR] = $0 }
     END {
-      if (n < 2) exit 1
-      for (i = sep[n-1] + 1; i < sep[n]; i++) print line[i]
+      for (i = NR; i >= 1; i--) {
+        if (line[i] ~ /^❯([[:space:]]|$)/) {
+          prompt = i
+          break
+        }
+      }
+      if (!prompt) exit 1
+      for (i = NR; i > prompt; i--) {
+        if (line[i] ~ /^─+$/) {
+          bottom = i
+          break
+        }
+      }
+      if (!bottom) exit 1
+      sub(/^❯[[:space:]]?/, "", line[prompt])
+      print line[prompt]
+      for (i = prompt + 1; i < bottom; i++) {
+        if (line[i] !~ /^─+$/) print line[i]
+      }
     }'
 }
 
@@ -75,6 +91,15 @@ input_is_empty() {
 
 normalized_input() {
   input_region | tr -d '❯' | squash
+}
+
+stash_input() {
+  tmux send-keys -t "$PANE" C-s || return 1
+  for ((attempt = 1; attempt <= 20; attempt++)); do
+    input_is_empty && return 0
+    sleep 0.1
+  done
+  return 1
 }
 
 clear_input() {
@@ -198,8 +223,8 @@ cleanup_unarmed_watcher() {
 }
 trap cleanup_unarmed_watcher EXIT
 
-if ! input_is_empty; then
-  echo "submit-compact.sh: Copilot input is not empty; refusing to append" >&2
+if ! stash_input; then
+  echo "submit-compact.sh: could not stash Copilot input; compact not submitted" >&2
   exit 1
 fi
 
@@ -223,9 +248,10 @@ if [ ! -e "$READY" ]; then
   exit 1
 fi
 
-# Input can change after the preflight check while the watcher starts.
-if ! input_is_empty; then
-  echo "submit-compact.sh: Copilot input is not empty; refusing to append" >&2
+# Stash again in case input arrived while the watcher was starting. Ctrl-S is
+# a no-op on an empty Copilot input.
+if ! stash_input; then
+  echo "submit-compact.sh: could not stash Copilot input; compact not submitted" >&2
   exit 1
 fi
 

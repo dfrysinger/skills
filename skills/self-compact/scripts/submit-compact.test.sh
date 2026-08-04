@@ -30,8 +30,9 @@ case "$command" in
     input="$(cat "$FAKE_TMUX_INPUT")"
     printf '%s\n' \
       "header" \
-      "────────────────" \
+      "────────8444 ────────" \
       "❯ $input" \
+      "──" \
       "────────────────" \
       "footer"
     ;;
@@ -43,7 +44,13 @@ case "$command" in
       last="$argument"
     done
 
-    if [ "$last" = "C-u" ]; then
+    if [ "$last" = "C-s" ]; then
+      input="$(cat "$FAKE_TMUX_INPUT")"
+      if [ -n "$input" ]; then
+        printf '%s' "$input" > "$FAKE_TMUX_STASH"
+        : > "$FAKE_TMUX_INPUT"
+      fi
+    elif [ "$last" = "C-u" ]; then
       : > "$FAKE_TMUX_INPUT"
     elif [ "$last" = "Enter" ]; then
       input="$(cat "$FAKE_TMUX_INPUT")"
@@ -134,32 +141,7 @@ EOF
 : > "$TMP_DIR/queue"
 
 printf '%s' "already queued" > "$TMP_DIR/input"
-if preflight_output="$(
-  PATH="$TMP_DIR:$PATH" \
-    TMUX_PANE="%1" \
-    FAKE_PANE_CWD="$TMP_DIR/workspace" \
-    FAKE_PANE_PID="100" \
-    FAKE_TMUX_INPUT="$TMP_DIR/input" \
-    FAKE_TMUX_QUEUE="$TMP_DIR/queue" \
-    FAKE_TMUX_RUN_SHELL_COMMAND="$TMP_DIR/preflight-run-shell" \
-    FAKE_WORKSPACE="$session/workspace.yaml" \
-    SELF_COMPACT_SESSION_STATE_DIR="$TMP_DIR/session-state" \
-    "$SCRIPT_DIR/submit-compact.sh" \
-    "Keep: active baton. Drop: resolved detail." 2>&1
-)"; then
-  echo "helper accepted nonempty input: $preflight_output" >&2
-  exit 1
-fi
-case "$preflight_output" in
-  *"Copilot input is not empty"*) ;;
-  *)
-    echo "unexpected preflight failure: $preflight_output" >&2
-    exit 1
-    ;;
-esac
-[ ! -e "$TMP_DIR/preflight-run-shell" ]
-
-: > "$TMP_DIR/input"
+: > "$TMP_DIR/stash"
 output="$(
   PATH="$TMP_DIR:$PATH" \
     TMUX_PANE="%1" \
@@ -167,6 +149,7 @@ output="$(
     FAKE_PANE_PID="100" \
     FAKE_TMUX_INPUT="$TMP_DIR/input" \
     FAKE_TMUX_QUEUE="$TMP_DIR/queue" \
+    FAKE_TMUX_STASH="$TMP_DIR/stash" \
     FAKE_TMUX_RUN_SHELL_COMMAND="$TMP_DIR/run-shell-command" \
     FAKE_WORKSPACE="$session/workspace.yaml" \
     SELF_COMPACT_SESSION_STATE_DIR="$TMP_DIR/session-state" \
@@ -185,6 +168,7 @@ case "$output" in
     ;;
 esac
 
+grep -qF 'already queued' "$TMP_DIR/stash"
 grep -qF '|| true' "$TMP_DIR/run-shell-command"
 
 for _ in $(seq 1 100); do
@@ -235,6 +219,7 @@ auto_output="$(
     FAKE_PANE_PID="100" \
     FAKE_TMUX_INPUT="$TMP_DIR/input" \
     FAKE_TMUX_QUEUE="$TMP_DIR/auto-queue" \
+    FAKE_TMUX_STASH="$TMP_DIR/auto-stash" \
     FAKE_WORKSPACE="$auto/workspace.yaml" \
     SELF_COMPACT_POLL_SECONDS=0.1 \
     SELF_COMPACT_MAX_POLLS=100 \
@@ -267,6 +252,7 @@ printf '%s\n' 'SELF_COMPACT_RUN_ID:queued-test' > "$queued/checkpoints/001-test.
 : > "$queued/ready"
 : > "$queued/armed"
 printf '%s' "automatic continuation" > "$TMP_DIR/input"
+: > "$TMP_DIR/queued-stash"
 
 queued_output="$(
   PATH="$TMP_DIR:$PATH" \
@@ -274,6 +260,7 @@ queued_output="$(
     FAKE_PANE_PID="100" \
     FAKE_TMUX_INPUT="$TMP_DIR/input" \
     FAKE_TMUX_QUEUE="$TMP_DIR/queued-queue" \
+    FAKE_TMUX_STASH="$TMP_DIR/queued-stash" \
     FAKE_WORKSPACE="$queued/workspace.yaml" \
     SELF_COMPACT_POLL_SECONDS=0.1 \
     SELF_COMPACT_MAX_POLLS=100 \
@@ -284,12 +271,13 @@ queued_output="$(
 )"
 
 case "$queued_output" in
-  *"post-compact input is already queued"*) ;;
+  *"submitted post-compact continuation"*) ;;
   *)
-    echo "watcher did not recognize queued continuation: $queued_output" >&2
+    echo "watcher did not resume after stashing queued input: $queued_output" >&2
     exit 1
     ;;
 esac
-[ ! -s "$TMP_DIR/queued-queue" ]
+grep -qF "automatic continuation" "$TMP_DIR/queued-stash"
+grep -qFx "proceed" "$TMP_DIR/queued-queue"
 
 echo "submit-compact test passed"

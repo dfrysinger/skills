@@ -95,11 +95,27 @@ fi
 
 input_region() {
   tmux capture-pane -p -t "$PANE" 2>/dev/null | awk '
-    /^─+$/ { n++; sep[n] = NR }
     { line[NR] = $0 }
     END {
-      if (n < 2) exit 1
-      for (i = sep[n-1] + 1; i < sep[n]; i++) print line[i]
+      for (i = NR; i >= 1; i--) {
+        if (line[i] ~ /^❯([[:space:]]|$)/) {
+          prompt = i
+          break
+        }
+      }
+      if (!prompt) exit 1
+      for (i = NR; i > prompt; i--) {
+        if (line[i] ~ /^─+$/) {
+          bottom = i
+          break
+        }
+      }
+      if (!bottom) exit 1
+      sub(/^❯[[:space:]]?/, "", line[prompt])
+      print line[prompt]
+      for (i = prompt + 1; i < bottom; i++) {
+        if (line[i] !~ /^─+$/) print line[i]
+      }
     }'
 }
 
@@ -117,9 +133,19 @@ normalized_input() {
   input_region | tr -d '❯' | squash
 }
 
+# Preserve any draft restored after the submitting turn. Ctrl-S is a no-op
+# when the input is empty and restores stashed text after the next turn ends.
+if ! tmux send-keys -t "$PANE" C-s; then
+  echo "compact landed, but Copilot input could not be stashed" >&2
+  exit 1
+fi
+for ((attempt = 1; attempt <= 20; attempt++)); do
+  input_is_empty && break
+  sleep 0.1
+done
 if ! input_is_empty; then
-  echo "post-compact input is already queued; continuation not needed"
-  exit 0
+  echo "compact landed, but Copilot input did not clear after stashing" >&2
+  exit 1
 fi
 
 expected="$(printf '%s' "$CONTINUATION" | squash)"
