@@ -263,8 +263,8 @@ printf '%s\n' \
 printf '%s\n' 'SELF_COMPACT_RUN_ID:queued-test' > "$queued/checkpoints/001-test.md"
 : > "$queued/ready"
 : > "$queued/armed"
-printf '%s' "automatic continuation" > "$TMP_DIR/input"
-: > "$TMP_DIR/queued-stash"
+: > "$TMP_DIR/input"
+printf '%s' "automatic continuation" > "$TMP_DIR/queued-stash"
 
 queued_output="$(
   PATH="$TMP_DIR:$PATH" \

@@ -97,11 +97,10 @@ normalized_input() {
   input_region | tr -d '❯' | squash
 }
 
-stash_input() {
-  tmux send-keys -t "$PANE" C-s || return 1
-  sleep 0.25
+wait_for_stable_empty_input() {
   local stable=0
-  for ((attempt = 1; attempt <= 30; attempt++)); do
+  sleep 0.25
+  for ((attempt = 1; attempt <= 20; attempt++)); do
     if input_is_empty; then
       stable=$((stable + 1))
       [ "$stable" -ge 3 ] && return 0
@@ -111,6 +110,16 @@ stash_input() {
     sleep 0.1
   done
   return 1
+}
+
+stash_input() {
+  tmux send-keys -t "$PANE" C-s || return 1
+  wait_for_stable_empty_input && return 0
+
+  # An empty input can still have a hidden stash. In that state the first
+  # Ctrl-S restores it; a second press stores it again.
+  tmux send-keys -t "$PANE" C-s || return 1
+  wait_for_stable_empty_input
 }
 
 clear_input() {

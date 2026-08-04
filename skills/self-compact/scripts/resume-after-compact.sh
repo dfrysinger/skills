@@ -138,19 +138,35 @@ normalized_input() {
   input_region | tr -d '❯' | squash
 }
 
+wait_for_stable_empty_input() {
+  local stable=0
+  sleep 0.25
+  for ((attempt = 1; attempt <= 20; attempt++)); do
+    if input_is_empty; then
+      stable=$((stable + 1))
+      [ "$stable" -ge 3 ] && return 0
+    else
+      stable=0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
 # Preserve any draft restored after the submitting turn. Ctrl-S is a no-op
 # when the input is empty and restores stashed text after the next turn ends.
 if ! "$TMUX_BIN" send-keys -t "$PANE" C-s; then
   echo "compact landed, but Copilot input could not be stashed" >&2
   exit 1
 fi
-for ((attempt = 1; attempt <= 20; attempt++)); do
-  input_is_empty && break
-  sleep 0.1
-done
-if ! input_is_empty; then
-  echo "compact landed, but Copilot input did not clear after stashing" >&2
-  exit 1
+if ! wait_for_stable_empty_input; then
+  # The first press restored a still-hidden stash. Store it again before
+  # submitting continuation.
+  if ! "$TMUX_BIN" send-keys -t "$PANE" C-s ||
+    ! wait_for_stable_empty_input; then
+    echo "compact landed, but Copilot input did not clear after stashing" >&2
+    exit 1
+  fi
 fi
 
 expected="$(printf '%s' "$CONTINUATION" | squash)"
