@@ -198,6 +198,15 @@ cleanup_unarmed_watcher() {
 }
 trap cleanup_unarmed_watcher EXIT
 
+if ! input_is_empty; then
+  echo "submit-compact.sh: Copilot input is not empty; refusing to append" >&2
+  exit 1
+fi
+
+# The watcher records failures in its own log. Keep its detached exit status
+# from becoming a tmux status message over the Copilot interface.
+watcher_command="$watcher_command || true"
+
 if ! tmux run-shell -b "$watcher_command"; then
   rm -f "$READY" "$ARMED" "$CANCELLED"
   echo "submit-compact.sh: continuation watcher did not start; compact not submitted" >&2
@@ -214,6 +223,7 @@ if [ ! -e "$READY" ]; then
   exit 1
 fi
 
+# Input can change after the preflight check while the watcher starts.
 if ! input_is_empty; then
   echo "submit-compact.sh: Copilot input is not empty; refusing to append" >&2
   exit 1

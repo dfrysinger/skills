@@ -94,10 +94,12 @@ phase and every named dropped item is safe to forget.
 ### 4. Submit and stop
 
 Run `scripts/submit-compact.sh` as the final tool action, passing a single-line
-steer. The helper fails closed unless the Copilot input is empty, the full
-command renders exactly, and Enter clears the input. Before submitting, it arms
-a detached watcher against the active session's `summary_count` and a unique
-marker that the compact must preserve in its checkpoint. The helper queues only
+steer. The helper checks that the Copilot input is empty before starting any
+background work, then fails closed unless the full command renders exactly and
+Enter clears the input. Before submitting, it arms a detached watcher against
+the active session's `summary_count` and a unique marker that the compact must
+preserve in its checkpoint. Watcher failures remain in the per-run log instead
+of becoming tmux interface messages. The helper queues only
 `/compact`; plain text sent during an active turn is steering, not a FIFO message
 behind the slash command. After both the count and marker prove that specific
 compact landed, the watcher checks the event log. If autopilot or another prompt

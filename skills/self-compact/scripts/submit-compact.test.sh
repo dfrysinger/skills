@@ -85,6 +85,9 @@ case "$command" in
     for argument in "$@"; do
       last="$argument"
     done
+    if [ -n "${FAKE_TMUX_RUN_SHELL_COMMAND:-}" ]; then
+      printf '%s\n' "$last" > "$FAKE_TMUX_RUN_SHELL_COMMAND"
+    fi
     /bin/bash -c "$last" &
     ;;
   *)
@@ -128,9 +131,35 @@ EOF
 : > "$session/events.jsonl"
 : > "$session/inuse.200.lock"
 : > "$session/inuse.201.lock"
-: > "$TMP_DIR/input"
 : > "$TMP_DIR/queue"
 
+printf '%s' "already queued" > "$TMP_DIR/input"
+if preflight_output="$(
+  PATH="$TMP_DIR:$PATH" \
+    TMUX_PANE="%1" \
+    FAKE_PANE_CWD="$TMP_DIR/workspace" \
+    FAKE_PANE_PID="100" \
+    FAKE_TMUX_INPUT="$TMP_DIR/input" \
+    FAKE_TMUX_QUEUE="$TMP_DIR/queue" \
+    FAKE_TMUX_RUN_SHELL_COMMAND="$TMP_DIR/preflight-run-shell" \
+    FAKE_WORKSPACE="$session/workspace.yaml" \
+    SELF_COMPACT_SESSION_STATE_DIR="$TMP_DIR/session-state" \
+    "$SCRIPT_DIR/submit-compact.sh" \
+    "Keep: active baton. Drop: resolved detail." 2>&1
+)"; then
+  echo "helper accepted nonempty input: $preflight_output" >&2
+  exit 1
+fi
+case "$preflight_output" in
+  *"Copilot input is not empty"*) ;;
+  *)
+    echo "unexpected preflight failure: $preflight_output" >&2
+    exit 1
+    ;;
+esac
+[ ! -e "$TMP_DIR/preflight-run-shell" ]
+
+: > "$TMP_DIR/input"
 output="$(
   PATH="$TMP_DIR:$PATH" \
     TMUX_PANE="%1" \
@@ -138,6 +167,7 @@ output="$(
     FAKE_PANE_PID="100" \
     FAKE_TMUX_INPUT="$TMP_DIR/input" \
     FAKE_TMUX_QUEUE="$TMP_DIR/queue" \
+    FAKE_TMUX_RUN_SHELL_COMMAND="$TMP_DIR/run-shell-command" \
     FAKE_WORKSPACE="$session/workspace.yaml" \
     SELF_COMPACT_SESSION_STATE_DIR="$TMP_DIR/session-state" \
     SELF_COMPACT_POLL_SECONDS=0.1 \
@@ -154,6 +184,8 @@ case "$output" in
     exit 1
     ;;
 esac
+
+grep -qF '|| true' "$TMP_DIR/run-shell-command"
 
 for _ in $(seq 1 100); do
   [ "$(wc -l < "$TMP_DIR/queue" | tr -d ' ')" -ge 2 ] && break
