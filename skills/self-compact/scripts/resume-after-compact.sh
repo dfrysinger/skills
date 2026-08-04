@@ -12,6 +12,11 @@ ARMED="${6:?armed path is required}"
 CANCELLED="${7:?cancelled path is required}"
 MARKER="${8:?checkpoint marker is required}"
 CONTINUATION="${9:-proceed}"
+TMUX_BIN="${10:-}"
+[ -x "$TMUX_BIN" ] || {
+  echo "continuation watcher has no executable tmux path" >&2
+  exit 1
+}
 POLL_SECONDS="${SELF_COMPACT_POLL_SECONDS:-1}"
 MAX_POLLS="${SELF_COMPACT_MAX_POLLS:-1800}"
 RESUME_GRACE_SECONDS="${SELF_COMPACT_RESUME_GRACE_SECONDS:-3}"
@@ -94,7 +99,7 @@ if post_compact_activity_exists; then
 fi
 
 input_region() {
-  tmux capture-pane -p -t "$PANE" 2>/dev/null | awk '
+  "$TMUX_BIN" capture-pane -p -t "$PANE" 2>/dev/null | awk '
     { line[NR] = $0 }
     END {
       for (i = NR; i >= 1; i--) {
@@ -135,7 +140,7 @@ normalized_input() {
 
 # Preserve any draft restored after the submitting turn. Ctrl-S is a no-op
 # when the input is empty and restores stashed text after the next turn ends.
-if ! tmux send-keys -t "$PANE" C-s; then
+if ! "$TMUX_BIN" send-keys -t "$PANE" C-s; then
   echo "compact landed, but Copilot input could not be stashed" >&2
   exit 1
 fi
@@ -149,7 +154,7 @@ if ! input_is_empty; then
 fi
 
 expected="$(printf '%s' "$CONTINUATION" | squash)"
-tmux send-keys -t "$PANE" -l -- "$CONTINUATION"
+"$TMUX_BIN" send-keys -t "$PANE" -l -- "$CONTINUATION"
 
 rendered=false
 for ((attempt = 1; attempt <= 40; attempt++)); do
@@ -167,13 +172,13 @@ fi
 
 # Close the grace-to-submit race without steering an automatically resumed turn.
 if post_compact_activity_exists; then
-  tmux send-keys -t "$PANE" C-u
+  "$TMUX_BIN" send-keys -t "$PANE" C-u
   echo "post-compact activity started before submission; continuation not needed"
   exit 0
 fi
 
 for ((attempt = 1; attempt <= 10; attempt++)); do
-  tmux send-keys -t "$PANE" Enter
+  "$TMUX_BIN" send-keys -t "$PANE" Enter
   sleep 1
   if awk -v after="$compaction_line" -v continuation="$CONTINUATION" '
     NR > after &&

@@ -4,6 +4,10 @@
 set -euo pipefail
 
 PANE="${TMUX_PANE:?TMUX_PANE is not set; run inside tmux}"
+TMUX_BIN="$(command -v tmux)" || {
+  echo "submit-compact.sh: tmux is unavailable; compact not submitted" >&2
+  exit 1
+}
 CONTINUATION="proceed"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SESSION_STATE_DIR="${SELF_COMPACT_SESSION_STATE_DIR:-$HOME/.copilot/session-state}"
@@ -218,7 +222,7 @@ shell_quote() {
 watcher_command=""
 for argument in \
   "$WATCHER" "$PANE" "$WORKSPACE" "$SUMMARY_COUNT" "$EVENT_LINE_COUNT" \
-  "$READY" "$ARMED" "$CANCELLED" "$MARKER" "$CONTINUATION"; do
+  "$READY" "$ARMED" "$CANCELLED" "$MARKER" "$CONTINUATION" "$TMUX_BIN"; do
   quoted="$(shell_quote "$argument")"
   watcher_command="${watcher_command}${watcher_command:+ }$quoted"
 done

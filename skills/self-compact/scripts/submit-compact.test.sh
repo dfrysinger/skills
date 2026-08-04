@@ -238,7 +238,7 @@ auto_output="$(
     SELF_COMPACT_RESUME_GRACE_SECONDS=0.1 \
     "$SCRIPT_DIR/resume-after-compact.sh" \
     "%1" "$auto/workspace.yaml" 1 0 "$auto/ready" "$auto/armed" \
-    "$auto/cancelled" "SELF_COMPACT_RUN_ID:auto-test" "proceed"
+    "$auto/cancelled" "SELF_COMPACT_RUN_ID:auto-test" "proceed" "$TMP_DIR/tmux"
 )"
 
 case "$auto_output" in
@@ -279,7 +279,7 @@ queued_output="$(
     SELF_COMPACT_RESUME_GRACE_SECONDS=0.1 \
     "$SCRIPT_DIR/resume-after-compact.sh" \
     "%1" "$queued/workspace.yaml" 1 0 "$queued/ready" "$queued/armed" \
-    "$queued/cancelled" "SELF_COMPACT_RUN_ID:queued-test" "proceed"
+    "$queued/cancelled" "SELF_COMPACT_RUN_ID:queued-test" "proceed" "$TMP_DIR/tmux"
 )"
 
 case "$queued_output" in
