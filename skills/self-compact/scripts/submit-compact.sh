@@ -164,6 +164,13 @@ case "$SUMMARY_COUNT" in
     ;;
 esac
 
+EVENTS="${WORKSPACE%/workspace.yaml}/events.jsonl"
+[ -r "$EVENTS" ] || {
+  echo "submit-compact.sh: active session event log is unavailable; compact not submitted" >&2
+  exit 1
+}
+EVENT_LINE_COUNT="$(wc -l < "$EVENTS" | tr -d '[:space:]')"
+
 FILES_DIR="${WORKSPACE%/workspace.yaml}/files"
 mkdir -p "$FILES_DIR"
 READY="$FILES_DIR/self-compact-$RUN_ID.ready"
@@ -178,8 +185,8 @@ shell_quote() {
 
 watcher_command=""
 for argument in \
-  "$WATCHER" "$PANE" "$WORKSPACE" "$SUMMARY_COUNT" "$READY" "$ARMED" \
-  "$CANCELLED" "$MARKER" "$CONTINUATION"; do
+  "$WATCHER" "$PANE" "$WORKSPACE" "$SUMMARY_COUNT" "$EVENT_LINE_COUNT" \
+  "$READY" "$ARMED" "$CANCELLED" "$MARKER" "$CONTINUATION"; do
   quoted="$(shell_quote "$argument")"
   watcher_command="${watcher_command}${watcher_command:+ }$quoted"
 done

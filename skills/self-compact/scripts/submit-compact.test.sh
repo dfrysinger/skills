@@ -55,16 +55,21 @@ case "$command" in
             (
               sleep 0.3
               marker="$(printf '%s' "$input" | grep -o 'SELF_COMPACT_RUN_ID:[^ .]*')"
-              printf '%s' "busy" > "$FAKE_TMUX_INPUT"
               sed 's/^summary_count: .*/summary_count: 2/' \
                 "$FAKE_WORKSPACE" > "$FAKE_WORKSPACE.tmp"
               mv "$FAKE_WORKSPACE.tmp" "$FAKE_WORKSPACE"
               mkdir -p "${FAKE_WORKSPACE%/workspace.yaml}/checkpoints"
               printf '%s\n' "$marker" > \
                 "${FAKE_WORKSPACE%/workspace.yaml}/checkpoints/001-test.md"
-              sleep 0.5
-              : > "$FAKE_TMUX_INPUT"
+              printf '%s\n' \
+                '{"type":"session.compaction_complete","timestamp":"2026-08-04T00:00:01Z"}' \
+                >> "${FAKE_WORKSPACE%/workspace.yaml}/events.jsonl"
             ) &
+            ;;
+          proceed)
+            printf '%s\n' \
+              '{"type":"user.message","data":{"content":"proceed"},"timestamp":"2026-08-04T00:00:02Z"}' \
+              >> "${FAKE_WORKSPACE%/workspace.yaml}/events.jsonl"
             ;;
         esac
       fi
@@ -137,6 +142,7 @@ output="$(
     SELF_COMPACT_SESSION_STATE_DIR="$TMP_DIR/session-state" \
     SELF_COMPACT_POLL_SECONDS=0.1 \
     SELF_COMPACT_MAX_POLLS=100 \
+    SELF_COMPACT_RESUME_GRACE_SECONDS=0.1 \
     "$SCRIPT_DIR/submit-compact.sh" \
     "Keep: active baton. Drop: resolved detail."
 )"
@@ -166,6 +172,53 @@ for _ in $(seq 1 50); do
     break
   sleep 0.1
 done
-grep -q 'submitted post-compact continuation after summary_count advanced to 2' "$log"
+grep -q 'submitted post-compact continuation after event line 1' "$log"
+
+auto="$TMP_DIR/session-state/auto-session"
+mkdir -p "$auto/checkpoints" "$auto/files"
+cat > "$auto/workspace.yaml" <<EOF
+id: auto-session
+cwd: $TMP_DIR/workspace
+summary_count: 1
+EOF
+: > "$auto/events.jsonl"
+: > "$auto/ready"
+: > "$auto/armed"
+
+(
+  sleep 0.2
+  sed 's/^summary_count: .*/summary_count: 2/' \
+    "$auto/workspace.yaml" > "$auto/workspace.yaml.tmp"
+  mv "$auto/workspace.yaml.tmp" "$auto/workspace.yaml"
+  printf '%s\n' 'SELF_COMPACT_RUN_ID:auto-test' > "$auto/checkpoints/001-test.md"
+  printf '%s\n' \
+    '{"type":"session.compaction_complete","timestamp":"2026-08-04T00:00:01Z"}' \
+    '{"type":"assistant.turn_start","timestamp":"2026-08-04T00:00:02Z"}' \
+    >> "$auto/events.jsonl"
+) &
+
+auto_output="$(
+  PATH="$TMP_DIR:$PATH" \
+    FAKE_PANE_CWD="$TMP_DIR/workspace" \
+    FAKE_PANE_PID="100" \
+    FAKE_TMUX_INPUT="$TMP_DIR/input" \
+    FAKE_TMUX_QUEUE="$TMP_DIR/auto-queue" \
+    FAKE_WORKSPACE="$auto/workspace.yaml" \
+    SELF_COMPACT_POLL_SECONDS=0.1 \
+    SELF_COMPACT_MAX_POLLS=100 \
+    SELF_COMPACT_RESUME_GRACE_SECONDS=0.1 \
+    "$SCRIPT_DIR/resume-after-compact.sh" \
+    "%1" "$auto/workspace.yaml" 1 0 "$auto/ready" "$auto/armed" \
+    "$auto/cancelled" "SELF_COMPACT_RUN_ID:auto-test" "proceed"
+)"
+
+case "$auto_output" in
+  *"post-compact activity already present"*) ;;
+  *)
+    echo "watcher did not recognize automatic continuation: $auto_output" >&2
+    exit 1
+    ;;
+esac
+[ ! -s "$TMP_DIR/auto-queue" ]
 
 echo "submit-compact test passed"
