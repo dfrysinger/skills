@@ -41,10 +41,9 @@ permission, destructive-action, or user-only visual-confirmation blocker.
 
 ## Current phase
 
-The implementation review gate and final reviewed-tree Tango lifecycle pass.
-The remaining phase is local landing, personal plugin installation, clean-state
-verification, watcher/lock verification, schedule shutdown, and charter
-closure.
+Complete. The implementation review gate and final reviewed-tree Tango
+lifecycle pass. The protocol is landed on local `main`, personal plugin
+v0.101.0 is installed, and cleanup checks pass.
 
 ## Phase order
 
@@ -72,4 +71,7 @@ draft isolation, or treat deterministic shell tests as the real-model proof.
 - The complete deterministic suite passes.
 - The implementation review gate has no remaining material finding.
 - The final reviewed-tree Tango lifecycle passed on commit `90f0d05`.
-- The next action is local landing and personal plugin installation.
+- Local `main` contains the protocol and remains unpushed.
+- Personal plugin v0.101.0 is installed from the landed tree.
+- No self-compact watcher or session lock remains.
+- Stop schedule #8 and close the landing todo.
