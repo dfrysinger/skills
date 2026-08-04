@@ -36,8 +36,8 @@ The change reuses the existing self-compact helper and watcher:
 - Ctrl-S toggles Copilot's draft stash. A visible draft becomes hidden and
   returns after the next turn. An empty input with no hidden stash is unchanged.
 - Ctrl-U clears visible editor text.
-- Esc Esc does not terminate a running tool or change the selected autopilot
-  mode. It does stop further assistant work after that tool completes, which is
+- Esc does not terminate a running tool or change the selected autopilot mode.
+  It does stop further assistant work after that tool completes, which is
   compatible with self-compact's final-action contract.
 
 No separate input-state helper exists in this repository. The current parser is
@@ -105,8 +105,8 @@ When the transition remains inconclusive after the redraw captures:
 6. Type the intended command once. If it renders exactly, Esc is not needed.
 7. If text remains, the command is not exact, a menu is visible, or the state
    is still unreadable, clear the helper's attempted command with Ctrl-U, send
-   Esc Esc, and capture again.
-8. If a menu is visibly still open, send one more Esc.
+   one Esc, and capture again.
+8. If a menu is visibly still open, send one additional Esc and capture again.
 9. Send Ctrl-U, type the intended command for the second and final time, and
    capture again.
 10. If the exact marked command still cannot be observed, clear the
@@ -207,7 +207,7 @@ inconclusive fallback, that draft may have been cleared and is not promised.
 | Resize refresh is nondestructive | Start with unreadable rendering and known geometry, then pulse width | Geometry is restored exactly; no input, mode, or autopilot state changes | Refresh can disturb the session |
 | Corrupt rendering recovers when key clearing repairs the editor | Feed an unstable or unreadable prompt state, then make Ctrl-U or Esc restore readable input | Visible tmux notice, 10-second grace, exact marked command, one Enter | Recoverable ambiguity still disables automation or loops |
 | Persistently unreadable rendering does not transmit unknown text | Keep the prompt unreadable through the bounded recovery | Helper-authored text is cleared where possible, no Enter occurs, and a visible failure notice appears | Residual draft text can be submitted as a user message |
-| Recovery is numerically bounded | Exercise every ambiguous branch with a shortened test delay | At most one grace wait, one Ctrl-S transition, four Ctrl-U presses including final cleanup, three Esc presses, two command typings, and zero unverified Enter presses | Recovery can hang, toggle, clear, or type repeatedly |
+| Recovery is numerically bounded | Exercise every ambiguous branch with a shortened test delay | At most one grace wait, one Ctrl-S transition, four Ctrl-U presses including final cleanup, two Esc presses, two command typings, and zero unverified Enter presses | Recovery can hang, toggle, clear, or type repeatedly |
 | Unknown text is not appended intentionally | Begin fallback with visible text and make parsing unreadable | Ctrl-U and any required Esc recovery occur before the marked command is typed | The command can be deliberately concatenated with a draft |
 | Exact submissions retain strict verification | Use readable rendering | Exact command comparison and normal Enter confirmation remain active | The fallback weakened the normal path |
 | Missing compaction start fails promptly | Consume Enter without recording `session.compaction_start` | An exact remaining helper command is cleared, watcher exits within the short deadline, visible failure is shown | A stranded command can wait for the long checkpoint timeout |
@@ -215,10 +215,10 @@ inconclusive fallback, that draft may have been cleared and is not promised.
 | Queued compact is not timed from Enter | Delay `session.compaction_start` until after a delayed `assistant.turn_end` | Watcher does not expire before turn end and accepts a start within 15 seconds afterward | A valid queued compact can be cancelled prematurely |
 | Post-compact activity wins | Record a user message or assistant turn after compaction | No `proceed` is injected | Watcher can steer an already resumed turn |
 | Grace-period submission wins | Record a user message during the 10-second wait | Recovery cancels without Ctrl-U, Esc, or command typing | The helper can clear or type into a user-started turn |
-| Esc is conditional | Make Ctrl-U produce an exact rendered command | No Esc key is sent | Esc can suppress work when it is unnecessary |
+| Esc is conditional | Make Ctrl-U produce an exact rendered command with no visible menu | No Esc key is sent | Esc can suppress work when it is unnecessary |
 | Post-compact Esc race is closed | Start activity during continuation recovery | No Esc or Enter occurs after the activity event; the turn reaches its normal end | Watcher can interrupt a resumed turn |
 | Failed compaction stops promptly | Record `session.compaction_complete` with `success:false` | Watcher exits immediately | Failure can wait 30 minutes or inject continuation |
-| Esc does not terminate the current tool | Run a bounded real shell command and send Esc Esc | Shell completes; autopilot selection remains | Fallback can terminate the helper itself |
+| Esc does not terminate the current tool | Run a bounded real shell command and send one Esc | Shell completes; autopilot selection remains | Fallback can terminate the helper itself |
 
 Deterministic shell tests cover all state transitions, retry counts, key order,
 visible-notice delivery, geometry restoration, event races, and event outcomes.
