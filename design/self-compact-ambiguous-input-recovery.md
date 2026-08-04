@@ -103,9 +103,9 @@ When the transition remains inconclusive after the redraw captures:
 4. Send Ctrl-U once and capture another stable state.
 5. If the input is clearly empty, continue.
 6. Type the intended command once. If it renders exactly, Esc is not needed.
-7. If text remains, the command is not exact, a menu is visible, or the state
-   is still unreadable, clear the helper's attempted command with Ctrl-U, send
-   one Esc, and capture again.
+7. If the visible input is not exactly the complete expected command, a menu is
+   visible, or the input state is unreadable, clear the entire visible input
+   with Ctrl-U, send one Esc, and capture again.
 8. If a menu is visibly still open, send one additional Esc and capture again.
 9. Send Ctrl-U, type the intended command for the second and final time, and
    capture again.
