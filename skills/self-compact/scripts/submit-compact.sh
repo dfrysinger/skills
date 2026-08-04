@@ -11,6 +11,8 @@ TMUX_BIN="$(command -v tmux)" || {
 CONTINUATION="proceed"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SESSION_STATE_DIR="${SELF_COMPACT_SESSION_STATE_DIR:-$HOME/.copilot/session-state}"
+# shellcheck source=skills/self-compact/scripts/input-recovery.sh
+source "$SCRIPT_DIR/input-recovery.sh"
 
 if [ "${1:-}" = "--continuation" ]; then
   [ $# -ge 3 ] || {
@@ -28,18 +30,7 @@ if [ -z "$STEER" ]; then
   exit 2
 fi
 
-RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-MARKER="SELF_COMPACT_RUN_ID:$RUN_ID"
-COMMAND="/compact $STEER Keep this exact continuation marker in the summary: $MARKER."
-
-case "$STEER" in
-  *$'\n'*)
-    echo "submit-compact.sh: steer must be a single line" >&2
-    exit 2
-    ;;
-esac
-
-validate_single_line() {
+validate_input() {
   local value_name="$1"
   local value="$2"
   case "$value" in
@@ -48,101 +39,52 @@ validate_single_line() {
       exit 2
       ;;
   esac
-  if printf '%s' "$value" | LC_ALL=C grep -q '[[:cntrl:]]'; then
-    echo "submit-compact.sh: ${value_name} must not contain control characters" >&2
+  if ! sc_ascii_printable "$value"; then
+    echo "submit-compact.sh: ${value_name} must contain only printable ASCII" >&2
     exit 2
   fi
 }
 
-validate_single_line "steer" "$STEER"
-validate_single_line "continuation" "$CONTINUATION"
+validate_input "steer" "$STEER"
+validate_input "continuation" "$CONTINUATION"
 
-input_region() {
-  tmux capture-pane -p -t "$PANE" 2>/dev/null | awk '
-    { line[NR] = $0 }
-    END {
-      for (i = NR; i >= 1; i--) {
-        if (line[i] ~ /^❯([[:space:]]|$)/) {
-          prompt = i
-          break
-        }
-      }
-      if (!prompt) exit 1
-      for (i = NR; i > prompt; i--) {
-        if (line[i] ~ /^─+$/) {
-          bottom = i
-          break
-        }
-      }
-      if (!bottom) exit 1
-      sub(/^❯[[:space:]]?/, "", line[prompt])
-      print line[prompt]
-      for (i = prompt + 1; i < bottom; i++) {
-        if (line[i] !~ /^─+$/) print line[i]
-      }
-    }'
-}
-
-squash() {
-  tr -d '[:space:]'
-}
-
-input_is_empty() {
-  local text
-  text=$(input_region | tr -d '❯' | squash) || return 1
-  [ -z "$text" ]
-}
-
-normalized_input() {
-  input_region | tr -d '❯' | squash
-}
-
-wait_for_stable_empty_input() {
-  local stable=0
-  sleep 0.25
-  for ((attempt = 1; attempt <= 20; attempt++)); do
-    if input_is_empty; then
-      stable=$((stable + 1))
-      [ "$stable" -ge 3 ] && return 0
-    else
-      stable=0
-    fi
-    sleep 0.1
-  done
-  return 1
-}
-
-stash_input() {
-  tmux send-keys -t "$PANE" C-s || return 1
-  wait_for_stable_empty_input && return 0
-
-  # An empty input can still have a hidden stash. In that state the first
-  # Ctrl-S restores it; a second press stores it again.
-  tmux send-keys -t "$PANE" C-s || return 1
-  wait_for_stable_empty_input
-}
-
-clear_input() {
-  local attempt
-  for ((attempt = 1; attempt <= 3; attempt++)); do
-    if ! tmux send-keys -t "$PANE" C-u; then
-      return 1
-    fi
-    sleep 0.5
-    input_is_empty && return 0
-  done
-  return 1
-}
-
-abort_after_send() {
-  local reason="$1"
-  if clear_input; then
-    echo "submit-compact.sh: $reason; input cleared" >&2
-  else
-    echo "submit-compact.sh: $reason; input cleanup failed" >&2
-  fi
+RUN_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+EPOCH_SECONDS="$(date -u +%s)"
+case "$EPOCH_SECONDS:$$" in
+  *[!0-9:]*|:*|*::*|*:)
+    echo "submit-compact.sh: could not create a compact run marker" >&2
+    exit 1
+    ;;
+esac
+[ "$EPOCH_SECONDS" -le 4294967295 ] && [ "$$" -le 1048575 ] || {
+  echo "submit-compact.sh: compact run marker exceeds its supported range" >&2
   exit 1
 }
+printf -v EPOCH_HEX '%08x' "$EPOCH_SECONDS"
+printf -v PID_HEX '%05x' "$$"
+RUN_ID="$RUN_STAMP-$$"
+MARKER="SCM:$EPOCH_HEX-$PID_HEX"
+COMMAND="/compact $STEER Keep $MARKER"
+
+SC_TMUX_BIN="$TMUX_BIN"
+SC_PANE="$PANE"
+ROW_LIMIT="$(sc_pane_one_row_limit)" || {
+  echo "submit-compact.sh: could not read pane width; compact not submitted" >&2
+  exit 1
+}
+if ! sc_one_row_command_fits "$COMMAND" "$ROW_LIMIT"; then
+  echo "submit-compact.sh: marked compact command is ${#COMMAND} columns, but this pane safely allows $ROW_LIMIT; shorten the steer or reference a shorter durable artifact" >&2
+  exit 2
+fi
+if ! sc_one_row_command_fits "$CONTINUATION" "$ROW_LIMIT"; then
+  echo "submit-compact.sh: continuation is ${#CONTINUATION} columns, but this pane safely allows $ROW_LIMIT; shorten the continuation or reference a shorter durable artifact" >&2
+  exit 2
+fi
+
+if ! sc_input_init "$TMUX_BIN" "$PANE"; then
+  echo "submit-compact.sh: could not verify a UTF-8 locale; compact not submitted" >&2
+  exit 1
+fi
 
 resolve_workspace() {
   local pane_cwd pane_pid ws this_cwd lock lock_pid parent
@@ -216,6 +158,17 @@ EVENTS="${WORKSPACE%/workspace.yaml}/events.jsonl"
 }
 EVENT_LINE_COUNT="$(wc -l < "$EVENTS" | tr -d '[:space:]')"
 
+submission_activity_exists() {
+  awk -v after="$EVENT_LINE_COUNT" '
+    NR > after &&
+      (/"type":"user.message"/ || /"type":"assistant.turn_start"/) {
+        found = 1
+        exit
+      }
+    END { exit(found ? 0 : 1) }
+  ' "$EVENTS"
+}
+
 FILES_DIR="${WORKSPACE%/workspace.yaml}/files"
 mkdir -p "$FILES_DIR"
 READY="$FILES_DIR/self-compact-$RUN_ID.ready"
@@ -231,12 +184,15 @@ shell_quote() {
 watcher_command=""
 for argument in \
   "$WATCHER" "$PANE" "$WORKSPACE" "$SUMMARY_COUNT" "$EVENT_LINE_COUNT" \
-  "$READY" "$ARMED" "$CANCELLED" "$MARKER" "$CONTINUATION" "$TMUX_BIN"; do
+  "$READY" "$ARMED" "$CANCELLED" "$MARKER" "$CONTINUATION" "$TMUX_BIN" \
+  "$COMMAND"; do
   quoted="$(shell_quote "$argument")"
   watcher_command="${watcher_command}${watcher_command:+ }$quoted"
 done
 quoted_log="$(shell_quote "$LOG")"
 watcher_command="$watcher_command >> $quoted_log 2>&1"
+quoted_locale="$(shell_quote "$SC_INPUT_LOCALE")"
+watcher_command="LC_ALL=$quoted_locale LANG=$quoted_locale SELF_COMPACT_LOCALE=$quoted_locale $watcher_command"
 
 cleanup_unarmed_watcher() {
   [ -e "$ARMED" ] || : > "$CANCELLED"
@@ -263,60 +219,47 @@ if [ ! -e "$READY" ]; then
   exit 1
 fi
 
-# Press Ctrl-S exactly once after watcher startup. A second press would restore
-# the same draft because Copilot's stash key is a toggle.
-if ! stash_input; then
-  echo "submit-compact.sh: could not stash Copilot input; compact not submitted" >&2
+prepare_status=0
+sc_prepare_verified_command "$COMMAND" submission_activity_exists ||
+  prepare_status=$?
+case "$prepare_status" in
+  0) ;;
+  10)
+    echo "submit-compact.sh: session activity started; compact not submitted" >&2
+    exit 1
+    ;;
+  *)
+    echo "submit-compact.sh: compact command could not be rendered exactly; compact not submitted" >&2
+    exit 1
+    ;;
+esac
+
+expected_hex="$(sc_literal_hex "$COMMAND")"
+final_status=0
+sc_wait_for_exact_render "$expected_hex" submission_activity_exists ||
+  final_status=$?
+case "$final_status" in
+  0) ;;
+  10)
+    sc_cleanup_exact_command "$expected_hex"
+    echo "submit-compact.sh: session activity started before Enter; compact not submitted" >&2
+    exit 1
+    ;;
+  *)
+    sc_cleanup_exact_command "$expected_hex"
+    echo "submit-compact.sh: compact command changed before Enter; compact not submitted" >&2
+    exit 1
+    ;;
+esac
+if submission_activity_exists; then
+  sc_cleanup_exact_command "$expected_hex"
+  echo "submit-compact.sh: session activity started before Enter; compact not submitted" >&2
   exit 1
 fi
-
-expected=$(printf '%s' "$COMMAND" | squash)
-if ! tmux send-keys -t "$PANE" -l -- "$COMMAND"; then
-  abort_after_send "could not type the compact command"
-fi
-
-rendered=false
-scrolled=false
-for ((attempt = 1; attempt <= 40; attempt++)); do
-  actual=$(normalized_input || true)
-  if [ "$actual" = "$expected" ]; then
-    rendered=true
-    break
-  fi
-  if [ -n "$actual" ] &&
-    [ "${#actual}" -lt "${#expected}" ] &&
-    [[ "$expected" == *"$actual" ]]; then
-    scrolled=true
-    break
-  fi
-  sleep 0.5
-done
-
-if [ "$scrolled" = true ]; then
-  abort_after_send "steer is too long to verify; shorten it or reference the durable artifact"
-fi
-
-if [ "$rendered" != true ]; then
-  abort_after_send "compact command never rendered exactly"
-fi
-
-submitted=false
-for ((attempt = 1; attempt <= 10; attempt++)); do
-  if ! tmux send-keys -t "$PANE" Enter; then
-    abort_after_send "could not submit the compact command"
-  fi
-  sleep 1.5
-  if input_is_empty; then
-    submitted=true
-    break
-  fi
-  if [ "$(normalized_input)" != "$expected" ]; then
-    break
-  fi
-done
-
-if [ "$submitted" != true ]; then
-  abort_after_send "compact command submission was not confirmed"
+if ! tmux send-keys -t "$PANE" Enter; then
+  sc_cleanup_exact_command "$expected_hex"
+  echo "submit-compact.sh: could not submit the compact command" >&2
+  exit 1
 fi
 
 : > "$ARMED"
