@@ -1466,8 +1466,24 @@ assert_brief_rejected assistant-bare-mention \
   $'I will emit SELF_COMPACT_BRIEF later, not now.'
 assert_brief_rejected missing-keep-content \
   $'SELF_COMPACT_BRIEF\nKeep:\nDrop: detail\nAfter compaction: continue and do not compact again'
+assert_brief_rejected keep-content-moved-off-label \
+  $'SELF_COMPACT_BRIEF\nKeep:\ncontinued baton\nDrop: detail\nAfter compaction: continue and do not compact again'
 assert_brief_rejected missing-literal \
   $'SELF_COMPACT_BRIEF\nKeep: baton\nDrop: detail\nAfter compaction: never initiate another compact'
+assert_brief_rejected no-recompact-literal-moved-off-label \
+  $'SELF_COMPACT_BRIEF\nKeep: baton\nDrop: detail\nAfter compaction: continue\nand do not compact again'
+
+setup_case brief-visibility-wait-out-of-range
+status=0
+SELF_COMPACT_BRIEF_WAIT_SECONDS=3600 \
+  run_submit_command > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
+  status=$?
+[ "$status" -ne 0 ] || fail "out-of-range brief visibility wait was accepted"
+grep -q 'brief visibility wait must be greater than zero and at most 2 seconds' \
+  "$FAKE_CASE/submit.err"
+assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+[ ! -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
+  fail "out-of-range brief visibility wait acquired the session lock"
 
 setup_case tool-argument-mention
 CONTENT='ordinary assistant content' /usr/bin/perl -MJSON::PP -e '

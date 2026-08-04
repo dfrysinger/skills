@@ -76,6 +76,15 @@ if ! sc_ambiguous_wait_is_bounded "$AMBIGUOUS_WAIT_SECONDS"; then
   echo "submit-compact.sh: ambiguous render wait must be between 20 and 30 seconds; compact not submitted" >&2
   exit 1
 fi
+BRIEF_WAIT_SECONDS="${SELF_COMPACT_BRIEF_WAIT_SECONDS:-2}"
+if ! awk -v seconds="$BRIEF_WAIT_SECONDS" '
+  BEGIN {
+    if (seconds !~ /^[0-9]+([.][0-9]+)?$/) exit 1
+    exit !(seconds > 0 && seconds <= 2)
+  }'; then
+  echo "submit-compact.sh: brief visibility wait must be greater than zero and at most 2 seconds; compact not submitted" >&2
+  exit 1
+fi
 
 resolve_workspace() {
   local pane_cwd pane_pid ws this_cwd lock lock_pid parent
@@ -222,12 +231,11 @@ brief_epoch_milliseconds() {
 }
 
 wait_for_current_turn_brief() {
-  local wait_seconds="${SELF_COMPACT_BRIEF_WAIT_SECONDS:-2}"
   local poll_seconds="${SELF_COMPACT_BRIEF_WAIT_DELAY_SECONDS:-0.05}"
   local wait_milliseconds poll_milliseconds started deadline now remaining
   local sleep_milliseconds sleep_seconds
 
-  wait_milliseconds="$(sc_seconds_to_milliseconds "$wait_seconds")" ||
+  wait_milliseconds="$(sc_seconds_to_milliseconds "$BRIEF_WAIT_SECONDS")" ||
     return 1
   poll_milliseconds="$(sc_seconds_to_milliseconds "$poll_seconds")" ||
     return 1
