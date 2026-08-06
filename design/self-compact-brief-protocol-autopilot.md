@@ -44,12 +44,11 @@ permission, destructive-action, or user-only visual-confirmation blocker.
 
 ## Current phase
 
-Preparing the current remediated tree for its required live proof. The review
-of `877f5b3..ee41772` confirmed 52 findings, rejected 2, and left none
-uncertain. Production hardening and the missing deterministic regressions are
-implemented, and multiple stable full deterministic runs pass. The prior live
-receipt remains historical evidence only; the current tree must pass a new
-complete tmux lifecycle before closure review.
+Running closure review on the live-proven remediated tree. The review of
+`877f5b3..ee41772` confirmed 52 findings, rejected 2, and left none uncertain.
+Production hardening and the missing deterministic regressions are
+implemented, multiple stable full deterministic runs pass, and the exact
+installed runtime from candidate `0eedd64` passed the complete tmux lifecycle.
 
 ## Phase order
 
@@ -69,36 +68,37 @@ draft isolation, or treat deterministic shell tests as the real-model proof.
 
 ## Current baton
 
-- Baseline: `ee41772d074f70d9d5d67cc4043e6336c1f38ad7`.
+- Candidate: `0eedd64601cebb2c2688b1527be1fe86b30d1472`.
 - Deep-review artifacts:
   `/Users/dfrysinger/.copilot/session-state/dc8dcc47-cbbc-5f0e-87fd-043acec5e7ae/files/dcr-self-compact-v102/`.
 - Implemented remediation: bounded authorization parsing, semantic root-event
   handling, request-to-completion conflict checks, ownership and handoff
   revalidation, detached failure reporting, continuation cleanup, portable
   helper invocation, and the expanded fail-closed regression matrix.
-- The installed plugin and historical live receipt are not evidence for the
-  current uncommitted tree.
-- Next action: create a local candidate commit, install that exact tree, pass
-  the complete live lifecycle with all three retained identifiers and draft
-  restoration, then run closure review before final installation and landing.
+- The repository and installed runtime script hashes match, and the installed
+  plugin reports version `0.103.0`.
+- Next action: run implementation closure review against the complete
+  remediated diff and this live receipt, close any material finding, rerun
+  affected validation, then land and reinstall the final reviewed commit.
 
 ## Live-proof receipt
 
 ```text
 LIVE_PROOF
-candidate: beedc58e25febae37c1b0a5acf5e9e948bba544a
-running: installed helper hashes match the candidate; plugin version 0.102.0
+candidate: 0eedd64601cebb2c2688b1527be1fe86b30d1472
+running: installed runtime hashes match the candidate; plugin version 0.103.0
 scenario: tmux-hosted Copilot CLI, 8,000 disposable lines, draft inserted during the marked delay, deferred brief authorization, compact, continuation, and draft restoration
 status: PASS
-excluded_outputs: .v102-delay-ready and session evidence files
+excluded_outputs: session evidence files
 
 | checkpoint | expected | observed | evidence | result |
 |---|---|---|---|---|
-| delayed draft | private draft remains unsubmitted | `V102_PRIVATE_DRAFT_DO_NOT_SUBMIT` stayed in the editor | tmux pane `%81` | PASS |
-| structural authorization | one exact helper call binds to the persisted brief | `call_5zlUWdOq6ZSVvgqKUss2gY1g` completed before authorization and one compact followed | session `8dd9eb44-437f-47fd-a002-66525d5a2097`, events 22-33 | PASS |
-| compact identity | one successful token-bearing compact advances the checkpoint | token `8ce70174`, `summary_count: 1`, one checkpoint | workspace, events 32-33, checkpoint 001 | PASS |
-| continuation | one fixed continuation resumes the retained task | one continuation at event 35 and retained markers at event 38 | events.jsonl | PASS |
-| restored draft | original draft returns unchanged | `V102_PRIVATE_DRAFT_DO_NOT_SUBMIT` visible after resume | tmux pane `%81` | PASS |
+| delayed draft | private draft remains unsubmitted | `V103_PRIVATE_DRAFT_DO_NOT_SUBMIT` stayed in the editor and never became a user message | tmux pane `%83`, event count | PASS |
+| structural authorization | one exact portable helper call binds to the persisted brief | `call_r6lmzQwSsIyL45K5nBAvrVKq` used the exact `$HOME` command and completed before one compact | session `bda6a159-7e76-4455-b8d4-a1d3e8969f37`, events 32-41 | PASS |
+| compact identity | one successful token-bearing compact advances the checkpoint | token `b1071aed`, `summary_count: 1`, one checkpoint | workspace, events 40-41, checkpoint 001 | PASS |
+| continuation | one fixed continuation resumes the retained task | exactly one fixed continuation at event 43 | events.jsonl | PASS |
+| retained meaning | all three identifiers survive compaction | `V103EMBEROTTER V103COBALTLOON V103JADEBADGER V103_LIVE_RESUMED` at event 45 | events.jsonl and tmux pane `%83` | PASS |
+| restored draft | original draft returns unchanged | `V103_PRIVATE_DRAFT_DO_NOT_SUBMIT` visible after resume | tmux pane `%83` | PASS |
 | teardown | no lock, watcher, or transient marker remains | only the completed run log remains | session files directory | PASS |
 | forbidden errors | no duplicate compact, continuation, or unknown-text submission | one compact start, one compact completion, one continuation | events.jsonl | PASS |
 
