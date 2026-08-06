@@ -64,20 +64,35 @@ if ! printf '%s' "$PROMPT" >"$RECOVERY_FILE"; then
   exit 1
 fi
 
-# Documented callers opt in to consuming their unique temporary input. The
-# explicit flag keeps generic prompt files caller-owned.
-if [ "$CONSUME_PROMPT" = "--consume-prompt" ] && ! rm -f -- "$PROMPT_FILE"; then
-  echo "rotate.sh: could not remove consumed prompt; recovery copy preserved at $RECOVERY_FILE" >&2
+# Record the recovery path before detaching so an interrupted child cannot
+# leave an undiscoverable snapshot. Keep the checked descriptor open for the
+# child so pathname changes cannot break later result logging.
+if ! exec 3>>"$LOG"; then
+  if rm -f -- "$RECOVERY_FILE"; then
+    echo "rotate.sh: could not open rotation log; original prompt retained at $PROMPT_FILE" >&2
+  else
+    echo "rotate.sh: could not open rotation log; original prompt retained at $PROMPT_FILE; recovery copy also remains at $RECOVERY_FILE" >&2
+  fi
+  exit 1
+fi
+if ! printf '%s\n' \
+  "=== rotate $OLD at $(date -Iseconds) ===" \
+  "recovery snapshot: $RECOVERY_FILE (removed after successful seeding)" >&3; then
+  exec 3>&-
+  if rm -f -- "$RECOVERY_FILE"; then
+    echo "rotate.sh: could not write rotation log; original prompt retained at $PROMPT_FILE" >&2
+  else
+    echo "rotate.sh: could not write rotation log; original prompt retained at $PROMPT_FILE; recovery copy also remains at $RECOVERY_FILE" >&2
+  fi
   exit 1
 fi
 
-# Record the recovery path before detaching so an interrupted child cannot
-# leave an undiscoverable snapshot.
-if ! {
-  echo "=== rotate $OLD at $(date -Iseconds) ==="
-  echo "recovery snapshot: $RECOVERY_FILE (removed after successful seeding)"
-} >>"$LOG"; then
-  echo "rotate.sh: could not write rotation log; recovery copy preserved at $RECOVERY_FILE" >&2
+# Documented callers opt in to consuming their unique temporary input. The
+# explicit flag keeps generic prompt files caller-owned.
+if [ "$CONSUME_PROMPT" = "--consume-prompt" ] && ! rm -f -- "$PROMPT_FILE"; then
+  echo "RESULT: prompt consumption failed; recovery copy preserved at $RECOVERY_FILE" >&3
+  exec 3>&-
+  echo "rotate.sh: could not remove consumed prompt; recovery copy preserved at $RECOVERY_FILE" >&2
   exit 1
 fi
 
@@ -151,7 +166,8 @@ _finish_success() {
 }
 
 (
-  exec >>"$LOG" 2>&1
+  exec 1>&3 2>&1
+  exec 3>&-
   BEFORE=$(_sessions_here | sort)
 
   if ! _type_and_submit "/new $PROMPT"; then
@@ -194,4 +210,5 @@ _finish_success() {
 ) &
 
 disown 2>/dev/null
+exec 3>&-
 echo "rotation started; result will be written to $LOG"

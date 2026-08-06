@@ -168,4 +168,17 @@ grep -q 'prompt does not name expected session old-invalid' "$ROOT/invalid.out"
 [ -f "$invalid" ]
 ! find "$ROOT" -maxdepth 1 -name 'copilot-rotate-recovery-old-invalid.*' | grep -q .
 
+log_failure="$ROOT/copilot-rotate-input-old-log-failure.test"
+mkdir -p "$ROOT/home/.copilot/session-state/old-log-failure"
+printf 'continue retired session old-log-failure' >"$log_failure"
+if HOME="$ROOT/home" TMPDIR="$ROOT/" PATH="$ROOT/bin:$PATH" TMUX_PANE=%1 \
+  ROTATE_LOG="$ROOT/missing/rotation.log" MOCK_INPUT="$ROOT/log-failure.input" \
+  "$SCRIPT" old-log-failure "$log_failure" --consume-prompt >"$ROOT/log-failure.out" 2>&1; then
+  exit 1
+fi
+grep -q 'could not open rotation log; original prompt retained at ' "$ROOT/log-failure.out"
+[ -f "$log_failure" ]
+[ ! -e "$ROOT/log-failure.input" ]
+! find "$ROOT" -maxdepth 1 -name 'copilot-rotate-recovery-old-log-failure.*' | grep -q .
+
 echo "rotate-session tests: pass"
