@@ -910,7 +910,6 @@ read_event_at_offset() {
 
 post_armed_parser_failure() {
   local message="$1"
-  RELEASE_LOCK=true
   echo "$message" >&2
   "$TMUX_BIN" display-message \
     -d "${SELF_COMPACT_NOTICE_MILLISECONDS:-10000}" -t "$PANE" \

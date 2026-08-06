@@ -2656,19 +2656,37 @@ wait_for_watcher_log 'first compact completion did not match this run token or f
   >/dev/null
 assert_count 0 '^TYPE:Compaction done;|^KEY:Enter:Compaction done;' "$FAKE_TMUX_ACTIONS"
 
-# A malformed lifecycle event after ARMED fails closed visibly but still
-# releases the watcher-owned lock.
-setup_case post-armed-parser-error-releases-lock
+# A malformed lifecycle event after ARMED fails closed visibly and retains the
+# watcher-owned lock, so no second compact can become eligible.
+setup_case post-armed-parser-error-retains-lock
 export FAKE_COMPACT_MODE=malformed-after-start
 run_submit >/dev/null
 wait_for_watcher_log 'could not inspect compaction completion events' >/dev/null
-grep -Eq '^NOTICE:self-compact cancelled: .*malformed event JSON' \
-  "$FAKE_TMUX_ACTIONS" ||
-  fail "post-ARMED parser failure did not emit a visible cancellation notice"
+wait_for_pattern \
+  '^NOTICE:self-compact cancelled: .*malformed event JSON' \
+  "$FAKE_TMUX_ACTIONS"
+watcher_pid="$(cat "$FAKE_CASE/session/files/self-compact.lock/watcher.pid")"
+wait_for_process_exit "$watcher_pid"
+[ -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
+  fail "post-ARMED parser failure released the watcher-owned lock"
+assert_file_equals watcher-owned \
+  "$FAKE_CASE/session/files/self-compact.lock/state"
+[ -e "$FAKE_CASE/session/files/self-compact.lock/armed" ] ||
+  fail "post-ARMED parser failure removed the lock's armed marker"
 assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
 assert_count 0 '^TYPE:Compaction done;|^KEY:Enter:Compaction done;' \
   "$FAKE_TMUX_ACTIONS"
-wait_for_path_absent "$FAKE_CASE/session/files/self-compact.lock"
+status=0
+run_submit > "$FAKE_CASE/competing.out" 2> "$FAKE_CASE/competing.err" ||
+  status=$?
+[ "$status" -ne 0 ] ||
+  fail "competing helper acquired the post-ARMED parser-failure lock"
+grep -q 'another or ambiguous self-compact run owns' \
+  "$FAKE_CASE/competing.err"
+assert_count 1 '^TYPE:/compact ' "$FAKE_TMUX_ACTIONS"
+assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
+[ -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
+  fail "competing helper removed the retained parser-failure lock"
 
 # The first completion after the observed start owns the verdict. A later
 # matching token cannot rescue an earlier mismatched compact.
