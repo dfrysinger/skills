@@ -82,6 +82,24 @@ wait_for_path_absent() {
   fail "timed out waiting for $path to be removed"
 }
 
+wait_for_path() {
+  local path="$1"
+  for _ in $(seq 1 200); do
+    [ -e "$path" ] && return 0
+    sleep 0.02
+  done
+  fail "timed out waiting for $path"
+}
+
+wait_for_process_exit() {
+  local pid="$1"
+  for _ in $(seq 1 200); do
+    kill -0 "$pid" >/dev/null 2>&1 || return 0
+    sleep 0.02
+  done
+  fail "timed out waiting for process $pid to exit"
+}
+
 prompt_hex() {
   (
     source "$SCRIPT_DIR/input-recovery.sh"
@@ -202,6 +220,17 @@ case "$command" in
         '#{pane_pid}') printf '%s\n' "$FAKE_PANE_PID" ;;
         '#{session_name}') printf '%s\n' "$FAKE_SESSION_NAME" ;;
         '#{pane_width}')
+          pane_width_count="$(increment_file "$FAKE_PANE_WIDTH_COUNT")"
+          if [ "${FAKE_REMOVE_HANDOFF_ON_PANE_WIDTH_COUNT:-0}" -eq "$pane_width_count" ]; then
+            find "$FAKE_CASE/session/files" -name 'self-compact-*.handoff' \
+              -delete
+            action "HOOK:removed-handoff-at-pane-width:$pane_width_count"
+          fi
+          if [ "${FAKE_APPEND_EVENTS_ON_PANE_WIDTH_COUNT:-0}" -eq "$pane_width_count" ]; then
+            cat "$FAKE_PANE_WIDTH_EVENTS" \
+              >> "$FAKE_CASE/session/events.jsonl"
+            action "HOOK:appended-events-at-pane-width:$pane_width_count"
+          fi
           read -r width _ < "$FAKE_GEOMETRY"
           printf '%s\n' "$width"
           ;;
@@ -435,6 +464,10 @@ case "$command" in
         action "KEY:Enter:$input"
         : > "$FAKE_RENDER_AFTER_CAPTURE"
         : > "$FAKE_RENDER_OVERRIDE"
+        if [[ "$input" != /compact\ * ]] &&
+          [ "${FAKE_CONTINUATION_ENTER_STATUS:-0}" -ne 0 ]; then
+          exit "$FAKE_CONTINUATION_ENTER_STATUS"
+        fi
         if [ "${FAKE_ENTER_STATUS:-0}" -ne 0 ] &&
           [ "${FAKE_ENTER_DELIVERED:-0}" != 1 ]; then
           exit "$FAKE_ENTER_STATUS"
@@ -469,6 +502,9 @@ case "$command" in
                   )"
                   append_event \
                     "{\"type\":\"session.compaction_complete\",\"data\":{\"success\":true,\"customInstructions\":\"$escaped_instructions\",\"checkpointNumber\":2}}"
+                  if [ "${FAKE_POST_COMPACT_PREEXISTING_ACTIVITY:-0}" = 1 ]; then
+                    append_event '{"agentId":null,"type":"assistant.turn_start"}'
+                  fi
                 ) &
                 printf '%s\n' "$!" >> "$FAKE_BACKGROUND_PIDS"
                 ;;
@@ -639,8 +675,44 @@ cat > "$FAKE_BIN/perl" <<'EOF'
 
 set -euo pipefail
 
+if [ -n "${FAKE_EPOCH_EXACT_DEADLINE_ARMED:-}" ] &&
+  [ -e "$FAKE_EPOCH_EXACT_DEADLINE_ARMED" ] &&
+  printf '%s\n' "$@" | grep -qx -- '-MTime::HiRes=time'; then
+  call=0
+  [ -s "$FAKE_EPOCH_CALL_COUNT" ] &&
+    call="$(cat "$FAKE_EPOCH_CALL_COUNT")"
+  call=$((call + 1))
+  printf '%s' "$call" > "$FAKE_EPOCH_CALL_COUNT"
+  if [ "$call" -eq 1 ]; then
+    printf '%s\n' 100000
+  else
+    if [ "$call" -eq 2 ]; then
+      printf '%s\n' \
+        '{"agentId":null,"type":"session.compaction_start"}' \
+        '{"agentId":null,"type":"session.compaction_complete","data":{"success":true,"customInstructions":"Use SELF_COMPACT_BRIEF. B:0123abcd","checkpointNumber":2}}' \
+        >> "$FAKE_EPOCH_EVENTS"
+      sed 's/^summary_count: .*/summary_count: 2/' \
+        "$FAKE_WORKSPACE" > "$FAKE_WORKSPACE.next"
+      mv "$FAKE_WORKSPACE.next" "$FAKE_WORKSPACE"
+      mkdir -p "${FAKE_WORKSPACE%/workspace.yaml}/checkpoints"
+      printf '%s\n' "checkpoint without identity prose" > \
+        "${FAKE_WORKSPACE%/workspace.yaml}/checkpoints/002-test.md"
+    fi
+    printf '%s\n' 100300
+  fi
+  exit 0
+fi
+
 if [ -n "${FAKE_EPOCH_MILLISECONDS_FILE:-}" ] &&
   printf '%s\n' "$@" | grep -qx -- '-MTime::HiRes=time'; then
+  if [ -n "${FAKE_EPOCH_AFTER_TYPE_COUNT:-}" ]; then
+    current_type_count=0
+    [ -s "$FAKE_TYPE_COUNT" ] &&
+      current_type_count="$(cat "$FAKE_TYPE_COUNT")"
+    if [ "$current_type_count" -lt "$FAKE_EPOCH_AFTER_TYPE_COUNT" ]; then
+      exec /usr/bin/perl "$@"
+    fi
+  fi
   call=0
   [ -s "$FAKE_EPOCH_CALL_COUNT" ] &&
     call="$(cat "$FAKE_EPOCH_CALL_COUNT")"
@@ -690,6 +762,9 @@ chmod +x "$FAKE_BIN/ps"
 
 setup_case() {
   local name="$1"
+  if [ "${SELF_COMPACT_TEST_PROGRESS:-0}" = 1 ]; then
+    printf 'submit-compact test case: %s\n' "$name" >&2
+  fi
   FAKE_CASE="$TEST_ROOT/$name"
   mkdir -p "$FAKE_CASE/session/files" "$FAKE_CASE/workspace"
   FAKE_WORKSPACE="$FAKE_CASE/session/workspace.yaml"
@@ -714,6 +789,7 @@ setup_case() {
   FAKE_RUN_SHELL_COMMAND="$FAKE_CASE/run-shell-command"
   FAKE_RUN_SHELL_ENV="$FAKE_CASE/run-shell-env"
   FAKE_EPOCH_CALL_COUNT="$FAKE_CASE/epoch-call-count"
+  FAKE_PANE_WIDTH_COUNT="$FAKE_CASE/pane-width-count"
   FAKE_PANE_CWD="$FAKE_CASE/workspace"
   FAKE_PANE_PID=100
   FAKE_SESSION_NAME="test-session"
@@ -739,6 +815,7 @@ EOF
   : > "$FAKE_ESC_COUNT"
   : > "$FAKE_TYPE_COUNT"
   : > "$FAKE_EPOCH_CALL_COUNT"
+  : > "$FAKE_PANE_WIDTH_COUNT"
   : > "$FAKE_CURSOR"
   : > "$FAKE_TRANSCRIPT"
   printf '%s' readable > "$FAKE_CAPTURE_MODE"
@@ -763,6 +840,8 @@ EOF
   unset FAKE_WINDOW_LINKED FAKE_EPOCH_MILLISECONDS_FILE
   unset FAKE_EPOCH_APPEND_EVENTS_AT_CALL FAKE_EPOCH_EVENTS
   unset FAKE_EPOCH_INCREMENT_AFTER_END
+  unset FAKE_EPOCH_AFTER_TYPE_COUNT
+  unset FAKE_EPOCH_EXACT_DEADLINE_ARMED
   unset FAKE_PUBLICATION_PID
   unset FAKE_FOREGROUND_CLOSURE_CONTENT FAKE_CLOSURE_TURN
   unset FAKE_TASK_COMPLETE_BEFORE_TURN_END
@@ -770,6 +849,16 @@ EOF
   unset FAKE_SUBAGENT_AFTER_TURN_END
   unset FAKE_DETACHED_PATH
   unset FAKE_ENTER_STATUS FAKE_ENTER_DELIVERED
+  unset FAKE_CONTINUATION_ENTER_STATUS
+  unset FAKE_POST_COMPACT_PREEXISTING_ACTIVITY
+  unset FAKE_REMOVE_HANDOFF_ON_PANE_WIDTH_COUNT
+  unset FAKE_APPEND_EVENTS_ON_PANE_WIDTH_COUNT FAKE_PANE_WIDTH_EVENTS
+  unset FAKE_HANDOFF_MUTATION
+  unset FAKE_BEFORE_HELPER_START_EVENTS
+  unset FAKE_BEFORE_HELPER_COMPLETION_EVENTS
+  unset FAKE_AFTER_HELPER_COMPLETION_EVENTS
+  unset FAKE_SKIP_HELPER_START
+  unset FAKE_SUBMIT_SCRIPT FAKE_PORTABLE_HOME FAKE_PORTABLE_HELPER
 
   export PATH="$FAKE_BIN:$PATH"
   export FAKE_CASE FAKE_WORKSPACE FAKE_TMUX_INPUT FAKE_TMUX_STASH
@@ -782,7 +871,7 @@ EOF
   export FAKE_RUN_SHELL_ENV
   export FAKE_PANE_CWD FAKE_PANE_PID FAKE_SESSION_NAME FAKE_ORIGINAL_GEOMETRY
   export FAKE_WINDOW_SIZE_CONFIGURED FAKE_WINDOW_SIZE_GLOBAL
-  export FAKE_EPOCH_CALL_COUNT
+  export FAKE_EPOCH_CALL_COUNT FAKE_PANE_WIDTH_COUNT
   export FAKE_TOOL_CALL_ID
 }
 
@@ -807,9 +896,15 @@ run_helper() {
 
 run_submit_command() {
   local status=0
-  printf '%s\n' \
-    "{\"agentId\":null,\"type\":\"tool.execution_start\",\"data\":{\"toolCallId\":\"$FAKE_TOOL_CALL_ID\",\"toolName\":\"bash\"}}" \
-    >> "$FAKE_CASE/session/events.jsonl"
+  if [ -n "${FAKE_BEFORE_HELPER_START_EVENTS:-}" ]; then
+    cat "$FAKE_BEFORE_HELPER_START_EVENTS" \
+      >> "$FAKE_CASE/session/events.jsonl"
+  fi
+  if [ "${FAKE_SKIP_HELPER_START:-0}" != 1 ]; then
+    printf '%s\n' \
+      "{\"agentId\":null,\"type\":\"tool.execution_start\",\"data\":{\"toolCallId\":\"$FAKE_TOOL_CALL_ID\",\"toolName\":\"bash\"}}" \
+      >> "$FAKE_CASE/session/events.jsonl"
+  fi
   TMUX_PANE="%1" \
     SELF_COMPACT_SESSION_STATE_DIR="$FAKE_CASE" \
     SELF_COMPACT_WORKSPACE="$FAKE_WORKSPACE" \
@@ -824,21 +919,54 @@ run_submit_command() {
     SELF_COMPACT_NOTICE_MILLISECONDS=20 \
     SELF_COMPACT_POLL_SECONDS=0.02 \
     SELF_COMPACT_MAX_POLLS=250 \
-    SELF_COMPACT_START_GRACE_SECONDS=0.3 \
+    SELF_COMPACT_START_GRACE_SECONDS="${SELF_COMPACT_START_GRACE_SECONDS:-0.3}" \
     SELF_COMPACT_RESUME_GRACE_SECONDS=0.01 \
     SELF_COMPACT_CONTINUATION_CONFIRM_DELAY_SECONDS=0.01 \
     SELF_COMPACT_CONTINUATION_CONFIRM_POLLS=100 \
     SELF_COMPACT_RUN_TOKEN=0123abcd \
-    "$SCRIPT_DIR/submit-compact.sh" "$@" || status=$?
+    "${FAKE_SUBMIT_SCRIPT:-$SCRIPT_DIR/submit-compact.sh}" "$@" || status=$?
   if [ -n "${FAKE_PUBLICATION_PID:-}" ]; then
     wait "$FAKE_PUBLICATION_PID"
+  fi
+  handoff="$(
+    find "$FAKE_CASE/session/files" -name 'self-compact-*.handoff' \
+      -print -quit
+  )"
+  if [ -n "$handoff" ]; then
+    case "${FAKE_HANDOFF_MUTATION:-}" in
+      '') ;;
+      wrong-token)
+        printf '%s\n%s\n%s\n' \
+          wrong-lock-token "$(sed -n '2p' "$handoff")" \
+          "$(sed -n '3p' "$handoff")" > "$handoff"
+        ;;
+      wrong-call-id)
+        printf '%s\n%s\n%s\n' \
+          "$(sed -n '1p' "$handoff")" wrong-call-id \
+          "$(sed -n '3p' "$handoff")" > "$handoff"
+        ;;
+      extra-line)
+        printf '%s\n' extra-line >> "$handoff"
+        ;;
+      *)
+        fail "unexpected fake handoff mutation: $FAKE_HANDOFF_MUTATION"
+        ;;
+    esac
   fi
   if [ "${FAKE_REMOVE_HANDOFF_BEFORE_COMPLETION:-0}" = 1 ]; then
     find "$FAKE_CASE/session/files" -name 'self-compact-*.handoff' -delete
   fi
+  if [ -n "${FAKE_BEFORE_HELPER_COMPLETION_EVENTS:-}" ]; then
+    cat "$FAKE_BEFORE_HELPER_COMPLETION_EVENTS" \
+      >> "$FAKE_CASE/session/events.jsonl"
+  fi
   printf '%s\n' \
     "{\"agentId\":null,\"type\":\"tool.execution_complete\",\"data\":{\"toolCallId\":\"$FAKE_TOOL_CALL_ID\",\"result\":{\"content\":\"test foreground exit $status\"}}}" \
     >> "$FAKE_CASE/session/events.jsonl"
+  if [ -n "${FAKE_AFTER_HELPER_COMPLETION_EVENTS:-}" ]; then
+    cat "$FAKE_AFTER_HELPER_COMPLETION_EVENTS" \
+      >> "$FAKE_CASE/session/events.jsonl"
+  fi
   if [ -n "${FAKE_FOREGROUND_CLOSURE_CONTENT:-}" ]; then
     CONTENT="$FAKE_FOREGROUND_CLOSURE_CONTENT" /usr/bin/perl -MJSON::PP -e '
       print encode_json({
@@ -899,6 +1027,74 @@ append_brief_turn() {
   ' >> "$FAKE_CASE/session/events.jsonl"
 }
 
+append_brief_turn_variant() {
+  local mode="$1"
+  local content="$2"
+  MODE="$mode" CONTENT="$content" HELPER_PATH="$SCRIPT_DIR/submit-compact.sh" \
+    TOOL_CALL_ID="$FAKE_TOOL_CALL_ID" /usr/bin/perl -MJSON::PP -e '
+    my ($mode, $content, $helper, $call_id) =
+      @ENV{qw(MODE CONTENT HELPER_PATH TOOL_CALL_ID)};
+    my $canonical = {
+      toolCallId => $call_id,
+      name => "bash",
+      arguments => {command => "\"" . $helper . "\""}
+    };
+    my @messages = ({
+      agentId => undef,
+      type => "assistant.message",
+      data => {content => $content, toolRequests => [$canonical]}
+    });
+    if ($mode eq "duplicate-request") {
+      push @messages, {
+        agentId => undef,
+        type => "assistant.message",
+        data => {content => "", toolRequests => [$canonical]}
+      };
+    } elsif ($mode eq "batched-request") {
+      push @{$messages[0]{data}{toolRequests}}, {
+        toolCallId => "call-other-tool",
+        name => "bash",
+        arguments => {command => "printf other"}
+      };
+    } elsif ($mode eq "noncanonical-command") {
+      $messages[0]{data}{toolRequests}[0]{arguments}{command} =
+        "\"" . $helper . "\" --unexpected";
+    } elsif ($mode eq "portable-command") {
+      $messages[0]{data}{toolRequests}[0]{arguments}{command} =
+        q{"$HOME/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh"};
+    } elsif ($mode eq "portable-composed-command") {
+      $messages[0]{data}{toolRequests}[0]{arguments}{command} =
+        q{"$HOME/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh" && true};
+    } elsif ($mode eq "portable-requoted-command") {
+      $messages[0]{data}{toolRequests}[0]{arguments}{command} =
+        q{"${HOME}/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh"};
+    } else {
+      die "unknown brief turn variant: $mode\n"
+        unless $mode eq "canonical";
+    }
+    print encode_json({agentId => undef, type => "assistant.turn_start"}), "\n";
+    print encode_json($_), "\n" for @messages;
+  ' >> "$FAKE_CASE/session/events.jsonl"
+}
+
+setup_portable_helper() {
+  FAKE_PORTABLE_HOME="$FAKE_CASE/home"
+  portable_parent="$FAKE_PORTABLE_HOME/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact"
+  mkdir -p "$portable_parent"
+  ln -s "$SCRIPT_DIR" "$portable_parent/scripts"
+  FAKE_PORTABLE_HELPER="$portable_parent/scripts/submit-compact.sh"
+  export FAKE_PORTABLE_HOME FAKE_PORTABLE_HELPER
+}
+
+write_event_hook() {
+  local variable_name="$1"
+  shift
+  local path="$FAKE_CASE/$variable_name.jsonl"
+  printf '%s\n' "$@" > "$path"
+  printf -v "$variable_name" '%s' "$path"
+  export "$variable_name"
+}
+
 append_split_brief_turn() {
   local content="$1"
   CONTENT="$content" HELPER_PATH="$SCRIPT_DIR/submit-compact.sh" \
@@ -945,6 +1141,20 @@ wait_for_watcher_log() {
   echo "--- run-shell" >&2
   cat "$FAKE_RUN_SHELL_COMMAND" >&2 || true
   fail "timed out waiting for watcher log pattern [$pattern]"
+}
+
+assert_authorization_rejected() {
+  local pattern="$1"
+  local status=0
+  run_submit_command > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
+    status=$?
+  [ "$status" -eq 0 ] ||
+    fail "foreground did not arm the rejecting verifier"
+  wait_for_watcher_log "$pattern" >/dev/null
+  wait_for_path_absent "$FAKE_CASE/session/files/self-compact.lock"
+  assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+  grep -q '^NOTICE:self-compact cancelled:' "$FAKE_TMUX_ACTIONS" ||
+    fail "authorization rejection did not emit a visible cancellation notice"
 }
 
 # Exact ownership accepts one captured prompt row only.
@@ -1201,7 +1411,11 @@ status=0
   run_submit
 ) > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" || status=$?
 [ "$status" -ne 0 ] || fail "invalid locale unexpectedly submitted compact"
+grep -q 'could not verify a UTF-8 locale; compact not submitted' \
+  "$FAKE_CASE/submit.err"
 assert_count 0 '^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+[ ! -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
+  fail "invalid-locale foreground failure acquired the session lock"
 
 : > "$FAKE_CASE/ready"
 : > "$FAKE_CASE/armed"
@@ -1220,6 +1434,8 @@ status=0
     call-test "$SCRIPT_DIR/submit-compact.sh" "$FAKE_CASE/watcher.log" 25 1 0.1
 ) > "$FAKE_CASE/watcher.out" 2> "$FAKE_CASE/watcher.err" || status=$?
 [ "$status" -ne 0 ] || fail "invalid-locale watcher unexpectedly continued"
+grep -q 'could not verify a UTF-8 locale; input state remains unknown' \
+  "$FAKE_CASE/watcher.err"
 assert_count 0 '^NOTICE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
 
 setup_case empty-input
@@ -1596,15 +1812,36 @@ printf '%s\n' watcher-owned \
   > "$FAKE_CASE/session/files/self-compact.lock/state"
 brief_started="$(/usr/bin/perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000')"
 status=0
-SELF_COMPACT_BRIEF_WAIT_SECONDS=0.5 \
+SELF_COMPACT_AUTH_WAIT_SECONDS=0.5 \
   run_submit_command > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
   status=$?
 brief_finished="$(/usr/bin/perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000')"
 [ "$status" -ne 0 ] || fail "large-history lock unexpectedly allowed submission"
 grep -q 'another or ambiguous self-compact run owns' "$FAKE_CASE/submit.err"
 [ "$((brief_finished - brief_started))" -lt 2000 ] ||
-  fail "current-turn brief scan exceeded two seconds on a 20,000-line history"
+  fail "candidate call-ID discovery exceeded two seconds on a 20,000-line history"
 assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+
+setup_case bounded-authorization-large-history
+awk 'BEGIN {
+  payload = sprintf("%256s", "")
+  gsub(/ /, "x", payload)
+  for (i = 1; i <= 250; i++) {
+    if (i % 2)
+      print "{\"agentId\":null,\"type\":\"tool.execution_complete\",\"data\":{\"toolCallId\":\"old-" i "\",\"content\":\"" payload "\"}}"
+    else
+      print "{\"agentId\":\"subagent-history\",\"type\":\"assistant.message\",\"data\":{\"content\":\"" payload "\"}}"
+  }
+}' >> "$FAKE_CASE/session/events.jsonl"
+authorization_started="$(/usr/bin/perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000')"
+SELF_COMPACT_AUTH_SCAN_BYTES=262144 run_submit >/dev/null
+wait_for_pattern '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
+authorization_finished="$(/usr/bin/perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000')"
+authorization_elapsed=$((authorization_finished - authorization_started))
+[ "$authorization_elapsed" -lt 20000 ] ||
+  fail "bounded authorization took ${authorization_elapsed}ms on a 250-event history"
+wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
+assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
 
 setup_case older-turn-brief-rejected
 append_brief_turn \
@@ -1631,6 +1868,174 @@ assert_brief_rejected missing-literal \
 assert_brief_rejected no-recompact-literal-moved-off-label \
   $'SELF_COMPACT_BRIEF\nKeep: baton\nDrop: detail\nAfter compaction: continue\nand do not compact again'
 
+brief_content=$'SELF_COMPACT_BRIEF\nKeep: authorization identity baton\nDrop: resolved detail\nAfter compaction: continue and do not compact again'
+
+setup_case duplicate-helper-request-identity
+append_brief_turn_variant duplicate-request "$brief_content"
+assert_authorization_rejected 'duplicate helper request identity'
+
+setup_case helper-request-batched-with-tool
+append_brief_turn_variant batched-request "$brief_content"
+assert_authorization_rejected 'helper request was batched with another tool'
+
+setup_case matching-call-id-noncanonical-command
+append_brief_turn_variant noncanonical-command "$brief_content"
+assert_authorization_rejected \
+  'helper request was not the canonical zero-argument command'
+
+setup_case portable-installed-helper-command
+setup_portable_helper
+append_brief_turn_variant portable-command "$brief_content"
+HOME="$FAKE_PORTABLE_HOME" FAKE_SUBMIT_SCRIPT="$FAKE_PORTABLE_HELPER" \
+  run_submit_command >/dev/null
+wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
+assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
+
+setup_case portable-installed-helper-composition-rejected
+setup_portable_helper
+append_brief_turn_variant portable-composed-command "$brief_content"
+HOME="$FAKE_PORTABLE_HOME" FAKE_SUBMIT_SCRIPT="$FAKE_PORTABLE_HELPER" \
+  assert_authorization_rejected \
+    'helper request was not the canonical zero-argument command'
+
+setup_case portable-installed-helper-requoting-rejected
+setup_portable_helper
+append_brief_turn_variant portable-requoted-command "$brief_content"
+HOME="$FAKE_PORTABLE_HOME" FAKE_SUBMIT_SCRIPT="$FAKE_PORTABLE_HELPER" \
+  assert_authorization_rejected \
+    'helper request was not the canonical zero-argument command'
+
+for handoff_case in wrong-token wrong-call-id extra-line; do
+  setup_case "handoff-$handoff_case"
+  append_brief_turn "$brief_content"
+  export FAKE_HANDOFF_MUTATION="$handoff_case"
+  SELF_COMPACT_AUTH_WAIT_SECONDS=0.15 \
+    assert_authorization_rejected \
+      'timed out waiting for persisted brief authorization'
+done
+
+# The watcher must retain positive handoff ownership through the last
+# read-only checks before it changes the editor.
+setup_case handoff-removed-after-positive-observation
+append_brief_turn "$brief_content"
+export FAKE_REMOVE_HANDOFF_ON_PANE_WIDTH_COUNT=2
+assert_authorization_rejected 'positive handoff was lost'
+assert_count 1 '^HOOK:removed-handoff-at-pane-width:2$' "$FAKE_TMUX_ACTIONS"
+
+# Root identity is parsed semantically: insignificant JSON whitespace is
+# accepted, while a nested agentId cannot disguise new root activity.
+setup_case root-agent-id-whitespace
+append_brief_turn "$brief_content"
+/usr/bin/perl -pi -e 's/"agentId":null/"agentId" : null/g' \
+  "$FAKE_CASE/session/events.jsonl"
+run_submit_command >/dev/null
+wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
+assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
+
+setup_case nested-agent-id-does-not-hide-root-activity
+append_brief_turn "$brief_content"
+printf '%s\n' \
+  '{"agentId":null,"type":"user.message","data":{"agentId":"nested-agent"},"content":"root user won"}' \
+  > "$FAKE_CASE/pane-width-events.jsonl"
+export FAKE_PANE_WIDTH_EVENTS="$FAKE_CASE/pane-width-events.jsonl"
+export FAKE_APPEND_EVENTS_ON_PANE_WIDTH_COUNT=2
+assert_authorization_rejected 'root-agent activity started before compact preparation'
+assert_count 1 '^HOOK:appended-events-at-pane-width:2$' "$FAKE_TMUX_ACTIONS"
+
+setup_case malformed-json-in-authorization-region
+append_brief_turn "$brief_content"
+write_event_hook FAKE_BEFORE_HELPER_COMPLETION_EVENTS \
+  '{"agentId":null,"type":"assistant.message","data":'
+assert_authorization_rejected 'malformed.*JSON.*authorization'
+grep -Eq '^NOTICE:self-compact cancelled: .*malformed.*JSON.*authorization' \
+  "$FAKE_TMUX_ACTIONS" ||
+  fail "malformed authorization JSON did not produce a visible diagnostic"
+
+# Root activity conflicts in either gap around the helper execution and after
+# completion. None may reach editor preparation.
+setup_case root-user-between-request-and-start
+append_brief_turn "$brief_content"
+write_event_hook FAKE_BEFORE_HELPER_START_EVENTS \
+  '{"agentId":null,"type":"user.message","content":"root user conflict"}'
+assert_authorization_rejected 'user activity|root.*activity|conflict'
+
+setup_case root-tool-between-request-and-start
+append_brief_turn "$brief_content"
+write_event_hook FAKE_BEFORE_HELPER_START_EVENTS \
+  '{"agentId":null,"type":"tool.execution_start","data":{"toolCallId":"conflicting-tool","toolName":"bash"}}'
+assert_authorization_rejected 'root.*tool|root.*activity|conflict'
+
+setup_case root-user-between-start-and-completion
+append_brief_turn "$brief_content"
+write_event_hook FAKE_BEFORE_HELPER_COMPLETION_EVENTS \
+  '{"agentId":null,"type":"user.message","content":"root user conflict"}'
+assert_authorization_rejected 'user activity|root.*activity|conflict'
+
+setup_case root-tool-between-start-and-completion
+append_brief_turn "$brief_content"
+write_event_hook FAKE_BEFORE_HELPER_COMPLETION_EVENTS \
+  '{"agentId":null,"type":"tool.execution_start","data":{"toolCallId":"conflicting-tool","toolName":"bash"}}'
+assert_authorization_rejected 'root.*tool|root.*activity|conflict'
+
+setup_case root-user-after-completion
+append_brief_turn "$brief_content"
+write_event_hook FAKE_AFTER_HELPER_COMPLETION_EVENTS \
+  '{"agentId":null,"type":"user.message","content":"root user conflict"}'
+assert_authorization_rejected 'user activity followed|root.*activity'
+
+setup_case root-tool-request-after-completion
+append_brief_turn "$brief_content"
+write_event_hook FAKE_AFTER_HELPER_COMPLETION_EVENTS \
+  '{"agentId":null,"type":"assistant.message","data":{"content":"","toolRequests":[{"toolCallId":"conflicting-request","name":"bash","arguments":{"command":"printf conflict"}}]}}'
+assert_authorization_rejected 'new root tool request followed'
+
+setup_case root-tool-execution-after-completion
+append_brief_turn "$brief_content"
+write_event_hook FAKE_AFTER_HELPER_COMPLETION_EVENTS \
+  '{"agentId":null,"type":"tool.execution_start","data":{"toolCallId":"conflicting-tool","toolName":"bash"}}'
+assert_authorization_rejected 'new root tool activity followed'
+
+setup_case second-root-turn-after-completion
+append_brief_turn "$brief_content"
+write_event_hook FAKE_AFTER_HELPER_COMPLETION_EVENTS \
+  '{"agentId":null,"type":"assistant.turn_start"}'
+assert_authorization_rejected \
+  'new root assistant turn began before the authorizing turn ended'
+
+# Equivalent subagent activity in both execution gaps is unrelated and remains
+# ignored.
+setup_case subagent-between-request-and-start
+append_brief_turn "$brief_content"
+write_event_hook FAKE_BEFORE_HELPER_START_EVENTS \
+  '{"agentId":"subagent-gap","type":"user.message","content":"subagent work"}' \
+  '{"agentId":"subagent-gap","type":"tool.execution_start","data":{"toolCallId":"sub-tool","toolName":"bash"}}'
+run_submit_command >/dev/null
+wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
+assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
+
+setup_case subagent-between-start-and-completion
+append_brief_turn "$brief_content"
+write_event_hook FAKE_BEFORE_HELPER_COMPLETION_EVENTS \
+  '{"agentId":"subagent-gap","type":"user.message","content":"subagent work"}' \
+  '{"agentId":"subagent-gap","type":"tool.execution_start","data":{"toolCallId":"sub-tool","toolName":"bash"}}'
+run_submit_command >/dev/null
+wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
+assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
+
+setup_case no-current-root-bash-start
+append_brief_turn "$brief_content"
+export FAKE_SKIP_HELPER_START=1
+status=0
+run_submit_command > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
+  status=$?
+[ "$status" -ne 0 ] ||
+  fail "missing current root Bash start unexpectedly launched a watcher"
+grep -q 'could not identify the current root-agent Bash tool call' \
+  "$FAKE_CASE/submit.err"
+[ ! -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
+  fail "call-ID discovery failure acquired the session lock"
+assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+
 setup_case authorization-wait-out-of-range
 status=0
 SELF_COMPACT_AUTH_WAIT_SECONDS=3600 \
@@ -1642,6 +2047,44 @@ grep -q 'AUTH_WAIT_SECONDS must be greater than zero and at most 30 seconds' \
 assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
 [ ! -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
   fail "out-of-range authorization wait acquired the session lock"
+
+setup_case authorization-shorter-than-quiescence
+append_brief_turn "$brief_content"
+status=0
+SELF_COMPACT_AUTH_WAIT_SECONDS=0.1 \
+  SELF_COMPACT_QUIESCENCE_GRACE_SECONDS=0.2 \
+  run_submit_command > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
+  status=$?
+[ "$status" -ne 0 ] ||
+  fail "authorization wait shorter than quiescence was accepted"
+grep -Eq 'AUTH_WAIT_SECONDS.*greater than.*QUIESCENCE_GRACE_SECONDS|QUIESCENCE_GRACE_SECONDS.*less than.*AUTH_WAIT_SECONDS' \
+  "$FAKE_CASE/submit.err"
+[ ! -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
+  fail "invalid authorization/quiescence relation acquired the session lock"
+assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+
+setup_case direct-quiescence-out-of-range
+direct_lock="$FAKE_CASE/direct.lock"
+mkdir "$direct_lock"
+printf '%s\n' direct-lock-token > "$direct_lock/token"
+status=0
+"$SCRIPT_DIR/resume-after-compact.sh" \
+  "%1" "$FAKE_WORKSPACE" 1 "$FAKE_CASE/direct.ready" \
+  "$FAKE_CASE/direct.armed" "$FAKE_CASE/direct.cancelled" \
+  "$FAKE_CASE/direct.handoff" 0123abcd \
+  "Compaction done; resume, do not compact." "$FAKE_BIN/tmux" \
+  "/compact Use SELF_COMPACT_BRIEF. B:0123abcd" \
+  "Use SELF_COMPACT_BRIEF. B:0123abcd" "$direct_lock" direct-lock-token \
+  call-direct "$SCRIPT_DIR/submit-compact.sh" "$FAKE_CASE/direct.log" \
+  25 1 31 > "$FAKE_CASE/direct.out" 2> "$FAKE_CASE/direct.err" ||
+  status=$?
+[ "$status" -ne 0 ] || fail "direct watcher accepted out-of-range quiescence"
+grep -q 'invalid quiescence grace' "$FAKE_CASE/direct.err"
+grep -q '^NOTICE:self-compact cancelled: invalid quiescence grace;' \
+  "$FAKE_TMUX_ACTIONS"
+assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+[ ! -d "$direct_lock" ] ||
+  fail "direct invalid-quiescence watcher left its foreground lock"
 
 setup_case tool-argument-mention
 CONTENT='ordinary assistant content' /usr/bin/perl -MJSON::PP -e '
@@ -1677,6 +2120,7 @@ printf '%s\n' 100000 100010 100011 100040 200000 220000 250000 \
   > "$FAKE_CASE/epoch-milliseconds"
 export FAKE_EPOCH_MILLISECONDS_FILE="$FAKE_CASE/epoch-milliseconds"
 export FAKE_EPOCH_INCREMENT_AFTER_END=1
+export FAKE_EPOCH_AFTER_TYPE_COUNT=1
 SELF_COMPACT_RENDER_WAIT_SECONDS=0.02 \
   SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS=20 \
   run_submit >/dev/null
@@ -1741,10 +2185,11 @@ printf '%s\n' foreground > "$FAKE_CASE/session/files/self-compact.lock/state"
 printf '%s\n' 999999 > "$FAKE_CASE/session/files/self-compact.lock/submitter.pid"
 printf '%s\n' 20260804T000000Z \
   > "$FAKE_CASE/session/files/self-compact.lock/created"
-printf '%s\n%s\n%s\n%s\n' \
+printf '%s\n%s\n%s\n%s\n%s\n' \
   "$FAKE_CASE/session/files/self-compact-$stale_run_id.ready" \
   "$FAKE_CASE/session/files/self-compact-$stale_run_id.armed" \
   "$FAKE_CASE/session/files/self-compact-$stale_run_id.cancelled" \
+  "$FAKE_CASE/session/files/self-compact-$stale_run_id.handoff" \
   "$FAKE_CASE/session/files/self-compact-$stale_run_id.log" \
   > "$FAKE_CASE/session/files/self-compact.lock/run-files"
 run_submit >/dev/null
@@ -1895,6 +2340,21 @@ run_submit_command --unknown \
 [ ! -s "$FAKE_RUN_SHELL_COMMAND" ] || fail "unknown option launched a watcher"
 assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
 
+# Start-grace validation is a foreground precondition: invalid input cannot
+# reach Enter or transfer ownership to a watcher.
+setup_case invalid-start-grace
+append_brief_turn \
+  $'SELF_COMPACT_BRIEF\nKeep: baton\nDrop: detail\nAfter compaction: continue and do not compact again'
+status=0
+SELF_COMPACT_START_GRACE_SECONDS=not-a-duration \
+  run_submit_command > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
+  status=$?
+[ "$status" -ne 0 ] || fail "invalid start grace unexpectedly armed a watcher"
+grep -Eq 'START_GRACE_SECONDS|start grace' "$FAKE_CASE/submit.err"
+assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+[ ! -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
+  fail "invalid start grace left a session lock"
+
 # A compaction start before assistant.turn_end is also accepted.
 setup_case start-before-end
 printf '%s' "hidden lifecycle draft" > "$FAKE_TMUX_STASH"
@@ -1903,6 +2363,30 @@ run_submit >/dev/null
 wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
 assert_count 1 '^KEY:Enter:Compaction done; resume, do not compact\.$' "$FAKE_TMUX_ACTIONS"
 assert_file_equals "hidden lifecycle draft" "$FAKE_TMUX_INPUT"
+
+# A start written by the deadline clock call itself is accepted by the final
+# event recheck instead of being lost at the exact boundary.
+setup_case start-at-exact-deadline
+export FAKE_COMPACT_MODE=no-start-keep
+export FAKE_EPOCH_EXACT_DEADLINE_ARMED="$FAKE_CASE/session/files/self-compact.lock/armed"
+export FAKE_EPOCH_EVENTS="$FAKE_CASE/session/events.jsonl"
+run_submit >/dev/null
+wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
+assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
+assert_count 1 '^KEY:Enter:Compaction done; resume, do not compact\.$' \
+  "$FAKE_TMUX_ACTIONS"
+
+# Activity already present immediately after the matching compact completion
+# suppresses continuation preparation entirely.
+setup_case preexisting-post-compact-activity
+export FAKE_COMPACT_MODE=success
+export FAKE_POST_COMPACT_PREEXISTING_ACTIVITY=1
+run_submit >/dev/null
+wait_for_watcher_log \
+  'post-compact activity already present.*continuation not needed' >/dev/null
+assert_count 0 '^TYPE:Compaction done;|^KEY:Enter:Compaction done;' \
+  "$FAKE_TMUX_ACTIONS"
+wait_for_path_absent "$FAKE_CASE/session/files/self-compact.lock"
 
 # An untrapped watcher death after ARMED strands the watcher-owned lock, so a
 # second helper cannot queue another compact.
@@ -1926,6 +2410,27 @@ grep -q 'another or ambiguous self-compact run owns' "$FAKE_CASE/submit.err"
 [ -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
   fail "stranded watcher lock was removed"
 assert_count 0 '^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+
+# Exercise the real watcher EXIT trap after it has crossed ARMED. A signal
+# cannot make that watcher-owned exclusion look safely reclaimable.
+setup_case real-watcher-trap-after-armed
+export FAKE_COMPACT_MODE=no-start-keep
+SELF_COMPACT_START_GRACE_SECONDS=2 run_submit >/dev/null
+wait_for_path "$FAKE_CASE/session/files/self-compact.lock/armed"
+assert_file_equals watcher-owned \
+  "$FAKE_CASE/session/files/self-compact.lock/state"
+watcher_pid="$(cat "$FAKE_CASE/session/files/self-compact.lock/watcher.pid")"
+kill "$watcher_pid"
+wait_for_process_exit "$watcher_pid"
+[ -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
+  fail "ARMED watcher trap released the watcher-owned lock"
+status=0
+run_submit > "$FAKE_CASE/competing.out" 2> "$FAKE_CASE/competing.err" ||
+  status=$?
+[ "$status" -ne 0 ] ||
+  fail "competing helper acquired a lock stranded by an ARMED watcher"
+grep -q 'another or ambiguous self-compact run owns' \
+  "$FAKE_CASE/competing.err"
 
 # The unreadable fallback also reaches one exact compact Enter end to end when
 # Ctrl-U repairs the editor; it does not use Esc or append to the old draft.
@@ -1964,7 +2469,19 @@ fi
 # deadline, then release only after proving no compact started.
 setup_case enter-error-no-start
 export FAKE_ENTER_STATUS=1
-run_submit >/dev/null
+SELF_COMPACT_START_GRACE_SECONDS=1.5 run_submit >/dev/null
+log="$(wait_for_watcher_log \
+  'compact Enter returned nonzero; observing the compaction-start deadline')"
+[ -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
+  fail "nonzero Enter released the lock before the start deadline"
+unset FAKE_ENTER_STATUS
+status=0
+run_submit > "$FAKE_CASE/competing.out" 2> "$FAKE_CASE/competing.err" ||
+  status=$?
+[ "$status" -ne 0 ] ||
+  fail "competing helper acquired the lock during ambiguous Enter delivery"
+grep -q 'another or ambiguous self-compact run owns' \
+  "$FAKE_CASE/competing.err"
 log="$(wait_for_watcher_log 'compaction did not start within')"
 grep -q 'compact Enter returned nonzero; observing the compaction-start deadline' "$log"
 assert_file_equals "" "$FAKE_TMUX_INPUT"
@@ -1981,6 +2498,19 @@ log="$(wait_for_watcher_log 'submitted post-compact continuation')"
 grep -q 'compact Enter returned nonzero; observing the compaction-start deadline' "$log"
 assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
 assert_count 1 '^KEY:Enter:Compaction done; resume, do not compact\.$' "$FAKE_TMUX_ACTIONS"
+
+# A continuation Enter error is recoverable: clean only the exact continuation
+# and release the lock rather than stranding either.
+setup_case continuation-enter-error
+export FAKE_COMPACT_MODE=success
+export FAKE_CONTINUATION_ENTER_STATUS=1
+run_submit >/dev/null
+wait_for_pattern '^TYPE:Compaction done; resume, do not compact\.$' \
+  "$FAKE_TMUX_ACTIONS"
+wait_for_path_absent "$FAKE_CASE/session/files/self-compact.lock"
+assert_file_equals "" "$FAKE_TMUX_INPUT"
+assert_count 1 '^KEY:Enter:Compaction done; resume, do not compact\.$' \
+  "$FAKE_TMUX_ACTIONS"
 
 # A different readable draft at no-start expiry is preserved without Ctrl-U.
 setup_case no-start-new-draft

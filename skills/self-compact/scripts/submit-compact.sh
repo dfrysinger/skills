@@ -79,6 +79,7 @@ if ! sc_ambiguous_wait_is_bounded "$AMBIGUOUS_WAIT_SECONDS"; then
 fi
 AUTH_WAIT_SECONDS="${SELF_COMPACT_AUTH_WAIT_SECONDS:-30}"
 QUIESCENCE_GRACE_SECONDS="${SELF_COMPACT_QUIESCENCE_GRACE_SECONDS:-2}"
+START_GRACE_SECONDS="${SELF_COMPACT_START_GRACE_SECONDS:-15}"
 for value_name in AUTH_WAIT_SECONDS QUIESCENCE_GRACE_SECONDS; do
   value="${!value_name}"
   if ! awk -v seconds="$value" 'BEGIN {
@@ -88,6 +89,28 @@ for value_name in AUTH_WAIT_SECONDS QUIESCENCE_GRACE_SECONDS; do
     exit 1
   fi
 done
+if ! awk -v quiet="$QUIESCENCE_GRACE_SECONDS" -v auth="$AUTH_WAIT_SECONDS" \
+  'BEGIN { exit !(quiet < auth) }'; then
+  echo "submit-compact.sh: QUIESCENCE_GRACE_SECONDS must be less than AUTH_WAIT_SECONDS; compact not submitted" >&2
+  exit 1
+fi
+if ! awk -v seconds="$START_GRACE_SECONDS" 'BEGIN {
+  exit !(seconds ~ /^[0-9]+([.][0-9]+)?$/ && seconds > 0 && seconds <= 30)
+}'; then
+  echo "submit-compact.sh: START_GRACE_SECONDS must be greater than zero and at most 30 seconds; compact not submitted" >&2
+  exit 1
+fi
+AUTH_SCAN_BYTES="${SELF_COMPACT_AUTH_SCAN_BYTES:-65536}"
+case "$AUTH_SCAN_BYTES" in
+  ''|*[!0-9]*)
+    echo "submit-compact.sh: authorization scan bound must be a positive integer; compact not submitted" >&2
+    exit 1
+    ;;
+esac
+if [ "$AUTH_SCAN_BYTES" -lt 65536 ] || [ "$AUTH_SCAN_BYTES" -gt 67108864 ]; then
+  echo "submit-compact.sh: authorization scan bound must be between 65536 and 67108864 bytes; compact not submitted" >&2
+  exit 1
+fi
 
 resolve_workspace() {
   local pane_cwd pane_pid ws this_cwd lock lock_pid parent
@@ -149,75 +172,6 @@ esac
 EVENTS="${WORKSPACE%/workspace.yaml}/events.jsonl"
 [ -r "$EVENTS" ] || {
   echo "submit-compact.sh: active session event log is unavailable; compact not submitted" >&2
-  exit 1
-}
-
-CANDIDATE_CALL_ID="$(
-  /usr/bin/perl -MJSON::PP -e '
-    use strict;
-    use warnings;
-    my $path = shift;
-    open my $fh, "<", $path or exit 1;
-    binmode $fh;
-    my $size = (stat($fh))[7];
-    defined $size or exit 1;
-    my $maximum = 8 * 1024 * 1024;
-    my $floor = $size > $maximum ? $size - $maximum : 0;
-    my $position = $size;
-    my $carry = "";
-    my %completed;
-    while ($position > $floor) {
-      my $take = $position - $floor;
-      $take = 65536 if $take > 65536;
-      $position -= $take;
-      seek($fh, $position, 0) or exit 1;
-      read($fh, my $chunk, $take) == $take or exit 1;
-      my $data = $chunk . $carry;
-      my @parts = split /\n/, $data, -1;
-      $carry = shift @parts;
-      for (my $index = $#parts; $index >= 0; $index--) {
-        my $line = $parts[$index];
-        next unless index($line, "\"tool.execution_") >= 0;
-        my $event = eval { decode_json($line) };
-        next unless $event && ref($event) eq "HASH";
-        next if defined $event->{agentId};
-        my $type = $event->{type} // "";
-        my $event_data = $event->{data};
-        next unless $event_data && ref($event_data) eq "HASH";
-        my $id = $event_data->{toolCallId} // "";
-        if ($type eq "tool.execution_complete" && length $id) {
-          $completed{$id} = 1;
-          next;
-        }
-        next unless $type eq "tool.execution_start";
-        exit 1 unless ($event_data->{toolName} // "") eq "bash";
-        exit 1 unless length $id;
-        exit 1 if $completed{$id};
-        print $id;
-        exit 0;
-      }
-    }
-    if ($position == 0 && length $carry) {
-      my $event = eval { decode_json($carry) };
-      if ($event && ref($event) eq "HASH" && !defined $event->{agentId}) {
-        my $event_data = $event->{data};
-        if (
-          ($event->{type} // "") eq "tool.execution_start" &&
-          $event_data && ref($event_data) eq "HASH"
-        ) {
-          my $id = $event_data->{toolCallId} // "";
-          exit 1 unless ($event_data->{toolName} // "") eq "bash";
-          exit 1 unless length $id;
-          exit 1 if $completed{$id};
-          print $id;
-          exit 0;
-        }
-      }
-    }
-    exit 1;
-  ' "$EVENTS"
-)" || {
-  echo "submit-compact.sh: could not identify the current root-agent Bash tool call; compact not submitted" >&2
   exit 1
 }
 
@@ -309,7 +263,6 @@ printf '%s\n' "$$" > "$LOCK_DIR/submitter.pid"
 printf '%s\n' "$RUN_STAMP" > "$LOCK_DIR/created"
 printf '%s\n%s\n%s\n%s\n%s\n' \
   "$READY" "$ARMED" "$CANCELLED" "$HANDOFF" "$LOG" > "$LOCK_DIR/run-files"
-printf '%s\n' "$CANDIDATE_CALL_ID" > "$LOCK_DIR/tool-call-id"
 printf '%s\n' "$SCRIPT_PATH" > "$LOCK_DIR/helper-path"
 write_lock_state foreground
 
@@ -325,6 +278,60 @@ cleanup_foreground() {
   fi
 }
 trap cleanup_foreground EXIT
+
+CANDIDATE_BOUNDARY="$(
+  /usr/bin/perl -e 'my $size = -s $ARGV[0]; defined $size or exit 1; print $size' \
+    "$EVENTS"
+)" || {
+  echo "submit-compact.sh: could not snapshot the event log after acquiring the lock; compact not submitted" >&2
+  exit 1
+}
+CANDIDATE_CALL_ID="$(
+  /usr/bin/perl -MJSON::PP -e '
+    use strict;
+    use warnings;
+    my ($path, $end, $maximum) = @ARGV;
+    $end =~ /^\d+$/ && $maximum =~ /^\d+$/ or exit 1;
+    open my $fh, "<", $path or exit 1;
+    binmode $fh;
+    my $size = (stat($fh))[7];
+    defined $size && $size >= $end or exit 1;
+    my $floor = $end > $maximum ? $end - $maximum : 0;
+    seek($fh, $floor, 0) or exit 1;
+    read($fh, my $buffer, $end - $floor) == $end - $floor or exit 1;
+    if ($floor > 0) {
+      my $newline = index($buffer, "\n");
+      exit 2 if $newline < 0;
+      $buffer = substr($buffer, $newline + 1);
+    }
+    exit 1 if length($buffer) && substr($buffer, -1) ne "\n";
+    my @lines = split /\n/, $buffer;
+    my @starts;
+    my %completed;
+    for my $line (@lines) {
+      my $event = eval { decode_json($line) };
+      exit 3 unless $event && ref($event) eq "HASH";
+      next if defined $event->{agentId};
+      my $type = $event->{type} // "";
+      my $data = $event->{data};
+      next unless $data && ref($data) eq "HASH";
+      my $id = $data->{toolCallId} // "";
+      if ($type eq "tool.execution_complete" && length $id) {
+        $completed{$id} = 1;
+      } elsif ($type eq "tool.execution_start") {
+        push @starts, [$id, $data->{toolName} // ""];
+      }
+    }
+    exit 2 unless @starts;
+    my ($id, $name) = @{$starts[-1]};
+    exit 2 unless $name eq "bash" && length $id && !$completed{$id};
+    print $id;
+  ' "$EVENTS" "$CANDIDATE_BOUNDARY" "$AUTH_SCAN_BYTES"
+)" || {
+  echo "submit-compact.sh: could not identify the current root-agent Bash tool call within the bounded event tail; compact not submitted" >&2
+  exit 1
+}
+printf '%s\n' "$CANDIDATE_CALL_ID" > "$LOCK_DIR/tool-call-id"
 
 shell_quote() {
   printf '%q' "$1"
@@ -363,11 +370,39 @@ done
   exit 1
 }
 
-printf '%s\n%s\n' "$LOCK_TOKEN" "$CANDIDATE_CALL_ID" > "$HANDOFF.next"
+watcher_owns_lock() {
+  local watcher_pid
+  lock_token_matches &&
+    [ "$(lock_state)" = watcher-owned ] &&
+    [ -r "$LOCK_DIR/watcher.pid" ] &&
+    [ -e "$LOCK_DIR/ready" ] || return 1
+  watcher_pid="$(cat "$LOCK_DIR/watcher.pid")"
+  pid_is_live "$watcher_pid"
+}
+
+watcher_owns_lock || {
+  echo "submit-compact.sh: detached verifier lost lock ownership after READY; compact not submitted" >&2
+  exit 1
+}
+HANDOFF_EVENT_OFFSET="$(
+  /usr/bin/perl -e 'my $size = -s $ARGV[0]; defined $size or exit 1; print $size' \
+    "$EVENTS"
+)" || {
+  echo "submit-compact.sh: could not snapshot the positive handoff boundary; compact not submitted" >&2
+  exit 1
+}
+printf '%s\n%s\n%s\n' \
+  "$LOCK_TOKEN" "$CANDIDATE_CALL_ID" "$HANDOFF_EVENT_OFFSET" > "$HANDOFF.next"
+watcher_owns_lock || {
+  rm -f "$HANDOFF.next"
+  echo "submit-compact.sh: detached verifier lost lock ownership before HANDOFF; compact not submitted" >&2
+  exit 1
+}
 mv "$HANDOFF.next" "$HANDOFF"
 : > "$LOCK_DIR/handoff"
 HANDOFF_COMPLETE=true
 trap - EXIT
 
+echo "self-compact handoff receipt: $LOCK_TOKEN"
 echo "self-compact verifier armed; foreground helper complete"
 echo "watcher log: $LOG"

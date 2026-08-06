@@ -59,14 +59,15 @@ editor.
 Run the helper with no arguments:
 
 ```sh
-"/Users/dfrysinger/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh"
+"$HOME/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh"
 ```
 
-Use that exact double-quoted canonical absolute path. Tilde, `$HOME`, arguments,
+Use that exact double-quoted canonical `$HOME` path. Tilde, arguments,
 assignments, redirections, pipelines, and composed shell commands are not
-supported. Set the Bash tool's `initial_wait` to at least 120 seconds for
-compatibility with older installed versions and to keep startup errors in the
-initiating turn.
+supported. The verifier resolves that one portable spelling to the installed
+helper and rejects every other expansion or composition. Set the Bash tool's
+`initial_wait` to at least 120 seconds for compatibility with older installed
+versions and to keep startup errors in the initiating turn.
 
 Old positional steers and `--continuation` are errors. Do not shorten the brief
 or retry with invented instructions when a run fails.

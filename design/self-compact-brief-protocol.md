@@ -689,15 +689,16 @@ This is an intentional breaking change to an internal personal helper.
 2. Change helper usage to:
 
    ```sh
-   "/absolute/path/to/submit-compact.sh"
+   "$HOME/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh"
    ```
 
 3. Set the invoking Bash tool's `initial_wait` to at least 120 seconds.
 4. Move all steer and continuation meaning into the immediately preceding
    `SELF_COMPACT_BRIEF`.
-5. Use the exact double-quoted canonical absolute helper path. Tilde,
-   `$HOME`, arguments, assignments, and shell composition are unsupported and
-   fail closed.
+5. Use the exact double-quoted canonical `$HOME` helper path. The verifier
+   resolves that one portable spelling to the installed helper. Tilde,
+   arguments, assignments, and shell composition are unsupported and fail
+   closed.
 6. Keep the old positional syntax and `--continuation` as hard errors with
    migration guidance for one release. Do not interpret or ignore supplied
    text.
@@ -741,7 +742,7 @@ fallback disabled.
   shape before it proves immediate editor emptiness and submits the fixed short
   token-bearing control command.
 - Every documented caller invokes the helper with a Bash `initial_wait` of at
-  least 120 seconds and the exact double-quoted canonical absolute path.
+  least 120 seconds and the exact double-quoted canonical `$HOME` path.
 - One session-scoped owner-token lock excludes concurrent helper runs and is
   released safely by foreground and watcher terminal paths; positive handoff
   is required, and post-`ARMED` termination never makes a second compact
