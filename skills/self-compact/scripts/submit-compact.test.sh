@@ -609,6 +609,10 @@ case "$command" in
     (
       unset LANG LC_ALL LC_CTYPE LC_COLLATE LC_MESSAGES LC_MONETARY
       unset LC_NUMERIC LC_TIME
+      if [ -n "${FAKE_DETACHED_PATH:-}" ]; then
+        PATH="$FAKE_DETACHED_PATH"
+        export PATH
+      fi
       printf 'LANG=%s\nLC_ALL=%s\n' \
         "${LANG-unset}" "${LC_ALL-unset}" > "$FAKE_RUN_SHELL_ENV"
       exec /bin/bash -c "$last"
@@ -757,6 +761,7 @@ EOF
   unset FAKE_TASK_COMPLETE_BEFORE_TURN_END
   unset FAKE_REMOVE_HANDOFF_BEFORE_COMPLETION
   unset FAKE_SUBAGENT_AFTER_TURN_END
+  unset FAKE_DETACHED_PATH
 
   export PATH="$FAKE_BIN:$PATH"
   export FAKE_CASE FAKE_WORKSPACE FAKE_TMUX_INPUT FAKE_TMUX_STASH
@@ -1792,6 +1797,16 @@ assert_count 1 '^KEY:Enter:Compaction done; resume, do not compact\.$' "$FAKE_TM
 assert_count 1 '^TYPE:Compaction done; resume, do not compact\.$' "$FAKE_TMUX_ACTIONS"
 assert_file_equals "already queued" "$FAKE_TMUX_INPUT"
 grep -q 'matching compact advanced summary_count to 2 at checkpoint 2' "$log"
+
+# The detached verifier uses the validated absolute tmux path even when tmux is
+# absent from its inherited PATH.
+setup_case detached-no-tmux-path
+export FAKE_DETACHED_PATH=/usr/bin:/bin
+export FAKE_COMPACT_MODE=success
+run_submit >/dev/null
+wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
+assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
+assert_count 1 '^KEY:Enter:Compaction done; resume, do not compact\.$' "$FAKE_TMUX_ACTIONS"
 
 # A delayed compact render is polled read-only until the exact marked command
 # appears. It does not spend another typing, recovery key, or warning.

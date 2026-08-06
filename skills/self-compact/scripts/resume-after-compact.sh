@@ -471,7 +471,7 @@ BEFORE_EVENTS="$(wc -l < "$EVENTS" | tr -d '[:space:]')"
 : > "$ARMED"
 : > "$LOCK_DIR/armed"
 RELEASE_LOCK=false
-if ! tmux send-keys -t "$PANE" Enter; then
+if ! "$TMUX_BIN" send-keys -t "$PANE" Enter; then
   sc_cleanup_exact_command "$expected_hex"
   deferred_failure "could not submit the compact command"
   exit 1

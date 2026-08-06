@@ -92,9 +92,9 @@ done
 resolve_workspace() {
   local pane_cwd pane_pid ws this_cwd lock lock_pid parent
   local selected=""
-  pane_cwd="$(tmux display-message -p -t "$PANE" '#{pane_current_path}' 2>/dev/null)" ||
+  pane_cwd="$("$TMUX_BIN" display-message -p -t "$PANE" '#{pane_current_path}' 2>/dev/null)" ||
     return 1
-  pane_pid="$(tmux display-message -p -t "$PANE" '#{pane_pid}' 2>/dev/null)" ||
+  pane_pid="$("$TMUX_BIN" display-message -p -t "$PANE" '#{pane_pid}' 2>/dev/null)" ||
     return 1
 
   for ws in "$SESSION_STATE_DIR"/*/workspace.yaml; do
@@ -349,7 +349,7 @@ watcher_command="$watcher_command || true"
 write_lock_state watcher-launching
 : > "$LOCK_DIR/watcher-launching"
 WATCHER_LAUNCH_ATTEMPTED=true
-if ! tmux run-shell -b "$watcher_command"; then
+if ! "$TMUX_BIN" run-shell -b "$watcher_command"; then
   echo "submit-compact.sh: detached verifier did not start; lock retained at $LOCK_DIR" >&2
   exit 1
 fi
