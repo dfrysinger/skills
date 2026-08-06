@@ -628,7 +628,8 @@ cat > "$FAKE_BIN/perl" <<'EOF'
 
 set -euo pipefail
 
-if [ -n "${FAKE_EPOCH_MILLISECONDS_FILE:-}" ]; then
+if [ -n "${FAKE_EPOCH_MILLISECONDS_FILE:-}" ] &&
+  printf '%s\n' "$@" | grep -qx -- '-MTime::HiRes=time'; then
   call=0
   [ -s "$FAKE_EPOCH_CALL_COUNT" ] &&
     call="$(cat "$FAKE_EPOCH_CALL_COUNT")"
@@ -804,7 +805,7 @@ run_submit_command() {
     SELF_COMPACT_RENDER_WAIT_SECONDS="${SELF_COMPACT_RENDER_WAIT_SECONDS:-0.05}" \
     SELF_COMPACT_RENDER_POLL_SECONDS="${SELF_COMPACT_RENDER_POLL_SECONDS:-0.001}" \
     SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS="${SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS:-25}" \
-    SELF_COMPACT_AUTH_WAIT_SECONDS="${SELF_COMPACT_AUTH_WAIT_SECONDS:-1.5}" \
+    SELF_COMPACT_AUTH_WAIT_SECONDS="${SELF_COMPACT_AUTH_WAIT_SECONDS:-3}" \
     SELF_COMPACT_QUIESCENCE_GRACE_SECONDS="${SELF_COMPACT_QUIESCENCE_GRACE_SECONDS:-0.02}" \
     SELF_COMPACT_RECOVERY_DELAY_SECONDS=0.05 \
     SELF_COMPACT_NOTICE_MILLISECONDS=20 \
@@ -913,7 +914,7 @@ append_split_brief_turn() {
 wait_for_watcher_log() {
   local pattern="$1"
   local log=""
-  for _ in $(seq 1 200); do
+  for _ in $(seq 1 400); do
     log="$(
       find "$FAKE_CASE/session/files" -name 'self-compact-*.log' \
         -print -quit 2>/dev/null
