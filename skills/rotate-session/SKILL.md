@@ -77,13 +77,31 @@ seed can sit undelivered while the session looks empty. Watching for the literal
 way.
 
 ```sh
-cat > /tmp/rotate-seed.txt <<'PROMPT'
+OLD='<old-session-id>'
+SEED=$(mktemp "${TMPDIR:-/tmp}/copilot-rotate-input-${OLD}.XXXXXX") || exit 1
+trap 'rm -f -- "$SEED"' EXIT
+if ! cat >"$SEED" <<'PROMPT'
 <the seed prompt from above>
 PROMPT
+then
+  echo "Could not write rotation seed" >&2
+  exit 1
+fi
+[ -s "$SEED" ] || { echo "Rotation seed is empty" >&2; exit 1; }
 
 ~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/rotate-session/scripts/rotate.sh \
-  <old-session-id> /tmp/rotate-seed.txt
+  "$OLD" "$SEED" --consume-prompt
 ```
+
+Use the unique `mktemp` path exactly as shown. A fixed `/tmp/rotate-seed.txt`
+can be overwritten by another agent rotating at the same time. The script
+synchronously snapshots and validates the prompt before it backgrounds, then
+consumes the temporary input only because the caller passes
+`--consume-prompt`. The seed prompt must contain the exact value of `OLD`; this
+binds the recovery instructions to the session being retired. A failed
+rotation preserves only its private recovery snapshot and names that file in
+the log. If creating or writing the seed fails, stop; never inspect or reuse an
+existing seed file.
 
 Make this the **last action of the turn** and end the turn, because `/new`
 replaces the conversation you are running in. The script backgrounds itself, so
@@ -103,7 +121,8 @@ rather than a rotation.
 
 ## Notes
 
-- If the log ends in `NOT seeded`, the prompt is still in the file it names.
+- If the log ends in `NOT seeded`, the prompt is in the private recovery file
+  it names.
   Paste it into the fresh session by hand.
 - Reading `~/.copilot/session-state` sits outside most agent workspaces, so the
   fresh session may hit an "Allow directory access" prompt. Choosing "add these

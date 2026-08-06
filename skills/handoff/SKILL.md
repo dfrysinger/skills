@@ -124,12 +124,20 @@ Steps:
    turn so the queued command runs next:
 
 ```sh
-cat > /tmp/handoff-seed.txt <<'PROMPT'
+OLD='<old-id>'
+SEED=$(mktemp "${TMPDIR:-/tmp}/copilot-rotate-input-${OLD}.XXXXXX") || exit 1
+trap 'rm -f -- "$SEED"' EXIT
+if ! cat >"$SEED" <<'PROMPT'
 Read the handoff at <handoff-path> and the plan at <plan-doc-path>. Then recover the retired session <old-id> from ~/.copilot/session-state/<old-id>: its plan.md, the two newest files in checkpoints/, anything in files/, its unfinished todos from session.db (table todos, status not done), and its last 12 turns via session_store_sql with source=local. Skip whatever is missing. Summarise where things stand, then continue the work. Re-invoke any skills listed under "suggested skills."
 PROMPT
+then
+  echo "Could not write handoff seed" >&2
+  exit 1
+fi
+[ -s "$SEED" ] || { echo "Handoff seed is empty" >&2; exit 1; }
 
 ~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/rotate-session/scripts/rotate.sh \
-  <old-id> /tmp/handoff-seed.txt
+  "$OLD" "$SEED" --consume-prompt
 ```
 
 Send the seed with that script rather than typing `/new` into the pane. A
@@ -139,7 +147,12 @@ own, so a hand-typed seed can sit undelivered while the session looks empty. The
 script waits for the prompt to render before submitting, confirms the fresh
 session recorded it, and re-sends if it did not. It writes the outcome to
 `/tmp/rotate-session-<old-id>.log`, so report what that log says rather than a
-handoff you did not observe.
+handoff you did not observe. The unique `mktemp` input prevents concurrent
+rotations from reading each other's handoffs; the script snapshots it before
+backgrounding and consumes the input only because the caller passes
+`--consume-prompt`. The prompt must contain the exact value of `OLD`. If seed
+creation or writing fails, stop rather than reading or reusing an existing
+file.
 
 `/new <prompt>` starts a clean conversation seeded with that prompt in the same
 tmux window and Copilot process, with no relaunch and no confirmation dialog.

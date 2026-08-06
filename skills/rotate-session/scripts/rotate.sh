@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Rotate the current Copilot CLI session into a fresh one seeded with a prompt.
 #
-#   rotate.sh <old-session-id> <prompt-file>
+#   rotate.sh <old-session-id> <prompt-file> [--consume-prompt]
 #
 # Typing `/new <prompt>` into the CLI input is racy. The CLI queues any message
 # that arrives while it is busy, and a queued message only drains at a turn
@@ -11,19 +11,75 @@
 # confirming the fresh session actually received a message rather than assuming
 # it did.
 #
-# All of the work happens in a detached child, because the caller's turn ends
-# the moment the rotation fires.
+# Prompt validation and snapshotting happen synchronously. The tmux interaction
+# runs in a detached child because the caller's turn ends when rotation fires.
 
 set -uo pipefail
 
-OLD="${1:?usage: rotate.sh <old-session-id> <prompt-file>}"
-PROMPT_FILE="${2:?usage: rotate.sh <old-session-id> <prompt-file>}"
+USAGE="usage: rotate.sh <old-session-id> <prompt-file> [--consume-prompt]"
+OLD="${1:?$USAGE}"
+PROMPT_FILE="${2:?$USAGE}"
+CONSUME_PROMPT="${3:-}"
 PANE="${TMUX_PANE:?TMUX_PANE is not set. This script drives a tmux pane and cannot run outside one; print the expanded /new command for the user to run instead (see the SKILL.md outside-tmux branch).}"
 STATE="$HOME/.copilot/session-state"
 LOG="${ROTATE_LOG:-/tmp/rotate-session-$OLD.log}"
+TMP_ROOT="${TMPDIR:-/tmp}"
+TMP_ROOT="${TMP_ROOT%/}"
+[ -n "$TMP_ROOT" ] || TMP_ROOT=/
+
+case "$CONSUME_PROMPT" in
+  ""|--consume-prompt) ;;
+  *) echo "rotate.sh: $USAGE" >&2; exit 1 ;;
+esac
 
 [ -s "$PROMPT_FILE" ] || { echo "rotate.sh: prompt file is empty" >&2; exit 1; }
 [ -d "$STATE/$OLD" ] || { echo "rotate.sh: no such session $OLD" >&2; exit 1; }
+
+PROMPT=$(cat -- "$PROMPT_FILE") || {
+  echo "rotate.sh: could not read prompt file $PROMPT_FILE" >&2
+  exit 1
+}
+case "$PROMPT" in
+  *"$OLD"*) ;;
+  *)
+    echo "rotate.sh: prompt does not name expected session $OLD" >&2
+    exit 1
+    ;;
+esac
+
+# Freeze the prompt before the detached child starts. The caller's input file
+# may be cleaned up or replaced after this command returns; the recovery copy
+# remains private to this rotation and is retained only when seeding fails.
+umask 077
+RECOVERY_FILE=$(mktemp "$TMP_ROOT/copilot-rotate-recovery-$OLD.XXXXXX") || {
+  echo "rotate.sh: could not create private prompt snapshot" >&2
+  exit 1
+}
+if ! printf '%s' "$PROMPT" >"$RECOVERY_FILE"; then
+  if rm -f -- "$RECOVERY_FILE"; then
+    echo "rotate.sh: could not write private prompt snapshot" >&2
+  else
+    echo "rotate.sh: could not write private prompt snapshot; incomplete copy may remain at $RECOVERY_FILE" >&2
+  fi
+  exit 1
+fi
+
+# Documented callers opt in to consuming their unique temporary input. The
+# explicit flag keeps generic prompt files caller-owned.
+if [ "$CONSUME_PROMPT" = "--consume-prompt" ] && ! rm -f -- "$PROMPT_FILE"; then
+  echo "rotate.sh: could not remove consumed prompt; recovery copy preserved at $RECOVERY_FILE" >&2
+  exit 1
+fi
+
+# Record the recovery path before detaching so an interrupted child cannot
+# leave an undiscoverable snapshot.
+if ! {
+  echo "=== rotate $OLD at $(date -Iseconds) ==="
+  echo "recovery snapshot: $RECOVERY_FILE (removed after successful seeding)"
+} >>"$LOG"; then
+  echo "rotate.sh: could not write rotation log; recovery copy preserved at $RECOVERY_FILE" >&2
+  exit 1
+fi
 
 # The input box is the region between the last two horizontal rules. A long
 # prompt wraps below the `❯` marker, so the whole region has to be read.
@@ -84,14 +140,22 @@ _type_and_submit() {
 
 _seeded() { [ -s "$STATE/$1/events.jsonl" ]; }
 
+_finish_success() {
+  local result="$1"
+  if ! rm -f -- "$RECOVERY_FILE"; then
+    echo "RESULT: $result, but recovery cleanup failed; prompt preserved at $RECOVERY_FILE"
+    exit 1
+  fi
+  echo "RESULT: $result"
+  exit 0
+}
+
 (
   exec >>"$LOG" 2>&1
-  echo "=== rotate $OLD at $(date -Iseconds) ==="
-  PROMPT=$(cat "$PROMPT_FILE")
   BEFORE=$(_sessions_here | sort)
 
   if ! _type_and_submit "/new $PROMPT"; then
-    echo "RESULT: rotation did not fire; the old session is untouched"
+    echo "RESULT: rotation did not fire; the old session is untouched; prompt preserved at $RECOVERY_FILE"
     exit 1
   fi
 
@@ -103,7 +167,7 @@ _seeded() { [ -s "$STATE/$1/events.jsonl" ]; }
     sleep 1
   done
   if [ -z "$NEW" ]; then
-    echo "RESULT: no new session appeared"
+    echo "RESULT: no new session appeared; prompt preserved at $RECOVERY_FILE"
     exit 1
   fi
   echo "new session: $NEW"
@@ -116,18 +180,16 @@ _seeded() { [ -s "$STATE/$1/events.jsonl" ]; }
   done
 
   if _seeded "$NEW"; then
-    echo "RESULT: rotated to $NEW, seeded"
-    exit 0
+    _finish_success "rotated to $NEW, seeded"
   fi
 
   echo "seed did not arrive; re-sending it as a plain message"
   DUP="NOTE: the original copy of this message was queued rather than delivered, so it may still arrive again later. If it does, treat it as a duplicate: do not redo the work and do not arm a second schedule. "
   if _type_and_submit "$DUP$PROMPT" && { sleep 5; _seeded "$NEW"; }; then
-    echo "RESULT: rotated to $NEW, seeded on retry"
-    exit 0
+    _finish_success "rotated to $NEW, seeded on retry"
   fi
 
-  echo "RESULT: rotated to $NEW but it is NOT seeded; prompt is at $PROMPT_FILE"
+  echo "RESULT: rotated to $NEW but it is NOT seeded; prompt preserved at $RECOVERY_FILE"
   exit 1
 ) &
 
