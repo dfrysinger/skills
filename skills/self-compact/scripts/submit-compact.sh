@@ -343,7 +343,7 @@ for argument in \
   "$CANCELLED" "$HANDOFF" "$TOKEN" "$CONTINUATION" "$TMUX_BIN" "$COMMAND" \
   "$CUSTOM_INSTRUCTIONS" "$LOCK_DIR" "$LOCK_TOKEN" "$CANDIDATE_CALL_ID" \
   "$SCRIPT_PATH" "$LOG" "$AMBIGUOUS_WAIT_SECONDS" "$AUTH_WAIT_SECONDS" \
-  "$QUIESCENCE_GRACE_SECONDS"; do
+  "$QUIESCENCE_GRACE_SECONDS" "$START_GRACE_SECONDS"; do
   quoted="$(shell_quote "$argument")"
   watcher_command="${watcher_command}${watcher_command:+ }$quoted"
 done

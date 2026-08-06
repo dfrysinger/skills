@@ -44,11 +44,12 @@ permission, destructive-action, or user-only visual-confirmation blocker.
 
 ## Current phase
 
-Running closure review on the live-proven remediated tree. The review of
-`877f5b3..ee41772` confirmed 52 findings, rejected 2, and left none uncertain.
-Production hardening and the missing deterministic regressions are
-implemented, multiple stable full deterministic runs pass, and the exact
-installed runtime from candidate `0eedd64` passed the complete tmux lifecycle.
+Closing two material findings from the two-family review of the live-proven
+candidate. Both reviewers found that the authorization byte cap was
+incorrectly reused for post-Enter lifecycle evidence; Terra also found that a
+root completion-only interleaving did not cancel authorization. Scoped runtime
+fixes and deterministic regressions are active. The exact installed runtime
+from candidate `0eedd64` remains the latest complete tmux lifecycle PASS.
 
 ## Phase order
 
@@ -77,9 +78,12 @@ draft isolation, or treat deterministic shell tests as the real-model proof.
   helper invocation, and the expanded fail-closed regression matrix.
 - The repository and installed runtime script hashes match, and the installed
   plugin reports version `0.103.0`.
-- Next action: run implementation closure review against the complete
-  remediated diff and this live receipt, close any material finding, rerun
-  affected validation, then land and reinstall the final reviewed commit.
+- Closure findings: make post-Enter event observation forward-progressing and
+  independent of `AUTH_SCAN_BYTES`; reject root completion-only conflict
+  events; explicitly propagate the validated start-grace value.
+- Next action: finish the scoped fix and full deterministic run, perform a
+  finding-scoped two-family closure check, then install the resulting commit
+  and rerun the complete live lifecycle before landing.
 
 ## Live-proof receipt
 

@@ -3,8 +3,8 @@
 
 set -euo pipefail
 
-[ "$#" -eq 20 ] || {
-  echo "usage: resume-after-compact.sh PANE WORKSPACE BEFORE READY ARMED CANCELLED HANDOFF TOKEN CONTINUATION TMUX COMMAND CUSTOM_INSTRUCTIONS LOCK_DIR LOCK_TOKEN TOOL_CALL_ID HELPER_PATH LOG AMBIGUOUS_WAIT AUTH_WAIT QUIESCENCE_GRACE" >&2
+[ "$#" -eq 21 ] || {
+  echo "usage: resume-after-compact.sh PANE WORKSPACE BEFORE READY ARMED CANCELLED HANDOFF TOKEN CONTINUATION TMUX COMMAND CUSTOM_INSTRUCTIONS LOCK_DIR LOCK_TOKEN TOOL_CALL_ID HELPER_PATH LOG AMBIGUOUS_WAIT AUTH_WAIT QUIESCENCE_GRACE START_GRACE" >&2
   exit 2
 }
 
@@ -28,6 +28,7 @@ LOG="${17:?log path is required}"
 AMBIGUOUS_WAIT_SECONDS="${18:?ambiguous wait is required}"
 AUTH_WAIT_SECONDS="${19:?authorization wait is required}"
 QUIESCENCE_GRACE_SECONDS="${20:?quiescence grace is required}"
+START_GRACE_SECONDS="${21:?compaction start grace is required}"
 
 [ -x "$TMUX_BIN" ] || {
   echo "self-compact watcher has no executable tmux path" >&2
@@ -74,7 +75,6 @@ fi
 POLL_SECONDS="${SELF_COMPACT_POLL_SECONDS:-1}"
 MAX_POLLS="${SELF_COMPACT_MAX_POLLS:-1800}"
 RESUME_GRACE_SECONDS="${SELF_COMPACT_RESUME_GRACE_SECONDS:-3}"
-START_GRACE_SECONDS="${SELF_COMPACT_START_GRACE_SECONDS:-15}"
 AUTH_SCAN_BYTES="${SELF_COMPACT_AUTH_SCAN_BYTES:-65536}"
 CHECKPOINTS_DIR="${WORKSPACE%/workspace.yaml}/checkpoints"
 EVENTS="${WORKSPACE%/workspace.yaml}/events.jsonl"
@@ -314,6 +314,7 @@ authorization_probe() {
       if ($type eq "user.message" ||
         $type eq "assistant.turn_start" ||
         $type eq "tool.execution_start" ||
+        $type eq "tool.execution_complete" ||
         $type eq "assistant.turn_end") {
         print "cancel:conflicting root activity preceded the helper request\n";
         exit;
@@ -356,7 +357,11 @@ authorization_probe() {
       print "cancel:helper execution start was not Bash\n";
       exit;
     }
-    if (!@completions || $completions[0] <= $starts[0]) {
+    if (@completions && $completions[0] <= $starts[0]) {
+      print "cancel:helper completion preceded its execution start\n";
+      exit;
+    }
+    if (!@completions) {
       print "wait\n";
       exit;
     }
@@ -377,7 +382,10 @@ authorization_probe() {
         print "cancel:the authorizing turn changed before helper completion\n";
         exit;
       }
-      if ($type eq "tool.execution_start" && $index != $starts[0]) {
+      if (
+        ($type eq "tool.execution_start" && $index != $starts[0]) ||
+        $type eq "tool.execution_complete"
+      ) {
         print "cancel:conflicting root tool activity followed the helper request\n";
         exit;
       }
@@ -418,7 +426,8 @@ authorization_probe() {
         print "cancel:user activity followed the helper request\n";
         exit;
       }
-      if ($type eq "tool.execution_start") {
+      if ($type eq "tool.execution_start" ||
+        $type eq "tool.execution_complete") {
         print "cancel:new root tool activity followed helper completion\n";
         exit;
       }
@@ -453,8 +462,11 @@ authorization_probe() {
       next unless $type eq "user.message" ||
         $type eq "assistant.turn_start" ||
         $type eq "tool.execution_start" ||
+        $type eq "tool.execution_complete" ||
         $type eq "assistant.message";
-      if ($type eq "user.message" || $type eq "tool.execution_start") {
+      if ($type eq "user.message" ||
+        $type eq "tool.execution_start" ||
+        $type eq "tool.execution_complete") {
         print "cancel:new root activity followed the authorizing turn\n";
         exit;
       }
@@ -480,7 +492,9 @@ authorization_probe() {
     for my $index ($closure_start + 1 .. $#events) {
       my $event = $events[$index][2];
       my $type = $event->{type} // "";
-      if ($type eq "user.message" || $type eq "tool.execution_start") {
+      if ($type eq "user.message" ||
+        $type eq "tool.execution_start" ||
+        $type eq "tool.execution_complete") {
         print "cancel:new root activity entered the closure turn\n";
         exit;
       }
@@ -627,7 +641,8 @@ semantic_activity_after() {
         exit;
       }
       if ($mode eq "authorization") {
-        if ($type eq "tool.execution_start") {
+        if ($type eq "tool.execution_start" ||
+          $type eq "tool.execution_complete") {
           print "activity\n";
           exit;
         }
@@ -753,35 +768,130 @@ if ! "$TMUX_BIN" send-keys -t "$PANE" Enter; then
   enter_failed=true
 fi
 
-event_record_after() {
-  local after="$1"
-  local event_type="$2"
+STREAM_STATE=""
+STREAM_CURSOR=""
+STREAM_START=""
+STREAM_END=""
+STREAM_ERROR=""
+
+stream_event_probe() {
+  local cursor="$1"
+  local mode="$2"
+  local expected="${3:-}"
+  local output status=0
+  STREAM_ERROR=""
+  output="$(
   /usr/bin/perl -MJSON::PP -e '
     use strict;
     use warnings;
-    my ($path, $after, $maximum, $wanted) = @ARGV;
-    $after =~ /^\d+$/ && $maximum =~ /^\d+$/ or exit 2;
+    my ($path, $cursor, $mode, $expected) = @ARGV;
+    $cursor =~ /^\d+$/ or exit 2;
     open my $fh, "<", $path or exit 2;
     binmode $fh;
     my $size = (stat($fh))[7];
-    defined $size && $size >= $after or exit 2;
-    exit 3 if $size - $after > $maximum;
-    seek($fh, $after, 0) or exit 2;
-    while (1) {
-      my $start = tell($fh);
-      my $line = <$fh>;
-      last unless defined $line;
-      exit 2 if substr($line, -1) ne "\n";
-      my $end = tell($fh);
-      my $event = eval { decode_json($line) };
-      exit 2 unless $event && ref($event) eq "HASH";
-      next if defined $event->{agentId};
-      if (($event->{type} // "") eq $wanted) {
-        print $start . ":" . $end;
-        exit;
+    defined $size && $size >= $cursor or exit 2;
+    seek($fh, $cursor, 0) or exit 2;
+
+    my $buffer = "";
+    my $buffer_start = $cursor;
+    my $maximum_line = 16 * 1024 * 1024;
+    my $remaining = $size - $cursor;
+    while ($remaining > 0) {
+      my $take = $remaining > 65536 ? 65536 : $remaining;
+      my $read = sysread($fh, my $chunk, $take);
+      defined $read or exit 3;
+      $read > 0 or exit 3;
+      $remaining -= $read;
+      $buffer .= $chunk;
+      while ((my $newline = index($buffer, "\n")) >= 0) {
+        exit 5 if $newline > $maximum_line;
+        my $line = substr($buffer, 0, $newline, "");
+        substr($buffer, 0, 1, "");
+        my $start = $buffer_start;
+        my $end = $start + $newline + 1;
+        $buffer_start = $end;
+        my $event = eval { decode_json($line) };
+        exit 4 unless $event && ref($event) eq "HASH";
+        next if defined $event->{agentId};
+        my $type = $event->{type} // "";
+        my $state = "";
+        if ($mode eq "submit") {
+          $state = "start" if $type eq "session.compaction_start";
+          $state = "turn-end" if $type eq "assistant.turn_end";
+        } elsif ($mode eq "start") {
+          $state = "start" if $type eq "session.compaction_start";
+        } elsif ($mode eq "completion") {
+          $state = "completion" if $type eq "session.compaction_complete";
+        } elsif ($mode eq "post") {
+          $state = "activity"
+            if $type eq "user.message" || $type eq "assistant.turn_start";
+        } elsif ($mode eq "continuation") {
+          if ($type eq "assistant.turn_start") {
+            $state = "activity";
+          } elsif ($type eq "user.message") {
+            my $data = $event->{data};
+            my $content = $data && ref($data) eq "HASH"
+              ? $data->{content}
+              : $event->{content};
+            $state = defined $content && !ref($content) &&
+              $content eq $expected
+              ? "continuation"
+              : "mismatch";
+          }
+        } else {
+          exit 2;
+        }
+        if (length $state) {
+          print join("\t", $state, $end, $start, $end), "\n";
+          exit;
+        }
       }
+      exit 5 if length($buffer) > $maximum_line;
     }
-  ' "$EVENTS" "$after" "$AUTH_SCAN_BYTES" "$event_type"
+    print join("\t", "none", $buffer_start, "", ""), "\n";
+  ' "$EVENTS" "$cursor" "$mode" "$expected"
+  )" || status=$?
+  if [ "$status" -ne 0 ]; then
+    STREAM_STATE=error
+    STREAM_CURSOR="$cursor"
+    STREAM_START=""
+    STREAM_END=""
+    case "$status" in
+      2) STREAM_ERROR="invalid reader boundary or mode" ;;
+      3) STREAM_ERROR="event log read failure" ;;
+      4) STREAM_ERROR="malformed event JSON" ;;
+      5) STREAM_ERROR="event line exceeded the reader bound" ;;
+      *) STREAM_ERROR="status $status" ;;
+    esac
+    return 0
+  fi
+  IFS=$'\t' read -r \
+    STREAM_STATE STREAM_CURSOR STREAM_START STREAM_END <<< "$output"
+  case "$STREAM_STATE" in
+    none|start|turn-end|completion|activity|continuation|mismatch) ;;
+    *)
+      STREAM_STATE=error
+      STREAM_ERROR="invalid reader state"
+      return 0
+      ;;
+  esac
+  case "$STREAM_CURSOR" in
+    ''|*[!0-9]*)
+      STREAM_STATE=error
+      STREAM_ERROR="invalid reader cursor"
+      ;;
+  esac
+  if [ "$STREAM_STATE" != none ]; then
+    for event_bound in "$STREAM_START" "$STREAM_END"; do
+      case "$event_bound" in
+        ''|*[!0-9]*)
+          STREAM_STATE=error
+          STREAM_ERROR="invalid reader event bounds"
+          break
+          ;;
+      esac
+    done
+  fi
 }
 
 read_event_at_offset() {
@@ -798,28 +908,36 @@ read_event_at_offset() {
   ' "$EVENTS" "$offset"
 }
 
+post_armed_parser_failure() {
+  local message="$1"
+  RELEASE_LOCK=true
+  echo "$message" >&2
+  "$TMUX_BIN" display-message \
+    -d "${SELF_COMPACT_NOTICE_MILLISECONDS:-10000}" -t "$PANE" \
+    "self-compact cancelled: $message; log: $LOG" >/dev/null 2>&1 || true
+  exit 1
+}
+
 compaction_start_record=""
 turn_end_record=""
+LIFECYCLE_CURSOR="$BEFORE_EVENT_OFFSET"
 if [ "$enter_failed" = false ]; then
   for ((attempt = 1; attempt <= MAX_POLLS; attempt++)); do
-    event_status=0
-    compaction_start_record="$(
-      event_record_after "$BEFORE_EVENT_OFFSET" session.compaction_start
-    )" || event_status=$?
-    if [ "$event_status" -ne 0 ]; then
-      deferred_failure "could not inspect compaction start events (status $event_status)"
-      exit 1
-    fi
-    [ -n "$compaction_start_record" ] && break
-    event_status=0
-    turn_end_record="$(
-      event_record_after "$BEFORE_EVENT_OFFSET" assistant.turn_end
-    )" || event_status=$?
-    if [ "$event_status" -ne 0 ]; then
-      deferred_failure "could not inspect submitting turn events (status $event_status)"
-      exit 1
-    fi
-    [ -n "$turn_end_record" ] && break
+    stream_event_probe "$LIFECYCLE_CURSOR" submit
+    [ "$STREAM_STATE" = error ] &&
+      post_armed_parser_failure \
+        "could not inspect submitting lifecycle events ($STREAM_ERROR)"
+    LIFECYCLE_CURSOR="$STREAM_CURSOR"
+    case "$STREAM_STATE" in
+      start)
+        compaction_start_record="$STREAM_START:$STREAM_END"
+        break
+        ;;
+      turn-end)
+        turn_end_record="$STREAM_START:$STREAM_END"
+        break
+        ;;
+    esac
     sleep "$POLL_SECONDS"
   done
 
@@ -842,27 +960,27 @@ if [ -z "$compaction_start_record" ]; then
   }
   start_deadline_milliseconds=$((start_now_milliseconds + start_grace_milliseconds))
   while :; do
-    event_status=0
-    compaction_start_record="$(
-      event_record_after "$BEFORE_EVENT_OFFSET" session.compaction_start
-    )" || event_status=$?
-    if [ "$event_status" -ne 0 ]; then
-      deferred_failure "could not inspect compaction start events (status $event_status)"
-      exit 1
+    stream_event_probe "$LIFECYCLE_CURSOR" start
+    [ "$STREAM_STATE" = error ] &&
+      post_armed_parser_failure \
+        "could not inspect compaction start events ($STREAM_ERROR)"
+    LIFECYCLE_CURSOR="$STREAM_CURSOR"
+    if [ "$STREAM_STATE" = start ]; then
+      compaction_start_record="$STREAM_START:$STREAM_END"
+      break
     fi
-    [ -n "$compaction_start_record" ] && break
     now_milliseconds="$(read_epoch_milliseconds)" || {
       deferred_failure "invalid compaction start clock value"
       exit 1
     }
     if [ "$now_milliseconds" -ge "$start_deadline_milliseconds" ]; then
-      event_status=0
-      compaction_start_record="$(
-        event_record_after "$BEFORE_EVENT_OFFSET" session.compaction_start
-      )" || event_status=$?
-      if [ "$event_status" -ne 0 ]; then
-        deferred_failure "could not inspect compaction start events (status $event_status)"
-        exit 1
+      stream_event_probe "$LIFECYCLE_CURSOR" start
+      [ "$STREAM_STATE" = error ] &&
+        post_armed_parser_failure \
+          "could not inspect compaction start events ($STREAM_ERROR)"
+      LIFECYCLE_CURSOR="$STREAM_CURSOR"
+      if [ "$STREAM_STATE" = start ]; then
+        compaction_start_record="$STREAM_START:$STREAM_END"
       fi
       break
     fi
@@ -887,18 +1005,19 @@ if [ -z "$compaction_start_record" ]; then
   exit 1
 fi
 
-compaction_start_offset="${compaction_start_record%%:*}"
+compaction_start_end_offset="${compaction_start_record#*:}"
 completion_record=""
+COMPLETION_CURSOR="$compaction_start_end_offset"
 for ((attempt = 1; attempt <= MAX_POLLS; attempt++)); do
-  event_status=0
-  completion_record="$(
-    event_record_after "$compaction_start_offset" session.compaction_complete
-  )" || event_status=$?
-  if [ "$event_status" -ne 0 ]; then
-    deferred_failure "could not inspect compaction completion events (status $event_status)"
-    exit 1
+  stream_event_probe "$COMPLETION_CURSOR" completion
+  [ "$STREAM_STATE" = error ] &&
+    post_armed_parser_failure \
+      "could not inspect compaction completion events ($STREAM_ERROR)"
+  COMPLETION_CURSOR="$STREAM_CURSOR"
+  if [ "$STREAM_STATE" = completion ]; then
+    completion_record="$STREAM_START:$STREAM_END"
+    break
   fi
-  [ -n "$completion_record" ] && break
   sleep "$POLL_SECONDS"
 done
 [ -n "$completion_record" ] || {
@@ -909,8 +1028,8 @@ done
 completion_offset="${completion_record%%:*}"
 completion_end_offset="${completion_record#*:}"
 completion_json="$(read_event_at_offset "$completion_offset")" || {
-  deferred_failure "could not read the matched compaction completion event"
-  exit 1
+  post_armed_parser_failure \
+    "could not read the matched compaction completion event"
 }
 checkpoint_number="$(
   printf '%s\n' "$completion_json" |
@@ -971,19 +1090,41 @@ done
   exit 1
 }
 
+POST_ACTIVITY_CURSOR="$completion_end_offset"
+POST_ACTIVITY_FOUND=false
+POST_ACTIVITY_PARSE_ERROR=""
+
 post_compact_activity_exists() {
-  local result status=0
-  result="$(semantic_activity_after "$completion_end_offset" post-compact)" ||
-    status=$?
-  [ "$status" -eq 0 ] && [ "$result" = clear ] && return 1
-  return 0
+  [ "$POST_ACTIVITY_FOUND" = false ] || return 0
+  [ -z "$POST_ACTIVITY_PARSE_ERROR" ] || return 0
+  stream_event_probe "$POST_ACTIVITY_CURSOR" post
+  if [ "$STREAM_STATE" = error ]; then
+    POST_ACTIVITY_PARSE_ERROR="$STREAM_ERROR"
+    return 0
+  fi
+  POST_ACTIVITY_CURSOR="$STREAM_CURSOR"
+  if [ "$STREAM_STATE" = activity ]; then
+    POST_ACTIVITY_FOUND=true
+    return 0
+  fi
+  return 1
+}
+
+handle_post_compact_activity() {
+  local activity_message="$1"
+  if [ -n "$POST_ACTIVITY_PARSE_ERROR" ]; then
+    post_armed_parser_failure \
+      "could not inspect post-compact activity ($POST_ACTIVITY_PARSE_ERROR)"
+  fi
+  echo "$activity_message"
+  RELEASE_LOCK=true
+  exit 0
 }
 
 sleep "$RESUME_GRACE_SECONDS"
 if post_compact_activity_exists; then
-  echo "post-compact activity already present after event offset $completion_end_offset; continuation not needed"
-  RELEASE_LOCK=true
-  exit 0
+  handle_post_compact_activity \
+    "post-compact activity already present after event offset $completion_end_offset; continuation not needed"
 fi
 
 row_limit="$(sc_pane_one_row_limit)" || {
@@ -1003,9 +1144,8 @@ sc_prepare_verified_command "$CONTINUATION" post_compact_activity_exists ||
 case "$prepare_status" in
   0) ;;
   10)
-    echo "post-compact activity started during recovery; continuation not needed"
-    RELEASE_LOCK=true
-    exit 0
+    handle_post_compact_activity \
+      "post-compact activity started during recovery; continuation not needed"
     ;;
   *)
     echo "compact landed, but continuation never rendered exactly" >&2
@@ -1017,11 +1157,11 @@ esac
 expected_hex="$(sc_literal_hex "$CONTINUATION")"
 if post_compact_activity_exists; then
   sc_cleanup_exact_command "$expected_hex"
-  echo "post-compact activity started before submission; continuation not needed"
-  RELEASE_LOCK=true
-  exit 0
+  handle_post_compact_activity \
+    "post-compact activity started before submission; continuation not needed"
 fi
 
+CONTINUATION_CURSOR="$POST_ACTIVITY_CURSOR"
 continuation_enter_status=0
 "$TMUX_BIN" send-keys -t "$PANE" Enter || continuation_enter_status=$?
 if [ "$continuation_enter_status" -ne 0 ]; then
@@ -1051,45 +1191,21 @@ if ! validate_positive_duration "$CONTINUATION_CONFIRM_DELAY_SECONDS" 5; then
   exit 1
 fi
 
-continuation_recorded() {
-  /usr/bin/perl -MJSON::PP -e '
-    use strict;
-    use warnings;
-    my ($path, $after, $maximum, $continuation) = @ARGV;
-    $after =~ /^\d+$/ && $maximum =~ /^\d+$/ or exit 2;
-    open my $fh, "<", $path or exit 2;
-    binmode $fh;
-    my $size = (stat($fh))[7];
-    defined $size && $size >= $after or exit 2;
-    exit 3 if $size - $after > $maximum;
-    seek($fh, $after, 0) or exit 2;
-    while (my $line = <$fh>) {
-      exit 2 if substr($line, -1) ne "\n";
-      my $event = eval { decode_json($line) };
-      exit 2 unless $event && ref($event) eq "HASH";
-      next if defined $event->{agentId};
-      next unless ($event->{type} // "") eq "user.message";
-      my $data = $event->{data};
-      my $content = $data && ref($data) eq "HASH"
-        ? $data->{content}
-        : $event->{content};
-      exit 0 if defined $content && !ref($content) &&
-        $content eq $continuation;
-    }
-    exit 1;
-  ' "$EVENTS" "$completion_end_offset" "$AUTH_SCAN_BYTES" "$CONTINUATION"
-}
-
 for ((attempt = 1; attempt <= CONTINUATION_CONFIRM_POLLS; attempt++)); do
-  continuation_status=0
-  continuation_recorded || continuation_status=$?
-  if [ "$continuation_status" -eq 0 ]; then
+  stream_event_probe "$CONTINUATION_CURSOR" continuation "$CONTINUATION"
+  if [ "$STREAM_STATE" = error ]; then
+    echo "compact landed, but continuation confirmation parsing failed ($STREAM_ERROR)" >&2
+    RELEASE_LOCK=true
+    exit 1
+  fi
+  CONTINUATION_CURSOR="$STREAM_CURSOR"
+  if [ "$STREAM_STATE" = continuation ]; then
     echo "submitted post-compact continuation after event offset $completion_end_offset"
     RELEASE_LOCK=true
     exit 0
   fi
-  if [ "$continuation_status" -gt 1 ]; then
-    echo "compact landed, but continuation confirmation parsing failed with status $continuation_status" >&2
+  if [ "$STREAM_STATE" = mismatch ] || [ "$STREAM_STATE" = activity ]; then
+    echo "compact landed, but another root activity won continuation confirmation" >&2
     RELEASE_LOCK=true
     exit 1
   fi

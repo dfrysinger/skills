@@ -63,6 +63,18 @@ assert_at_most() {
     fail "expected at most $maximum matches for [$pattern] in $path, got $actual"
 }
 
+assert_subagent_padding_over_64k() {
+  local phase="$1"
+  local bytes
+  bytes="$(
+    grep -F "\"phase\":\"$phase\"" "$FAKE_CASE/session/events.jsonl" |
+      wc -c |
+      tr -d '[:space:]'
+  )"
+  [ "$bytes" -gt 65536 ] ||
+    fail "$phase subagent padding was only $bytes bytes"
+}
+
 wait_for_pattern() {
   local pattern="$1"
   local path="$2"
@@ -135,6 +147,38 @@ action() {
 
 append_event() {
   printf '%s\n' "$1" >> "${FAKE_WORKSPACE%/workspace.yaml}/events.jsonl"
+}
+
+append_subagent_padding() {
+  local phase="$1"
+  local events index next payload
+  events="${FAKE_WORKSPACE%/workspace.yaml}/events.jsonl"
+  next="$events.padding-next"
+  printf -v payload '%01024d' 0
+  cat "$events" > "$next"
+  for index in $(seq 1 80); do
+    printf '%s\n' \
+      "{\"agentId\":\"subagent-padding\",\"type\":\"assistant.message\",\"data\":{\"phase\":\"$phase\",\"index\":$index,\"content\":\"$payload\"}}" \
+      >> "$next"
+  done
+  mv "$next" "$events"
+}
+
+append_event_with_subagent_padding() {
+  local event="$1"
+  local phase="$2"
+  local events index next payload
+  events="${FAKE_WORKSPACE%/workspace.yaml}/events.jsonl"
+  next="$events.padding-next"
+  printf -v payload '%01024d' 0
+  cat "$events" > "$next"
+  printf '%s\n' "$event" >> "$next"
+  for index in $(seq 1 80); do
+    printf '%s\n' \
+      "{\"agentId\":\"subagent-padding\",\"type\":\"assistant.message\",\"data\":{\"phase\":\"$phase\",\"index\":$index,\"content\":\"$payload\"}}" \
+      >> "$next"
+  done
+  mv "$next" "$events"
 }
 
 increment_file() {
@@ -484,6 +528,9 @@ case "$command" in
                   append_event '{"type":"assistant.turn_end"}'
                   sleep "${FAKE_START_DELAY:-0.02}"
                   append_event '{"type":"session.compaction_start"}'
+                  if [ "${FAKE_SUBAGENT_PADDING_BETWEEN_COMPACT_EVENTS:-0}" = 1 ]; then
+                    append_subagent_padding between-compact-events
+                  fi
                   if [ -s "$FAKE_TMUX_STASH" ]; then
                     cat "$FAKE_TMUX_STASH" > "$FAKE_TMUX_INPUT"
                     : > "$FAKE_TMUX_STASH"
@@ -500,8 +547,14 @@ case "$command" in
                     printf '%s' "$custom_instructions" |
                       sed 's/\\/\\\\/g; s/"/\\"/g'
                   )"
-                  append_event \
-                    "{\"type\":\"session.compaction_complete\",\"data\":{\"success\":true,\"customInstructions\":\"$escaped_instructions\",\"checkpointNumber\":2}}"
+                  if [ "${FAKE_SUBAGENT_PADDING_AFTER_COMPLETION:-0}" = 1 ]; then
+                    append_event_with_subagent_padding \
+                      "{\"type\":\"session.compaction_complete\",\"data\":{\"success\":true,\"customInstructions\":\"$escaped_instructions\",\"checkpointNumber\":2}}" \
+                      after-completion
+                  else
+                    append_event \
+                      "{\"type\":\"session.compaction_complete\",\"data\":{\"success\":true,\"customInstructions\":\"$escaped_instructions\",\"checkpointNumber\":2}}"
+                  fi
                   if [ "${FAKE_POST_COMPACT_PREEXISTING_ACTIVITY:-0}" = 1 ]; then
                     append_event '{"agentId":null,"type":"assistant.turn_start"}'
                   fi
@@ -546,6 +599,11 @@ case "$command" in
                 append_event '{"type":"session.compaction_start"}'
                 append_event \
                   '{"type":"session.compaction_complete","data":{"success":false,"error":"Nothing to compact"}}'
+                ;;
+              malformed-after-start)
+                : > "$FAKE_TMUX_INPUT"
+                append_event '{"type":"session.compaction_start"}'
+                append_event '{"agentId":null,"type":"assistant.message","data":'
                 ;;
               mismatched-then-matching)
                 : > "$FAKE_TMUX_INPUT"
@@ -851,6 +909,8 @@ EOF
   unset FAKE_ENTER_STATUS FAKE_ENTER_DELIVERED
   unset FAKE_CONTINUATION_ENTER_STATUS
   unset FAKE_POST_COMPACT_PREEXISTING_ACTIVITY
+  unset FAKE_SUBAGENT_PADDING_BETWEEN_COMPACT_EVENTS
+  unset FAKE_SUBAGENT_PADDING_AFTER_COMPLETION
   unset FAKE_REMOVE_HANDOFF_ON_PANE_WIDTH_COUNT
   unset FAKE_APPEND_EVENTS_ON_PANE_WIDTH_COUNT FAKE_PANE_WIDTH_EVENTS
   unset FAKE_HANDOFF_MUTATION
@@ -1431,7 +1491,8 @@ status=0
     "Compaction done; resume, do not compact." \
     "$FAKE_BIN/tmux" "/compact Use SELF_COMPACT_BRIEF. B:0123abcd" \
     "Use SELF_COMPACT_BRIEF. B:0123abcd" "$FAKE_CASE/lock" test-lock \
-    call-test "$SCRIPT_DIR/submit-compact.sh" "$FAKE_CASE/watcher.log" 25 1 0.1
+    call-test "$SCRIPT_DIR/submit-compact.sh" "$FAKE_CASE/watcher.log" \
+    25 1 0.1 0.3
 ) > "$FAKE_CASE/watcher.out" 2> "$FAKE_CASE/watcher.err" || status=$?
 [ "$status" -ne 0 ] || fail "invalid-locale watcher unexpectedly continued"
 grep -q 'could not verify a UTF-8 locale; input state remains unknown' \
@@ -1965,6 +2026,12 @@ write_event_hook FAKE_BEFORE_HELPER_START_EVENTS \
   '{"agentId":null,"type":"tool.execution_start","data":{"toolCallId":"conflicting-tool","toolName":"bash"}}'
 assert_authorization_rejected 'root.*tool|root.*activity|conflict'
 
+setup_case stale-root-tool-completion-between-request-and-start
+append_brief_turn "$brief_content"
+write_event_hook FAKE_BEFORE_HELPER_START_EVENTS \
+  '{"agentId":null,"type":"tool.execution_complete","data":{"toolCallId":"stale-tool","result":{"content":"stale"}}}'
+assert_authorization_rejected 'root.*tool|root.*activity|conflict'
+
 setup_case root-user-between-start-and-completion
 append_brief_turn "$brief_content"
 write_event_hook FAKE_BEFORE_HELPER_COMPLETION_EVENTS \
@@ -1975,6 +2042,12 @@ setup_case root-tool-between-start-and-completion
 append_brief_turn "$brief_content"
 write_event_hook FAKE_BEFORE_HELPER_COMPLETION_EVENTS \
   '{"agentId":null,"type":"tool.execution_start","data":{"toolCallId":"conflicting-tool","toolName":"bash"}}'
+assert_authorization_rejected 'root.*tool|root.*activity|conflict'
+
+setup_case stale-root-tool-completion-between-start-and-completion
+append_brief_turn "$brief_content"
+write_event_hook FAKE_BEFORE_HELPER_COMPLETION_EVENTS \
+  '{"agentId":null,"type":"tool.execution_complete","data":{"toolCallId":"stale-tool","result":{"content":"stale"}}}'
 assert_authorization_rejected 'root.*tool|root.*activity|conflict'
 
 setup_case root-user-after-completion
@@ -1994,6 +2067,12 @@ append_brief_turn "$brief_content"
 write_event_hook FAKE_AFTER_HELPER_COMPLETION_EVENTS \
   '{"agentId":null,"type":"tool.execution_start","data":{"toolCallId":"conflicting-tool","toolName":"bash"}}'
 assert_authorization_rejected 'new root tool activity followed'
+
+setup_case stale-root-tool-completion-after-helper-completion
+append_brief_turn "$brief_content"
+write_event_hook FAKE_AFTER_HELPER_COMPLETION_EVENTS \
+  '{"agentId":null,"type":"tool.execution_complete","data":{"toolCallId":"stale-tool","result":{"content":"stale"}}}'
+assert_authorization_rejected 'root.*tool|root.*activity|conflict'
 
 setup_case second-root-turn-after-completion
 append_brief_turn "$brief_content"
@@ -2076,7 +2155,7 @@ status=0
   "/compact Use SELF_COMPACT_BRIEF. B:0123abcd" \
   "Use SELF_COMPACT_BRIEF. B:0123abcd" "$direct_lock" direct-lock-token \
   call-direct "$SCRIPT_DIR/submit-compact.sh" "$FAKE_CASE/direct.log" \
-  25 1 31 > "$FAKE_CASE/direct.out" 2> "$FAKE_CASE/direct.err" ||
+  25 1 31 0.3 > "$FAKE_CASE/direct.out" 2> "$FAKE_CASE/direct.err" ||
   status=$?
 [ "$status" -ne 0 ] || fail "direct watcher accepted out-of-range quiescence"
 grep -q 'invalid quiescence grace' "$FAKE_CASE/direct.err"
@@ -2351,9 +2430,26 @@ SELF_COMPACT_START_GRACE_SECONDS=not-a-duration \
   status=$?
 [ "$status" -ne 0 ] || fail "invalid start grace unexpectedly armed a watcher"
 grep -Eq 'START_GRACE_SECONDS|start grace' "$FAKE_CASE/submit.err"
+[ ! -s "$FAKE_RUN_SHELL_COMMAND" ] ||
+  fail "invalid start grace launched a verifier"
 assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
 [ ! -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
   fail "invalid start grace left a session lock"
+
+# A valid foreground override is serialized into the detached verifier command
+# and controls the observed no-start deadline.
+setup_case start-grace-override-propagated
+export FAKE_COMPACT_MODE=no-start-keep
+SELF_COMPACT_START_GRACE_SECONDS=0.05 run_submit >/dev/null
+log="$(wait_for_watcher_log 'compaction did not start within 0.05s')"
+grep -Fq ' 0.05 >> ' \
+  "$FAKE_RUN_SHELL_COMMAND" ||
+  fail "start-grace override was not explicitly propagated as a verifier argument"
+grep -q 'compaction did not start within 0.05s after assistant.turn_end' "$log"
+assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
+assert_count 0 '^TYPE:Compaction done;|^KEY:Enter:Compaction done;' \
+  "$FAKE_TMUX_ACTIONS"
+wait_for_path_absent "$FAKE_CASE/session/files/self-compact.lock"
 
 # A compaction start before assistant.turn_end is also accepted.
 setup_case start-before-end
@@ -2375,6 +2471,31 @@ wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
 assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
 assert_count 1 '^KEY:Enter:Compaction done; resume, do not compact\.$' \
   "$FAKE_TMUX_ACTIONS"
+
+# Lifecycle readers must skip more than their nominal 64KiB tail of benign
+# subagent events and still bind the exact matching completion.
+setup_case large-subagent-tail-between-compact-events
+export FAKE_COMPACT_MODE=success
+export FAKE_SUBAGENT_PADDING_BETWEEN_COMPACT_EVENTS=1
+run_submit >/dev/null
+log="$(wait_for_watcher_log 'submitted post-compact continuation')"
+assert_subagent_padding_over_64k between-compact-events
+grep -q 'matching compact advanced summary_count to 2 at checkpoint 2' "$log"
+assert_count 1 '^KEY:Enter:Compaction done; resume, do not compact\.$' \
+  "$FAKE_TMUX_ACTIONS"
+wait_for_path_absent "$FAKE_CASE/session/files/self-compact.lock"
+
+# The post-completion activity and continuation-confirmation readers likewise
+# skip a >64KiB subagent-only tail.
+setup_case large-subagent-tail-after-completion
+export FAKE_COMPACT_MODE=success
+export FAKE_SUBAGENT_PADDING_AFTER_COMPLETION=1
+run_submit >/dev/null
+wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
+assert_subagent_padding_over_64k after-completion
+assert_count 1 '^KEY:Enter:Compaction done; resume, do not compact\.$' \
+  "$FAKE_TMUX_ACTIONS"
+wait_for_path_absent "$FAKE_CASE/session/files/self-compact.lock"
 
 # Activity already present immediately after the matching compact completion
 # suppresses continuation preparation entirely.
@@ -2534,6 +2655,20 @@ run_submit >/dev/null
 wait_for_watcher_log 'first compact completion did not match this run token or failed' \
   >/dev/null
 assert_count 0 '^TYPE:Compaction done;|^KEY:Enter:Compaction done;' "$FAKE_TMUX_ACTIONS"
+
+# A malformed lifecycle event after ARMED fails closed visibly but still
+# releases the watcher-owned lock.
+setup_case post-armed-parser-error-releases-lock
+export FAKE_COMPACT_MODE=malformed-after-start
+run_submit >/dev/null
+wait_for_watcher_log 'could not inspect compaction completion events' >/dev/null
+grep -Eq '^NOTICE:self-compact cancelled: .*malformed event JSON' \
+  "$FAKE_TMUX_ACTIONS" ||
+  fail "post-ARMED parser failure did not emit a visible cancellation notice"
+assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
+assert_count 0 '^TYPE:Compaction done;|^KEY:Enter:Compaction done;' \
+  "$FAKE_TMUX_ACTIONS"
+wait_for_path_absent "$FAKE_CASE/session/files/self-compact.lock"
 
 # The first completion after the observed start owns the verdict. A later
 # matching token cannot rescue an earlier mismatched compact.
