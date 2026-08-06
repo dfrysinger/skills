@@ -44,10 +44,9 @@ permission, destructive-action, or user-only visual-confirmation blocker.
 
 ## Current phase
 
-Implementing the reviewed deferred-authorization correction. The v0.101.0
-same-process brief gate is disproven by Alpha and Tango event-publication
-evidence. The corrected critical design has cleared dual review and selective
-verification; implementation has not started.
+Running implementation review on candidate `beedc58`. The deterministic suite
+passes in the repository, and the installed candidate has passed the complete
+tmux lifecycle.
 
 ## Phase order
 
@@ -67,19 +66,35 @@ draft isolation, or treat deterministic shell tests as the real-model proof.
 
 ## Current baton
 
-- v0.101.0 is already landed, installed, and pushed at `877f5b3`.
-- Real Alpha failures prove same-process `assistant.message` visibility is not
-  a valid authorization gate.
-- Tango instrumentation proved tool completion may become readable roughly
-  2.7 seconds before the preceding assistant message.
-- The corrected design moves authorization and all editor mutation into the
-  existing detached watcher.
-- The watcher binds the root agent's persisted brief to the foreground-recorded
-  candidate `toolCallId`, positive `HANDOFF`, exact helper request,
-  start/completion events, and a supported quiescent terminal shape.
-- Root-agent scans ignore non-null-`agentId` subagent traffic.
-- The design cleared three bounded dual-review rounds and a selective verifier.
-- Next action: implement the deterministic check contract and protocol changes.
-- Do not use the installed v0.101.0 self-compaction helper as evidence for this
-  run; it is the broken behavior under repair. The live charter schedule is the
-  recovery path until the corrected candidate passes.
+- Candidate: `beedc58e25febae37c1b0a5acf5e9e948bba544a`.
+- The repository and installed helper hashes match.
+- The repository deterministic suite passes.
+- The live lifecycle exposed and closed one detached-PATH defect. The verifier
+  now uses the validated absolute tmux path for every tmux operation.
+- Next action: complete implementation dual review and the critical fail-closed
+  code review, apply any material fixes, and rerun the final lifecycle.
+
+## Live-proof receipt
+
+```text
+LIVE_PROOF
+candidate: beedc58e25febae37c1b0a5acf5e9e948bba544a
+running: installed helper hashes match the candidate; plugin version 0.102.0
+scenario: tmux-hosted Copilot CLI, 8,000 disposable lines, draft inserted during the marked delay, deferred brief authorization, compact, continuation, and draft restoration
+status: PASS
+excluded_outputs: .v102-delay-ready and session evidence files
+
+| checkpoint | expected | observed | evidence | result |
+|---|---|---|---|---|
+| delayed draft | private draft remains unsubmitted | `V102_PRIVATE_DRAFT_DO_NOT_SUBMIT` stayed in the editor | tmux pane `%81` | PASS |
+| structural authorization | one exact helper call binds to the persisted brief | `call_5zlUWdOq6ZSVvgqKUss2gY1g` completed before authorization and one compact followed | session `8dd9eb44-437f-47fd-a002-66525d5a2097`, events 22-33 | PASS |
+| compact identity | one successful token-bearing compact advances the checkpoint | token `8ce70174`, `summary_count: 1`, one checkpoint | workspace, events 32-33, checkpoint 001 | PASS |
+| continuation | one fixed continuation resumes the retained task | one continuation at event 35 and retained markers at event 38 | events.jsonl | PASS |
+| restored draft | original draft returns unchanged | `V102_PRIVATE_DRAFT_DO_NOT_SUBMIT` visible after resume | tmux pane `%81` | PASS |
+| teardown | no lock, watcher, or transient marker remains | only the completed run log remains | session files directory | PASS |
+| forbidden errors | no duplicate compact, continuation, or unknown-text submission | one compact start, one compact completion, one continuation | events.jsonl | PASS |
+
+first_divergence: none
+unverified: none
+covered_deltas: none
+```
