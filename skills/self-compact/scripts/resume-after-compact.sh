@@ -471,10 +471,11 @@ BEFORE_EVENTS="$(wc -l < "$EVENTS" | tr -d '[:space:]')"
 : > "$ARMED"
 : > "$LOCK_DIR/armed"
 RELEASE_LOCK=false
+enter_failed=false
 if ! "$TMUX_BIN" send-keys -t "$PANE" Enter; then
   sc_cleanup_exact_command "$expected_hex"
-  deferred_failure "could not submit the compact command"
-  exit 1
+  echo "compact Enter returned nonzero; observing the compaction-start deadline" >&2
+  enter_failed=true
 fi
 
 event_line_after() {
@@ -492,17 +493,21 @@ event_line_after() {
 
 compaction_start_line=""
 turn_end_line=""
-for ((attempt = 1; attempt <= MAX_POLLS; attempt++)); do
-  compaction_start_line="$(event_line_after "$BEFORE_EVENTS" session.compaction_start)"
-  [ -n "$compaction_start_line" ] && break
-  turn_end_line="$(event_line_after "$BEFORE_EVENTS" assistant.turn_end)"
-  [ -n "$turn_end_line" ] && break
-  sleep "$POLL_SECONDS"
-done
+if [ "$enter_failed" = false ]; then
+  for ((attempt = 1; attempt <= MAX_POLLS; attempt++)); do
+    compaction_start_line="$(event_line_after "$BEFORE_EVENTS" session.compaction_start)"
+    [ -n "$compaction_start_line" ] && break
+    turn_end_line="$(event_line_after "$BEFORE_EVENTS" assistant.turn_end)"
+    [ -n "$turn_end_line" ] && break
+    sleep "$POLL_SECONDS"
+  done
 
-if [ -z "$compaction_start_line" ] && [ -z "$turn_end_line" ]; then
-  deferred_failure "timed out waiting for the submitting turn end or compaction start"
-  exit 1
+  if [ -z "$compaction_start_line" ] && [ -z "$turn_end_line" ]; then
+    deferred_failure "timed out waiting for the submitting turn end or compaction start"
+    exit 1
+  fi
+else
+  turn_end_line=enter-failed
 fi
 
 if [ -z "$compaction_start_line" ]; then

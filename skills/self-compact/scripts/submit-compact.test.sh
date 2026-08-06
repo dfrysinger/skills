@@ -435,6 +435,10 @@ case "$command" in
         action "KEY:Enter:$input"
         : > "$FAKE_RENDER_AFTER_CAPTURE"
         : > "$FAKE_RENDER_OVERRIDE"
+        if [ "${FAKE_ENTER_STATUS:-0}" -ne 0 ] &&
+          [ "${FAKE_ENTER_DELIVERED:-0}" != 1 ]; then
+          exit "$FAKE_ENTER_STATUS"
+        fi
         case "$input" in
           /compact\ *)
             printf '%s\n' "$input" >> "$FAKE_TMUX_QUEUE"
@@ -530,6 +534,9 @@ case "$command" in
                 exit 1
                 ;;
             esac
+            if [ "${FAKE_ENTER_STATUS:-0}" -ne 0 ]; then
+              exit "$FAKE_ENTER_STATUS"
+            fi
             ;;
           *)
             if [ -n "$input" ]; then
@@ -762,6 +769,7 @@ EOF
   unset FAKE_REMOVE_HANDOFF_BEFORE_COMPLETION
   unset FAKE_SUBAGENT_AFTER_TURN_END
   unset FAKE_DETACHED_PATH
+  unset FAKE_ENTER_STATUS FAKE_ENTER_DELIVERED
 
   export PATH="$FAKE_BIN:$PATH"
   export FAKE_CASE FAKE_WORKSPACE FAKE_TMUX_INPUT FAKE_TMUX_STASH
@@ -1951,6 +1959,28 @@ if find "$FAKE_CASE/session/files" -name 'self-compact-*.armed' -print -quit |
   grep -q .; then
   fail "no-start watcher left an armed marker"
 fi
+
+# A nonzero Enter result is ambiguous: hold exclusion through the start
+# deadline, then release only after proving no compact started.
+setup_case enter-error-no-start
+export FAKE_ENTER_STATUS=1
+run_submit >/dev/null
+log="$(wait_for_watcher_log 'compaction did not start within')"
+grep -q 'compact Enter returned nonzero; observing the compaction-start deadline' "$log"
+assert_file_equals "" "$FAKE_TMUX_INPUT"
+wait_for_path_absent "$FAKE_CASE/session/files/self-compact.lock"
+
+# A nonzero Enter result may still mean the key was delivered. Follow the
+# matching lifecycle instead of releasing exclusion or queuing another compact.
+setup_case enter-error-delivered
+export FAKE_ENTER_STATUS=1
+export FAKE_ENTER_DELIVERED=1
+export FAKE_COMPACT_MODE=success
+run_submit >/dev/null
+log="$(wait_for_watcher_log 'submitted post-compact continuation')"
+grep -q 'compact Enter returned nonzero; observing the compaction-start deadline' "$log"
+assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
+assert_count 1 '^KEY:Enter:Compaction done; resume, do not compact\.$' "$FAKE_TMUX_ACTIONS"
 
 # A different readable draft at no-start expiry is preserved without Ctrl-U.
 setup_case no-start-new-draft
