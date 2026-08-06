@@ -72,8 +72,9 @@ After compaction: Read the handoff and plan, re-invoke <skills>, and continue th
 Then invoke `self-compact`'s helper with zero arguments and a Bash
 `initial_wait` of at least 120 seconds as the final tool action, and end the
 turn. This overwrites the live conversation in place, so unlike `/new` there is
-no old session to resume. The helper's watcher, not selected autopilot mode,
-owns the post-compact wakeup.
+no old session to resume. The helper's detached verifier authorizes after the
+foreground tool returns, then owns submission, completion proof, and the
+post-compact wakeup.
 
 ### `/new` (exception): when the old conversation must survive
 

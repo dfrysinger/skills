@@ -59,20 +59,23 @@ editor.
 Run the helper with no arguments:
 
 ```sh
-~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh
+"$HOME/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh"
 ```
 
-Set the Bash tool's `initial_wait` to at least 120 seconds. The helper may need
-the full draft-recovery and render-verification interval before returning. A
-shorter tool wait can create a synthetic assistant turn while the helper is
-still active, which correctly cancels the submission as concurrent activity.
+Use that exact double-quoted canonical `$HOME` path. Tilde, arguments,
+assignments, redirections, pipelines, and composed shell commands are not
+supported. The verifier resolves that one portable spelling to the installed
+helper and rejects every other expansion or composition. Set the Bash tool's
+`initial_wait` to at least 120 seconds for compatibility with older installed
+versions and to keep startup errors in the initiating turn.
 
 Old positional steers and `--continuation` are errors. Do not shorten the brief
 or retry with invented instructions when a run fails.
 
-The helper briefly waits for the immediately preceding assistant message to
-become visible in the event log, verifies that the current turn contains the
-complete brief, then submits:
+The foreground helper records its root-agent Bash tool-call identity, transfers
+the session lock to a detached verifier, writes a positive handoff, and returns
+without mutating the editor. After the initiating interaction has persisted and
+quiesced, the verifier binds that tool call to the complete brief and submits:
 
 ```text
 /compact Use SELF_COMPACT_BRIEF. B:<8-hex>
@@ -81,8 +84,8 @@ complete brief, then submits:
 The token identifies this run in `session.compaction_complete`. It is not
 required to appear in checkpoint prose.
 
-After the helper reports that submission and the watcher are armed, end the
-turn. Do not make another tool call.
+After the helper reports that the verifier is armed, end the turn. Ordinary
+closing narration is allowed, but do not make another tool call.
 
 ## Safety contract
 
