@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Submit the fixed SELF_COMPACT_BRIEF control and arm one continuation watcher.
+# Arm a detached verifier that submits one fixed SELF_COMPACT_BRIEF control.
 
 set -euo pipefail
 
@@ -15,6 +15,7 @@ TMUX_BIN="$(command -v tmux)" || {
   exit 1
 }
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_PATH="$SCRIPT_DIR/submit-compact.sh"
 SESSION_STATE_DIR="${SELF_COMPACT_SESSION_STATE_DIR:-$HOME/.copilot/session-state}"
 CONTINUATION="Compaction done; resume, do not compact."
 # shellcheck source=skills/self-compact/scripts/input-recovery.sh
@@ -66,25 +67,27 @@ if ! sc_one_row_command_fits "$CONTINUATION" "$ROW_LIMIT"; then
   echo "submit-compact.sh: continuation is ${#CONTINUATION} columns, but this pane safely allows $ROW_LIMIT" >&2
   exit 2
 fi
-
 if ! sc_input_init "$TMUX_BIN" "$PANE"; then
   echo "submit-compact.sh: could not verify a UTF-8 locale; compact not submitted" >&2
   exit 1
 fi
+
 AMBIGUOUS_WAIT_SECONDS="${SELF_COMPACT_AMBIGUOUS_WAIT_SECONDS:-25}"
 if ! sc_ambiguous_wait_is_bounded "$AMBIGUOUS_WAIT_SECONDS"; then
   echo "submit-compact.sh: ambiguous render wait must be between 20 and 30 seconds; compact not submitted" >&2
   exit 1
 fi
-BRIEF_WAIT_SECONDS="${SELF_COMPACT_BRIEF_WAIT_SECONDS:-2}"
-if ! awk -v seconds="$BRIEF_WAIT_SECONDS" '
-  BEGIN {
-    if (seconds !~ /^[0-9]+([.][0-9]+)?$/) exit 1
-    exit !(seconds > 0 && seconds <= 2)
+AUTH_WAIT_SECONDS="${SELF_COMPACT_AUTH_WAIT_SECONDS:-30}"
+QUIESCENCE_GRACE_SECONDS="${SELF_COMPACT_QUIESCENCE_GRACE_SECONDS:-2}"
+for value_name in AUTH_WAIT_SECONDS QUIESCENCE_GRACE_SECONDS; do
+  value="${!value_name}"
+  if ! awk -v seconds="$value" 'BEGIN {
+    exit !(seconds ~ /^[0-9]+([.][0-9]+)?$/ && seconds > 0 && seconds <= 30)
   }'; then
-  echo "submit-compact.sh: brief visibility wait must be greater than zero and at most 2 seconds; compact not submitted" >&2
-  exit 1
-fi
+    echo "submit-compact.sh: $value_name must be greater than zero and at most 30 seconds; compact not submitted" >&2
+    exit 1
+  fi
+done
 
 resolve_workspace() {
   local pane_cwd pane_pid ws this_cwd lock lock_pid parent
@@ -149,15 +152,8 @@ EVENTS="${WORKSPACE%/workspace.yaml}/events.jsonl"
   exit 1
 }
 
-current_turn_has_brief() {
-  local perl_bin
-  if [ -x /usr/bin/perl ]; then
-    perl_bin=/usr/bin/perl
-  else
-    perl_bin="$(command -v perl 2>/dev/null || true)"
-  fi
-  [ -n "$perl_bin" ] || return 1
-  "$perl_bin" -MJSON::PP -e '
+CANDIDATE_CALL_ID="$(
+  /usr/bin/perl -MJSON::PP -e '
     use strict;
     use warnings;
     my $path = shift;
@@ -169,30 +165,8 @@ current_turn_has_brief() {
     my $floor = $size > $maximum ? $size - $maximum : 0;
     my $position = $size;
     my $carry = "";
-    my @messages;
-    my $found_start = 0;
-    my $inspect = sub {
-      my ($line) = @_;
-      return 0
-        unless index($line, "\"type\":\"assistant.turn_start\"") >= 0 ||
-          index($line, "\"type\":\"assistant.message\"") >= 0;
-      my $event = eval { decode_json($line) };
-      return 0 unless $event && ref($event) eq "HASH";
-      my $type = $event->{type} // "";
-      if ($type eq "assistant.turn_start") {
-        return 1;
-      }
-      if ($type eq "assistant.message") {
-        my $data = $event->{data};
-        if ($data && ref($data) eq "HASH") {
-          my $content = $data->{content};
-          unshift @messages, $content
-            if defined $content && length $content;
-        }
-      }
-      return 0;
-    };
-    while ($position > $floor && !$found_start) {
+    my %completed;
+    while ($position > $floor) {
       my $take = $position - $floor;
       $take = 65536 if $take > 65536;
       $position -= $take;
@@ -202,79 +176,49 @@ current_turn_has_brief() {
       my @parts = split /\n/, $data, -1;
       $carry = shift @parts;
       for (my $index = $#parts; $index >= 0; $index--) {
-        next unless length $parts[$index];
-        if ($inspect->($parts[$index])) {
-          $found_start = 1;
-          last;
+        my $line = $parts[$index];
+        next unless index($line, "\"tool.execution_") >= 0;
+        my $event = eval { decode_json($line) };
+        next unless $event && ref($event) eq "HASH";
+        next if defined $event->{agentId};
+        my $type = $event->{type} // "";
+        my $event_data = $event->{data};
+        next unless $event_data && ref($event_data) eq "HASH";
+        my $id = $event_data->{toolCallId} // "";
+        if ($type eq "tool.execution_complete" && length $id) {
+          $completed{$id} = 1;
+          next;
+        }
+        next unless $type eq "tool.execution_start";
+        exit 1 unless ($event_data->{toolName} // "") eq "bash";
+        exit 1 unless length $id;
+        exit 1 if $completed{$id};
+        print $id;
+        exit 0;
+      }
+    }
+    if ($position == 0 && length $carry) {
+      my $event = eval { decode_json($carry) };
+      if ($event && ref($event) eq "HASH" && !defined $event->{agentId}) {
+        my $event_data = $event->{data};
+        if (
+          ($event->{type} // "") eq "tool.execution_start" &&
+          $event_data && ref($event_data) eq "HASH"
+        ) {
+          my $id = $event_data->{toolCallId} // "";
+          exit 1 unless ($event_data->{toolName} // "") eq "bash";
+          exit 1 unless length $id;
+          exit 1 if $completed{$id};
+          print $id;
+          exit 0;
         }
       }
     }
-    if (!$found_start && $position == 0 && length $carry) {
-      $found_start = $inspect->($carry);
-    }
-    exit 1 unless $found_start;
-    for my $content (@messages) {
-      next unless $content =~ /\ASELF_COMPACT_BRIEF\n/;
-      next unless $content =~ /\nKeep:[ \t]*(\S[^\n]*)/;
-      next unless $content =~ /\nDrop:[^\n]*/;
-      next unless $content =~ /\nAfter compaction:[ \t]*(\S[^\n]*)/;
-      my ($after) = $content =~ /\nAfter compaction:[ \t]*([^\n]+)/;
-      next unless defined $after && index($after, "do not compact again") >= 0;
-      exit 0;
-    }
     exit 1;
   ' "$EVENTS"
-}
-
-brief_epoch_milliseconds() {
-  /usr/bin/perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000'
-}
-
-wait_for_current_turn_brief() {
-  local poll_seconds="${SELF_COMPACT_BRIEF_WAIT_DELAY_SECONDS:-0.05}"
-  local wait_milliseconds poll_milliseconds started deadline now remaining
-  local sleep_milliseconds sleep_seconds
-
-  wait_milliseconds="$(sc_seconds_to_milliseconds "$BRIEF_WAIT_SECONDS")" ||
-    return 1
-  poll_milliseconds="$(sc_seconds_to_milliseconds "$poll_seconds")" ||
-    return 1
-  started="$(brief_epoch_milliseconds)"
-  case "$started" in ''|*[!0-9]*) return 1 ;; esac
-  deadline=$((started + wait_milliseconds))
-
-  while :; do
-    current_turn_has_brief && return 0
-    now="$(brief_epoch_milliseconds)"
-    case "$now" in ''|*[!0-9]*) return 1 ;; esac
-    [ "$now" -lt "$deadline" ] || return 1
-    remaining=$((deadline - now))
-    sleep_milliseconds="$poll_milliseconds"
-    [ "$sleep_milliseconds" -le "$remaining" ] ||
-      sleep_milliseconds="$remaining"
-    sleep_seconds="$(
-      awk -v milliseconds="$sleep_milliseconds" \
-        'BEGIN { printf "%.3f\n", milliseconds / 1000 }'
-    )"
-    sleep "$sleep_seconds"
-  done
-}
-
-if ! wait_for_current_turn_brief; then
-  echo "submit-compact.sh: current assistant turn has no complete SELF_COMPACT_BRIEF; compact not submitted" >&2
+)" || {
+  echo "submit-compact.sh: could not identify the current root-agent Bash tool call; compact not submitted" >&2
   exit 1
-fi
-
-EVENT_LINE_COUNT="$(wc -l < "$EVENTS" | tr -d '[:space:]')"
-submission_activity_exists() {
-  awk -v after="$EVENT_LINE_COUNT" '
-    NR > after &&
-      (/"type":"user.message"/ || /"type":"assistant.turn_start"/) {
-        found = 1
-        exit
-      }
-    END { exit(found ? 0 : 1) }
-  ' "$EVENTS"
 }
 
 FILES_DIR="${WORKSPACE%/workspace.yaml}/files"
@@ -284,6 +228,7 @@ LOCK_TOKEN="$TOKEN-$RUN_ID"
 READY="$FILES_DIR/self-compact-$RUN_ID.ready"
 ARMED="$FILES_DIR/self-compact-$RUN_ID.armed"
 CANCELLED="$FILES_DIR/self-compact-$RUN_ID.cancelled"
+HANDOFF="$FILES_DIR/self-compact-$RUN_ID.handoff"
 LOG="$FILES_DIR/self-compact-$RUN_ID.log"
 WATCHER="$SCRIPT_DIR/resume-after-compact.sh"
 
@@ -310,7 +255,7 @@ pid_is_live() {
 
 reclaim_stale_foreground_lock() {
   local state owner_pid existing_token existing_run_id existing_stamp
-  local run_files expected_run_files ready armed cancelled log
+  local run_files expected_old expected_new ready armed cancelled handoff log
   [ -d "$LOCK_DIR" ] || return 1
   state="$(lock_state)"
   [ "$state" = foreground ] || return 1
@@ -321,7 +266,8 @@ reclaim_stale_foreground_lock() {
   [ ! -e "$LOCK_DIR/watcher.pid" ] &&
     [ ! -e "$LOCK_DIR/watcher-launching" ] &&
     [ ! -e "$LOCK_DIR/ready" ] &&
-    [ ! -e "$LOCK_DIR/armed" ] || return 1
+    [ ! -e "$LOCK_DIR/armed" ] &&
+    [ ! -e "$LOCK_DIR/handoff" ] || return 1
   existing_token="$(cat "$LOCK_DIR/token")"
   printf '%s\n' "$existing_token" |
     grep -Eq '^[0-9a-f]{8}-[0-9]{8}T[0-9]{6}Z-[1-9][0-9]*$' || return 1
@@ -334,16 +280,17 @@ reclaim_stale_foreground_lock() {
   ready="$FILES_DIR/self-compact-$existing_run_id.ready"
   armed="$FILES_DIR/self-compact-$existing_run_id.armed"
   cancelled="$FILES_DIR/self-compact-$existing_run_id.cancelled"
+  handoff="$FILES_DIR/self-compact-$existing_run_id.handoff"
   log="$FILES_DIR/self-compact-$existing_run_id.log"
-  expected_run_files="$(printf '%s\n%s\n%s\n%s' \
-    "$ready" "$armed" "$cancelled" "$log")"
+  expected_old="$(printf '%s\n%s\n%s\n%s' "$ready" "$armed" "$cancelled" "$log")"
+  expected_new="$(printf '%s\n%s\n%s\n%s\n%s' "$ready" "$armed" "$cancelled" "$handoff" "$log")"
   run_files="$(cat "$LOCK_DIR/run-files")"
-  [ "$run_files" = "$expected_run_files" ] || return 1
-  [ "$(wc -l < "$LOCK_DIR/run-files" | tr -d '[:space:]')" -eq 4 ] ||
+  { [ "$run_files" = "$expected_old" ] || [ "$run_files" = "$expected_new" ]; } ||
     return 1
   [ ! -e "$ready" ] &&
     [ ! -e "$armed" ] &&
     [ ! -e "$cancelled" ] &&
+    [ ! -e "$handoff" ] &&
     [ ! -e "$log" ] || return 1
   pid_is_live "$owner_pid" && return 1
   rm -rf "$LOCK_DIR"
@@ -360,16 +307,20 @@ fi
 printf '%s\n' "$LOCK_TOKEN" > "$LOCK_DIR/token"
 printf '%s\n' "$$" > "$LOCK_DIR/submitter.pid"
 printf '%s\n' "$RUN_STAMP" > "$LOCK_DIR/created"
-printf '%s\n%s\n%s\n%s\n' "$READY" "$ARMED" "$CANCELLED" "$LOG" > "$LOCK_DIR/run-files"
+printf '%s\n%s\n%s\n%s\n%s\n' \
+  "$READY" "$ARMED" "$CANCELLED" "$HANDOFF" "$LOG" > "$LOCK_DIR/run-files"
+printf '%s\n' "$CANDIDATE_CALL_ID" > "$LOCK_DIR/tool-call-id"
+printf '%s\n' "$SCRIPT_PATH" > "$LOCK_DIR/helper-path"
 write_lock_state foreground
 
 WATCHER_LAUNCH_ATTEMPTED=false
+HANDOFF_COMPLETE=false
 cleanup_foreground() {
   if [ "$WATCHER_LAUNCH_ATTEMPTED" = false ]; then
     if lock_token_matches && [ "$(lock_state)" = foreground ]; then
       rm -rf "$LOCK_DIR"
     fi
-  else
+  elif [ "$HANDOFF_COMPLETE" = false ]; then
     : > "$CANCELLED"
   fi
 }
@@ -381,9 +332,11 @@ shell_quote() {
 
 watcher_command=""
 for argument in \
-  "$WATCHER" "$PANE" "$WORKSPACE" "$SUMMARY_COUNT" "$EVENT_LINE_COUNT" \
-  "$READY" "$ARMED" "$CANCELLED" "$TOKEN" "$CONTINUATION" "$TMUX_BIN" \
-  "$COMMAND" "$CUSTOM_INSTRUCTIONS" "$LOCK_DIR" "$LOCK_TOKEN"; do
+  "$WATCHER" "$PANE" "$WORKSPACE" "$SUMMARY_COUNT" "$READY" "$ARMED" \
+  "$CANCELLED" "$HANDOFF" "$TOKEN" "$CONTINUATION" "$TMUX_BIN" "$COMMAND" \
+  "$CUSTOM_INSTRUCTIONS" "$LOCK_DIR" "$LOCK_TOKEN" "$CANDIDATE_CALL_ID" \
+  "$SCRIPT_PATH" "$LOG" "$AMBIGUOUS_WAIT_SECONDS" "$AUTH_WAIT_SECONDS" \
+  "$QUIESCENCE_GRACE_SECONDS"; do
   quoted="$(shell_quote "$argument")"
   watcher_command="${watcher_command}${watcher_command:+ }$quoted"
 done
@@ -397,7 +350,7 @@ write_lock_state watcher-launching
 : > "$LOCK_DIR/watcher-launching"
 WATCHER_LAUNCH_ATTEMPTED=true
 if ! tmux run-shell -b "$watcher_command"; then
-  echo "submit-compact.sh: continuation watcher did not start; lock retained at $LOCK_DIR" >&2
+  echo "submit-compact.sh: detached verifier did not start; lock retained at $LOCK_DIR" >&2
   exit 1
 fi
 
@@ -406,88 +359,15 @@ for ((attempt = 1; attempt <= 30; attempt++)); do
   sleep 0.1
 done
 [ -e "$READY" ] || {
-  echo "submit-compact.sh: continuation watcher did not become ready; lock retained at $LOCK_DIR" >&2
+  echo "submit-compact.sh: detached verifier did not become ready; lock retained at $LOCK_DIR" >&2
   exit 1
 }
 
-prepare_status=0
-sc_prepare_empty_editor submission_activity_exists || prepare_status=$?
-case "$prepare_status" in
-  0) ;;
-  10)
-    echo "submit-compact.sh: session activity started; compact not submitted" >&2
-    exit 1
-    ;;
-  *)
-    echo "submit-compact.sh: editor could not be proven empty; compact not submitted" >&2
-    exit 1
-    ;;
-esac
-
-HAD_DRAFT="$SC_PREPARE_HAD_DRAFT"
-type_status=0
-sc_type_literal "$COMMAND" submission_activity_exists || type_status=$?
-case "$type_status" in
-  0) ;;
-  10)
-    echo "submit-compact.sh: session activity started before typing; compact not submitted" >&2
-    exit 1
-    ;;
-  *)
-    echo "submit-compact.sh: could not type the compact command" >&2
-    exit 1
-    ;;
-esac
-
-expected_hex="$(sc_literal_hex "$COMMAND")"
-render_status=0
-sc_wait_for_exact_render "$expected_hex" submission_activity_exists ||
-  render_status=$?
-case "$render_status" in
-  0) ;;
-  10)
-    sc_cleanup_exact_command "$expected_hex"
-    echo "submit-compact.sh: session activity started before Enter; compact not submitted" >&2
-    exit 1
-    ;;
-  *)
-    if [ "$HAD_DRAFT" = true ]; then
-      sc_cleanup_exact_command "$expected_hex"
-      echo "submit-compact.sh: compact command was not exact and this run handled a draft; compact not submitted" >&2
-      exit 1
-    fi
-    ambiguous_status=0
-    sc_wait_for_ambiguous_submit "$expected_hex" submission_activity_exists ||
-      ambiguous_status=$?
-    case "$ambiguous_status" in
-      0|2) ;;
-      10)
-        sc_cleanup_exact_command "$expected_hex"
-        echo "submit-compact.sh: session activity started during the timed render wait; compact not submitted" >&2
-        exit 1
-        ;;
-      *)
-        sc_cleanup_exact_command "$expected_hex"
-        echo "submit-compact.sh: compact command rendered with a known mismatch; compact not submitted" >&2
-        exit 1
-        ;;
-    esac
-    ;;
-esac
-
-if submission_activity_exists; then
-  sc_cleanup_exact_command "$expected_hex"
-  echo "submit-compact.sh: session activity started before Enter; compact not submitted" >&2
-  exit 1
-fi
-: > "$ARMED"
-: > "$LOCK_DIR/armed"
-if ! tmux send-keys -t "$PANE" Enter; then
-  sc_cleanup_exact_command "$expected_hex"
-  echo "submit-compact.sh: could not submit the compact command" >&2
-  exit 1
-fi
-
+printf '%s\n%s\n' "$LOCK_TOKEN" "$CANDIDATE_CALL_ID" > "$HANDOFF.next"
+mv "$HANDOFF.next" "$HANDOFF"
+: > "$LOCK_DIR/handoff"
+HANDOFF_COMPLETE=true
 trap - EXIT
-echo "submitted compact; post-compact continuation watcher armed"
+
+echo "self-compact verifier armed; foreground helper complete"
 echo "watcher log: $LOG"

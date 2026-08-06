@@ -8,12 +8,12 @@ Implement, prove, review, publish, and install the critical protocol defined in
 ## Authoritative plan
 
 - Worktree: `/Users/dfrysinger/code/skills`
-- Branch: `dfrysinger/self-compact-brief-protocol`
+- Branch: `dfrysinger/self-compact-deferred-brief-gate`
 - Plan: `design/self-compact-brief-protocol.md`
 - Definition of Done:
   `Definition of Done: Self-Compact Brief Protocol`
-- Push policy: local commits are allowed; do not push unless the user asks in
-  a later turn.
+- Push policy: push reviewed and validated work to `origin/main` when the
+  Definition of Done is complete.
 
 ## Required process skills
 
@@ -23,6 +23,9 @@ Implement, prove, review, publish, and install the critical protocol defined in
 - **Execution:** `/dfrysinger-skills:dual-review`
   - Reviews the complete implementation only after the current-tree live proof
     passes.
+- **Execution:** `/deep:code-review`
+  - Performs the critical fail-closed boundary ensemble review after
+    implementation dual review.
 - **Execution:** `/dfrysinger-skills:behavior-validation`
   - Use only if the final implementation's critical runtime surface requires
     evidence beyond the explicit Sierra live contract.
@@ -41,9 +44,10 @@ permission, destructive-action, or user-only visual-confirmation blocker.
 
 ## Current phase
 
-Complete. The implementation review gate and final reviewed-tree Tango
-lifecycle pass. The protocol is landed on local `main`, personal plugin
-v0.101.0 is installed, and cleanup checks pass.
+Implementing the reviewed deferred-authorization correction. The v0.101.0
+same-process brief gate is disproven by Alpha and Tango event-publication
+evidence. The corrected critical design has cleared dual review and selective
+verification; implementation has not started.
 
 ## Phase order
 
@@ -63,15 +67,19 @@ draft isolation, or treat deterministic shell tests as the real-model proof.
 
 ## Current baton
 
-- Design complete and reviewed.
-- Branch created from `6fe47d4`.
-- Candidate version is v0.101.0; the installed plugin remains v0.100.0.
-- SQL todos `brief-protocol-code` through `brief-protocol-land` track the
-  remaining phases.
-- The complete deterministic suite passes.
-- The implementation review gate has no remaining material finding.
-- The final reviewed-tree Tango lifecycle passed on commit `90f0d05`.
-- Local `main` contains the protocol and remains unpushed.
-- Personal plugin v0.101.0 is installed from the landed tree.
-- No self-compact watcher or session lock remains.
-- Stop schedule #8 and close the landing todo.
+- v0.101.0 is already landed, installed, and pushed at `877f5b3`.
+- Real Alpha failures prove same-process `assistant.message` visibility is not
+  a valid authorization gate.
+- Tango instrumentation proved tool completion may become readable roughly
+  2.7 seconds before the preceding assistant message.
+- The corrected design moves authorization and all editor mutation into the
+  existing detached watcher.
+- The watcher binds the root agent's persisted brief to the foreground-recorded
+  candidate `toolCallId`, positive `HANDOFF`, exact helper request,
+  start/completion events, and a supported quiescent terminal shape.
+- Root-agent scans ignore non-null-`agentId` subagent traffic.
+- The design cleared three bounded dual-review rounds and a selective verifier.
+- Next action: implement the deterministic check contract and protocol changes.
+- Do not use the installed v0.101.0 self-compaction helper as evidence for this
+  run; it is the broken behavior under repair. The live charter schedule is the
+  recovery path until the corrected candidate passes.
