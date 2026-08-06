@@ -47,8 +47,9 @@ permission, destructive-action, or user-only visual-confirmation blocker.
 Final reviewed runtime and real tmux lifecycle are complete. Both reviewer
 families confirmed the closure fixes with no remaining findings. The exact
 installed runtime from candidate `df7ea88` passed the complete draft-bearing
-Scenario A lifecycle. Landing, installed-copy verification from `main`, and
-publication remain.
+Scenario A lifecycle. The branch is merged into local `main`, the installed
+copy matches the landed runtime, and its full deterministic suite passes.
+Publication remains.
 
 ## Phase order
 
@@ -84,9 +85,9 @@ draft isolation, or treat deterministic shell tests as the real-model proof.
   reports version `0.103.0`.
 - Terra and Opus both confirmed the final finding-scoped closure with no
   remaining findings.
-- Next action: commit this final receipt, merge to local `main`, reinstall from
-  the landed commit, verify the installed hashes and clean runtime state, push
-  `origin/main`, and stop schedule 9.
+- Landed local `main`: `657820c8ab67e30c99793f38f12cb651fbcc9989`.
+- The installed-copy full deterministic suite passed after landing.
+- Next action: push `origin/main` and stop schedule 9.
 
 ## Live-proof receipt
 
