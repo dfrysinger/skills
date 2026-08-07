@@ -21,6 +21,11 @@ otherwise it prints the objective for the user.
 
 - The agent may self-enqueue `/autopilot <objective>` through its current tmux
   pane after the `/every` reminder is live.
+- Confirm acceptance from visible TUI output. Current builds print
+  `Started autopilot objective #<n>:`; older builds print
+  `Autopilot objective:`. Either means injection succeeded.
+- Do not report injection failure if either accepted-objective confirmation is
+  visible, even when the charter reminder is described separately.
 - `/allow-all` remains user-controlled. Print it when needed; never
   self-enqueue a permission escalation.
 - Autopilot mode is sticky by default for the next prompt. This is expected and

@@ -177,13 +177,18 @@ sleep 0.5
 for i in 1 2 3 4 5; do
   tmux send-keys -t "$TMUX_PANE" Enter
   sleep 2
-  tmux capture-pane -p -t "$TMUX_PANE" | grep -q 'Autopilot objective:' && break
+  tmux capture-pane -p -S -120 -t "$TMUX_PANE" |
+    grep -Eq 'Started autopilot objective( #[0-9]+)?:|Autopilot objective:' &&
+    break
 done
 ```
 
-`Autopilot objective:` is how the CLI renders an accepted objective, so seeing it
-proves the command was interpreted rather than left in the box. If it never
-appears, say so plainly and fall back below — do not claim autopilot is active.
+Current CLI builds render an accepted objective as
+`Started autopilot objective #<n>:`; older builds used `Autopilot objective:`.
+Either confirmation proves the command was interpreted rather than left in the
+box. Never report injection failure when either confirmation is visible. If
+neither appears, say so plainly and fall back below — do not claim autopilot is
+active.
 
 Make this the **last tool action of the turn** so the submitted command becomes
 the next queued user turn instead of racing later tool work.
@@ -201,8 +206,8 @@ Optional — run this whenever you like for a tighter goal-driven loop
 If `/allow-all` is needed, print it for the user; never self-enqueue it. The
 `/every` re-brief remains the load-bearing mechanism either way.
 
-**Complete when** the pane showed `Autopilot objective:`, or the fallback was
-printed, and you have moved on with the actual work.
+**Complete when** the pane showed either accepted-objective confirmation, or
+the fallback was printed, and you have moved on with the actual work.
 
 ### 4. Stop cleanly when the Definition of Done is met
 When every Definition-of-Done item is verifiably met:

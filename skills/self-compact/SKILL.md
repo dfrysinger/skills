@@ -21,15 +21,23 @@ message. The helper submits one short control and resumes with one fixed wake.
 
 ### 1. Choose what survives
 
-Keep only the state needed for the next action:
+The native compactor already reads and summarizes the conversation. The brief
+is a steering delta for facts the generated checkpoint might not preserve
+precisely; it is not a second session summary.
 
-- objective, decisions, acceptance criteria, and non-goals;
-- active branch, paths, runtime identity, and session-bound resources;
-- what is complete, what remains, and the next action;
-- durable artifact paths instead of copied artifact contents.
+Prefer one durable baton pointer plus only exceptional live state:
 
-Drop resolved investigation, superseded approaches, repeated explanation, and
-verbose tool output.
+- the authoritative plan, charter, issue, handoff, or receipt path;
+- the active workspace or branch only when the pointer does not establish it;
+- session-bound resources that cannot be recovered from the durable baton,
+  such as a live PID, paused watcher, authenticated profile, or running agent;
+- one exact next action.
+
+Do **not** restate completed work, review findings, validation results, the
+remaining plan sequence, acceptance criteria, or decisions already present in
+the durable baton. Update that artifact before compacting instead. Drop
+resolved investigation and tool output generically rather than enumerating
+them.
 
 ### 2. Emit the final brief
 
@@ -51,8 +59,22 @@ case-sensitive literal `do not compact again`. `Keep:` content and the complete
 `After compaction:` instruction, including that literal, must be on the same
 physical line as their labels. Additional detail may continue on later lines.
 
-The brief may be long. It is part of the conversation and is not typed into the
-editor.
+Default to exactly these three labeled lines and keep the whole brief under
+800 characters. Exceed that only when unrecoverable session-bound state cannot
+fit; never exceed it merely to summarize the conversation or copy a durable
+artifact. A normal brief looks like:
+
+```text
+SELF_COMPACT_BRIEF
+
+Keep: Continue from `docs/feature-plan.md` in `/worktree` on `feature/x`; watcher PID 123 remains intentionally paused.
+
+Drop: Resolved history and tool output already reflected in the plan.
+
+After compaction: Re-read the plan baton, confirm PID 123 is still paused, and execute its next unchecked item; do not compact again.
+```
+
+The brief is part of the conversation and is not typed into the editor.
 
 ### 3. Submit as the final tool action
 
