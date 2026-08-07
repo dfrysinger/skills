@@ -295,15 +295,16 @@ The ownership sequence is:
    command, and writes `ARMED` immediately before its final activity check and
    Enter.
 7. The watcher is the only lock releaser in `watcher-owned` state and retains
-   ownership through authorization, compact completion, continuation, timeout,
-   or any fail-closed terminal path.
+   ownership through authorization, a queued compact wait, compact completion,
+   continuation, session disappearance, or any fail-closed terminal path.
 
 The watcher does not wait for a foreground-written `ARMED`; it owns that marker.
 Before `ARMED`, a controlled watcher cancellation releases the lock. After
-`ARMED`, a controlled cancellation holds through the existing compaction-start
-deadline and follows the matching lifecycle if a start appears. An untrapped
-watcher death after ownership transfer leaves the lock stranded for manual
-inspection; it never makes a second compact eligible.
+`ARMED`, a successful Enter holds through the queued-command wait and follows
+the matching lifecycle whenever it starts. A nonzero Enter retains the existing
+bounded start observation. An untrapped watcher death after ownership transfer
+leaves the lock stranded for manual inspection; it never makes a second compact
+eligible.
 
 A second invocation exits before editor mutation whenever the lock exists,
 except for one provably stale case: state is `foreground`, the owner token and
@@ -320,6 +321,84 @@ requiring inspection over an unobserved second compact.
 The lock prevents two supported helper invocations from queuing compacts in the
 same session. A compact control also carries a short per-run token, so a manual
 or external compact cannot satisfy this watcher's event identity.
+
+### 3.1 Keep ownership while Copilot queues the compact
+
+**Objective:** After a successful compact Enter, keep the detached watcher
+responsible for that exact token-bearing command until its compaction completes
+or the owning Copilot process or tmux pane disappears.
+
+**Lane:** Critical. This changes the post-`ARMED` fail-closed boundary. Releasing
+the watcher while a live compact remains queued permits a later unverified
+compaction with no continuation or draft recovery.
+
+**Non-goals:**
+
+- Do not change Copilot CLI queue admission or make slash commands run during an
+  active foreground model turn. That runtime change belongs to Copilot CLI.
+- Do not inspect, reorder, delete, or otherwise manage arbitrary queued items.
+- Do not extend the bounded wait for a matching compaction completion after a
+  start has been observed.
+- Do not treat subagent events as root-agent authorization conflicts.
+
+The existing watcher, owner-token lock, lifecycle cursor, exact editor-state
+reader, and tmux/session identity remain the state owners. No second queue or
+sidecar state machine is introduced.
+
+Copilot CLI may accept ordinary Enter but convert `/compact` into a native
+queued command while notification-producing background work remains active.
+That command leaves the editor, so the watcher cannot distinguish "submitted
+now" from "queued for later" using the Enter result alone. A root
+`assistant.turn_end` is also insufficient: background notification gating may
+continue after the foreground turn ends.
+
+At foreground resolution, the submitter records the one live Copilot PID whose
+`inuse.<pid>.lock` belongs to the selected workspace and whose ancestry reaches
+the owning tmux pane. The watcher receives that PID as immutable run identity.
+Workspace-lock presence is not later used as a liveness proxy: `/new` may move
+the lock while the same process remains alive, and a hard kill may leave a
+stale lock.
+
+After a successful Enter, the watcher therefore:
+
+1. Starts the existing start-grace clock from its own Enter, independent of any
+   later root `assistant.turn_end`.
+2. Reads lifecycle events from the pre-Enter cursor without a fixed
+   poll-count deadline.
+3. At the start-grace deadline, captures the editor without mutation. If the
+   exact compact command is still present, Enter was not accepted; the watcher
+   clears only that exact command, reports cancellation, and releases.
+4. If the editor is empty, changed, or unreadable, the command may be queued.
+   The watcher keeps its lock and lifecycle cursor and continues waiting.
+5. On every wait cycle, it confirms that the original tmux pane still exists
+   and that the recorded Copilot PID is live. If either disappears before the
+   owned compact starts, the in-memory queued command cannot execute in that
+   owning CLI process; the watcher reports the owner end and releases.
+6. Each root `session.compaction_start` is a candidate because the start event
+   has no run token. The watcher applies the existing bounded completion wait
+   to that candidate. A first completion with this run's exact custom
+   instructions owns the lifecycle: success proceeds, while failure reports,
+   sends no continuation, and releases this run's lock. A completion without
+   the exact token belongs to a foreign candidate; the watcher advances past it
+   and resumes the queued wait without releasing its lock. A candidate start
+   with no bounded completion remains an ambiguous post-`ARMED` failure and
+   strands exclusion for inspection.
+7. Once the matching completion appears, the existing checkpoint,
+   continuation, draft restoration, and teardown protocol resumes unchanged.
+
+A different or unreadable editor value is never cleared. Manual deletion of a
+queued compact is not externally distinguishable from a still-queued command;
+the conservative behavior is to retain the watcher until the session
+disappears.
+
+A merely longer fixed timeout is rejected. Alpha demonstrated a valid queued
+compact starting after the previous 30-minute watcher deadline. Any finite
+guess can recreate the same unverified-late-compact failure.
+
+A controlled owner-end exit releases only the exactly owned lock and run
+markers. Parser failures, malformed state, a candidate start with no bounded
+completion, and an untrapped watcher death after `ARMED` continue to strand
+exclusion for inspection.
 
 ### 4. Use a fixed short control template
 
@@ -404,9 +483,12 @@ run, only the exact path may press Enter. A known prefix, suffix, altered
 command, restored draft, or second prompt row always fails closed. Waiting is
 never a substitute for the immediately preceding empty-editor proof.
 
-If Enter submits nothing or compaction does not start, the existing short
-start-deadline path cancels the watcher and clears only an exactly owned visible
-control command. It does not retry or type a second command.
+After a successful Enter, the start-grace deadline performs one non-mutating
+editor check. It cancels and clears only when the exact owned control remains
+visible. Empty, changed, or unreadable editor state may mean the command is
+queued, so the watcher retains ownership until an owned completion or owner
+disappearance. A nonzero Enter retains the existing short start-deadline path.
+No path retries or types a second command.
 
 The fixed continuation remains on the strict exact path. There is no timed
 fallback for continuation because a failed wake is recoverable through manual
@@ -423,9 +505,22 @@ The watcher records:
   and
 - the fixed continuation.
 
-It waits for the first `session.compaction_start` after the event baseline,
-using the existing turn-end/start deadline. It then evaluates the first
-`session.compaction_complete` after that start.
+After successful Enter, it waits without a fixed start deadline. Every
+`session.compaction_start` after the event baseline opens one candidate
+lifecycle. The watcher applies the existing bounded completion wait to that
+candidate and evaluates only its first `session.compaction_complete`.
+
+The candidate belongs to this run when its completion carries exact
+`customInstructions`:
+
+```text
+Use SELF_COMPACT_BRIEF. B:<this run's 8-hex token>
+```
+
+A completion without that exact token closes a foreign candidate. The watcher
+advances beyond it and resumes the queued-command wait while retaining the
+lock. A candidate with no completion inside the existing bound is ambiguous
+and strands exclusion.
 
 The compact is accepted only when all are true:
 
@@ -438,11 +533,13 @@ The compact is accepted only when all are true:
 5. exactly one checkpoint file with that zero-padded number exists under the
    session's `checkpoints/` directory.
 
-A failed completion, a different custom instruction or token, a missing
-checkpoint, or a summary count that does not advance ends the watcher without
-continuation. The watcher evaluates the first completion after the observed
-start and does not scan forward for a later matching token. Checkpoint prose is
-never searched for a marker or phrase.
+An exact-token completion with `success:false` is this run's terminal failure:
+the command has been consumed, so the watcher reports failure, releases its own
+lock, and sends no continuation. An exact-token success with a missing
+checkpoint or a summary count that does not advance likewise ends without
+continuation. The watcher never pairs a completion with a later start or scans
+past the first completion inside one candidate. Checkpoint prose is never
+searched for a marker or phrase.
 
 ### 8. Resume without initiating another compact
 
@@ -534,8 +631,9 @@ or retry failed compaction.
 | User or assistant activity begins | Cancel before the next editor action |
 | Compact command is altered or multiline | Never Enter |
 | Compaction succeeds but checkpoint omits arbitrary prose | Accept from exact event and checkpoint number |
-| Another compact with different instructions occurs | Do not continue it |
-| Compaction fails or never starts | Exit one-shot; no retry or continuation |
+| Another compact with different instructions occurs | Close that foreign candidate, retain ownership, and continue waiting for this run |
+| This run's exact-token compaction fails | Exit one-shot; release this run's lock; no retry or continuation |
+| Compaction never starts while the owning process and pane remain live | Keep the watcher and lock; do not invent a timeout |
 | Checkpoint next step discusses compaction | Fixed continuation says compaction is already done and forbids another |
 | Continuation cannot render exactly | Leave it unsent; manual input or `/every` remains the backstop |
 | Deferred authorization fails | Write the exact reason to the run log and show a bounded tmux status message with the log path |
@@ -569,8 +667,10 @@ or retry failed compaction.
    fallback.
 11. One session-scoped lock excludes concurrent supported helper runs, and a
    per-run token distinguishes this compact from external compacts.
-12. Compaction identity comes from the first completion after the observed
-    start and exact token-bearing `customInstructions`, not checkpoint prose.
+12. Compaction identity comes from the first completion within each candidate
+    start and exact token-bearing `customInstructions`; foreign candidates are
+    closed before scanning for a later start, and checkpoint prose is never
+    identity.
 13. Continuation requires successful completion, checkpoint-number advancement,
     checkpoint-file existence, and no post-compact activity.
 14. The continuation states that compaction is complete and forbids another
@@ -600,6 +700,9 @@ or retry failed compaction.
 | Caller-selected continuation is retired | Invoke with `--continuation '<prompt>'` and with an unknown option | Usage error before workspace resolution or mutation | Callers can still steer or lengthen the wake |
 | Concurrent helper runs are excluded | Hold a live session lock and invoke a second helper; separately expose dead `foreground`, `watcher-launching`, `watcher-owned`, malformed, and conflicting run-file states | Only well-formed dead `foreground` with no launch evidence is reclaimed; every live, transferred, or ambiguous state blocks before mutation; each owner token releases only its own lock | Two queued compacts or unsafe stale-lock deletion are possible |
 | Post-Enter watcher death retains exclusion | Terminate the watcher after `ARMED` and separately immediately after Enter | A controlled termination retains ownership through start handling; an untrapped death strands the lock; a second helper never mutates the editor | Watcher cleanup can release a live queued compact |
+| Queued compact outlives bounded polling | Accept Enter, remove the exact command from the editor, emit no root turn end, delay the matching compaction start beyond the configured start grace and poll limit, then complete it | The same watcher remains alive and locked, performs its editor check from the Enter-relative grace clock, observes the delayed matching start, submits one continuation, restores the draft, and cleans up | A turn-end dependency or fixed watcher deadline expires while a live queued compact remains |
+| Owning process ends before queued compact starts | Accept Enter without a start, then make the recorded Copilot PID dead or remove the owning tmux pane; separately move/remove the workspace's `inuse.*.lock` while that PID remains live | Process death or pane loss reports owner disappearance, submits no continuation, and releases only this run's lock and markers; lock-file movement alone keeps watching | An orphan watcher runs forever, a session rotation releases a live queued compact, or a stale lock hides process death |
+| Foreign compact precedes the queued compact | Queue the owned token-bearing command, emit an unrelated start and mismatched or failed completion, then emit a second start and this run's matching completion | The watcher retains exclusion, advances past the foreign lifecycle, and resumes exactly once after the owned completion | A manual or automatic compact consumes the watcher's one start slot and releases a still-queued owned compact |
 | Restored draft is re-stashed | Restore a unique draft after the brief and before helper preparation | Draft is absent before command typing and returns unchanged after continuation | Brief emission creates a draft-appending race |
 | Exact compact remains preferred | Render the fixed command exactly | One paste, no timed wait, one Enter | The safer normal path was lost |
 | Timed fallback is bounded | Begin with a truly empty editor and no hidden draft, recheck current width, prove empty, paste once, and keep capture unreadable for 25 test-scaled seconds | One width-safe paste, one wait, one Enter, no recovery typing | Renderer corruption still disables automation or a deferred resize can wrap an ambiguously submitted command |
@@ -610,7 +713,7 @@ or retry failed compaction.
 | Menu blocks timed fallback | Show concrete nearby menu chrome after paste | Zero Enter | Ambiguous paste can activate a menu choice |
 | No brief marker is required in prose | Complete with exact event metadata and a checkpoint that omits `SELF_COMPACT_BRIEF` and any run marker | Watcher accepts and continues | Generated prose still controls identity |
 | Exact completion identity | Produce success with this run's token, then variants with another token, untagged or different instructions, failure, missing number, stale count, or missing checkpoint | Only the exact token-bearing complete case continues | Unrelated or incomplete compaction can be claimed |
-| First completion after start wins | Append a mismatched completion followed by a matching one | Watcher rejects the run and does not scan forward | A later compact can be mistaken for the submitted one |
+| First completion per candidate start wins | Append one start with a mismatched completion, then a second start with a matching completion | The first completion closes only its candidate start; the watcher advances past that foreign lifecycle and accepts the later matching start/completion pair | A completion can be paired across starts or a foreign compact can release the queued run |
 | Continuation prevents duplicate compact | Land a checkpoint whose next step discusses compaction, then inject the fixed wake | User event contains exact fixed wake; no second compact starts | Generic continuation can restart compaction |
 | Continuation stays strict | Make its render unreadable or mismatched | No continuation Enter and no timed fallback | Recoverable wake ambiguity can submit unknown text |
 | Legacy safety stays bounded | Run existing locale, redraw, menu, multiline, resize, no-start, failure, and activity-race scenarios | Existing key/type maxima and fail-closed outcomes remain | Protocol refactor weakened the editor boundary |
@@ -680,6 +783,28 @@ corruption by changing the implementation or weakening the proof candidate.
 The fallback PASS signal is one proven-empty transition, one paste, a
 20-30 second wait, one Enter, a matching compact event, and no submitted draft.
 
+### Scenario C: queued compact behind background work
+
+Run a real tmux-hosted Copilot CLI with one notification-producing background
+task still active after the root turn ends. Emit the canonical brief and invoke
+the helper as the final root tool action.
+
+PASS requires:
+
+1. ordinary Enter moves the exact token-bearing `/compact` out of the editor
+   while the background task keeps it queued;
+2. the watcher remains alive and owns the lock beyond the configured
+   start-grace interval;
+3. releasing the background task causes exactly that compact token to start and
+   complete;
+4. exactly one fixed continuation follows;
+5. retained markers and any private draft survive unchanged; and
+6. no lock, watcher, or transient marker remains.
+
+The scenario fails if the watcher expires before the queued command starts, a
+second compact becomes eligible, the command runs without continuation, or
+manual editor repair is required.
+
 ## Migration
 
 This is an intentional breaking change to an internal personal helper.
@@ -718,7 +843,10 @@ restore semantic shortening as an approved practice:
 2. Retain immediate empty-editor proof, fixed short commands, current-turn
    brief verification, detached structural invocation binding, session
    locking, token-bearing event identity, and explicit continuation.
-3. If the split protocol itself is implicated, restore the v0.100 scripts and
+3. Disable automated compact submission while notification-producing
+   background work remains active if queued-command ownership cannot be
+   retained safely.
+4. If the split protocol itself is implicated, restore the v0.100 scripts and
    plugin manifests from Git, update the installed plugin, and require manual
    `/compact` for briefs that exceed one row.
 
@@ -750,6 +878,10 @@ fallback disabled.
 - The exact path remains preferred; the compact-only timed fallback satisfies
   every gate and numeric bound in this document and is unavailable when any
   draft was observed or stashed.
+- A compact accepted into Copilot's queue remains under the original watcher's
+  owner-token lock through its matching completion, continuation, and teardown,
+  or until owning-session disappearance; no fixed poll-count timeout can leave
+  a live queued compact unobserved.
 - `resume-after-compact.sh` proves the first matching successful event and
   checkpoint number without grepping checkpoint prose.
 - The fixed continuation states that compaction is complete, forbids another
@@ -758,7 +890,7 @@ fallback disabled.
   contain no old positional-steer examples.
 - The targeted deterministic suite passes, including all named Hotel and Sierra
   regressions and retained v0.100 safety scenarios.
-- The complete live Scenario A passes on the reviewed tree; Scenario B is
+- The complete live Scenarios A and C pass on the reviewed tree; Scenario B is
   either proven live or explicitly covered by the deterministic harness under
   its stated exception.
 - Dual review has no verified in-scope must-fix finding.

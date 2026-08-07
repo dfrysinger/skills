@@ -262,6 +262,10 @@ case "$command" in
       case "$last" in
         '#{pane_current_path}') printf '%s\n' "$FAKE_PANE_CWD" ;;
         '#{pane_pid}') printf '%s\n' "$FAKE_PANE_PID" ;;
+        '#{pane_id}')
+          [ ! -e "$FAKE_PANE_DEAD" ] || exit 1
+          printf '%s\n' '%1'
+          ;;
         '#{session_name}') printf '%s\n' "$FAKE_SESSION_NAME" ;;
         '#{pane_width}')
           pane_width_count="$(increment_file "$FAKE_PANE_WIDTH_COUNT")"
@@ -561,6 +565,30 @@ case "$command" in
                 ) &
                 printf '%s\n' "$!" >> "$FAKE_BACKGROUND_PIDS"
                 ;;
+              queued-delayed|lock-moves-delayed)
+                : > "$FAKE_TMUX_INPUT"
+                (
+                  [ "${FAKE_COMPACT_MODE}" != lock-moves-delayed ] || {
+                    rm -f "$FAKE_CASE/session/inuse.200.lock"
+                    : > "$FAKE_CASE/session/inuse.201.lock"
+                  }
+                  sleep "${FAKE_START_DELAY:-0.4}"
+                  append_event '{"type":"session.compaction_start"}'
+                  sed 's/^summary_count: .*/summary_count: 2/' \
+                    "$FAKE_WORKSPACE" > "$FAKE_WORKSPACE.next"
+                  mv "$FAKE_WORKSPACE.next" "$FAKE_WORKSPACE"
+                  mkdir -p "${FAKE_WORKSPACE%/workspace.yaml}/checkpoints"
+                  printf '%s\n' "checkpoint without identity prose" > \
+                    "${FAKE_WORKSPACE%/workspace.yaml}/checkpoints/002-test.md"
+                  escaped_instructions="$(
+                    printf '%s' "$custom_instructions" |
+                      sed 's/\\/\\\\/g; s/"/\\"/g'
+                  )"
+                  append_event \
+                    "{\"type\":\"session.compaction_complete\",\"data\":{\"success\":true,\"customInstructions\":\"$escaped_instructions\",\"checkpointNumber\":2}}"
+                ) &
+                printf '%s\n' "$!" >> "$FAKE_BACKGROUND_PIDS"
+                ;;
               start-before-end)
                 : > "$FAKE_TMUX_INPUT"
                 (
@@ -594,11 +622,26 @@ case "$command" in
                 printf '%s' unreadable > "$FAKE_CAPTURE_MODE"
                 append_event '{"type":"assistant.turn_end"}'
                 ;;
+              owner-dies)
+                printf '%s' "new user draft" > "$FAKE_TMUX_INPUT"
+                (sleep 0.4; : > "$FAKE_OWNER_DEAD") &
+                printf '%s\n' "$!" >> "$FAKE_BACKGROUND_PIDS"
+                ;;
+              pane-dies)
+                printf '%s' "new user draft" > "$FAKE_TMUX_INPUT"
+                printf '%s' unreadable > "$FAKE_CAPTURE_MODE"
+                (sleep 0.4; : > "$FAKE_PANE_DEAD") &
+                printf '%s\n' "$!" >> "$FAKE_BACKGROUND_PIDS"
+                ;;
               failed)
                 : > "$FAKE_TMUX_INPUT"
                 append_event '{"type":"session.compaction_start"}'
+                escaped_instructions="$(
+                  printf '%s' "$custom_instructions" |
+                    sed 's/\\/\\\\/g; s/"/\\"/g'
+                )"
                 append_event \
-                  '{"type":"session.compaction_complete","data":{"success":false,"error":"Nothing to compact"}}'
+                  "{\"type\":\"session.compaction_complete\",\"data\":{\"success\":false,\"customInstructions\":\"$escaped_instructions\",\"error\":\"Nothing to compact\"}}"
                 ;;
               malformed-after-start)
                 : > "$FAKE_TMUX_INPUT"
@@ -608,14 +651,15 @@ case "$command" in
               mismatched-then-matching)
                 : > "$FAKE_TMUX_INPUT"
                 append_event '{"type":"session.compaction_start"}'
+                append_event \
+                  '{"type":"session.compaction_complete","data":{"success":true,"customInstructions":"Use SELF_COMPACT_BRIEF. B:deadbeef","checkpointNumber":2}}'
+                append_event '{"type":"session.compaction_start"}'
                 sed 's/^summary_count: .*/summary_count: 2/' \
                   "$FAKE_WORKSPACE" > "$FAKE_WORKSPACE.next"
                 mv "$FAKE_WORKSPACE.next" "$FAKE_WORKSPACE"
                 mkdir -p "${FAKE_WORKSPACE%/workspace.yaml}/checkpoints"
                 printf '%s\n' "checkpoint without identity prose" > \
                   "${FAKE_WORKSPACE%/workspace.yaml}/checkpoints/002-test.md"
-                append_event \
-                  '{"type":"session.compaction_complete","data":{"success":true,"customInstructions":"Use SELF_COMPACT_BRIEF. B:deadbeef","checkpointNumber":2}}'
                 escaped_instructions="$(
                   printf '%s' "$custom_instructions" |
                     sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -803,15 +847,21 @@ cat > "$FAKE_BIN/ps" <<'EOF'
 set -euo pipefail
 
 pid=""
+field=""
 while [ $# -gt 0 ]; do
-  if [ "$1" = "-p" ]; then
-    pid="$2"
-    break
-  fi
+  [ "$1" != "-p" ] || pid="$2"
+  [ "$1" != "-o" ] || field="${2%=}"
   shift
 done
 case "$pid" in
-  200|201) echo 100 ;;
+  200|201|202)
+    if [ "$field" = pid ]; then
+      [ ! -e "$FAKE_OWNER_DEAD" ] || exit 1
+      echo "$pid"
+    else
+      echo 100
+    fi
+    ;;
   100) echo 1 ;;
   *) exit 1 ;;
 esac
@@ -848,6 +898,8 @@ setup_case() {
   FAKE_RUN_SHELL_ENV="$FAKE_CASE/run-shell-env"
   FAKE_EPOCH_CALL_COUNT="$FAKE_CASE/epoch-call-count"
   FAKE_PANE_WIDTH_COUNT="$FAKE_CASE/pane-width-count"
+  FAKE_OWNER_DEAD="$FAKE_CASE/owner-dead"
+  FAKE_PANE_DEAD="$FAKE_CASE/pane-dead"
   FAKE_PANE_CWD="$FAKE_CASE/workspace"
   FAKE_PANE_PID=100
   FAKE_SESSION_NAME="test-session"
@@ -900,6 +952,7 @@ EOF
   unset FAKE_EPOCH_INCREMENT_AFTER_END
   unset FAKE_EPOCH_AFTER_TYPE_COUNT
   unset FAKE_EPOCH_EXACT_DEADLINE_ARMED
+  unset FAKE_SUBMIT_WORKSPACE
   unset FAKE_PUBLICATION_PID
   unset FAKE_FOREGROUND_CLOSURE_CONTENT FAKE_CLOSURE_TURN
   unset FAKE_TASK_COMPLETE_BEFORE_TURN_END
@@ -932,6 +985,7 @@ EOF
   export FAKE_PANE_CWD FAKE_PANE_PID FAKE_SESSION_NAME FAKE_ORIGINAL_GEOMETRY
   export FAKE_WINDOW_SIZE_CONFIGURED FAKE_WINDOW_SIZE_GLOBAL
   export FAKE_EPOCH_CALL_COUNT FAKE_PANE_WIDTH_COUNT
+  export FAKE_OWNER_DEAD FAKE_PANE_DEAD
   export FAKE_TOOL_CALL_ID
 }
 
@@ -967,7 +1021,7 @@ run_submit_command() {
   fi
   TMUX_PANE="%1" \
     SELF_COMPACT_SESSION_STATE_DIR="$FAKE_CASE" \
-    SELF_COMPACT_WORKSPACE="$FAKE_WORKSPACE" \
+    SELF_COMPACT_WORKSPACE="${FAKE_SUBMIT_WORKSPACE-$FAKE_WORKSPACE}" \
     SELF_COMPACT_CAPTURE_DELAY_SECONDS=0.001 \
     SELF_COMPACT_RESIZE_HOLD_SECONDS=0.001 \
     SELF_COMPACT_RENDER_WAIT_SECONDS="${SELF_COMPACT_RENDER_WAIT_SECONDS:-0.05}" \
@@ -978,7 +1032,7 @@ run_submit_command() {
     SELF_COMPACT_RECOVERY_DELAY_SECONDS=0.05 \
     SELF_COMPACT_NOTICE_MILLISECONDS=20 \
     SELF_COMPACT_POLL_SECONDS=0.02 \
-    SELF_COMPACT_MAX_POLLS=250 \
+    SELF_COMPACT_MAX_POLLS="${SELF_COMPACT_MAX_POLLS:-250}" \
     SELF_COMPACT_START_GRACE_SECONDS="${SELF_COMPACT_START_GRACE_SECONDS:-0.3}" \
     SELF_COMPACT_RESUME_GRACE_SECONDS=0.01 \
     SELF_COMPACT_CONTINUATION_CONFIRM_DELAY_SECONDS=0.01 \
@@ -1486,18 +1540,39 @@ status=0
   export PATH="$invalid_locale_bin:$PATH"
   export SELF_COMPACT_LOCALE=definitely-invalid
   "$SCRIPT_DIR/resume-after-compact.sh" \
-    "%1" "$FAKE_WORKSPACE" 1 "$FAKE_CASE/ready" "$FAKE_CASE/armed" \
+    "%1" 200 "$FAKE_WORKSPACE" 1 "$FAKE_CASE/ready" "$FAKE_CASE/armed" \
     "$FAKE_CASE/cancelled" "$FAKE_CASE/handoff" "0123abcd" \
     "Compaction done; resume, do not compact." \
     "$FAKE_BIN/tmux" "/compact Use SELF_COMPACT_BRIEF. B:0123abcd" \
     "Use SELF_COMPACT_BRIEF. B:0123abcd" "$FAKE_CASE/lock" test-lock \
     call-test "$SCRIPT_DIR/submit-compact.sh" "$FAKE_CASE/watcher.log" \
-    25 1 0.1 0.3
+    25 1 0.1 0.3 "$FAKE_BIN/ps"
 ) > "$FAKE_CASE/watcher.out" 2> "$FAKE_CASE/watcher.err" || status=$?
 [ "$status" -ne 0 ] || fail "invalid-locale watcher unexpectedly continued"
 grep -q 'could not verify a UTF-8 locale; input state remains unknown' \
   "$FAKE_CASE/watcher.err"
 assert_count 0 '^NOTICE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+
+setup_case ambiguous-owner-workspace
+: > "$FAKE_CASE/session/inuse.201.lock"
+mkdir -p "$FAKE_CASE/other/files"
+cat > "$FAKE_CASE/other/workspace.yaml" <<EOF
+id: other
+cwd: $FAKE_PANE_CWD
+summary_count: 1
+EOF
+ln -s ../session/events.jsonl "$FAKE_CASE/other/events.jsonl"
+: > "$FAKE_CASE/other/inuse.202.lock"
+FAKE_SUBMIT_WORKSPACE=""
+status=0
+run_submit > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" || status=$?
+[ "$status" -ne 0 ] ||
+  fail "ambiguous owner PIDs selected a different workspace"
+grep -q 'could not resolve one active Copilot session for this pane' \
+  "$FAKE_CASE/submit.err"
+assert_count 0 '^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
+[ ! -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
+  fail "ambiguous owner PIDs acquired the session lock"
 
 setup_case empty-input
 run_helper "/compact empty"
@@ -2148,14 +2223,15 @@ mkdir "$direct_lock"
 printf '%s\n' direct-lock-token > "$direct_lock/token"
 status=0
 "$SCRIPT_DIR/resume-after-compact.sh" \
-  "%1" "$FAKE_WORKSPACE" 1 "$FAKE_CASE/direct.ready" \
+  "%1" 200 "$FAKE_WORKSPACE" 1 "$FAKE_CASE/direct.ready" \
   "$FAKE_CASE/direct.armed" "$FAKE_CASE/direct.cancelled" \
   "$FAKE_CASE/direct.handoff" 0123abcd \
   "Compaction done; resume, do not compact." "$FAKE_BIN/tmux" \
   "/compact Use SELF_COMPACT_BRIEF. B:0123abcd" \
   "Use SELF_COMPACT_BRIEF. B:0123abcd" "$direct_lock" direct-lock-token \
   call-direct "$SCRIPT_DIR/submit-compact.sh" "$FAKE_CASE/direct.log" \
-  25 1 31 0.3 > "$FAKE_CASE/direct.out" 2> "$FAKE_CASE/direct.err" ||
+  25 1 31 0.3 "$FAKE_BIN/ps" \
+  > "$FAKE_CASE/direct.out" 2> "$FAKE_CASE/direct.err" ||
   status=$?
 [ "$status" -ne 0 ] || fail "direct watcher accepted out-of-range quiescence"
 grep -q 'invalid quiescence grace' "$FAKE_CASE/direct.err"
@@ -2437,15 +2513,14 @@ assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
   fail "invalid start grace left a session lock"
 
 # A valid foreground override is serialized into the detached verifier command
-# and controls the observed no-start deadline.
+# and controls the Enter-relative exact-command check.
 setup_case start-grace-override-propagated
 export FAKE_COMPACT_MODE=no-start-keep
 SELF_COMPACT_START_GRACE_SECONDS=0.05 run_submit >/dev/null
-log="$(wait_for_watcher_log 'compaction did not start within 0.05s')"
-grep -Fq ' 0.05 >> ' \
+log="$(wait_for_watcher_log 'exact compact command remained in the editor 0.05s after Enter')"
+grep -Eq ' 0[.]05 [^ ]*/ps >> ' \
   "$FAKE_RUN_SHELL_COMMAND" ||
   fail "start-grace override was not explicitly propagated as a verifier argument"
-grep -q 'compaction did not start within 0.05s after assistant.turn_end' "$log"
 assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
 assert_count 0 '^TYPE:Compaction done;|^KEY:Enter:Compaction done;' \
   "$FAKE_TMUX_ACTIONS"
@@ -2567,14 +2642,40 @@ grep -q '^NOTICE:self-compact: input changed or unreadable; will clear it in 10 
 assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
 assert_count 0 '^KEY:Escape:' "$FAKE_TMUX_ACTIONS"
 
+# A queued compact may remain pending beyond both the start grace and the
+# completion poll budget. Empty editor state keeps ownership until it starts.
+setup_case queued-start-outlives-old-deadline
+export FAKE_COMPACT_MODE=queued-delayed
+export FAKE_START_DELAY=1.5
+SELF_COMPACT_START_GRACE_SECONDS=0.05 SELF_COMPACT_MAX_POLLS=2 \
+  run_submit >/dev/null
+log="$(wait_for_watcher_log 'submitted post-compact continuation')"
+grep -q 'compact may be queued; retaining ownership' "$log"
+assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
+assert_count 1 '^KEY:Enter:Compaction done; resume, do not compact\.$' \
+  "$FAKE_TMUX_ACTIONS"
+wait_for_path_absent "$FAKE_CASE/session/files/self-compact.lock"
+
+# Moving the session's inuse lock does not end ownership while the exact
+# Copilot PID and pane remain live.
+setup_case queued-lock-movement
+export FAKE_COMPACT_MODE=lock-moves-delayed
+export FAKE_START_DELAY=0.15
+SELF_COMPACT_START_GRACE_SECONDS=0.05 run_submit >/dev/null
+wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
+[ -e "$FAKE_CASE/session/inuse.201.lock" ] ||
+  fail "queued-lock movement case did not move the inuse lock"
+assert_count 1 '^KEY:Enter:Compaction done; resume, do not compact\.$' \
+  "$FAKE_TMUX_ACTIONS"
+
 # If Enter leaves the exact helper command but no start follows, the watcher
 # clears only that exact command, warns visibly, and exits promptly.
 setup_case no-start-exact
 export FAKE_COMPACT_MODE=no-start-keep
 run_submit >/dev/null
-log="$(wait_for_watcher_log 'compaction did not start within')"
+log="$(wait_for_watcher_log 'exact compact command remained in the editor')"
 assert_file_equals "" "$FAKE_TMUX_INPUT"
-grep -q '^NOTICE:self-compact: compaction did not start; cancelled' \
+grep -q '^NOTICE:self-compact: compact command was not accepted; cancelled' \
   "$FAKE_TMUX_ACTIONS"
 assert_count 1 '^KEY:C-u:' "$FAKE_TMUX_ACTIONS"
 if find "$FAKE_CASE/session/files" -name 'self-compact-*.ready' -print -quit |
@@ -2633,28 +2734,32 @@ assert_file_equals "" "$FAKE_TMUX_INPUT"
 assert_count 1 '^KEY:Enter:Compaction done; resume, do not compact\.$' \
   "$FAKE_TMUX_ACTIONS"
 
-# A different readable draft at no-start expiry is preserved without Ctrl-U.
-setup_case no-start-new-draft
-export FAKE_COMPACT_MODE=no-start-new-draft
+# A readable changed draft means Enter may have queued the compact. The watcher
+# preserves it until the bound owner PID dies, then releases without Ctrl-U.
+setup_case queued-owner-dies
+export FAKE_COMPACT_MODE=owner-dies
 run_submit >/dev/null
-wait_for_watcher_log 'compaction did not start within' >/dev/null
+wait_for_watcher_log 'owning Copilot process or tmux pane ended' >/dev/null
 assert_file_equals "new user draft" "$FAKE_TMUX_INPUT"
 assert_count 0 '^KEY:C-u:' "$FAKE_TMUX_ACTIONS"
+wait_for_path_absent "$FAKE_CASE/session/files/self-compact.lock"
 
-# An unreadable no-start buffer is also left untouched.
-setup_case no-start-unreadable
-export FAKE_COMPACT_MODE=no-start-unreadable
+# An unreadable queued state is also left untouched until pane loss proves that
+# the accepted in-memory command cannot run in the owning CLI.
+setup_case queued-pane-dies
+export FAKE_COMPACT_MODE=pane-dies
 run_submit >/dev/null
-wait_for_watcher_log 'compaction did not start within' >/dev/null
+wait_for_watcher_log 'owning Copilot process or tmux pane ended' >/dev/null
 assert_count 0 '^KEY:C-u:' "$FAKE_TMUX_ACTIONS"
+wait_for_path_absent "$FAKE_CASE/session/files/self-compact.lock"
 
 # A failed compact exits immediately and never injects continuation.
 setup_case failed-compact
 export FAKE_COMPACT_MODE=failed
 run_submit >/dev/null
-wait_for_watcher_log 'first compact completion did not match this run token or failed' \
-  >/dev/null
+wait_for_watcher_log 'matching compact failed; continuation not submitted' >/dev/null
 assert_count 0 '^TYPE:Compaction done;|^KEY:Enter:Compaction done;' "$FAKE_TMUX_ACTIONS"
+wait_for_path_absent "$FAKE_CASE/session/files/self-compact.lock"
 
 # A malformed lifecycle event after ARMED fails closed visibly and retains the
 # watcher-owned lock, so no second compact can become eligible.
@@ -2688,14 +2793,14 @@ assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
 [ -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
   fail "competing helper removed the retained parser-failure lock"
 
-# The first completion after the observed start owns the verdict. A later
-# matching token cannot rescue an earlier mismatched compact.
-setup_case first-completion-after-start-wins
+# A foreign candidate closes at its first completion. A later candidate with
+# this run's exact token still owns the queued compact lifecycle.
+setup_case foreign-then-owned-compact
 export FAKE_COMPACT_MODE=mismatched-then-matching
 run_submit >/dev/null
-wait_for_watcher_log 'first compact completion did not match this run token or failed' \
-  >/dev/null
-assert_count 0 '^TYPE:Compaction done;|^KEY:Enter:Compaction done;' \
+log="$(wait_for_watcher_log 'submitted post-compact continuation')"
+grep -q 'foreign compact lifecycle completed; continuing to wait' "$log"
+assert_count 1 '^KEY:Enter:Compaction done; resume, do not compact\.$' \
   "$FAKE_TMUX_ACTIONS"
 
 # Activity beginning during post-compact recovery is checked before Esc and

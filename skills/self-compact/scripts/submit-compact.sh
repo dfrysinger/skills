@@ -14,6 +14,10 @@ TMUX_BIN="$(command -v tmux)" || {
   echo "submit-compact.sh: tmux is unavailable; compact not submitted" >&2
   exit 1
 }
+PS_BIN="$(command -v ps)" || {
+  echo "submit-compact.sh: ps is unavailable; compact not submitted" >&2
+  exit 1
+}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/submit-compact.sh"
 SESSION_STATE_DIR="${SELF_COMPACT_SESSION_STATE_DIR:-$HOME/.copilot/session-state}"
@@ -112,49 +116,77 @@ if [ "$AUTH_SCAN_BYTES" -lt 65536 ] || [ "$AUTH_SCAN_BYTES" -gt 67108864 ]; then
   exit 1
 fi
 
-resolve_workspace() {
-  local pane_cwd pane_pid ws this_cwd lock lock_pid parent
+owner_pid_for_workspace() {
+  local ws="$1"
+  local pane_pid lock lock_pid parent
   local selected=""
-  pane_cwd="$("$TMUX_BIN" display-message -p -t "$PANE" '#{pane_current_path}' 2>/dev/null)" ||
-    return 1
   pane_pid="$("$TMUX_BIN" display-message -p -t "$PANE" '#{pane_pid}' 2>/dev/null)" ||
     return 1
+  case "$pane_pid" in ''|*[!0-9]*) return 1 ;; esac
 
-  for ws in "$SESSION_STATE_DIR"/*/workspace.yaml; do
-    [ -r "$ws" ] || continue
-    this_cwd="$(awk -F': ' '/^cwd: /{sub(/[[:space:]]+$/, "", $2); print $2; exit}' "$ws")"
-    [ "$this_cwd" = "$pane_cwd" ] || continue
-    for lock in "${ws%/workspace.yaml}"/inuse.*.lock; do
-      [ -e "$lock" ] || continue
-      lock_pid="${lock##*/inuse.}"
-      lock_pid="${lock_pid%.lock}"
-      case "$lock_pid" in ''|*[!0-9]*) continue ;; esac
-      parent="$lock_pid"
-      while [ "$parent" -gt 1 ]; do
-        if [ "$parent" = "$pane_pid" ]; then
-          if [ -z "$selected" ]; then
-            selected="$ws"
-          elif [ "$selected" != "$ws" ]; then
-            return 1
-          fi
-          break
+  for lock in "${ws%/workspace.yaml}"/inuse.*.lock; do
+    [ -e "$lock" ] || continue
+    lock_pid="${lock##*/inuse.}"
+    lock_pid="${lock_pid%.lock}"
+    case "$lock_pid" in ''|*[!0-9]*) continue ;; esac
+    parent="$lock_pid"
+    while [ "$parent" -gt 1 ]; do
+      if [ "$parent" = "$pane_pid" ]; then
+        if [ -z "$selected" ]; then
+          selected="$lock_pid"
+        elif [ "$selected" != "$lock_pid" ]; then
+          return 2
         fi
-        parent="$(ps -o ppid= -p "$parent" 2>/dev/null | tr -d '[:space:]')"
-        case "$parent" in ''|*[!0-9]*) break ;; esac
-      done
+        break
+      fi
+      parent="$(ps -o ppid= -p "$parent" 2>/dev/null | tr -d '[:space:]')"
+      case "$parent" in ''|*[!0-9]*) break ;; esac
     done
   done
   [ -n "$selected" ] || return 1
   printf '%s\n' "$selected"
 }
 
+resolve_workspace() {
+  local pane_cwd ws this_cwd owner_pid owner_status
+  local selected="" selected_pid=""
+  pane_cwd="$("$TMUX_BIN" display-message -p -t "$PANE" '#{pane_current_path}' 2>/dev/null)" ||
+    return 1
+
+  for ws in "$SESSION_STATE_DIR"/*/workspace.yaml; do
+    [ -r "$ws" ] || continue
+    this_cwd="$(awk -F': ' '/^cwd: /{sub(/[[:space:]]+$/, "", $2); print $2; exit}' "$ws")"
+    [ "$this_cwd" = "$pane_cwd" ] || continue
+    owner_status=0
+    owner_pid="$(owner_pid_for_workspace "$ws")" || owner_status=$?
+    case "$owner_status" in
+      0) ;;
+      1) continue ;;
+      *) return 1 ;;
+    esac
+    if [ -z "$selected" ]; then
+      selected="$ws"
+      selected_pid="$owner_pid"
+    elif [ "$selected" != "$ws" ] || [ "$selected_pid" != "$owner_pid" ]; then
+      return 1
+    fi
+  done
+  [ -n "$selected" ] || return 1
+  printf '%s\t%s\n' "$selected" "$selected_pid"
+}
+
 if [ -n "${SELF_COMPACT_WORKSPACE:-}" ]; then
   WORKSPACE="$SELF_COMPACT_WORKSPACE"
+  OWNER_PID="$(owner_pid_for_workspace "$WORKSPACE")" || {
+    echo "submit-compact.sh: could not bind the active Copilot process for this pane; compact not submitted" >&2
+    exit 1
+  }
 else
-  WORKSPACE="$(resolve_workspace)" || {
+  active_session="$(resolve_workspace)" || {
     echo "submit-compact.sh: could not resolve one active Copilot session for this pane; compact not submitted" >&2
     exit 1
   }
+  IFS=$'\t' read -r WORKSPACE OWNER_PID <<< "$active_session"
 fi
 [ -r "$WORKSPACE" ] || {
   echo "submit-compact.sh: could not resolve the active Copilot session; compact not submitted" >&2
@@ -339,11 +371,11 @@ shell_quote() {
 
 watcher_command=""
 for argument in \
-  "$WATCHER" "$PANE" "$WORKSPACE" "$SUMMARY_COUNT" "$READY" "$ARMED" \
+  "$WATCHER" "$PANE" "$OWNER_PID" "$WORKSPACE" "$SUMMARY_COUNT" "$READY" "$ARMED" \
   "$CANCELLED" "$HANDOFF" "$TOKEN" "$CONTINUATION" "$TMUX_BIN" "$COMMAND" \
   "$CUSTOM_INSTRUCTIONS" "$LOCK_DIR" "$LOCK_TOKEN" "$CANDIDATE_CALL_ID" \
   "$SCRIPT_PATH" "$LOG" "$AMBIGUOUS_WAIT_SECONDS" "$AUTH_WAIT_SECONDS" \
-  "$QUIESCENCE_GRACE_SECONDS" "$START_GRACE_SECONDS"; do
+  "$QUIESCENCE_GRACE_SECONDS" "$START_GRACE_SECONDS" "$PS_BIN"; do
   quoted="$(shell_quote "$argument")"
   watcher_command="${watcher_command}${watcher_command:+ }$quoted"
 done

@@ -3,35 +3,48 @@
 
 set -euo pipefail
 
-[ "$#" -eq 21 ] || {
-  echo "usage: resume-after-compact.sh PANE WORKSPACE BEFORE READY ARMED CANCELLED HANDOFF TOKEN CONTINUATION TMUX COMMAND CUSTOM_INSTRUCTIONS LOCK_DIR LOCK_TOKEN TOOL_CALL_ID HELPER_PATH LOG AMBIGUOUS_WAIT AUTH_WAIT QUIESCENCE_GRACE START_GRACE" >&2
+[ "$#" -eq 23 ] || {
+  echo "usage: resume-after-compact.sh PANE OWNER_PID WORKSPACE BEFORE READY ARMED CANCELLED HANDOFF TOKEN CONTINUATION TMUX COMMAND CUSTOM_INSTRUCTIONS LOCK_DIR LOCK_TOKEN TOOL_CALL_ID HELPER_PATH LOG AMBIGUOUS_WAIT AUTH_WAIT QUIESCENCE_GRACE START_GRACE PS" >&2
   exit 2
 }
 
 PANE="${1:?pane is required}"
-WORKSPACE="${2:?workspace.yaml path is required}"
-BEFORE="${3:?baseline summary_count is required}"
-READY="${4:?ready path is required}"
-ARMED="${5:?armed path is required}"
-CANCELLED="${6:?cancelled path is required}"
-HANDOFF="${7:?handoff path is required}"
-TOKEN="${8:?run token is required}"
-CONTINUATION="${9:?continuation is required}"
-TMUX_BIN="${10:?tmux path is required}"
-COMMAND="${11:?compact command is required}"
-CUSTOM_INSTRUCTIONS="${12:?custom instructions are required}"
-LOCK_DIR="${13:?lock directory is required}"
-LOCK_TOKEN="${14:?lock token is required}"
-TOOL_CALL_ID="${15:?tool call id is required}"
-HELPER_PATH="${16:?helper path is required}"
-LOG="${17:?log path is required}"
-AMBIGUOUS_WAIT_SECONDS="${18:?ambiguous wait is required}"
-AUTH_WAIT_SECONDS="${19:?authorization wait is required}"
-QUIESCENCE_GRACE_SECONDS="${20:?quiescence grace is required}"
-START_GRACE_SECONDS="${21:?compaction start grace is required}"
+OWNER_PID="${2:?owner pid is required}"
+WORKSPACE="${3:?workspace.yaml path is required}"
+BEFORE="${4:?baseline summary_count is required}"
+READY="${5:?ready path is required}"
+ARMED="${6:?armed path is required}"
+CANCELLED="${7:?cancelled path is required}"
+HANDOFF="${8:?handoff path is required}"
+TOKEN="${9:?run token is required}"
+CONTINUATION="${10:?continuation is required}"
+TMUX_BIN="${11:?tmux path is required}"
+COMMAND="${12:?compact command is required}"
+CUSTOM_INSTRUCTIONS="${13:?custom instructions are required}"
+LOCK_DIR="${14:?lock directory is required}"
+LOCK_TOKEN="${15:?lock token is required}"
+TOOL_CALL_ID="${16:?tool call id is required}"
+HELPER_PATH="${17:?helper path is required}"
+LOG="${18:?log path is required}"
+AMBIGUOUS_WAIT_SECONDS="${19:?ambiguous wait is required}"
+AUTH_WAIT_SECONDS="${20:?authorization wait is required}"
+QUIESCENCE_GRACE_SECONDS="${21:?quiescence grace is required}"
+START_GRACE_SECONDS="${22:?compaction start grace is required}"
+PS_BIN="${23:?ps path is required}"
+
+case "$OWNER_PID" in
+  ''|*[!0-9]*|0)
+    echo "self-compact watcher has no valid owner pid" >&2
+    exit 1
+    ;;
+esac
 
 [ -x "$TMUX_BIN" ] || {
   echo "self-compact watcher has no executable tmux path" >&2
+  exit 1
+}
+[ -x "$PS_BIN" ] || {
+  echo "self-compact watcher has no executable ps path" >&2
   exit 1
 }
 
@@ -761,6 +774,15 @@ BEFORE_EVENT_OFFSET="$(event_log_size)" || {
 : > "$ARMED"
 : > "$LOCK_DIR/armed"
 RELEASE_LOCK=false
+enter_milliseconds="$(read_epoch_milliseconds)" || {
+  deferred_failure "invalid compaction start clock value"
+  exit 1
+}
+start_grace_milliseconds="$(sc_seconds_to_milliseconds "$START_GRACE_SECONDS")" || {
+  deferred_failure "invalid compaction start grace"
+  exit 1
+}
+start_deadline_milliseconds=$((enter_milliseconds + start_grace_milliseconds))
 enter_failed=false
 if ! "$TMUX_BIN" send-keys -t "$PANE" Enter; then
   sc_cleanup_exact_command "$expected_hex"
@@ -917,48 +939,33 @@ post_armed_parser_failure() {
   exit 1
 }
 
-compaction_start_record=""
-turn_end_record=""
+owner_is_live() {
+  local observed
+  observed="$("$PS_BIN" -o pid= -p "$OWNER_PID" 2>/dev/null | tr -d '[:space:]')" ||
+    return 1
+  [ "$observed" = "$OWNER_PID" ]
+}
+
+pane_exists() {
+  local observed
+  observed="$("$TMUX_BIN" display-message -p -t "$PANE" '#{pane_id}' 2>/dev/null)" ||
+    return 1
+  [ "$observed" = "$PANE" ]
+}
+
+release_after_owner_end() {
+  echo "owning Copilot process or tmux pane ended before this compact started" >&2
+  sc_notice "self-compact: queued compact owner ended; cancelled"
+  RELEASE_LOCK=true
+  exit 1
+}
+
 LIFECYCLE_CURSOR="$BEFORE_EVENT_OFFSET"
-if [ "$enter_failed" = false ]; then
-  for ((attempt = 1; attempt <= MAX_POLLS; attempt++)); do
-    stream_event_probe "$LIFECYCLE_CURSOR" submit
-    [ "$STREAM_STATE" = error ] &&
-      post_armed_parser_failure \
-        "could not inspect submitting lifecycle events ($STREAM_ERROR)"
-    LIFECYCLE_CURSOR="$STREAM_CURSOR"
-    case "$STREAM_STATE" in
-      start)
-        compaction_start_record="$STREAM_START:$STREAM_END"
-        break
-        ;;
-      turn-end)
-        turn_end_record="$STREAM_START:$STREAM_END"
-        break
-        ;;
-    esac
-    sleep "$POLL_SECONDS"
-  done
-
-  if [ -z "$compaction_start_record" ] && [ -z "$turn_end_record" ]; then
-    deferred_failure "timed out waiting for the submitting turn end or compaction start"
-    exit 1
-  fi
-else
-  turn_end_record=enter-failed
-fi
-
-if [ -z "$compaction_start_record" ]; then
-  start_grace_milliseconds="$(sc_seconds_to_milliseconds "$START_GRACE_SECONDS")" || {
-    deferred_failure "invalid compaction start grace"
-    exit 1
-  }
-  start_now_milliseconds="$(read_epoch_milliseconds)" || {
-    deferred_failure "invalid compaction start clock value"
-    exit 1
-  }
-  start_deadline_milliseconds=$((start_now_milliseconds + start_grace_milliseconds))
-  while :; do
+grace_checked=false
+checkpoint_number=""
+while [ -z "$checkpoint_number" ]; do
+  compaction_start_record=""
+  while [ -z "$compaction_start_record" ]; do
     stream_event_probe "$LIFECYCLE_CURSOR" start
     [ "$STREAM_STATE" = error ] &&
       post_armed_parser_failure \
@@ -968,89 +975,127 @@ if [ -z "$compaction_start_record" ]; then
       compaction_start_record="$STREAM_START:$STREAM_END"
       break
     fi
+
+    if ! owner_is_live || ! pane_exists; then
+      release_after_owner_end
+    fi
+
     now_milliseconds="$(read_epoch_milliseconds)" || {
       deferred_failure "invalid compaction start clock value"
       exit 1
     }
     if [ "$now_milliseconds" -ge "$start_deadline_milliseconds" ]; then
-      stream_event_probe "$LIFECYCLE_CURSOR" start
-      [ "$STREAM_STATE" = error ] &&
-        post_armed_parser_failure \
-          "could not inspect compaction start events ($STREAM_ERROR)"
-      LIFECYCLE_CURSOR="$STREAM_CURSOR"
-      if [ "$STREAM_STATE" = start ]; then
-        compaction_start_record="$STREAM_START:$STREAM_END"
+      if [ "$enter_failed" = true ]; then
+        sc_cleanup_exact_command "$expected_hex"
+        sc_notice "self-compact: compaction did not start; cancelled"
+        echo "compaction did not start within ${START_GRACE_SECONDS}s after Enter returned nonzero" >&2
+        RELEASE_LOCK=true
+        exit 1
       fi
+      if [ "$grace_checked" = false ]; then
+        stream_event_probe "$LIFECYCLE_CURSOR" start
+        [ "$STREAM_STATE" = error ] &&
+          post_armed_parser_failure \
+            "could not inspect compaction start events ($STREAM_ERROR)"
+        LIFECYCLE_CURSOR="$STREAM_CURSOR"
+        if [ "$STREAM_STATE" = start ]; then
+          compaction_start_record="$STREAM_START:$STREAM_END"
+          break
+        fi
+        sc_capture_state || true
+        if sc_state_is_exact "$expected_hex"; then
+          sc_cleanup_exact_command "$expected_hex"
+          sc_notice "self-compact: compact command was not accepted; cancelled"
+          echo "exact compact command remained in the editor ${START_GRACE_SECONDS}s after Enter" >&2
+          RELEASE_LOCK=true
+          exit 1
+        fi
+        grace_checked=true
+        echo "compact may be queued; retaining ownership until its lifecycle starts or the owner ends" >&2
+      fi
+    fi
+    sleep "$POLL_SECONDS"
+  done
+
+  compaction_start_end_offset="${compaction_start_record#*:}"
+  completion_record=""
+  COMPLETION_CURSOR="$compaction_start_end_offset"
+  for ((attempt = 1; attempt <= MAX_POLLS; attempt++)); do
+    stream_event_probe "$COMPLETION_CURSOR" completion
+    [ "$STREAM_STATE" = error ] &&
+      post_armed_parser_failure \
+        "could not inspect compaction completion events ($STREAM_ERROR)"
+    COMPLETION_CURSOR="$STREAM_CURSOR"
+    if [ "$STREAM_STATE" = completion ]; then
+      completion_record="$STREAM_START:$STREAM_END"
       break
     fi
-    sleep_seconds="$(
-      awk -v poll="$POLL_SECONDS" \
-        -v remaining="$((start_deadline_milliseconds - now_milliseconds))" '
-        BEGIN {
-          remaining_seconds = remaining / 1000
-          if (poll < remaining_seconds) print poll
-          else print remaining_seconds
-        }'
-    )"
-    sleep "$sleep_seconds"
+    sleep "$POLL_SECONDS"
   done
-fi
+  [ -n "$completion_record" ] || {
+    deferred_failure "timed out waiting for session.compaction_complete"
+    exit 1
+  }
 
-if [ -z "$compaction_start_record" ]; then
-  sc_cleanup_exact_command "$(sc_literal_hex "$COMMAND")"
-  sc_notice "self-compact: compaction did not start; cancelled"
-  echo "compaction did not start within ${START_GRACE_SECONDS}s after assistant.turn_end" >&2
-  RELEASE_LOCK=true
-  exit 1
-fi
-
-compaction_start_end_offset="${compaction_start_record#*:}"
-completion_record=""
-COMPLETION_CURSOR="$compaction_start_end_offset"
-for ((attempt = 1; attempt <= MAX_POLLS; attempt++)); do
-  stream_event_probe "$COMPLETION_CURSOR" completion
-  [ "$STREAM_STATE" = error ] &&
+  completion_offset="${completion_record%%:*}"
+  completion_end_offset="${completion_record#*:}"
+  completion_json="$(read_event_at_offset "$completion_offset")" || {
     post_armed_parser_failure \
-      "could not inspect compaction completion events ($STREAM_ERROR)"
-  COMPLETION_CURSOR="$STREAM_CURSOR"
-  if [ "$STREAM_STATE" = completion ]; then
-    completion_record="$STREAM_START:$STREAM_END"
-    break
-  fi
-  sleep "$POLL_SECONDS"
-done
-[ -n "$completion_record" ] || {
-  deferred_failure "timed out waiting for session.compaction_complete"
-  exit 1
-}
+      "could not read the candidate compaction completion event"
+  }
+  completion_verdict="$(
+    printf '%s\n' "$completion_json" |
+      /usr/bin/perl -MJSON::PP -e '
+        my $line = <STDIN>;
+        my $event = eval { decode_json($line) } or exit 1;
+        exit 1 if defined $event->{agentId};
+        my $data = $event->{data} && ref($event->{data}) eq "HASH"
+          ? $event->{data}
+          : $event;
+        if (!defined $data->{customInstructions} ||
+            ref($data->{customInstructions}) ||
+            $data->{customInstructions} ne $ARGV[0]) {
+          print "foreign";
+          exit;
+        }
+        if (!($data->{success} // 0)) {
+          print "owned-failure";
+          exit;
+        }
+        if (!defined $data->{checkpointNumber} ||
+            $data->{checkpointNumber} !~ /^\d+$/) {
+          print "owned-invalid";
+          exit;
+        }
+        print "owned-success\t", $data->{checkpointNumber};
+      ' "$CUSTOM_INSTRUCTIONS"
+  )" || post_armed_parser_failure \
+    "could not classify the candidate compaction completion event"
 
-completion_offset="${completion_record%%:*}"
-completion_end_offset="${completion_record#*:}"
-completion_json="$(read_event_at_offset "$completion_offset")" || {
-  post_armed_parser_failure \
-    "could not read the matched compaction completion event"
-}
-checkpoint_number="$(
-  printf '%s\n' "$completion_json" |
-    /usr/bin/perl -MJSON::PP -e '
-      my $line = <STDIN>;
-      my $event = eval { decode_json($line) } or exit 1;
-      exit 1 if defined $event->{agentId};
-      my $data = $event->{data} && ref($event->{data}) eq "HASH"
-        ? $event->{data}
-        : $event;
-      exit 1 unless ($data->{success} // 0);
-      exit 1 unless defined $data->{customInstructions};
-      exit 1 unless $data->{customInstructions} eq $ARGV[0];
-      exit 1 unless defined $data->{checkpointNumber};
-      exit 1 unless $data->{checkpointNumber} =~ /^\d+$/;
-      print $data->{checkpointNumber};
-    ' "$CUSTOM_INSTRUCTIONS"
-)" || {
-  echo "first compact completion did not match this run token or failed" >&2
-  RELEASE_LOCK=true
-  exit 1
-}
+  case "$completion_verdict" in
+    foreign)
+      echo "foreign compact lifecycle completed; continuing to wait for this run token" >&2
+      LIFECYCLE_CURSOR="$completion_end_offset"
+      ;;
+    owned-failure)
+      echo "matching compact failed; continuation not submitted" >&2
+      RELEASE_LOCK=true
+      exit 1
+      ;;
+    owned-invalid)
+      echo "matching compact completion had no valid checkpoint number" >&2
+      RELEASE_LOCK=true
+      exit 1
+      ;;
+    $'owned-success\t'*)
+      checkpoint_number="${completion_verdict#*$'\t'}"
+      ;;
+    *)
+      post_armed_parser_failure \
+        "candidate compaction completion produced an invalid verdict"
+      ;;
+  esac
+done
 
 [ "$checkpoint_number" -gt "$BEFORE" ] || {
   echo "matching compact did not advance the checkpoint number" >&2
