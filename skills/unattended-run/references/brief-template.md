@@ -43,6 +43,10 @@ process after compaction without copying each skill's rules.
 
 > Keep building against the plan at `<PLAN_DOC>`[ through `<SCOPE>`] in your
 > `<WORKSPACE>`. Follow the required process skills below.
+> If a reminder arrives while you are making a user-directed edit to the plan,
+> design doc, brief, or charter, finish the current coherent edit and persist it
+> to the authoritative file before reconciling against that file. Never replace
+> an in-flight revision with the older persisted version.
 > Use rubber-duck to brainstorm solutions and align on paths forward whenever
 > you get stuck. Keep the plan up to date so future agents can pick it up. Use
 > subagents liberally to parallelize work whenever possible. `<PUSH_POLICY>`.

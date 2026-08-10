@@ -138,13 +138,16 @@ tick re-reads the authoritative copy:
 
 ```
 manage_schedule action=create interval=1h \
-  prompt="Re-read your autopilot charter at <charter-path> and its current plan
-  baton. Follow the charter's Required process skills protocol exactly and
-  reconcile the current work against it; execute any skill invocation or
-  compaction action the charter says is due now rather than merely acknowledging
-  it. Confirm the workspace, push policy, objective, and current phase, and
-  correct any drift before continuing. Stop this schedule once the charter's
-  referenced Definition of Done is verifiably met."
+  prompt="If you are currently making a user-directed edit to the plan, design
+  doc, brief, or charter, finish the current coherent edit and persist it first.
+  Then re-read your autopilot charter at <charter-path> and its current plan
+  baton. Never replace an in-flight revision with the older persisted version.
+  Follow the charter's Required process skills protocol exactly and reconcile
+  the current work against it; execute any skill invocation or compaction action
+  the charter says is due now rather than merely acknowledging it. Confirm the
+  workspace, push policy, objective, and current phase, and correct any drift
+  before continuing. Stop this schedule once the charter's referenced
+  Definition of Done is verifiably met."
 ```
 
 The charter remains authoritative for skill and compaction policy; the schedule
