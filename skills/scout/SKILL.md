@@ -27,13 +27,30 @@ not the mechanism they guessed at. Identify the target repository; when the user
 names no project, use the repository containing the current working directory
 and say which one you picked.
 
-Complete when the outcome sentence and the chosen repository are both stated in
-your reply.
+Before any scout searches, classify the repository from host-reported
+visibility and ownership:
+
+- **Public project** — the host reports public visibility.
+- **Closed-source work project** — the host reports private or internal
+  visibility, and the owner is an organisation that represents the user's
+  workplace.
+- **Restricted project** — every other private repository, or any repository
+  whose visibility or work ownership is unresolved.
+
+Public and restricted projects use a **clean-room search**: repository-local
+evidence and public sources only. Closed-source work projects may also search
+workplace chat and internal repositories. Require host evidence for the
+classification; local paths, remote names, and authenticated access do not
+establish work ownership.
+
+Complete when the outcome sentence, chosen repository, classification evidence,
+and allowed search surfaces are stated in your reply.
 
 ## 2. Send the point scout
 
 Dispatch one `general-purpose` subagent to settle the vocabulary the other
-four will search with. Give it the outcome sentence and the repository, and
+four will search with. Give it the outcome sentence, repository,
+classification, and allowed search surfaces, and
 ask it to report the terms this codebase uses for the topic, the terms the
 surrounding ecosystem uses for it, and the stack a solution would be built on
 — language, framework, and the libraries already carrying nearby work.
@@ -66,10 +83,15 @@ apart from legwork skipped.
 
 Issue all four `task` calls in a single response so the tiers run at once.
 Each brief carries the outcome sentence, the repository, and the point scout's
-terms, names, and stack. It also carries that tier's **Returns** clause,
-evidence bar, and sourcing rule verbatim, since a scout judged against a bar
-it was never given will come back short. Every search runs against the names as well as the
+terms, names, and stack, plus the repository classification and allowed search
+surfaces. It also carries that tier's **Returns** clause, evidence bar, and
+sourcing rule verbatim, since a scout judged against a bar it was never given
+will come back short. Every search runs against the names as well as the
 mechanisms. Each scout reports; none of them recommends.
+
+For the in-house tier, carry only the branch matching the repository
+classification, including that branch's gate, Returns clause, evidence bar, and
+sourcing rule.
 
 Match each tier's agent type to the evidence it must **reach**: `explore`
 reaches files and code hosting but neither the web nor chat, so it suits the
@@ -77,6 +99,10 @@ two near tiers and would silently gut the other two.
 
 **In flight** (`explore`) — search pull requests and issues before anyone reads
 code. Someone may already own this.
+
+Every classification may search the target repository on its host as
+repository-local evidence. A clean-room search may expand beyond the target
+only through public host surfaces.
 
 ```bash
 gh repo view --json nameWithOwner
@@ -108,6 +134,18 @@ what exists; designing belongs in the report.
 building it. This tier exists because the nearest competitor is usually a
 colleague, and colleagues announce their work in chat long before it is
 searchable in code.
+
+For a clean-room search, use only public repositories, issues, pull requests,
+and other public owner surfaces. Report every public surface and phrasing
+searched, then stop this tier. State that workplace chat and internal
+repositories were outside the search boundary.
+
+Returns every public repository, issue, or pull request found with its URL,
+owner, progress, and one line on whether it overlaps — or that the searches
+returned nothing. The evidence bar is direct public metadata and inspected
+public candidate descriptions. Every finding cites a public URL.
+
+For a closed-source work project, run the internal search below.
 
 Search chat first, the harvested names before the mechanism terms, and expect
 the names to carry the tier: a team names its channel for what it calls the
@@ -148,12 +186,12 @@ gh search issues --owner <org> --limit 20 --json number,state,title,url '<distin
 gh search prs --owner <org> --limit 20 --json number,state,title,url '<distinctive name>'
 ```
 
-Returns the channels and repositories found with links, who owns the work, how
-far along it is, and one line on whether it overlaps the outcome — or that the
-searches returned nothing, with the surface above.
+The internal branch returns the channels and repositories found with links, who
+owns the work, how far along it is, and one line on whether it overlaps the
+outcome — or that the searches returned nothing, with the surface above.
 
-**Everything this tier finds is confidential.** Summarise it; do not paste
-internal content, quotes, or links wholesale. Keep it to a section of the
+**Everything the internal branch finds is confidential.** Summarise it; do not
+paste internal content, quotes, or links wholesale. Keep it to a section of the
 report marked internal, and keep that report on local disk, where the skills
 downstream can read it. It must never reach a public repository, an upstream
 issue, a commit message, or anything published.
@@ -235,6 +273,9 @@ the join-wait-adopt choice to the user.
 
 ## 5. Write the scout report
 
+Open with the repository classification, the evidence supporting it, and the
+search surfaces allowed by that classification.
+
 Cover five things, in this order:
 
 - **What is possible** — the genuine options, including doing nothing.
@@ -255,8 +296,9 @@ Follow `explain` for the register.
 
 Complete when all five sections are present, the recommendation names its
 tradeoff and says why the balance sits there rather than one rung cheaper or
-one rung better, and every claim traces to a specific pull request, file path,
-channel, or source from the scout reports, with any source returned
+one rung better, the opener states the repository classification, its evidence,
+and allowed search surfaces, and every claim traces to a specific pull request,
+file path, channel, or source from the scout reports, with any source returned
 **unverified** still labelled that way and never the basis of a
 recommendation.
 
