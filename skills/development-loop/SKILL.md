@@ -222,6 +222,13 @@ already matches the intended base, rename or create refs without replacing it.
 Otherwise update the tree to current main, classify the resulting file changes
 under the rules above, then branch.
 
+**Freeze stacked dependencies before final proof.** For a change stacked on
+another unlanded branch, record the exact dependency commit before the final
+rebase. Rebase once onto that frozen commit, then run the expensive build,
+live-proof, and review ladder. Any later dependency movement invalidates the
+stacked candidate and its runtime evidence; freeze again and restart from the
+rebase rather than accumulating proof across different histories.
+
 - Keep refactoring separate unless required for the fix.
 - Prefer reviewable slices; roughly 200-400 human-written changed lines is a
   useful review target, not an absolute limit.
