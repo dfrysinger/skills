@@ -222,12 +222,21 @@ already matches the intended base, rename or create refs without replacing it.
 Otherwise update the tree to current main, classify the resulting file changes
 under the rules above, then branch.
 
-**Freeze stacked dependencies before final proof.** For a change stacked on
-another unlanded branch, record the exact dependency commit before the final
-rebase. Rebase once onto that frozen commit, then run the expensive build,
-live-proof, and review ladder. Any later dependency movement invalidates the
-stacked candidate and its runtime evidence; freeze again and restart from the
-rebase rather than accumulating proof across different histories.
+**Freeze stacked dependencies before final proof.** First pass the dependency
+branch's own compiler, lint, and other candidate-defining gates. Record that
+exact dependency commit, rebase the child once, then run the expensive build,
+live-proof, and review ladder. Keep the proven stack frozen: movement on main
+alone is not a reason to rebase it. Move the dependency only for required
+mergeability, human direction, or a material dependency correction. When it
+does move, the child candidate and its runtime evidence change; freeze again
+and restart from the rebase rather than accumulating proof across histories.
+
+For an expensive native, generated, or packaged runtime artifact, separate
+diagnosis from artifact production. Reproduce the exact failure, settle the
+state transition with focused tests or instrumentation, and batch the coherent
+fix before producing another artifact. Build once per candidate, then run the
+targeted acceptance flow; use a short bounded stress repetition only when the
+defect is timing-dependent.
 
 - Keep refactoring separate unless required for the fix.
 - Prefer reviewable slices; roughly 200-400 human-written changed lines is a
@@ -480,6 +489,14 @@ After review:
 If final validation fails, fix the root cause and re-review the **new fix
 delta**, not the entire historical diff, unless the fix materially redesigns
 the change.
+
+Classify a broad CI failure before editing. Run the same failing workflow or
+smallest equivalent check on the exact base candidate, or on current main when
+the base is unavailable. A candidate-unique failure that reaches changed
+behavior reopens the loop. A failure reproduced by the control is
+repository-health evidence, not acceptance evidence for this change; record
+the comparison and keep it outside the fix. Classification is complete when
+every red broad check is tied to either the candidate or a named control run.
 
 ## 9. Land
 
