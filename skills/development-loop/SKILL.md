@@ -51,6 +51,43 @@ specific enough to be wrong: "the cache key omits the tenant id", not "caching
 is broken". Trace every hop that can change the reported result and stop there;
 a local predicate is one hop, not an expedition.
 
+**Probe uncertain mechanisms before designing around them.** When the proposed
+fix depends on an unobserved browser or WebView operation, OS API, callback
+bridge, framework lifecycle, protocol, or external-service response, state one
+falsifiable hypothesis and the smallest observation that distinguishes it.
+Test that mechanism directly in the failing process when possible. Prefer an
+existing debug, eval, console, CDP, IPC, API, log, or temporary diagnostic
+surface over a production edit and rebuild. Keep each probe reversible and
+single-purpose, and record the observation separately from its interpretation.
+
+A successful invocation proves only that the caller returned success. It does
+not prove the runtime effect occurred. Keep or reject the hypothesis from the
+observed effect before choosing architecture or writing production code. When
+no direct route reaches the boundary, add a safe debug-gated reusable route as
+described by `visual-proof` section 3a when that instrumentation is
+proportionate to the change. Do not impose instrumentation on a deterministic
+local bug whose mechanism is already established.
+
+When no proportionate probe can observe an uncertain mechanism, do not
+implement a path that depends on it. Record the unresolved hypothesis, then
+choose a path that uses established mechanisms or keep the work blocked until
+the mechanism can be observed.
+
+| Proof level | Establishes | Does not establish |
+| --- | --- | --- |
+| Local | Pure state, parsing, ownership, or transition logic | The runtime bridge works |
+| Mechanism | The real platform, callback, protocol, or service performs the operation | The complete user flow works |
+| Acceptance | The candidate completes every observable checkpoint | Exhaustive internal edge-case coverage |
+
+Use the levels in order when each is relevant; lower proof never substitutes
+for higher proof. For runtime failures, read current state and logs, run one
+direct probe, keep or reject its hypothesis, and repeat only for the next
+uncertain bridge. Then resume the normal workflow at section 1; mechanism proof
+does not select the lane, satisfy the durable contract, or authorize skipping
+design, tests, implementation discipline, or complete live acceptance. If a
+production edit fails to sharpen the boundary observation, the next action is
+a direct probe rather than another edit.
+
 When the failure resists reproduction — production-only, timing-dependent, no
 repro steps — force it with instrumentation, added logging, or a test that
 recreates its conditions. If it still will not surface, `rubber-duck` the trace
@@ -65,7 +102,10 @@ still fails. After the edit lands there is no before to pair the fix against.
 
 Complete when you can point at the observed failure, the traced path to it, and
 a named cause — or at a labeled hypothesis and the check that failed to settle
-it.
+it. When an uncertain runtime mechanism was involved, also record the
+hypothesis, distinguishing observation, observed result, and keep or reject
+decision. An unresolved mechanism may complete the diagnosis record, but it
+cannot authorize an implementation that depends on that mechanism.
 
 ## 1. Triage the change before designing it
 
@@ -643,6 +683,10 @@ literal `findings: []`.
 - **Permanent guard proliferation.** A focused regression test is often enough.
 - **Harness green mistaken for product green.** Scripted checks, mocked E2Es,
   helper messages, and successful source reads do not prove the visible flow.
+- **Successful invocation mistaken for runtime effect.** A returned success
+  value does not prove that a WebView, OS API, callback, protocol, or service
+  changed the observed state. Probe the uncertain mechanism before building
+  retry, timeout, ownership, or abstraction machinery around it.
 - **Partial proof promoted to pass.** Reproducing the failure, reaching login,
   or proving one downstream result cannot open the review gate when another
   acceptance checkpoint is broken or unseen.
@@ -673,3 +717,6 @@ The change is complete when:
 6. dual review has no verified in-scope must-fix finding;
 7. post-review validation covers the actual review fixes;
 8. the landed diff remains coherent and scoped.
+
+Changes to the mechanism-probe rule also pass the behavioral fixture in
+[`references/mechanism-probe-fixture.md`](./references/mechanism-probe-fixture.md).
