@@ -13,11 +13,9 @@
 # load delay.
 #
 # Modes:
-#   (default) — assume Copilot CLI is already running in the pane. Send keys
-#              right away. Use this when reattaching to an existing session.
-#   --wait    — poll the pane for Copilot CLI readiness (the `❯` input box
-#              marker) for up to 30s, then send keys. Use this immediately
-#              after launching a fresh Copilot in a new tmux session.
+#   (default) — require a ready Copilot CLI with an empty input prompt now.
+#   --wait    — poll for that same ready state for up to 30s. Use this
+#              immediately after launching a fresh Copilot.
 #
 # Designed to be backgrounded by the user's `ca` launcher:
 #   ( mailbox-poke.sh "$NAME" --wait ) &
@@ -45,30 +43,70 @@ LAST_POKED=""
 [[ -f "$WATERMARK_FILE" ]] && LAST_POKED="$(cat "$WATERMARK_FILE" 2>/dev/null || true)"
 [[ "$NEWEST_ID" == "$LAST_POKED" ]] && exit 0
 
-if [[ "$WAIT" -eq 1 ]]; then
-  # Poll up to 30s for Copilot CLI's input prompt marker
-  for _ in $(seq 1 60); do
-    if tmux has-session -t "$NAME" 2>/dev/null && \
-       tmux capture-pane -p -t "$NAME" 2>/dev/null | tail -10 | grep -q '❯'; then
-      break
-    fi
-    sleep 0.5
-  done
-  sleep 0.5  # small grace once we see the prompt
+PANE="$(
+  tmux list-panes -a -F $'#{session_name}\t#{pane_id}\t#{window_active}\t#{pane_active}' 2>/dev/null |
+    awk -F $'\t' -v name="$NAME" '$1 == name && $3 == "1" && $4 == "1" { print $2 }'
+)"
+if [[ -z "$PANE" || "$PANE" == *$'\n'* ]]; then
+  echo "UNVERIFIED: tmux session '$NAME' is not running; the mail is queued for pickup." >&2
+  exit 3
 fi
 
-# Only send if the recipient tmux session is actually up
-if tmux has-session -t "$NAME" 2>/dev/null; then
-  PROMPT='check mailbox; skip if empty'
-  tmux send-keys -t "$NAME" -l -- "$PROMPT"
+if [[ "$(tmux display-message -p -t "$PANE" '#{session_name}' 2>/dev/null || true)" != "$NAME" ]]; then
+  echo "UNVERIFIED: resolved pane does not belong to exact session '$NAME'; no keys were sent." >&2
+  exit 3
+fi
+
+current_input() {
+  awk '
+    /^[[:space:]]*❯/ { line = $0 }
+    END {
+      sub(/^[[:space:]]*/, "", line)
+      sub(/[[:space:]]*$/, "", line)
+      print line
+    }
+  '
+}
+
+copilot_ready() {
+  local command screen input
+  command="$(tmux display-message -p -t "$PANE" '#{pane_current_command}' 2>/dev/null || true)"
+  [[ "$command" == "copilot" ]] || return 1
+  screen="$(tmux capture-pane -p -J -t "$PANE" 2>/dev/null || true)"
+  input="$(current_input <<<"$screen")"
+  grep -q 'Session:.*AIC used' <<<"$screen" &&
+    [[ "$input" == "❯" ]]
+}
+
+if [[ "$WAIT" -eq 1 ]]; then
+  for _ in $(seq 1 60); do
+    copilot_ready && break
+    sleep 0.5
+  done
+fi
+
+if ! copilot_ready; then
+  echo "UNVERIFIED: '$NAME' is not at a ready Copilot prompt; the mail is queued and no keys were sent." >&2
+  exit 3
+fi
+
+PROMPT="check mailbox; skip if empty [mailbox-poke:$NEWEST_ID]"
+if tmux send-keys -t "$PANE" -l -- "$PROMPT"; then
   sleep 0.5
-  # A single Enter often fails to submit, leaving the poke unsent in the
-  # recipient's input box. Retry until their input line is empty again.
   SUBMITTED=0
   for _ in 1 2 3 4 5; do
-    tmux send-keys -t "$NAME" Enter
+    SCREEN="$(tmux capture-pane -p -J -t "$PANE" 2>/dev/null || true)"
+    INPUT="$(current_input <<<"$SCREEN")"
+    if [[ "$(tmux display-message -p -t "$PANE" '#{pane_current_command}' 2>/dev/null || true)" != "copilot" ]] ||
+      [[ "$INPUT" != "❯ $PROMPT" ]]; then
+      break
+    fi
+    tmux send-keys -t "$PANE" Enter
     sleep 1.5
-    if tmux capture-pane -p -t "$NAME" | grep -q '^❯[[:space:]]*$'; then
+    SCREEN="$(tmux capture-pane -p -J -t "$PANE" 2>/dev/null || true)"
+    INPUT="$(current_input <<<"$SCREEN")"
+    if [[ "$INPUT" == "❯" ]] &&
+      grep -Fq "$PROMPT" <<<"$SCREEN"; then
       SUBMITTED=1
       break
     fi
@@ -86,6 +124,6 @@ if tmux has-session -t "$NAME" 2>/dev/null; then
     exit 3
   fi
 else
-  echo "UNVERIFIED: tmux session '$NAME' is not running; the mail is queued for pickup." >&2
+  echo "UNVERIFIED: '$NAME' disappeared before the poke could be entered; the mail is queued." >&2
   exit 3
 fi

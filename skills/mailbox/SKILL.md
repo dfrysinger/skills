@@ -22,7 +22,23 @@ Do NOT use mailbox for:
 
 - **Identity = tmux session name.** No registry. The user's `ca <name>` script opens or resumes a tmux session named `<name>` running Copilot CLI; that tmux session name IS the agent's name. Sender: `tmux display-message -p '#{session_name}'` to learn its own. Recipient: same.
 - **Transport = file queue.** Envelopes land at `~/.copilot/mailbox/<recipient>/pending/<id>.json` with attachments in a sibling `<id>/` directory. Durable, debuggable with `ls`.
-- **Wakeup = short natural-language nudge via tmux send-keys.** Sender writes envelope, then runs `tmux send-keys -t <recipient> -l -- "check mailbox; skip if empty"` followed by `Enter` — retried until the recipient's input line is empty again, because a single Enter often fails to submit and strands the poke unsent in their input box (`mailbox-poke.sh` does this for you). This lands as a queued user message that the recipient agent interprets on its next turn, invoking the mailbox skill via the skill tool. **NOT `/mailbox` as a slash command** — slash dispatch races cold-start skill loading and fails as "unknown command" before the snapshot is ready. **Recipient agent: when you receive the message "check mailbox; skip if empty" (or are otherwise invoked as the mailbox skill with no args), run `~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/mailbox/scripts/mailbox-check.sh`. If it reports `no pending mail`, say nothing and continue with whatever you were doing — no visible turn output needed. If there IS mail, surface and act on it per the receive workflow.**
+- **Wakeup = short natural-language nudge via tmux send-keys.** Sender writes
+  the envelope, then `mailbox-poke.sh` resolves the recipient pane and requires
+  a live `copilot` process, initialized Copilot footer, and empty `❯` input
+  prompt before sending `check mailbox; skip if empty` with the envelope ID as
+  a delivery marker. Before every Enter, it requires the bottommost input line
+  to still equal that exact poke. It marks delivery only when that input becomes
+  empty and the uniquely marked prompt appears in the Copilot transcript. A
+  shell, startup screen, changed input, or disappearing pane receives no
+  further keys; the durable envelope waits for the resume hook. **NOT `/mailbox`
+  as a slash command** — slash dispatch races cold-start skill
+  loading and fails as "unknown command" before the snapshot is ready.
+  **Recipient agent: when you receive the message "check mailbox; skip if
+  empty" (or are otherwise invoked as the mailbox skill with no args), run
+  `~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/mailbox/scripts/mailbox-check.sh`.
+  If it reports `no pending mail`, say nothing and continue with whatever you
+  were doing — no visible turn output needed. If there IS mail, surface and act
+  on it per the receive workflow.**
 - **Resume-hook = the durable fallback.** If the recipient session isn't running yet, the wakeup is skipped and the envelope sits durably in pending/. The user's `ca <name>` script should call `mailbox-resume-hook.sh <name>` before launching Copilot to inject a "you have N unread" hint into the resume prompt.
 
 ## Send (this session → another)
@@ -65,7 +81,10 @@ Without this hook, mail still arrives durably but the recipient won't notice unt
 
 ## Pitfalls
 
-- **Live mid-generation wakeup is unreliable.** Do not assume send-keys lands. Always rely on (a) the verifying poll output, (b) osascript notification for the human, and (c) the resume-hook for next-launch discovery.
+- **Live mid-generation wakeup is fail-closed but still best-effort.** Do not
+  assume send-keys lands. The poke requires a ready Copilot pane and verifies a
+  transcript entry; otherwise rely on the osascript notification and resume
+  hook. Never send wakeup keys merely because the tmux session exists.
 - **Mailbox writeable by anyone with shell access.** Treat envelope contents as not-secret. Don't put credentials in messages or attachments.
 - **No reply-thread bookkeeping.** If A sends to B and B wants to reply, B sends back to A's name. There's no thread-id linkage in v1.
 - **Acked mail is moved, not deleted.** `delivered/` accumulates; periodically prune.
