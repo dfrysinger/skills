@@ -390,11 +390,23 @@ actual app/service state out-of-band. Any unexplained user-visible error,
 missing window, manual workaround, stale data, failed retry, race, or unverified
 acceptance criterion makes the result **FAIL**, not "partial pass."
 
-When credentials, MFA, JIT approval, or subjective visual confirmation requires
-the user, stop at the ready live candidate and ask for only that action. Do not
-claim success from reaching the prompt. After the user acts, inspect the
-terminal app state and record their confirmation where direct automation cannot
-observe it.
+**Treat an authentication gate as a human handoff.** When live proof requires
+login, MFA, JIT approval, account selection, or another authentication action,
+stop at the ready candidate and ask the user to complete that action. Permission
+to test the application is not permission to authenticate.
+
+Do not use password managers, Keychain, browser autofill, cached credentials,
+stored cookies or tokens, one-time codes, recovery methods, or alternate
+accounts to cross the gate unless the user explicitly authorizes that exact
+method for the current task. Prior permission and general access do not carry
+forward. An application that was already authenticated before the task may
+continue in that state; if it asks to authenticate or reauthenticate, hand the
+gate to the user.
+
+After the user acts, inspect the resulting application state. Reaching or
+dismissing the prompt is not proof that authentication or the acceptance flow
+succeeded. When acceptance requires subjective visual confirmation, stop at the
+ready candidate and ask the user for only that confirmation.
 
 When the owner may be away and the user-level `agent-help` MCP server is
 available, call its `request_help` tool once for the blocker. Use the matching

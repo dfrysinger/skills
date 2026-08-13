@@ -31,14 +31,14 @@ unseen, manually bypassed, or unexplained states keep the gate closed.
 
 ## Human-in-the-loop checkpoints
 
-Credentials, MFA, JIT approval, and subjective visual checks may require the
-user. Reaching the point where help is needed is `BLOCKED`, not success. Resume
-the same identified candidate after the user acts, inspect the resulting app
-state, and record the user's observation only for evidence the agent cannot
-directly collect. If the owner may be away, use the user-level `agent-help`
-MCP server's `request_help` tool once with a short non-secret label; never put
-URLs, credentials, repository content, raw errors, or personal data in the
-notification.
+Authentication gates and subjective visual confirmation follow `SKILL.md`'s
+human-handoff rule. Reaching the point where help is needed is `BLOCKED`, not
+success. Resume the same identified candidate after the user acts, inspect the
+resulting app state, and record the user's observation only for evidence the
+agent cannot directly collect. If the owner may be away, use the user-level
+`agent-help` MCP server's `request_help` tool once with a short non-secret
+label; never put URLs, credentials, repository content, raw errors, or personal
+data in the notification.
 
 ## Competing proof owners
 
