@@ -25,10 +25,12 @@ Do NOT use mailbox for:
 - **Wakeup = short natural-language nudge via tmux send-keys.** Sender writes
   the envelope, then `mailbox-poke.sh` resolves the recipient pane and requires
   a live `copilot` process, initialized Copilot footer, and empty `❯` input
-  prompt before sending `check mailbox; skip if empty` with the envelope ID as
-  a delivery marker. Before every Enter, it requires the bottommost input line
-  to still equal that exact poke. It marks delivery only when that input becomes
-  empty and the uniquely marked prompt appears in the Copilot transcript. A
+  prompt before sending `check mailbox; skip if empty` with a short unique
+  marker derived from the envelope ID. Before every Enter, it requires the
+  bottommost input line (including any visual wrapping in a narrow pane) to
+  still equal that exact poke after display whitespace is normalized. It marks
+  delivery only when that input becomes empty and the unique marker appears in
+  the Copilot transcript. A
   shell, startup screen, changed input, or disappearing pane receives no
   further keys; the durable envelope waits for the resume hook. **NOT `/mailbox`
   as a slash command** — slash dispatch races cold-start skill
