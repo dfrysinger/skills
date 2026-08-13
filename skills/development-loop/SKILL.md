@@ -73,11 +73,11 @@ implement a path that depends on it. Record the unresolved hypothesis, then
 choose a path that uses established mechanisms or keep the work blocked until
 the mechanism can be observed.
 
-| Proof level | Establishes | Does not establish |
+| Proof | Shows | Does not show |
 | --- | --- | --- |
-| Local | Pure state, parsing, ownership, or transition logic | The runtime bridge works |
-| Mechanism | The real platform, callback, protocol, or service performs the operation | The complete user flow works |
-| Acceptance | The candidate completes every observable checkpoint | Exhaustive internal edge-case coverage |
+| **Code** | Internal logic behaves correctly | The real platform integration works |
+| **Integration** | The browser, OS API, callback, protocol, or service performs the operation | The complete user workflow succeeds |
+| **End-to-end** | The actual build completes the full user workflow | Every internal edge case is covered |
 
 Use the levels in order when each is relevant; lower proof never substitutes
 for higher proof. For runtime failures, read current state and logs, run one
