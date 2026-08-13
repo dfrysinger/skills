@@ -514,10 +514,16 @@ the comparison and keep it outside the fix.
 
 When evidence points to an intermittent failure, rerun only the failed jobs on
 the same candidate. Do not start the complete workflow again and do not push a
-successor merely to obtain another attempt. Produce a successor only for a
-verified candidate defect, then batch its related fixes and restart final proof
-once. Classification is complete when every red broad check is tied to the
-candidate, a named control run, or explicit intermittent evidence.
+successor merely to obtain another attempt. Record the rerun URL and outcome.
+A successful same-candidate rerun is explicit intermittent evidence for the
+original failure. If the same failure repeats under the same conditions, it
+remains unclassified until focused reproduction or a named control run ties it
+to the candidate or repository health. Apply section 5's candidate-change rule
+when classification proves a candidate defect.
+
+Classification is complete when every red broad check is tied to the candidate,
+a named control run, or a named successful rerun of the same failed job on the
+same candidate.
 
 ## 9. Land
 
@@ -650,9 +656,8 @@ literal `findings: []`.
   evidence-output churn restarts the scenario.
 - **Using the full CI matrix as an iterative debugger.** Repeated successor
   pushes discard partial evidence, cancel expensive work, and mix unrelated
-  failures into the next attempt. Diagnose with focused checks, freeze one
-  exact candidate for final proof, rerun only evidenced intermittent failures,
-  and change the candidate only for a verified defect.
+  failures into the next attempt. Follow section 5's final-candidate freeze and
+  successor rule.
 
 ## Verification
 
