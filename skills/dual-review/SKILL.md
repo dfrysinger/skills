@@ -34,16 +34,14 @@ security review.
 | Slot | Model family | Agent type | Mode |
 |---|---|---|---|
 | A | latest Claude Opus | `code-review` | `background` |
-| B | latest GPT **Terra** tier (balanced), excluding mini and codex | `code-review` | `background` |
+| B | latest GPT **Terra** tier (balanced) | `code-review` | `background` |
 
 Resolve the highest-numbered available model in each family at session start.
-For slot B prefer the Terra (balanced) tier over the Sol (flagship) tier: it
-keeps almost all of Sol's coding/reasoning accuracy while being faster and
-cheaper, which suits a parallel reviewer. Avoid the Luna tier here — its lower
-reasoning capacity misses subtle logic bugs. If no Terra-tier model exists in
-the current build, fall back to the highest non-mini, non-codex GPT.
-Dispatch the bare model id; put effort labels in the prompt, not the model id.
-Both reviewers run in parallel and receive the same scope contract.
+Use Terra for slot B; never fall back to Sol for routine dual review. If Terra
+is unavailable, use the highest non-Sol, non-mini, non-codex, non-Luna GPT
+model, or report the slot unavailable rather than buying an unbounded flagship
+investigation. Launch both reviewers with medium reasoning effort and default
+context. They run in parallel and receive the same scope contract.
 
 If one reviewer fails, retry it once. If the retry fails, stop and report the
 dual review as incomplete. Never call a single-family result a dual review.
@@ -90,11 +88,17 @@ The prompt must enforce:
 4. **Impact and likelihood.** Every finding carries severity and likelihood.
 5. **Verbatim evidence.** Every code claim includes a quote of at least 12
    source tokens from the cited range.
-6. **Bounded investigation.** Review the diff and direct interaction surfaces,
-   with a target budget of at most 60 tool calls or 60 minutes. If responsible
-   coverage is impossible, return `review_complete: false`; do not keep
-   searching indefinitely.
-7. **Round discipline.**
+6. **Static review.** Read, search, and reason from the candidate and supplied
+   evidence. Reviewers never build, test, lint, install, format, generate,
+   launch, or mutate. Missing runtime evidence produces
+   `review_complete: false` plus the smallest requested check; it does not
+   authorize reviewer-side execution.
+7. **Round budget.**
+   - discovery: at most 30 tool calls or 25 minutes;
+   - fix-verification: at most 12 tool calls or 10 minutes;
+   - resolution-only: at most 8 tool calls or 8 minutes.
+   Returning incomplete is correct when the budget cannot cover the slice.
+8. **Round discipline.**
    - Round 1 is the broad discovery pass.
    - Round 2 verifies prior fixes and reviews the fix delta plus directly
      affected paths.
@@ -230,18 +234,21 @@ land independently while an unreviewable slice is deferred. Continue recovery
 under the autonomous completion budget below when the deferred slice is
 required for the acceptance criteria.
 
-The reviewer-side time/tool budget is not sufficient by itself. When the
-runtime exposes elapsed time, tool-call count, or cancellation:
+Reviewers are static consumers of evidence, never validation workers. A queued
+compiler, unavailable runner, or missing dependency is therefore irrelevant to
+their execution: they report the missing evidence and return.
 
-- inspect status no later than 30 minutes for a reviewer that has not returned;
-- request immediate conclusion or cancel at 60 minutes or 60 tool calls;
-- discard partial prose as an incomplete review;
-- split/narrow before retrying rather than granting more search time.
+When the runtime exposes elapsed time, tool-call count, or cancellation:
 
-When the runtime cannot cancel a running reviewer, do not treat its eventual
-over-budget output as authoritative. Mark it incomplete and use a narrowed
-retry. Prevent this case up front by splitting large/mixed diffs and keeping the
-review packet bounded.
+- inspect discovery reviewers at 15 minutes and focused reviewers at 7;
+- request immediate conclusion at the round limit;
+- discard over-budget output as incomplete;
+- split or narrow before one retry rather than granting more search time.
+
+When the runtime cannot cancel a running reviewer, do not launch competing
+reviewers or builds behind it. Mark its eventual over-budget output incomplete,
+then use one narrowed retry. Prevent this case by splitting large or mixed
+diffs and keeping the packet bounded.
 
 ## Bounded iteration loop
 

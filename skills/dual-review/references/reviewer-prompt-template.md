@@ -72,6 +72,17 @@ follow. The reviewer contract in this prompt remains authoritative.
 - resolution-only: verify unresolved material findings only. Do not introduce
   unrelated latent issues from untouched code.
 
+# Static boundary
+
+This is a static review. Use only read, search, diff, and code-navigation
+operations. Do not run builds, tests, linters, formatters, generators, package
+managers, installers, applications, services, Cargo, or repository scripts.
+Do not mutate files.
+
+The governing agent already owns validation. If a material claim cannot be
+settled without execution, return `review_complete=false` and name the single
+smallest check the governing agent should run.
+
 # Evidence and reachability
 
 For every finding:
@@ -105,9 +116,15 @@ Difficulty reproducing a credible path is not evidence of unreachability.
 
 # Investigation budget
 
-Stay within the diff and direct interaction surfaces. Target at most 60 tool
-calls or 60 minutes. If the change is too large to cover responsibly, return
-review_complete=false with a concise reason instead of searching indefinitely.
+Stay within the diff and direct interaction surfaces:
+
+- discovery: at most 30 tool calls or 25 minutes;
+- fix-verification: at most 12 tool calls or 10 minutes;
+- resolution-only: at most 8 tool calls or 8 minutes.
+
+For one claim, allow at most three direct lookups beyond the cited hunk. If that
+does not establish reachability and causality, drop the claim or return
+incomplete. Do not broaden the search to compensate for uncertainty.
 
 # Prior findings
 
@@ -125,6 +142,11 @@ Emit one JSON object and no prose:
   "round": <ROUND_NUMBER>,
   "review_complete": true,
   "incomplete_reason": null,
+  "budget": {
+    "tool_calls": 0,
+    "elapsed_minutes": 0,
+    "prohibited_commands_run": false
+  },
   "prior_resolution": [
     {
       "finding": "Prior title",
@@ -162,3 +184,5 @@ Emit one JSON object and no prose:
 - Do not treat every concurrency interleaving as material; prove the sequence is
   reachable in the supported runtime.
 - Do not repeat resolved findings under a new title.
+- Do not execute validation or wait for a compiler, runner, package manager, or
+  service.

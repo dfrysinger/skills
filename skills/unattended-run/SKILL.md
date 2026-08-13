@@ -1,6 +1,6 @@
 ---
 name: unattended-run
-description: Keep a long, unattended Copilot CLI run on course. Autonomously arm an `/every` charter re-brief (via manage_schedule) that restores the run's operating rules on each tick so a compacted context doesn't drift, then best-effort self-enqueue the `/autopilot` objective through the current tmux pane. Use when starting a long autopilot or `/goal` run against a plan doc, when writing or sharpening an autopilot objective, or when keeping an unattended run from drifting over many context compactions.
+description: Keep a long, unattended Copilot CLI run on course. Arm an `/every` charter re-brief that restores the run's operating rules after compaction, then hand off an optional `/autopilot` objective at the next idle tmux boundary. Use when starting a long autopilot or `/goal` run against a plan doc, sharpening its objective, or preventing drift across context compactions.
 ---
 
 # unattended-run
@@ -14,10 +14,10 @@ For a long, unattended Copilot CLI run, two things keep the agent on course:
   `manage_schedule` before any same-session compact. It is the load-bearing
   deliverable of this skill.**
 - An **optional `/autopilot` objective** that drives the *what* until the agent
-  determines the task is complete. `/autopilot` is not an agent tool, but when
-  the CLI is running inside tmux you can best-effort enqueue it into your own
-  input field with `tmux send-keys`. Fall back to printing it when self-enqueue
-  is unsafe or unavailable.
+  determines the task is complete. `/autopilot` is not an agent tool. Inside
+  tmux, a detached handoff waits for the current turn to become idle before it
+  types the objective. Fall back to printing it when that handoff is
+  unavailable.
 
 ## Critical: `/autopilot` is UI injection, not an agent tool
 
@@ -36,7 +36,11 @@ verifiable as a tool. This is expected and is **NOT a blocker**:
 - Autopilot remaining selected after completion is expected and harmless. It
   affects only how the next prompt is handled; do not turn it off as cleanup.
 - A slash command you inject lands at the **next turn boundary**, like any user
-  message — including mid-run under autopilot. To self-compact during a run,
+  message — including mid-run under autopilot. Synchronous self-injection from
+  an active tool call races the turn that launched it: the command cannot be
+  interpreted while that turn is still working, so short confirmation loops
+  produce false failures or lose the input during redraw. Use the detached
+  idle-boundary handoff in step 3. To self-compact during a run,
   use `self-compact`, which queues the compact and arms a watcher that submits
   continuation only after the session's `summary_count` proves compaction
   landed. Then end your turn. Selected autopilot mode alone does not reliably
@@ -160,7 +164,7 @@ objective live, pointed at that file, with a prompt that follows the charter's
 **Required process skills** protocol. A same-session compact is forbidden until
 this criterion passes.
 
-### 3. Best-effort self-enqueue `/autopilot`, then proceed autonomously
+### 3. Hand off `/autopilot` at the next idle boundary
 After the charter exists and the `/every` reminder is live, enqueue the
 single-line objective into your own Copilot CLI input when all of these hold:
 
@@ -169,34 +173,27 @@ single-line objective into your own Copilot CLI input when all of these hold:
 - The user has not asked you to leave autopilot disabled.
 - The objective contains no newline and is fully resolved, with no `<SLOT>`.
 
-Type the text literally, then press Enter **and confirm it fired**. A single
-Enter is unreliable: it often fails to submit, leaving the command sitting
-unsent in the input box while you move on believing you triggered it. Retry
-Enter until the pane proves the command took effect:
+Launch the bundled handoff as a **detached** Bash process, then end the current
+turn immediately:
 
 ```bash
-tmux send-keys -t "$TMUX_PANE" -l -- '/autopilot <objective>'
-sleep 0.5
-for i in 1 2 3 4 5; do
-  tmux send-keys -t "$TMUX_PANE" Enter
-  sleep 2
-  tmux capture-pane -p -S -120 -t "$TMUX_PANE" |
-    grep -Eq 'Started autopilot objective( #[0-9]+)?:|Autopilot objective:' &&
-    break
-done
+"<skill-dir>/scripts/enqueue-autopilot.sh" \
+  "$TMUX_PANE" \
+  '/autopilot <objective>'
 ```
 
-Current CLI builds render an accepted objective as
-`Started autopilot objective #<n>:`; older builds used `Autopilot objective:`.
-Either confirmation proves the command was interpreted rather than left in the
-box. Never report injection failure when either confirmation is visible. If
-neither appears, say so plainly and fall back below — do not claim autopilot is
-active.
+Invoke Bash with `mode:"async"`, `detach:true`, and a short `initial_wait`.
+This must be the final tool action: emit no prose and call no more tools after
+launching it. The helper waits until the pane has left `Working`, requires two
+stable idle observations, submits once, and verifies either
+`Started autopilot objective #<n>:` or `Autopilot objective:`. It writes a
+receipt under `~/.copilot/autopilot-enqueue/` and notifies the user if delivery
+cannot be confirmed.
 
-Make this the **last tool action of the turn** so the submitted command becomes
-the next queued user turn instead of racing later tool work.
+Do not replace this with an inline `tmux send-keys` loop. The helper must outlive
+the turn that launched it; otherwise it is observing the race it created.
 
-If tmux targeting is unavailable or injection fails, print this fallback and
+If tmux targeting is unavailable before launch, print this fallback and
 continue without blocking:
 
 ```
@@ -207,10 +204,12 @@ Optional — run this whenever you like for a tighter goal-driven loop
 ```
 
 If `/allow-all` is needed, print it for the user; never self-enqueue it. The
-`/every` re-brief remains the load-bearing mechanism either way.
+detached helper reports post-launch failure through its receipt and macOS
+notification. The `/every` re-brief remains the load-bearing mechanism either
+way.
 
-**Complete when** the pane showed either accepted-objective confirmation, or
-the fallback was printed, and you have moved on with the actual work.
+**Complete when** the detached handoff was launched as the last action, or the
+fallback was printed because tmux targeting was unavailable.
 
 ### 4. Stop cleanly when the Definition of Done is met
 When every Definition-of-Done item is verifiably met:

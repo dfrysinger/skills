@@ -19,8 +19,9 @@ otherwise it prints the objective for the user.
 
 ## Launching the run
 
-- The agent may self-enqueue `/autopilot <objective>` through its current tmux
-  pane after the `/every` reminder is live.
+- The agent may hand off `/autopilot <objective>` through its current tmux pane
+  after the `/every` reminder is live. The bundled detached helper waits for
+  the active turn to reach an idle boundary before typing.
 - Confirm acceptance from visible TUI output. Current builds print
   `Started autopilot objective #<n>:`; older builds print
   `Autopilot objective:`. Either means injection succeeded.
@@ -34,7 +35,8 @@ otherwise it prints the objective for the user.
   otherwise alter the user's selected mode.
 - Escape / Ctrl+C cancels and stops autopilot from continuing.
 
-These remain user-interface slash commands, not agent tools. tmux injection is
-best-effort delivery only; do not claim activation or inspect hidden
-slash-command state. If injection is unavailable, print the objective and do
-not ask the user to restart the CLI.
+These remain user-interface slash commands, not agent tools. A synchronous
+`tmux send-keys` loop launched by the active turn cannot verify its own next
+turn and must not be used. The detached helper verifies visible acceptance; if
+the handoff is unavailable, print the objective and do not ask the user to
+restart the CLI.
