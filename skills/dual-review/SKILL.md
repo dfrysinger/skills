@@ -34,14 +34,13 @@ security review.
 | Slot | Model family | Agent type | Mode |
 |---|---|---|---|
 | A | latest Claude Opus | `code-review` | `background` |
-| B | latest GPT **Terra** tier (balanced) | `code-review` | `background` |
+| B | latest full GPT, preferring **Terra** | `code-review` | `background` |
 
 Resolve the highest-numbered available model in each family at session start.
-Use Terra for slot B; never fall back to Sol for routine dual review. If Terra
-is unavailable, use the highest non-Sol, non-mini, non-codex, non-Luna GPT
-model, or report the slot unavailable rather than buying an unbounded flagship
-investigation. Launch both reviewers with medium reasoning effort and default
-context. They run in parallel and receive the same scope contract.
+Prefer Terra for routine cost and latency. Sol and Luna are valid fallbacks;
+exclude only mini and codex variants. The scope and execution budgets, not the
+GPT tier, bound the review. Launch both reviewers with medium reasoning effort
+and default context. They run in parallel and receive the same scope contract.
 
 If one reviewer fails, retry it once. If the retry fails, stop and report the
 dual review as incomplete. Never call a single-family result a dual review.
@@ -98,6 +97,8 @@ The prompt must enforce:
    - fix-verification: at most 12 tool calls or 10 minutes;
    - resolution-only: at most 8 tool calls or 8 minutes.
    Returning incomplete is correct when the budget cannot cover the slice.
+   These are reviewer instructions and landing gates, not guaranteed runtime
+   kill switches.
 8. **Round discipline.**
    - Round 1 is the broad discovery pass.
    - Round 2 verifies prior fixes and reviews the fix delta plus directly
@@ -245,10 +246,18 @@ When the runtime exposes elapsed time, tool-call count, or cancellation:
 - discard over-budget output as incomplete;
 - split or narrow before one retry rather than granting more search time.
 
-When the runtime cannot cancel a running reviewer, do not launch competing
+Runtime counters are authoritative. Reviewer-reported counters are telemetry,
+not proof of compliance. When the runtime cannot expose or enforce tool-call
+limits, the call ceiling remains a review-acceptance rule rather than a hard
+spend cap. When it cannot cancel a running reviewer, do not launch competing
 reviewers or builds behind it. Mark its eventual over-budget output incomplete,
-then use one narrowed retry. Prevent this case by splitting large or mixed
-diffs and keeping the packet bounded.
+then use one narrowed retry.
+
+The default ceilings assume a review slice of at most roughly 400 human-written
+lines. Keep the ceilings and split an incomplete slice rather than raising
+them. Use completed review telemetry to recalibrate downward when both families
+consistently finish below half a ceiling; do not claim the ceilings are hard
+enforcement unless runtime counters and cancellation prove it.
 
 ## Bounded iteration loop
 

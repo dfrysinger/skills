@@ -64,7 +64,8 @@ work autonomously. If self-enqueue is unavailable, print the objective instead.
 Fill both artifacts in [`references/brief-template.md`](references/brief-template.md):
 the **charter** (the standing *how* — required process skills, push policy,
 autonomy mandate, plan hygiene, subagents, coordination, standing grants) and
-the **objective** (plan doc, scope, one-line outcome, observable done-condition).
+the **objective** (plan doc, scope, outcome, boundaries, and observable
+done-condition).
 The charter's skill manifest records:
 
 - one **governing skill** that owns the run's process and completion gates;
@@ -83,7 +84,11 @@ scope, under a unique heading both artifacts point at; if it's missing, write it
 first — with `design-doc` for systemic or critical work, or at
 `development-loop`'s handoff point for bounded work.
 
-**Complete when** no `<SLOT>` remains in either artifact, both point at the same
+Persist the objective body in its own file, without the `/autopilot` prefix,
+because the detached helper pastes the whole file. Persist the charter
+separately so the schedule can re-read only the standing operating rules.
+
+**Complete when** both files exist, no `<SLOT>` remains, both point at the same
 Definition-of-Done heading, and every skill in the manifest owns work or a gate
 that remains in this run.
 
@@ -98,8 +103,8 @@ message using `self-compact`'s brief protocol:
 ```text
 SELF_COMPACT_BRIEF
 
-Keep: Replace the conversation with a standing brief pointing at <brief-path>
-and its Definition of Done.
+Keep: Replace the conversation with a standing brief pointing at <charter-path>,
+<objective-file>, and their shared Definition of Done.
 
 Drop: Planning history and tool output already captured by the charter.
 
@@ -166,12 +171,13 @@ this criterion passes.
 
 ### 3. Hand off `/autopilot` at the next idle boundary
 After the charter exists and the `/every` reminder is live, enqueue the
-single-line objective into your own Copilot CLI input when all of these hold:
+persisted objective into your own Copilot CLI input when all of these hold:
 
 - `TMUX_PANE` is set and `tmux display-message -p -t "$TMUX_PANE"
   '#{pane_id}'` succeeds.
 - The user has not asked you to leave autopilot disabled.
-- The objective contains no newline and is fully resolved, with no `<SLOT>`.
+- The objective file is readable, self-contained, and fully resolved, with no
+  `<SLOT>`.
 
 Launch the bundled handoff as a **detached** Bash process, then end the current
 turn immediately:
@@ -179,16 +185,18 @@ turn immediately:
 ```bash
 "<skill-dir>/scripts/enqueue-autopilot.sh" \
   "$TMUX_PANE" \
-  '/autopilot <objective>'
+  '<objective-file>'
 ```
 
 Invoke Bash with `mode:"async"`, `detach:true`, and a short `initial_wait`.
 This must be the final tool action: emit no prose and call no more tools after
 launching it. The helper waits until the pane has left `Working`, requires two
-stable idle observations, submits once, and verifies either
-`Started autopilot objective #<n>:` or `Autopilot objective:`. It writes a
-receipt under `~/.copilot/autopilot-enqueue/` and notifies the user if delivery
-cannot be confirmed.
+stable idle observations from a ready Copilot CLI prompt, pastes the complete
+multi-line objective as one bracketed input, prefixes a unique handoff ID,
+submits once, and verifies either a newer
+`Started autopilot objective #<n>:` or a legacy confirmation carrying that
+handoff ID. It writes a receipt under `~/.copilot/autopilot-enqueue/` and
+notifies the user if delivery cannot be confirmed.
 
 Do not replace this with an inline `tmux send-keys` loop. The helper must outlive
 the turn that launched it; otherwise it is observing the race it created.
@@ -200,7 +208,7 @@ continue without blocking:
 Optional — run this whenever you like for a tighter goal-driven loop
 (the run already continues without it via the /every re-brief):
 
-/autopilot <objective>
+Paste `/autopilot ` followed by the complete contents of <objective-file>.
 ```
 
 If `/allow-all` is needed, print it for the user; never self-enqueue it. The

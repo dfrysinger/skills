@@ -6,20 +6,29 @@ best-effort self-enqueue through tmux or print as a fallback for `/autopilot`.
 Fill every `<SLOT>`; delete any clause that doesn't apply rather than leaving a
 placeholder.
 
-## Objective — OPTIONAL, self-enqueued or printed for `/autopilot <objective>`
+## Objective — OPTIONAL, persisted and handed to `/autopilot`
 
 `/autopilot` is not an agent tool. After arming the charter re-brief, enqueue
-this line into the current tmux pane as the final tool action when targeting is
-safe; otherwise print it as an optional convenience and proceed. The run stays
-on course through the charter re-brief without it.
+the objective file into the current tmux pane as the final tool action when
+targeting is safe; otherwise print its contents as an optional convenience and
+proceed. The run stays on course through the charter re-brief without it.
 
-One self-contained, completion-detectable line. Autopilot re-reads it on every
-continuation and determines completion from it, so keep it short and make the
-done-condition observable:
+Persist a complete work order, not a compressed slogan. Autopilot re-reads it
+on every continuation, so include enough context to resume correctly after
+compaction. Store only this objective body in a dedicated file such as
+`docs/<run>-autopilot-objective.md`; the handoff helper adds `/autopilot`:
 
-> Achieve the Definition of Done in `<PLAN_DOC>`[ for `<SCOPE>`], the
-> "`<DOD_REF>`" section: `<ONE_LINE_OUTCOME>`. Keep working through the plan;
-> finish only once every item in the "`<DOD_REF>`" section is verifiably met.
+> Work from `<PLAN_DOC>`[ for `<SCOPE>`] in `<WORKSPACE>`.
+>
+> Outcome: `<OUTCOME>`.
+>
+> Follow the plan in order and keep its current baton accurate. Use the
+> charter's required process skills and push policy. Treat `<NON_GOALS>` as
+> outside this run.
+>
+> Finish only when every item in the "`<DOD_REF>`" section is verifiably met.
+> Do not substitute partial tests, code inspection, or a plausible
+> implementation for the observable completion evidence named there.
 
 Objective slots:
 
@@ -32,7 +41,9 @@ Objective slots:
   one condition that can't drift apart. Its items must be observable (tests
   green, the E2E scenario passes, the feature works end to end) so
   autopilot stops only when they genuinely hold.
-- **`<ONE_LINE_OUTCOME>`** — the finished result in one plain phrase.
+- **`<OUTCOME>`** — the finished user-visible result.
+- **`<NON_GOALS>`** — explicit boundaries that prevent the run from expanding
+  into adjacent cleanup or redesign.
 
 ## Charter — persisted to a file, re-fed on the `/every` reminder
 
@@ -95,12 +106,20 @@ Charter slots:
 
 ## Worked example
 
-**Objective** (`/autopilot`):
+**Objective file**:
 
-> Achieve the Definition of Done in `docs/checkout-refactor-plan.md`, the
-> "Definition of Done" section: the checkout flow is refactored and its full
-> test suite passes. Keep working through the plan; finish only once every item
-> in the "Definition of Done" section is verifiably met.
+> Work from `docs/checkout-refactor-plan.md` in the checkout-refactor worktree.
+>
+> Outcome: the checkout flow uses the new state model and the supported
+> checkout scenarios work end to end.
+>
+> Follow the plan in order and keep its current baton accurate. Use the
+> charter's required process skills and push policy. Do not redesign unrelated
+> payment or account flows.
+>
+> Finish only when every item in the "Definition of Done" section is verifiably
+> met. Do not substitute partial tests, code inspection, or a plausible
+> implementation for the observable completion evidence named there.
 
 **Charter** (persisted; re-fed on the reminder):
 

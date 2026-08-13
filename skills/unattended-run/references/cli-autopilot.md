@@ -19,9 +19,14 @@ otherwise it prints the objective for the user.
 
 ## Launching the run
 
-- The agent may hand off `/autopilot <objective>` through its current tmux pane
-  after the `/every` reminder is live. The bundled detached helper waits for
-  the active turn to reach an idle boundary before typing.
+- The agent may hand off a persisted multi-line `/autopilot` objective through
+  its current tmux pane after the `/every` reminder is live. The bundled
+  detached helper requires a ready Copilot CLI prompt, waits for the active
+  turn to reach an idle boundary, then uses bracketed paste so the complete
+  objective is one input submission. A unique handoff ID at the start of the
+  submitted objective distinguishes a new legacy confirmation from stale pane
+  output. The helper fails closed rather than pasting into another application
+  or an uninitialized terminal.
 - Confirm acceptance from visible TUI output. Current builds print
   `Started autopilot objective #<n>:`; older builds print
   `Autopilot objective:`. Either means injection succeeded.

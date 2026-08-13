@@ -122,6 +122,10 @@ Stay within the diff and direct interaction surfaces:
 - fix-verification: at most 12 tool calls or 10 minutes;
 - resolution-only: at most 8 tool calls or 8 minutes.
 
+These limits determine whether the review is accepted. They do not promise that
+the agent runtime can terminate you at the exact tool-call boundary. Conclude
+early enough to return a complete result inside both limits.
+
 For one claim, allow at most three direct lookups beyond the cited hunk. If that
 does not establish reachability and causality, drop the claim or return
 incomplete. Do not broaden the search to compensate for uncertainty.
