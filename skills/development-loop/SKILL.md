@@ -238,6 +238,20 @@ fix before producing another artifact. Build once per candidate, then run the
 targeted acceptance flow; use a short bounded stress repetition only when the
 defect is timing-dependent.
 
+**Freeze the final CI candidate.** Treat the complete cross-platform or
+otherwise expensive CI matrix as final proof, not as the primary debugging
+harness. Before starting it, batch every fix supported by focused evidence,
+pass the candidate-defining checks, and record the exact commit. Keep that
+candidate unchanged while the matrix runs. A red flaky, unrelated, or
+repository-health check is not permission to push a successor.
+
+Change the frozen candidate only when a completed check proves a reproducible
+candidate defect that reaches changed behavior. Diagnose it with the smallest
+equivalent local, platform, or manual canary, batch related fixes, rerun their
+focused checks, record the successor commit, and restart final proof once.
+When pull-request policy permits, keep large or expensive work draft during
+diagnosis and mark it ready only after the final candidate is frozen.
+
 - Keep refactoring separate unless required for the fix.
 - Prefer reviewable slices; roughly 200-400 human-written changed lines is a
   useful review target, not an absolute limit.
@@ -490,13 +504,20 @@ If final validation fails, fix the root cause and re-review the **new fix
 delta**, not the entire historical diff, unless the fix materially redesigns
 the change.
 
-Classify a broad CI failure before editing. Run the same failing workflow or
-smallest equivalent check on the exact base candidate, or on current main when
-the base is unavailable. A candidate-unique failure that reaches changed
-behavior reopens the loop. A failure reproduced by the control is
-repository-health evidence, not acceptance evidence for this change; record
-the comparison and keep it outside the fix. Classification is complete when
-every red broad check is tied to either the candidate or a named control run.
+Classify a broad CI failure before editing. Run the smallest equivalent local,
+platform, or manual canary against the frozen candidate. When the failure may
+be repository health, run the same check on the exact base candidate, or on
+current main when the base is unavailable. A candidate-unique failure that
+reaches changed behavior reopens the loop. A failure reproduced by the control
+is repository-health evidence, not acceptance evidence for this change; record
+the comparison and keep it outside the fix.
+
+When evidence points to an intermittent failure, rerun only the failed jobs on
+the same candidate. Do not start the complete workflow again and do not push a
+successor merely to obtain another attempt. Produce a successor only for a
+verified candidate defect, then batch its related fixes and restart final proof
+once. Classification is complete when every red broad check is tied to the
+candidate, a named control run, or explicit intermittent evidence.
 
 ## 9. Land
 
@@ -627,6 +648,11 @@ literal `findings: []`.
 - **Duplicate E2E runs without causal value.** Rerun expensive live proof when
   section 6's receipt-validity rule requires it, not because unrelated
   evidence-output churn restarts the scenario.
+- **Using the full CI matrix as an iterative debugger.** Repeated successor
+  pushes discard partial evidence, cancel expensive work, and mix unrelated
+  failures into the next attempt. Diagnose with focused checks, freeze one
+  exact candidate for final proof, rerun only evidenced intermittent failures,
+  and change the candidate only for a verified defect.
 
 ## Verification
 
