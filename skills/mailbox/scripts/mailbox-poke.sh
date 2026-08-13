@@ -113,25 +113,42 @@ MARKER="[mb:${NEWEST_ID##*-}]"
 PROMPT="check mailbox; skip if empty $MARKER"
 PROMPT_SIGNATURE="$(input_signature <<<"❯ $PROMPT")"
 if tmux send-keys -t "$PANE" -l -- "$PROMPT"; then
-  sleep 0.5
   SUBMITTED=0
-  for _ in 1 2 3 4 5; do
+  for _ in 1 2 3 4; do
     SCREEN="$(tmux capture-pane -p -J -t "$PANE" 2>/dev/null || true)"
     INPUT="$(current_input <<<"$SCREEN")"
     INPUT_SIGNATURE="$(input_signature <<<"$INPUT")"
-    if [[ "$(tmux display-message -p -t "$PANE" '#{pane_current_command}' 2>/dev/null || true)" != "copilot" ]] ||
-      [[ "$INPUT_SIGNATURE" != "$PROMPT_SIGNATURE" ]]; then
-      break
-    fi
-    tmux send-keys -t "$PANE" Enter
-    sleep 1.5
-    SCREEN="$(tmux capture-pane -p -J -t "$PANE" 2>/dev/null || true)"
-    INPUT="$(current_input <<<"$SCREEN")"
-    if [[ "$INPUT" == "❯" ]] &&
-      grep -Fq "$MARKER" <<<"$SCREEN"; then
+
+    if [[ "$INPUT" == "❯" ]] && grep -Fq "$MARKER" <<<"$SCREEN"; then
       SUBMITTED=1
       break
     fi
+
+    if [[ "$(tmux display-message -p -t "$PANE" '#{pane_current_command}' 2>/dev/null || true)" != "copilot" ]]; then
+      break
+    fi
+
+    if [[ "$INPUT_SIGNATURE" == "$PROMPT_SIGNATURE" ]]; then
+      tmux send-keys -t "$PANE" Enter
+    elif [[ "$INPUT" != "❯" ]]; then
+      break
+    fi
+
+    # Copilot can take a few seconds to move submitted text into the transcript.
+    # Do not send another Enter during that transition.
+    for _ in 1 2 3 4 5 6; do
+      sleep 0.5
+      SCREEN="$(tmux capture-pane -p -J -t "$PANE" 2>/dev/null || true)"
+      INPUT="$(current_input <<<"$SCREEN")"
+      INPUT_SIGNATURE="$(input_signature <<<"$INPUT")"
+      if [[ "$INPUT" == "❯" ]] && grep -Fq "$MARKER" <<<"$SCREEN"; then
+        SUBMITTED=1
+        break 2
+      fi
+      if [[ "$INPUT" != "❯" && "$INPUT_SIGNATURE" != "$PROMPT_SIGNATURE" ]]; then
+        break 2
+      fi
+    done
   done
   if [[ "$SUBMITTED" -eq 1 ]]; then
     # Mark this envelope as already-poked-about so re-attaches don't re-nag.
