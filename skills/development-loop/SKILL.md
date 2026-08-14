@@ -1,6 +1,6 @@
 ---
 name: development-loop
-description: Develop and ship one non-trivial code change through a risk-sized loop — establish the failure, triage the blast radius, prove runtime behavior, review, and land. Use for bug fixes, features, refactors, app or service changes, agent workflows, pipelines, and SDK changes. When triage finds shared state, persistence, public contracts, cross-component architecture, security, or fail-closed boundaries, invoke `design-doc` before coding.
+description: Develop and ship one non-trivial code change through a risk-sized loop — establish the failure, triage the blast radius, prove runtime behavior, review, and land. Use when fixing bugs, building features, refactoring, iterating on UI, or changing apps, services, agent workflows, pipelines, or SDKs. When triage finds shared state, persistence, public contracts, cross-component architecture, security, or fail-closed boundaries, invoke `design-doc` before coding.
 ---
 
 # development-loop
@@ -30,6 +30,29 @@ runnable may happen first. They are development diagnostics, not acceptance
 evidence. The conditional pre-build guard review in section 4 is the only
 implementation-review exception; it reviews a guard that constrains the work,
 not an implementation claimed to work.
+
+### Tracer-bullet UI branch
+
+Use this branch when the user explicitly wants to explore and refine a
+user-visible interface before investing in durable validation. It changes the
+timing of sections 2, 4, and 5, not the evidence or landing requirements.
+
+Record the candidate as exploratory, the interaction being evaluated, and the
+deferred gates. Reuse the running watcher or HMR process and change one visible
+behavior at a time. Produce only enough diagnostics to make that slice load in
+the existing runtime, then hand the runnable candidate to the user. Treat their
+first visible divergence as the next work item; keep accepted behavior fixed
+while refining that divergence.
+
+User acceptance freezes the interface candidate and ends this branch. Encode
+the durable contract and regression tests, run the proportionate deterministic
+checks, and continue through the normal live-proof, review, and landing gates.
+Manual exploration counts toward live proof only when its candidate identity,
+scenario, checkpoints, and explicit confirmation satisfy section 6's receipt.
+
+Complete when the user has accepted the frozen interface candidate, every
+deferred gate is recorded for the normal loop, and no exploratory result has
+been represented as validated or ready to land.
 
 ## 0. Establish the failure
 
