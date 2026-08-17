@@ -133,7 +133,7 @@ if ! validate_positive_duration "$START_GRACE_SECONDS" 30; then
   deferred_failure "invalid compaction start grace"
   exit 1
 fi
-if ! validate_positive_duration "$AUTH_WAIT_SECONDS" 30; then
+if ! validate_positive_duration "$AUTH_WAIT_SECONDS" 180; then
   deferred_failure "invalid authorization wait"
   exit 1
 fi

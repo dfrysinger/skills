@@ -243,9 +243,12 @@ work. Subagent events with non-null `agentId` are outside the root agent's
 editor activity stream and are ignored throughout authorization, quiescence,
 compaction identity, and post-compact activity checks.
 
-The watcher waits a bounded 30 seconds for the complete persisted sequence,
+The watcher waits a bounded 180 seconds for the complete persisted sequence,
 positive handoff, tool completion, and one of the supported quiescent terminal
-shapes.
+shapes. Copilot CLI 1.0.79 can leave the initiating Bash tool's completion
+unreadable for more than 30 seconds after the helper has handed off; the longer
+bound absorbs that observed persistence delay without changing any editor or
+ownership gate.
 Timeout, malformed JSON, ambiguous matches, or inability to establish the
 binding releases the lock and exits without Ctrl-S, typing, or Enter. The event
 baseline for activity and compaction identity is recorded only after

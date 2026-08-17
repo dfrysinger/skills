@@ -1893,6 +1893,52 @@ run_submit_command >/dev/null
 wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
 assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
 
+# Copilot 1.0.79 can persist the initiating tool completion more than the
+# former 30-second authorization bound after the helper has handed off.
+setup_case authorization-after-former-thirty-second-bound
+printf '%s\n' 100000 131000 > "$FAKE_CASE/epoch-milliseconds"
+for fake_epoch in $(seq 131010 10 132000); do
+  printf '%s\n' "$fake_epoch" >> "$FAKE_CASE/epoch-milliseconds"
+done
+export FAKE_EPOCH_MILLISECONDS_FILE="$FAKE_CASE/epoch-milliseconds"
+(
+  for _ in $(seq 1 200); do
+    find "$FAKE_CASE/session/files" -name 'self-compact-*.handoff' -print -quit |
+      grep -q . && break
+    sleep 0.002
+  done
+  sleep 0.1
+  CONTENT=$'SELF_COMPACT_BRIEF\nKeep: delayed baton beyond the old bound\nDrop: resolved detail\nAfter compaction: continue and do not compact again' \
+    HELPER_PATH="$SCRIPT_DIR/submit-compact.sh" \
+    TOOL_CALL_ID="$FAKE_TOOL_CALL_ID" \
+    /usr/bin/perl -MJSON::PP -e '
+      print encode_json({agentId => undef, type => "assistant.turn_start"}), "\n";
+      print encode_json({
+        agentId => undef,
+        type => "assistant.message",
+        data => {
+          content => $ENV{CONTENT},
+          toolRequests => [{
+            toolCallId => $ENV{TOOL_CALL_ID},
+            name => "bash",
+            arguments => {command => "\"" . $ENV{HELPER_PATH} . "\""}
+          }]
+        }
+      }), "\n"
+    ' > "$FAKE_CASE/session/events.jsonl.next"
+  cat "$FAKE_CASE/session/events.jsonl" \
+    >> "$FAKE_CASE/session/events.jsonl.next"
+  mv "$FAKE_CASE/session/events.jsonl.next" \
+    "$FAKE_CASE/session/events.jsonl"
+) &
+FAKE_PUBLICATION_PID=$!
+export FAKE_PUBLICATION_PID
+printf '%s\n' "$FAKE_PUBLICATION_PID" >> "$FAKE_BACKGROUND_PIDS"
+SELF_COMPACT_AUTH_WAIT_SECONDS=120 \
+  run_submit_command >/dev/null
+wait_for_watcher_log 'submitted post-compact continuation' >/dev/null
+assert_count 1 '^KEY:Enter:/compact ' "$FAKE_TMUX_ACTIONS"
+
 setup_case split-brief-and-tool-message
 append_split_brief_turn \
   $'SELF_COMPACT_BRIEF\nKeep: split event baton\nDrop: resolved detail\nAfter compaction: continue and do not compact again'
@@ -2196,7 +2242,7 @@ SELF_COMPACT_AUTH_WAIT_SECONDS=3600 \
   run_submit_command > "$FAKE_CASE/submit.out" 2> "$FAKE_CASE/submit.err" ||
   status=$?
 [ "$status" -ne 0 ] || fail "out-of-range authorization wait was accepted"
-grep -q 'AUTH_WAIT_SECONDS must be greater than zero and at most 30 seconds' \
+grep -q 'AUTH_WAIT_SECONDS must be greater than zero and at most 180s' \
   "$FAKE_CASE/submit.err"
 assert_count 0 '^KEY:C-s$|^TYPE:|^KEY:Enter:' "$FAKE_TMUX_ACTIONS"
 [ ! -d "$FAKE_CASE/session/files/self-compact.lock" ] ||

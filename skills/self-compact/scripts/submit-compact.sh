@@ -81,15 +81,18 @@ if ! sc_ambiguous_wait_is_bounded "$AMBIGUOUS_WAIT_SECONDS"; then
   echo "submit-compact.sh: ambiguous render wait must be between 20 and 30 seconds; compact not submitted" >&2
   exit 1
 fi
-AUTH_WAIT_SECONDS="${SELF_COMPACT_AUTH_WAIT_SECONDS:-30}"
+AUTH_WAIT_MAX_SECONDS=180
+AUTH_WAIT_SECONDS="${SELF_COMPACT_AUTH_WAIT_SECONDS:-$AUTH_WAIT_MAX_SECONDS}"
 QUIESCENCE_GRACE_SECONDS="${SELF_COMPACT_QUIESCENCE_GRACE_SECONDS:-2}"
 START_GRACE_SECONDS="${SELF_COMPACT_START_GRACE_SECONDS:-15}"
 for value_name in AUTH_WAIT_SECONDS QUIESCENCE_GRACE_SECONDS; do
   value="${!value_name}"
-  if ! awk -v seconds="$value" 'BEGIN {
-    exit !(seconds ~ /^[0-9]+([.][0-9]+)?$/ && seconds > 0 && seconds <= 30)
+  maximum=30
+  [ "$value_name" = AUTH_WAIT_SECONDS ] && maximum="$AUTH_WAIT_MAX_SECONDS"
+  if ! awk -v seconds="$value" -v maximum="$maximum" 'BEGIN {
+    exit !(seconds ~ /^[0-9]+([.][0-9]+)?$/ && seconds > 0 && seconds <= maximum)
   }'; then
-    echo "submit-compact.sh: $value_name must be greater than zero and at most 30 seconds; compact not submitted" >&2
+    echo "submit-compact.sh: $value_name must be greater than zero and at most ${maximum}s; compact not submitted" >&2
     exit 1
   fi
 done
