@@ -66,6 +66,13 @@ the **charter** (the standing *how* — required process skills, push policy,
 autonomy mandate, plan hygiene, subagents, coordination, standing grants) and
 the **objective** (plan doc, scope, outcome, boundaries, and observable
 done-condition).
+
+Derive the push policy from the repository's instructions. If agents have
+owned branch namespaces and a pull-request workflow, publishing reviewed work
+to that owned branch is the default. A local-only charter requires an explicit
+user request or repository prohibition; do not infer it from separate approval
+gates for deployment, merge queues, infrastructure, or shared resources.
+
 The charter's skill manifest records:
 
 - one **governing skill** that owns the run's process and completion gates;

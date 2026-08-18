@@ -89,10 +89,14 @@ Charter slots:
 - **`<EXECUTION_SKILLS>`** — only project or domain skills that own a remaining
   implementation, testing, deployment, or review phase. Do not include every
   skill currently loaded, and never include `unattended-run` itself.
-- **`<PUSH_POLICY>`** — the one policy most worth pinning, pick one:
-  - `Don't push — keep working locally for this run`
-  - `Push to remote and merge when each phase is done, tested E2E and reviewed clean`
-  - `Push reviewed and validated work whenever you need`
+- **`<PUSH_POLICY>`** — derive this from the repository's own instructions.
+  When the repository gives agents an owned branch namespace and pull-request
+  path, default to `Push reviewed and validated work to your own branch and PR
+  whenever you need`. Use `Don't push — keep working locally for this run`
+  only when the user explicitly requests local-only work or a repository rule
+  forbids remote publication. Keep ordinary branch publication separate from
+  approval-gated production actions such as deployment, merge-queue mutation,
+  infrastructure changes, or writes to shared resources.
 - **`<COORDINATION>`** — when peers share the effort:
   `If coordinating with other agents, don't wait for them to push to main —
   cherry-pick what you need from their worktree/branch`. Omit when solo.
