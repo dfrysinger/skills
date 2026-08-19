@@ -1,0 +1,34 @@
+  Current   Sessions   Issues   Pull requests   Gists 
+
+                                                                          ┃
+ ● Edit  Edit ~/code/gaw-wt-oscar-js-transcript-workflow/docs/design/sin… ┃
+ ● Edit  Edit ~/code/gaw-wt-oscar-js-transcript-workflow/docs/design/sin… ┃
+                                                                          ┃
+ ⌄ Thought for 6s                                                         ┃
+ │ I need to set clear acceptance criteria and a DoD patch. The design    ┃
+ │ objective is specifically for every model microvm due to the source. I ┃
+ │ have to adjust criterion 2 and ensure criterion 3 is in place. For     ┃
+ │ criterion 4, this involves the workflow agent child. Criterion 5       ┃
+ │ should confirm no unrequested authority is involved. Overall, mapping  ┃
+ │ the wording from C2 is still okay, possibly combining C3, C5, and C11, ┃
+ │ and I need to remove trusted mode from the DoD.                        ┃
+                                                                          ┃
+ ● Edit  Edit ~/code/gaw-wt-oscar-js-transcript-workflow/docs/design/sin… ┃
+                                                                          ┃
+ / Search "trusted.parent|trusted parent|privileged paren… 17 lines found ┃
+ / Search "parent\.|capabilities\.open|requestedCapabilit… 33 lines found ┃
+                                                                          ┃
+ $ Shell Check simplified design diff 3 lines…                            ┃
+   git -C /Users/dfrysinger/code/gaw-wt-oscar-js-transcript-workflow --n… ┃
+                                                                          ┃
+ MD Read single-script-enterprise-transcript-workflow.md L1:345 (345 lin… ┃
+ MD Read single-script-enterprise-transcript-workflow.md L570:775 (206 l… ┃
+ MD Read single-script-enterprise-transcript-workflow.md L880:980 (101 l… ┃
+                                                                          ┃
+ ● Edit  Edit ~/code/gaw-wt-oscar-js-transcript-workflow/docs/design/sin… ┃
+                                                                          ┃
+ ~/copilot-workspace/agent-oscar                Session: 86714.12 AIC used 
+╻▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+┃                                     
+╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ ◎ Working - autopilot · 38.4 KiB esc interrupt        GPT-5.6 Sol · (11%)

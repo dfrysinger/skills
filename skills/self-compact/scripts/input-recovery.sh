@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Shared Copilot TUI input capture and bounded recovery helpers.
 
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../_lib/copilot-pane.sh"
+
 SC_TMUX_BIN=""
 SC_PANE=""
 SC_STATE_STATUS="unknown"
@@ -238,100 +240,32 @@ sc_resize_pulse() {
 }
 
 sc_prompt_hex() {
-  awk '
+  cp_input_region | awk '
     {
-      line[NR] = $0
-    }
-    function emit(value) {
       if (emitted) printf "\n"
-      printf "%s", value
+      printf "%s", $0
       emitted = 1
-    }
-    END {
-      for (i = NR; i >= 1; i--) {
-        if (line[i] ~ /^❯([[:space:]]|$)/) {
-          prompt = i
-          break
-        }
-      }
-      if (!prompt) exit 1
-      for (i = NR; i > prompt; i--) {
-        if (line[i] ~ /^─+$/) {
-          bottom = i
-          break
-        }
-      }
-      if (!bottom) exit 1
-      value = line[prompt]
-      sub(/^❯ ?/, "", value)
-      sub(/ +$/, "", value)
-      emit(value)
-      for (i = prompt + 1; i < bottom; i++) {
-        if (line[i] !~ /^─+$/) {
-          value = line[i]
-          sub(/^  /, "", value)
-          sub(/ +$/, "", value)
-          emit(value)
-        }
-      }
     }' | sc_text_hex
 }
 
 sc_menu_visible() {
-  awk '
-    { line[NR] = $0 }
+  cp_below_input | awk '
+    NR > 4 { exit }
+    {
+      candidate = tolower($0)
+      if (candidate ~ /esc/ &&
+        candidate ~ /(close|cancel|dismiss)/) escape_hint = 1
+      if (candidate ~ /enter/ &&
+        candidate ~ /select/) select_hint = 1
+      if (index($0, "↑") && index($0, "↓")) navigation_hint = 1
+    }
     END {
-      for (i = NR; i >= 1; i--) {
-        if (line[i] ~ /^❯([[:space:]]|$)/) {
-          prompt = i
-          break
-        }
-      }
-      if (!prompt) exit 1
-      for (i = NR; i > prompt; i--) {
-        if (line[i] ~ /^─+$/) {
-          bottom = i
-          break
-        }
-      }
-      if (!bottom) exit 1
-      last = bottom + 4
-      if (last > NR) last = NR
-      for (i = bottom + 1; i <= last; i++) {
-        candidate = tolower(line[i])
-        if (candidate ~ /esc/ &&
-          candidate ~ /(close|cancel|dismiss)/) escape_hint = 1
-        if (candidate ~ /enter/ &&
-          candidate ~ /select/) select_hint = 1
-        if (index(line[i], "↑") && index(line[i], "↓")) navigation_hint = 1
-      }
       exit !(escape_hint && select_hint && navigation_hint)
     }'
 }
 
 sc_footer_stashed() {
-  awk '
-    { line[NR] = $0 }
-    END {
-      for (i = NR; i >= 1; i--) {
-        if (line[i] ~ /^❯([[:space:]]|$)/) {
-          prompt = i
-          break
-        }
-      }
-      if (!prompt) exit 1
-      for (i = NR; i > prompt; i--) {
-        if (line[i] ~ /^─+$/) {
-          bottom = i
-          break
-        }
-      }
-      if (!bottom) exit 1
-      for (i = bottom + 1; i <= NR; i++) {
-        if (tolower(line[i]) ~ /stashed/) exit 0
-      }
-      exit 1
-    }'
+  cp_below_input | grep -qi 'stashed'
 }
 
 sc_capture_sample() {

@@ -16,6 +16,9 @@
 
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/../../_lib/copilot-pane.sh"
+
 USAGE="usage: rotate.sh <old-session-id> <prompt-file> [--consume-prompt]"
 OLD="${1:?$USAGE}"
 PROMPT_FILE="${2:?$USAGE}"
@@ -96,26 +99,19 @@ if [ "$CONSUME_PROMPT" = "--consume-prompt" ] && ! rm -f -- "$PROMPT_FILE"; then
   exit 1
 fi
 
-# The input box is the region between the last two horizontal rules. A long
-# prompt wraps below the `❯` marker, so the whole region has to be read.
-_input_region() {
-  tmux capture-pane -p -t "$PANE" 2>/dev/null | awk '
-    /^─+$/ { n++; sep[n] = NR }
-    { line[NR] = $0 }
-    END {
-      if (n < 2) exit 1
-      for (i = sep[n-1] + 1; i < sep[n]; i++) print line[i]
-    }'
-}
+# The input box is read through the shared pane parser, which knows both the
+# boxed and caret layouts. A long prompt wraps across several rows, so the whole
+# region has to be read.
+_input_region() { cp_capture "$PANE" | cp_input_region; }
 
 # Wrapping inserts newlines and padding at arbitrary points, so compare with all
 # whitespace removed.
-_squash() { tr -d '[:space:]'; }
+_squash() { cp_input_signature; }
 
 _input_is_empty() {
   local t
-  t=$(_input_region | tr -d '❯' | _squash) || return 1
-  [ -z "$t" ]
+  t=$(_input_region) || return 1
+  [ -z "$(_squash <<<"$t")" ]
 }
 
 _sessions_here() {

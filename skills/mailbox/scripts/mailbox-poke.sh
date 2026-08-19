@@ -6,8 +6,8 @@
 # the mailbox skill (which then runs mailbox-check.sh).
 #
 # Why not "/mailbox"? Slash dispatch races cold-start skill-snapshot
-# loading: the `❯` prompt appears before skills are registered, so a slash
-# command sent immediately after detecting `❯` hits the router before the
+# loading: the input box appears before skills are registered, so a slash
+# command sent immediately after the box renders hits the router before the
 # mailbox skill is recognized → "unknown command". A natural-language
 # prompt goes through the agent's reasoning loop, which tolerates the
 # load delay.
@@ -23,6 +23,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/_common.sh"
+. "$SCRIPT_DIR/../../_lib/copilot-pane.sh"
 
 [[ $# -lt 1 ]] && { echo "usage: mailbox-poke.sh <name> [--wait]" >&2; exit 2; }
 NAME="$1"; shift
@@ -57,45 +58,7 @@ if [[ "$(tmux display-message -p -t "$PANE" '#{session_name}' 2>/dev/null || tru
   exit 3
 fi
 
-current_input() {
-  awk '
-    /^[[:space:]]*❯/ {
-      line = $0
-      sub(/[[:space:]]*$/, "", line)
-      active = 1
-      next
-    }
-    active && /^[[:space:]]*─/ {
-      active = 0
-      next
-    }
-    active {
-      continuation = $0
-      sub(/^[[:space:]]*/, "", continuation)
-      sub(/[[:space:]]*$/, "", continuation)
-      line = line continuation
-    }
-    END {
-      sub(/^[[:space:]]*/, "", line)
-      sub(/[[:space:]]*$/, "", line)
-      print line
-    }
-  '
-}
-
-input_signature() {
-  tr -d '[:space:]'
-}
-
-copilot_ready() {
-  local command screen input
-  command="$(tmux display-message -p -t "$PANE" '#{pane_current_command}' 2>/dev/null || true)"
-  [[ "$command" == "copilot" ]] || return 1
-  screen="$(tmux capture-pane -p -J -t "$PANE" 2>/dev/null || true)"
-  input="$(current_input <<<"$screen")"
-  grep -q 'Session:.*AIC used' <<<"$screen" &&
-    [[ "$input" == "❯" ]]
-}
+copilot_ready() { cp_pane_accepts_input "$PANE"; }
 
 if [[ "$WAIT" -eq 1 ]]; then
   for _ in $(seq 1 60); do
@@ -111,15 +74,29 @@ fi
 
 MARKER="[mb:${NEWEST_ID##*-}]"
 PROMPT="check mailbox; skip if empty $MARKER"
-PROMPT_SIGNATURE="$(input_signature <<<"❯ $PROMPT")"
+PROMPT_SIGNATURE="$(cp_input_signature <<<"$PROMPT")"
+
+# Reads the pane into BOX ("empty", "text", or "none") and INPUT_SIGNATURE.
+# "none" means the input box could not be located at all, which is not the same
+# as an empty box and must never be treated as a successful submission.
+read_input() {
+  local text
+  if text="$(cp_input_region <<<"$SCREEN")"; then
+    INPUT_SIGNATURE="$(cp_input_signature <<<"$text")"
+    [[ -z "$INPUT_SIGNATURE" ]] && BOX=empty || BOX=text
+  else
+    INPUT_SIGNATURE=""
+    BOX=none
+  fi
+}
+
 if tmux send-keys -t "$PANE" -l -- "$PROMPT"; then
   SUBMITTED=0
   for _ in 1 2 3 4; do
     SCREEN="$(tmux capture-pane -p -J -t "$PANE" 2>/dev/null || true)"
-    INPUT="$(current_input <<<"$SCREEN")"
-    INPUT_SIGNATURE="$(input_signature <<<"$INPUT")"
+    read_input
 
-    if [[ "$INPUT" == "❯" ]] && grep -Fq "$MARKER" <<<"$SCREEN"; then
+    if [[ "$BOX" == empty ]] && grep -Fq "$MARKER" <<<"$SCREEN"; then
       SUBMITTED=1
       break
     fi
@@ -130,7 +107,7 @@ if tmux send-keys -t "$PANE" -l -- "$PROMPT"; then
 
     if [[ "$INPUT_SIGNATURE" == "$PROMPT_SIGNATURE" ]]; then
       tmux send-keys -t "$PANE" Enter
-    elif [[ "$INPUT" != "❯" ]]; then
+    elif [[ "$BOX" != empty ]]; then
       break
     fi
 
@@ -139,13 +116,12 @@ if tmux send-keys -t "$PANE" -l -- "$PROMPT"; then
     for _ in 1 2 3 4 5 6; do
       sleep 0.5
       SCREEN="$(tmux capture-pane -p -J -t "$PANE" 2>/dev/null || true)"
-      INPUT="$(current_input <<<"$SCREEN")"
-      INPUT_SIGNATURE="$(input_signature <<<"$INPUT")"
-      if [[ "$INPUT" == "❯" ]] && grep -Fq "$MARKER" <<<"$SCREEN"; then
+      read_input
+      if [[ "$BOX" == empty ]] && grep -Fq "$MARKER" <<<"$SCREEN"; then
         SUBMITTED=1
         break 2
       fi
-      if [[ "$INPUT" != "❯" && "$INPUT_SIGNATURE" != "$PROMPT_SIGNATURE" ]]; then
+      if [[ "$BOX" != empty && "$INPUT_SIGNATURE" != "$PROMPT_SIGNATURE" ]]; then
         break 2
       fi
     done

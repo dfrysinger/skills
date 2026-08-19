@@ -24,11 +24,14 @@ Do NOT use mailbox for:
 - **Transport = file queue.** Envelopes land at `~/.copilot/mailbox/<recipient>/pending/<id>.json` with attachments in a sibling `<id>/` directory. Durable, debuggable with `ls`.
 - **Wakeup = short natural-language nudge via tmux send-keys.** Sender writes
   the envelope, then `mailbox-poke.sh` resolves the recipient pane and requires
-  a live `copilot` process, initialized Copilot footer, and empty `❯` input
-  prompt before sending `check mailbox; skip if empty` with a short unique
-  marker derived from the envelope ID. Before every Enter, it requires the
-  bottommost input line (including any visual wrapping in a narrow pane) to
-  still equal that exact poke after display whitespace is normalized. It marks
+  a live `copilot` process, initialized Copilot footer, and empty input box
+  before sending `check mailbox; skip if empty` with a short unique
+  marker derived from the envelope ID. The input box is located with the shared
+  parser in `skills/_lib/copilot-pane.sh`, which reads both the current boxed
+  layout and the older caret one; a pane whose box cannot be located receives no
+  keys at all. Before every Enter, it requires the box contents (including any
+  visual wrapping in a narrow pane) to still equal that exact poke after display
+  whitespace is normalized. It marks
   delivery only when that input becomes empty and the unique marker appears in
   the Copilot transcript. A
   shell, startup screen, changed input, or disappearing pane receives no

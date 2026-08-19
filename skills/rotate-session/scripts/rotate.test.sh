@@ -2,6 +2,19 @@
 
 set -euo pipefail
 
+# The pane parser must satisfy every case against both input-box layouts, so
+# the whole suite runs once per style rather than testing one and assuming the
+# other.
+if [ -z "${MOCK_TUI:-}" ]; then
+  for style in boxed caret; do
+    MOCK_TUI="$style" "${BASH_SOURCE[0]}" "$@" || {
+      echo "rotate-session tests: FAILED for $style layout" >&2
+      exit 1
+    }
+  done
+  exit 0
+fi
+
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rotate.sh"
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/rotate-session-test.XXXXXX")
 trap '/bin/rm -rf -- "$ROOT"' EXIT
@@ -34,13 +47,30 @@ set -euo pipefail
 
 case "${1:-}" in
   capture-pane)
-    printf '%s\n' '────────'
-    if [ "${MOCK_MODE:-success}" = success ]; then
-      printf '❯ %s\n' "$(cat "$MOCK_INPUT" 2>/dev/null || true)"
+    # MOCK_TUI selects the input-box layout so both the current boxed style and
+    # the older caret style stay covered.
+    if [ "${MOCK_TUI:-caret}" = boxed ]; then
+      printf '%s\n' ' ▄▄▄▄▄▄▄▄'
+      printf '%s\n' '  ❯ an earlier user message'
+      printf '%s\n' ' ▀▀▀▀▀▀▀▀'
+      printf '%s\n' ' ~/w  Session: 1 AIC used'
+      printf '%s\n' '╻▄▄▄▄▄▄▄▄'
+      if [ "${MOCK_MODE:-success}" = success ]; then
+        printf '┃%s\n' "$(cat "$MOCK_INPUT" 2>/dev/null || true)"
+      else
+        printf '┃\n'
+      fi
+      printf '%s\n' '╹▀▀▀▀▀▀▀▀'
+      printf '%s\n' ' ← open sidebar · / commands'
     else
-      printf '❯ \n'
+      printf '%s\n' '────────'
+      if [ "${MOCK_MODE:-success}" = success ]; then
+        printf '❯ %s\n' "$(cat "$MOCK_INPUT" 2>/dev/null || true)"
+      else
+        printf '❯ \n'
+      fi
+      printf '%s\n' '────────'
     fi
-    printf '%s\n' '────────'
     ;;
   send-keys)
     if [ "${*: -2:1}" = -- ]; then
@@ -181,4 +211,4 @@ grep -q 'could not open rotation log; original prompt retained at ' "$ROOT/log-f
 [ ! -e "$ROOT/log-failure.input" ]
 ! find "$ROOT" -maxdepth 1 -name 'copilot-rotate-recovery-old-log-failure.*' | grep -q .
 
-echo "rotate-session tests: pass"
+echo "rotate-session tests: pass (${MOCK_TUI} layout)"

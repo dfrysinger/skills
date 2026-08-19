@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/../../_lib/copilot-pane.sh"
+
 pane="${1:-}"
 objective_file="${2:-}"
 objective=""
@@ -76,9 +79,9 @@ for _ in $(seq 1 300); do
     finish "unavailable" "tmux pane disappeared while waiting for idle"
     exit 2
   fi
-  if ! grep -q 'Session:.*AIC used' <<<"$screen" ||
-    ! grep -Eq '^[[:space:]]*❯' <<<"$screen" ||
-    grep -Eq '(^|[^[:alpha:]])Working([^[:alpha:]]|$).*esc interrupt|◉ Working' <<<"$screen"; then
+  if ! cp_is_loaded <<<"$screen" ||
+    ! cp_input_is_empty <<<"$screen" ||
+    cp_is_busy <<<"$screen"; then
     idle_samples=0
   else
     idle_samples=$((idle_samples + 1))
@@ -90,8 +93,8 @@ for _ in $(seq 1 300); do
 done
 
 if ((idle_samples < 2)); then
-  if ! grep -q 'Session:.*AIC used' <<<"${screen:-}" ||
-    ! grep -Eq '^[[:space:]]*❯' <<<"${screen:-}"; then
+  if ! cp_is_loaded <<<"${screen:-}" ||
+    ! cp_input_is_empty <<<"${screen:-}"; then
     finish "timeout" "Copilot prompt did not become ready within 300 seconds"
   else
     finish "timeout" "pane did not reach a stable idle boundary within 300 seconds"
