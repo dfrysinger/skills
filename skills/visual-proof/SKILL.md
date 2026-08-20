@@ -1,6 +1,6 @@
 ---
 name: visual-proof
-description: Capture visual evidence that running software behaves as intended, and validate it is real rather than blank, stale, or unfalsifiable. Use when verifying a UI change end to end, when a change note claims a screenshot, or when another skill needs runtime proof a human can see.
+description: Capture and inspect visual evidence for a current running UI candidate, rejecting blank, stale, unopened, or unfalsifiable screenshots. Use for every user-visible UI fix or feature before review, PR creation, landing, or a success claim; also use when a change note claims a screenshot or another skill needs runtime proof a human can see. This skill supplies the visual section of development-loop's machine-validated live-proof receipt; it does not replace full interaction proof.
 ---
 
 # visual-proof
@@ -8,6 +8,30 @@ description: Capture visual evidence that running software behaves as intended, 
 Seeing the software work is a separate claim from the tests passing, and a
 screenshot has to earn it. A file that was written is not a capture, and a
 capture is not proof until you have looked at it and said what it shows.
+
+## 0. Produce receipt evidence, not a verdict
+
+For runtime work, `development-loop` owns the completion gate and
+[`references/live-proof-receipt.md`](../development-loop/references/live-proof-receipt.md)
+owns its structured receipt. This skill fills the receipt's `visual` section.
+It cannot set the whole receipt to `PASS` by itself: the flow owner must still
+record the trigger, every meaningful interaction checkpoint, the terminal
+state, forbidden outcomes, and running-candidate identity.
+
+For every capture, return:
+
+- its stable path;
+- whether it was opened and rendered;
+- one falsifiable claim read from its pixels;
+- its actual width and height;
+- a passed pixel-spread check.
+
+Keep `visual.required: true` until all affected states have that evidence. A
+final screenshot cannot stand in for button clicks, submissions, redirects,
+agent tool calls, persistence, or reload behavior that happened before it.
+
+Complete when the visual entries are ready for the shared validator, not when
+the image file merely exists.
 
 ## 1. Answer it without pixels first
 
@@ -128,8 +152,14 @@ file could contradict: "the invoice total row reads 1,240.00 next to a red
 overdue badge", not "the UI looks correct". A description nothing could
 falsify is not evidence.
 
+Record the path, opened state, actual dimensions, pixel-spread result, and
+claim in the shared live-proof receipt. The receipt validator independently
+decodes PNG captures and rejects missing, dimensionally inconsistent, or
+single-color images.
+
 Complete when the image has been viewed, its dimensions and pixel spread pass,
-and the written claim matches what you saw.
+the written claim matches what you saw, and the structured capture entry is
+ready for validation.
 
 ## 5. Pair the after against a baseline
 
@@ -190,3 +220,9 @@ in the durable record.
   reports the click and the state does not move.
 - **A screenshot standing in for a diagnosis.** Pixels show that something is
   wrong far better than they show why.
+- **A screenshot standing in for the interaction.** The final pixels do not
+  prove that the supported trigger, intermediate states, assistant actions, or
+  persistence path worked.
+- **Closing the runtime proof gate here.** Visual proof supplies evidence to
+  the shared receipt; only the complete, current receipt validator can admit
+  review, landing, or a success claim.

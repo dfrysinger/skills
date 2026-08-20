@@ -1,6 +1,6 @@
 ---
 name: development-loop
-description: Develop and ship one non-trivial code change through a risk-sized loop — establish the failure, triage the blast radius, prove runtime behavior, review, and land. Use when fixing bugs, building features, refactoring, iterating on UI, or changing apps, services, agent workflows, pipelines, or SDKs. When triage finds shared state, persistence, public contracts, cross-component architecture, security, or fail-closed boundaries, invoke `design-doc` before coding.
+description: Develop and ship one non-trivial code change through a risk-sized loop — establish the failure, triage the blast radius, prove runtime behavior with a machine-validated receipt, review, and land. Use when fixing bugs, building features, refactoring, changing UI, or changing apps, services, agent workflows, pipelines, or SDKs; invoke it before claiming runtime work is ready, opening or updating a PR, or landing. When triage finds shared state, persistence, public contracts, cross-component architecture, security, or fail-closed boundaries, invoke `design-doc` before coding.
 ---
 
 # development-loop
@@ -30,6 +30,30 @@ runnable may happen first. They are development diagnostics, not acceptance
 evidence. The conditional pre-build guard review in section 4 is the only
 implementation-review exception; it reviews a guard that constrains the work,
 not an implementation claimed to work.
+
+### Durable proof admission
+
+As soon as a task is classified as user-visible or externally observable
+runtime work, create a stable proof id and make the open gate survive context
+loss. In Copilot CLI:
+
+1. add a pending `live-proof-<id>` todo whose description names the exact
+   trigger and terminal state;
+2. insert or replace the same id in `live_proof_receipts` with status
+   `INCONCLUSIVE`, the planned scenario, and the receipt-artifact path;
+3. keep both open through implementation, compaction, rotation, scheduled
+   turns, review fixes, and candidate rebuilds.
+
+If session SQL is unavailable, create the structured JSON receipt from
+[`references/live-proof-receipt.md`](./references/live-proof-receipt.md)
+immediately and leave its status `INCONCLUSIVE`. Do not rely on a checklist
+that exists only in conversation history.
+
+After any runtime-relevant candidate change, set the durable row and JSON
+receipt to `STALE` before doing more work. Close the todo and write `PASS` to
+the table only after the receipt validator accepts the current candidate. An
+empty todo list is not a completion signal when runtime work never created its
+proof admission record.
 
 ### Tracer-bullet UI branch
 
@@ -366,7 +390,7 @@ implementation review, broad CI, full lint, PR creation or update, or landing
 work. Do not dispatch those tasks in parallel with an active live proof: a
 failed proof invalidates the premise of their work and wastes time.
 
-Before starting, record a compact **live-proof receipt** using
+Before starting, record a structured **live-proof receipt** using
 [`references/live-proof-receipt.md`](./references/live-proof-receipt.md):
 
 - candidate identity: a clean commit, or a full candidate identity that covers
@@ -381,6 +405,13 @@ Before starting, record a compact **live-proof receipt** using
   and forbidden errors from the acceptance criteria;
 - evidence source: what the agent can inspect directly and what requires a
   human action or confirmation.
+
+Generate the receipt's candidate object with
+`scripts/validate-live-proof.py fingerprint`; do not hand-write a commit-only
+identity for a dirty worktree. The fingerprint covers `HEAD`, tracked changes,
+and every non-ignored untracked file except predeclared evidence outputs.
+Ignored configuration or generated inputs that affect runtime are named as
+additional inputs and hashed. The helper rejects excluding tracked files.
 
 The receipt records evidence; it does not create evidence. Every `PASS` row must
 point to a direct observation, artifact, query result, or explicit human
@@ -463,6 +494,13 @@ covers every acceptance criterion. `FAIL`, `BLOCKED`, `STALE`, and
 checkpoint, return directly to sections 3-5, and rerun this gate before any
 review or PR work.
 
+Run `scripts/validate-live-proof.py validate <receipt.json>` before opening the
+gate. It must recompute the same candidate fingerprint and accept the complete
+scenario, forbidden-outcome evidence, visual inspection when required, empty
+unverified list, and absence of a manual workaround. Copy the accepted receipt
+path and result into `live_proof_receipts`, then close the matching proof todo.
+The validator's exit code, not the agent's summary, is the admission decision.
+
 Until the gate passes, describe the state as "candidate ready," "proof in
 progress," or the actual failure status. Do not say the feature works, is
 verified, or is ready to land.
@@ -499,10 +537,12 @@ Invoke `dual-review` after the change works.
 
 Before dispatching, verify the live-proof receipt is present and still matches
 or explicitly covers the reviewed tree. If runtime work has no passing receipt,
-stop: do not
-reinterpret scripted checks or a partial scenario as permission to review. Once
-the gate passes, run the remaining deterministic validation proportionate to
-the lane, then review.
+stop: do not reinterpret scripted checks or a partial scenario as permission
+to review. For a structured receipt, rerun
+`scripts/validate-live-proof.py validate <receipt.json>` and confirm the
+matching `live_proof_receipts` row is `PASS`; a remembered earlier exit code is
+not current evidence. Once the gate passes, run the remaining deterministic
+validation proportionate to the lane, then review.
 
 Give reviewers:
 
@@ -617,11 +657,15 @@ same candidate.
 Before landing:
 
 - relevant tests/build/type/lint checks are green;
-- required live-proof receipt is `PASS` and matches or explicitly covers the
-  exact tree being landed under section 6's receipt-validity rule;
+- the required receipt validator has just accepted the exact tree being landed,
+  and the matching durable proof row and todo are `PASS` and closed;
 - dual review has no `must-fix` finding;
 - the diff still matches the objective and non-goals;
 - test artifacts are cleaned up.
+
+Apply the same validator, durable-row, and closed-todo gate before
+`task_complete` or any final statement that the runtime change works, even
+when the task has no commit or PR.
 
 For a PR, inspect Copilot PR review comments and pass them through the same
 scope/risk gate. A substantive verified must-fix comment reopens review of that
@@ -759,8 +803,9 @@ The change is complete when:
 2. objective, acceptance criteria, and non-goals are explicit;
 3. the durable contract is proportional to the lane;
 4. functional behavior is tested;
-5. required live behavior has a passing receipt that matches or explicitly
-   covers the exact reviewed tree under section 6's receipt-validity rule;
+5. required live behavior has a machine-validated passing receipt that matches
+   or explicitly covers the exact reviewed tree, with its durable proof row and
+   todo closed only after validation;
 6. dual review has no verified in-scope must-fix finding;
 7. post-review validation covers the actual review fixes;
 8. the landed diff remains coherent and scoped.
