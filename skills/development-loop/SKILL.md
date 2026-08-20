@@ -418,6 +418,18 @@ login, MFA, JIT approval, account selection, or another authentication action,
 stop at the ready candidate and ask the user to complete that action. Permission
 to test the application is not permission to authenticate.
 
+The agent owns setup through the last step before protected human input. Trigger
+the application's login flow, follow its browser or window handoff, and directly
+verify that the actual login, device-code entry, account-selection, MFA, or
+approval page is visible, stable, and usable before asking the user to act.
+Copying a code to the clipboard, printing a URL, opening a blank window, or
+receiving a successful launcher result is only an intermediate event. If the
+protected-input page is missing, blank, stuck, or cannot be observed, record the
+handoff as **BLOCKED** at that earlier checkpoint and diagnose the launch or
+navigation failure; do not transfer a broken login flow to the user. This
+readiness check never authorizes inspecting or entering the user's protected
+input.
+
 Do not use password managers, Keychain, browser autofill, cached credentials,
 stored cookies or tokens, one-time codes, recovery methods, or alternate
 accounts to cross the gate unless the user explicitly authorizes that exact
