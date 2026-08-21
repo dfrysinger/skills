@@ -101,7 +101,7 @@ if tmux send-keys -t "$PANE" -l -- "$PROMPT"; then
       break
     fi
 
-    if [[ "$(tmux display-message -p -t "$PANE" '#{pane_current_command}' 2>/dev/null || true)" != "copilot" ]]; then
+    if ! cp_pane_is_copilot "$PANE"; then
       break
     fi
 

@@ -130,6 +130,39 @@ else
   ok 'still-loading pane is not loaded'
 fi
 
+# --- process identity across CLI versions -----------------------------------
+
+for command in \
+  copilot \
+  copilot-loader \
+  copilot-loader- \
+  copilot-loader-1.0.81-0 \
+  copilot-1.0.81 \
+  copilot-1.0.81- \
+  copilot-1.0.81-4; do
+  if cp_command_is_copilot "$command"; then
+    ok "Copilot command accepted: $command"
+  else
+    no "Copilot command accepted: $command"
+  fi
+done
+
+for command in \
+  '' \
+  node \
+  zsh \
+  copilot-photos-import \
+  copilot-helper \
+  copilot-loader-helper \
+  copilot-1.0.81-helper \
+  copilot-1.x.81-4; do
+  if cp_command_is_copilot "$command"; then
+    no "non-Copilot command rejected: ${command:-<empty>}"
+  else
+    ok "non-Copilot command rejected: ${command:-<empty>}"
+  fi
+done
+
 # --- caret style still works ------------------------------------------------
 
 caret_empty="$(

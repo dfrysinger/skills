@@ -67,8 +67,7 @@ if ! tmux display-message -p -t "$pane" '#{pane_id}' >/dev/null 2>&1; then
   exit 2
 fi
 
-pane_command="$(tmux display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null || true)"
-if [[ "$pane_command" != "copilot" ]]; then
+if ! cp_pane_is_copilot "$pane"; then
   finish "unavailable" "target pane is not running Copilot CLI"
   exit 2
 fi

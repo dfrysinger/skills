@@ -7,7 +7,9 @@
 # the only way to get either, so the parser lives here once rather than being
 # reinvented per caller.
 #
-# Two input-box styles are recognised.
+# Two input-box styles and process identities are recognised. Copilot CLI
+# 1.0.81-0 uses the caret frame and exposes its loader as `copilot-loader-`
+# through tmux. Newer 1.0.81 builds use the boxed frame and `copilot`.
 #
 # Boxed style, current:
 #
@@ -138,8 +140,18 @@ cp_is_loaded() { grep -q 'Session:.*AIC used'; }
 # Captures a pane with wrapped lines joined. Returns 1 if the pane is gone.
 cp_capture() { tmux capture-pane -p -J -t "$1" 2>/dev/null; }
 
+cp_command_is_copilot() {
+  case "$1" in
+  copilot | copilot-loader | copilot-loader-) return 0 ;;
+  esac
+  [[ "$1" =~ ^copilot-loader-[0-9]+\.[0-9]+\.[0-9]+(-[0-9]+)?$ ]] ||
+    [[ "$1" =~ ^copilot-[0-9]+\.[0-9]+\.[0-9]+(-[0-9]*)?$ ]]
+}
+
 cp_pane_is_copilot() {
-  [ "$(tmux display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null || true)" = copilot ]
+  local command
+  command="$(tmux display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null || true)"
+  cp_command_is_copilot "$command"
 }
 
 # Returns 0 when the pane can receive a keystroke: a real Copilot pane that has
