@@ -131,6 +131,16 @@ cp_is_busy() {
   grep -Eqi 'esc interrupt|[◎◉○●▪▫][[:space:]]*Working'
 }
 
+# Returns 0 when the live status footer says autopilot is selected. Read only
+# below the input frame so transcript prose containing "autopilot" cannot
+# masquerade as mode state. Current CLIs may show either "Working - autopilot"
+# or a task label such as "Proving release - autopilot".
+cp_autopilot_is_selected() {
+  local footer
+  footer="$(cp_below_input)" || return 1
+  grep -Eqi '(^|[[:space:]])[-·][[:space:]]*autopilot([[:space:]]|$)' <<<"$footer"
+}
+
 # Returns 0 when the CLI has finished loading. The input box renders before
 # skills are registered, and a slash command sent during that window is
 # silently dropped, so a rendered box alone does not mean the agent can be

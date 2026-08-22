@@ -100,6 +100,32 @@ else
   ok 'idle pane is not busy'
 fi
 
+TASK_AUTOPILOT_STATUS=' ○ Proving expanded License Admin walkthrough - autopilot  esc interrupt'
+if cp_autopilot_is_selected <<<"$(boxed_with '  ' "$TASK_AUTOPILOT_STATUS")"; then
+  ok 'task-labelled autopilot footer is selected'
+else
+  no 'task-labelled autopilot footer is selected'
+fi
+
+LEGACY_AUTOPILOT_STATUS=' ◎ Working - autopilot · 1.7 KiB esc interrupt'
+if cp_autopilot_is_selected <<<"$(boxed_with '  ' "$LEGACY_AUTOPILOT_STATUS")"; then
+  ok 'legacy autopilot footer is selected'
+else
+  no 'legacy autopilot footer is selected'
+fi
+
+transcript_autopilot="$(
+  cat <<EOF
+ ● Continue the autopilot charter.
+$(boxed_with '  ' "$IDLE_STATUS")
+EOF
+)"
+if cp_autopilot_is_selected <<<"$transcript_autopilot"; then
+  no 'transcript autopilot prose is not selected'
+else
+  ok 'transcript autopilot prose is not selected'
+fi
+
 # A busy pane also has an empty input box, so emptiness alone must not be
 # treated as readiness by callers.
 if cp_input_is_empty <<<"$(boxed_with '  ' "$BUSY_STATUS")"; then
