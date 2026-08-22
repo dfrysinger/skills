@@ -98,6 +98,8 @@ installs, so refresh them with their host-specific commands:
 # Claude Code
 claude plugin marketplace update dfrysinger-skills
 claude plugin update --scope user dfrysinger-skills@dfrysinger-skills
+# Run inside the active Claude Code session:
+/reload-plugins
 
 # Codex CLI (Codex has no in-place plugin update command)
 codex plugin marketplace upgrade dfrysinger-skills
