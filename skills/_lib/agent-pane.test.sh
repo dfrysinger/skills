@@ -40,6 +40,7 @@ check 'nearest Copilot wins over nested Claude reviewer' copilot \
 check 'unrecognized process tree fails closed' '' \
   "$(ap_backend_from_processes 400 <<<"$processes" 2>/dev/null || true)"
 
+esc=$'\033'
 claude_empty="$(
   cat <<'EOF'
 ────────────────────────────────────────────────────────
@@ -54,11 +55,23 @@ check 'Claude empty prompt parsed' '' \
 check 'Claude loaded footer detected' yes \
   "$(cl_is_loaded <<<"$claude_empty" && echo yes || echo no)"
 
+claude_suggested="$(
+  printf '%s\n' \
+    "────────────────────────────────────────────────────────" \
+    "${esc}[39m❯ ${esc}[2mrun the update and reload${esc}[0m" \
+    "────────────────────────────────────────────────────────" \
+    "  ${esc}[38;5;246mOpus 5 | Ctx: 57% | 7d: 61%${esc}[39m" \
+    "  ${esc}[38;5;211m⏵⏵ bypass permissions on${esc}[39m"
+)"
+check 'Claude dim suggestion is empty' '' \
+  "$(cl_input_region <<<"$claude_suggested")"
+check 'Claude dim suggestion still has loaded footer' yes \
+  "$(cl_is_loaded <<<"$claude_suggested" && echo yes || echo no)"
+
 claude_typed="${claude_empty/❯ /❯ check mailbox; skip if empty [mb:abc]}"
 check 'Claude typed prompt parsed' 'checkmailbox;skipifempty[mb:abc]' \
   "$(cl_input_signature <<<"$(cl_input_region <<<"$claude_typed")")"
 
-esc=$'\033'
 codex_empty="$(
   printf '%s\n' \
     "${esc}[1m${esc}[39m›${esc}[0m ${esc}[2mImprove documentation in @filename" \
@@ -83,4 +96,3 @@ check 'shell text is not a Codex prompt' no \
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
-
