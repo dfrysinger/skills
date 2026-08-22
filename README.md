@@ -91,7 +91,19 @@ The root `plugin.json` is Copilot-specific, while
 `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` serve Claude Code
 and Codex. This lets a host omit a plugin skill when it already provides a
 built-in with the same name. Re-run `copilot plugin update
-dfrysinger-skills` on any machine to pull the change.
+dfrysinger-skills` to update Copilot. Claude Code and Codex use marketplace
+installs, so refresh them with their host-specific commands:
+
+```sh
+# Claude Code
+claude plugin marketplace update dfrysinger-skills
+claude plugin update --scope user dfrysinger-skills@dfrysinger-skills
+
+# Codex CLI (Codex has no in-place plugin update command)
+codex plugin marketplace upgrade dfrysinger-skills
+codex plugin remove dfrysinger-skills@dfrysinger-skills
+codex plugin add dfrysinger-skills@dfrysinger-skills
+```
 
 For a personal-only skill that should not be published, drop the directory
 under `~/.copilot/skills/<name>/` instead and run `/skills reload`.
