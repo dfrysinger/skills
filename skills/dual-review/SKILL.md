@@ -31,10 +31,10 @@ security review.
 
 ## Reviewer pair
 
-| Slot | Model family | Agent type | Mode |
-|---|---|---|---|
-| A | latest Claude Opus | `code-review` | `background` |
-| B | latest full GPT, preferring **Terra** | `code-review` | `background` |
+| Slot | Model family |
+|---|---|
+| A | latest Claude Opus |
+| B | latest full GPT, preferring **Terra** |
 
 Resolve the highest-numbered available model in each family at session start.
 Prefer Terra for routine cost and latency. Sol and Luna are valid fallbacks;
@@ -44,6 +44,31 @@ and default context. They run in parallel and receive the same scope contract.
 
 If one reviewer fails, retry it once. If the retry fails, stop and report the
 dual review as incomplete. Never call a single-family result a dual review.
+
+## Transport
+
+Both families are reachable from any of these hosts; only the dispatch differs,
+and the protocol is identical whichever runtime carries it. Resolve the host at
+session start and use its row.
+
+| Host | Slot A (Claude) | Slot B (GPT) |
+|---|---|---|
+| Copilot CLI | `code-review` agent, `background` | `code-review` agent, `background` |
+| Claude Code | `Agent` tool, model `opus`, background | `codex exec -m <model> --sandbox read-only`, or the `codex` plugin's `codex-companion.mjs task --model <model> --effort medium` |
+| Codex CLI | `claude -p --model <model>` | native subagent, `background` |
+
+A host lacking a native agent type for the other family still satisfies the
+protocol through that family's own CLI, so a missing agent type is a dispatch
+detail rather than grounds to report the review as single-family.
+
+Run slot B read-only wherever the transport offers it. `--sandbox read-only`
+converts the static-review rule in the prompt contract from an instruction the
+reviewer can drift from into a mechanical guarantee.
+
+Model identifiers move between generations, so discover them rather than
+trusting a written example: query the host's model list for the current
+`gpt-5.x-terra` and Opus releases at session start, and treat any identifier
+quoted here as illustrative.
 
 ## Review packet
 
