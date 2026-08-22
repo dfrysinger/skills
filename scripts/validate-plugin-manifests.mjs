@@ -44,8 +44,9 @@ function hasNonEmptyFrontmatterField(frontmatter, field) {
   return value !== "" && value !== "\"\"" && value !== "''";
 }
 
-const [claudePlugin, claudeMarketplace, codexPlugin, codexMarketplace] =
+const [copilotPlugin, claudePlugin, claudeMarketplace, codexPlugin, codexMarketplace] =
   await Promise.all([
+    readJson("plugin.json"),
     readJson(".claude-plugin/plugin.json"),
     readJson(".claude-plugin/marketplace.json"),
     readJson(".codex-plugin/plugin.json"),
@@ -56,6 +57,7 @@ const expectedName = "dfrysinger-skills";
 const expectedSkillsPath = "./skills/";
 
 for (const [label, manifest] of [
+  ["Copilot plugin", copilotPlugin],
   ["Claude plugin", claudePlugin],
   ["Codex plugin", codexPlugin],
 ]) {
@@ -127,7 +129,12 @@ assert(
 const skillDirectories = (await readdir(resolve(root, "skills"), {
   withFileTypes: true,
 }))
-  .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+  .filter(
+    (entry) =>
+      entry.isDirectory() &&
+      !entry.name.startsWith(".") &&
+      !entry.name.startsWith("_"),
+  )
   .map((entry) => entry.name)
   .sort();
 const listedSkills = [...claudePlugin.skills].sort();
@@ -135,6 +142,14 @@ assert(
   JSON.stringify(listedSkills) ===
     JSON.stringify(skillDirectories.map((directory) => `./skills/${directory}`)),
   "Claude plugin skills must list every direct skills/ directory",
+);
+const copilotSkills = [...copilotPlugin.skills].sort();
+const expectedCopilotSkills = skillDirectories
+  .filter((directory) => directory !== "rubber-duck")
+  .map((directory) => `./skills/${directory}`);
+assert(
+  JSON.stringify(copilotSkills) === JSON.stringify(expectedCopilotSkills),
+  "Copilot plugin skills must list every direct skills/ directory except rubber-duck",
 );
 for (const directory of skillDirectories) {
   const skillContent = await readFile(

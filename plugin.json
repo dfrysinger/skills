@@ -12,7 +12,6 @@
     "./skills/unattended-run",
     "./skills/self-compact",
     "./skills/dual-review",
-    "./skills/rubber-duck",
     "./skills/explain",
     "./skills/design-doc",
     "./skills/development-loop",

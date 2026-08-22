@@ -2,8 +2,8 @@
 # mailbox-poke.sh <session-name> [--wait]
 #
 # If <session-name>'s mailbox has pending mail, send a natural-language
-# wakeup prompt into its tmux pane that nudges the Copilot agent to invoke
-# the mailbox skill (which then runs mailbox-check.sh).
+# wakeup prompt into its tmux pane that nudges the agent to invoke the mailbox
+# skill (which then runs mailbox-check.sh).
 #
 # Why not "/mailbox"? Slash dispatch races cold-start skill-snapshot
 # loading: the input box appears before skills are registered, so a slash
@@ -13,7 +13,7 @@
 # load delay.
 #
 # Modes:
-#   (default) — require a ready Copilot CLI with an empty input prompt now.
+#   (default) — require a recognized, ready agent CLI with empty input now.
 #   --wait    — poll for that same ready state for up to 30s. Use this
 #              immediately after launching a fresh Copilot.
 #
@@ -23,7 +23,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/_common.sh"
-. "$SCRIPT_DIR/../../_lib/copilot-pane.sh"
+. "$SCRIPT_DIR/../../_lib/agent-pane.sh"
 
 [[ $# -lt 1 ]] && { echo "usage: mailbox-poke.sh <name> [--wait]" >&2; exit 2; }
 NAME="$1"; shift
@@ -58,31 +58,37 @@ if [[ "$(tmux display-message -p -t "$PANE" '#{session_name}' 2>/dev/null || tru
   exit 3
 fi
 
-copilot_ready() { cp_pane_accepts_input "$PANE"; }
+BACKEND="$(ap_pane_backend "$PANE" 2>/dev/null || true)"
+if [[ -z "$BACKEND" ]]; then
+  echo "UNVERIFIED: '$NAME' is not a recognized Copilot, Claude, or Codex pane; the mail is queued and no keys were sent." >&2
+  exit 3
+fi
+
+agent_ready() { ap_pane_accepts_input "$PANE" "$BACKEND"; }
 
 if [[ "$WAIT" -eq 1 ]]; then
   for _ in $(seq 1 60); do
-    copilot_ready && break
+    agent_ready && break
     sleep 0.5
   done
 fi
 
-if ! copilot_ready; then
-  echo "UNVERIFIED: '$NAME' is not at a ready Copilot prompt; the mail is queued and no keys were sent." >&2
+if ! agent_ready; then
+  echo "UNVERIFIED: '$NAME' is not at a ready $BACKEND prompt; the mail is queued and no keys were sent." >&2
   exit 3
 fi
 
 MARKER="[mb:${NEWEST_ID##*-}]"
 PROMPT="check mailbox; skip if empty $MARKER"
-PROMPT_SIGNATURE="$(cp_input_signature <<<"$PROMPT")"
+PROMPT_SIGNATURE="$(ap_input_signature <<<"$PROMPT")"
 
 # Reads the pane into BOX ("empty", "text", or "none") and INPUT_SIGNATURE.
 # "none" means the input box could not be located at all, which is not the same
 # as an empty box and must never be treated as a successful submission.
 read_input() {
   local text
-  if text="$(cp_input_region <<<"$SCREEN")"; then
-    INPUT_SIGNATURE="$(cp_input_signature <<<"$text")"
+  if text="$(ap_input_region "$BACKEND" <<<"$SCREEN")"; then
+    INPUT_SIGNATURE="$(ap_input_signature <<<"$text")"
     [[ -z "$INPUT_SIGNATURE" ]] && BOX=empty || BOX=text
   else
     INPUT_SIGNATURE=""
@@ -93,7 +99,7 @@ read_input() {
 if tmux send-keys -t "$PANE" -l -- "$PROMPT"; then
   SUBMITTED=0
   for _ in 1 2 3 4; do
-    SCREEN="$(tmux capture-pane -p -J -t "$PANE" 2>/dev/null || true)"
+    SCREEN="$(ap_capture "$PANE" "$BACKEND" 2>/dev/null || true)"
     read_input
 
     if [[ "$BOX" == empty ]] && grep -Fq "$MARKER" <<<"$SCREEN"; then
@@ -101,7 +107,7 @@ if tmux send-keys -t "$PANE" -l -- "$PROMPT"; then
       break
     fi
 
-    if ! cp_pane_is_copilot "$PANE"; then
+    if ! ap_pane_is_backend "$PANE" "$BACKEND"; then
       break
     fi
 
@@ -115,7 +121,7 @@ if tmux send-keys -t "$PANE" -l -- "$PROMPT"; then
     # Do not send another Enter during that transition.
     for _ in 1 2 3 4 5 6; do
       sleep 0.5
-      SCREEN="$(tmux capture-pane -p -J -t "$PANE" 2>/dev/null || true)"
+      SCREEN="$(ap_capture "$PANE" "$BACKEND" 2>/dev/null || true)"
       read_input
       if [[ "$BOX" == empty ]] && grep -Fq "$MARKER" <<<"$SCREEN"; then
         SUBMITTED=1
