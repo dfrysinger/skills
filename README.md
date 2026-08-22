@@ -40,6 +40,7 @@ Skills register as `dfrysinger-skills` and become available to invoke from your 
 
 ### Workflow
 
+- **[skill-create](./skills/skill-create/SKILL.md)** : Create reusable agent skills through the `writing-great-skills` rubric, portable mechanical validation, and the bounded `dual-review` gate without requiring a lifecycle or curation system.
 - **[design-doc](./skills/design-doc/SKILL.md)** : Write the durable design document that turns a systemic or critical change into a complete work order — objective, non-goals, reuse contract, failure model, invariants, deterministic check contract, Definition of Done — then run the normal bounded [`dual-review`](./skills/dual-review/SKILL.md) loop before any code exists. Owns the scope and architecture call; hands the finished document to [`development-loop`](./skills/development-loop/SKILL.md).
 - **[development-loop](./skills/development-loop/SKILL.md)** : Size development process to the actual risk: bounded bug fixes use focused regression tests and a short review path; anything larger arrives with a reviewed design document from [`design-doc`](./skills/design-doc/SKILL.md) and adds architecture guards and final live proof. Owns forward motion for every change. Uses [`dual-review`](./skills/dual-review/SKILL.md)'s material-risk gate rather than requiring literal zero comments.
 - **[git-history-recovery](./skills/git-history-recovery/SKILL.md)** : Recover lost or displaced Git work after an accidental reset/checkout/rebase/stash using reflog, dangling commits, and path-scoped restore.
