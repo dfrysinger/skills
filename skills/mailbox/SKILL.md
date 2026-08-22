@@ -1,6 +1,6 @@
 ---
 name: mailbox
-description: Hand a file or message to another named Copilot CLI session in a different tmux pane. Use when this session has produced a deliverable another named agent should pick up, or the user says to send something to an agent by name (e.g. "send this to juliett"). Requires macOS + tmux.
+description: Hand a file or message to another named Copilot CLI, Claude Code, or Codex CLI session in a different tmux pane. Use when this session has produced a deliverable another named agent should pick up, or the user says to send something to an agent by name (e.g. "send this to juliett"). Requires macOS + tmux.
 ---
 
 # mailbox
@@ -11,31 +11,33 @@ Cross-session message + file handoff, keyed by tmux session name.
 
 - User says "send this to <name>", "hand this off to <name>", "deliver X to <name>".
 - You have produced a concrete artifact (file, doc, summary) for another named agent session to consume.
-- You want to delegate a task to another live tmux-resident Copilot session.
+- You want to delegate a task to another live tmux-resident Copilot, Claude, or Codex session.
 
 Do NOT use mailbox for:
 - Self-talk inside the same session (just write to disk normally).
-- Notifying a non-Copilot terminal (osascript notification suffices).
+- Notifying a terminal that is not a recognized agent CLI (osascript notification suffices).
 - Heavy bidirectional RPC. This is one-shot delivery, not a chat protocol.
 
 ## How it works
 
-- **Identity = tmux session name.** No registry. The user's `ca <name>` script opens or resumes a tmux session named `<name>` running Copilot CLI; that tmux session name IS the agent's name. Sender: `tmux display-message -p '#{session_name}'` to learn its own. Recipient: same.
+- **Identity = tmux session name.** No registry. Agent Stack opens or resumes a backend-specific tmux session; that full tmux session name IS the agent's mailbox name. Copilot uses `<name>`, Claude uses `claude-<name>`, and Codex uses `codex-<name>`. Sender: `tmux display-message -p '#{session_name}'` to learn its own. Recipient: same.
 - **Transport = file queue.** Envelopes land at `~/.copilot/mailbox/<recipient>/pending/<id>.json` with attachments in a sibling `<id>/` directory. Durable, debuggable with `ls`.
 - **Wakeup = short natural-language nudge via tmux send-keys.** Sender writes
   the envelope, then `mailbox-poke.sh` resolves the recipient pane and requires
-  a recognized Copilot process, initialized Copilot footer, and empty input box
+  a recognized Copilot, Claude, or Codex process, initialized backend-specific
+  footer, and empty input box
   before sending `check mailbox; skip if empty` with a short unique marker
   derived from the envelope ID. The shared parser in
-  `skills/_lib/copilot-pane.sh` reads both the newer boxed layout and the
-  `1.0.81-0` caret layout. It accepts the newer `copilot` process identity and
-  versioned `copilot-<version>` binaries, plus the `copilot-loader-` identity
-  exposed by `1.0.81-0`; a pane whose box or process identity cannot be
+  `skills/_lib/agent-pane.sh` detects the nearest recognized agent process in
+  the pane's descendant tree and dispatches to a backend-specific parser. This
+  handles Claude panes whose tmux command is only a version string and Codex
+  panes launched through Node, without mistaking a nested reviewer subprocess
+  for the pane's owning agent. A pane whose box or process identity cannot be
   recognized receives no keys at all. Before every Enter, it requires the box
   contents (including any visual wrapping in a narrow pane) to still equal that
   exact poke after display whitespace is normalized. It marks
   delivery only when that input becomes empty and the unique marker appears in
-  the Copilot transcript. A
+  the agent transcript. A
   shell, startup screen, changed input, or disappearing pane receives no
   further keys; the durable envelope waits for the resume hook. **NOT `/mailbox`
   as a slash command** — slash dispatch races cold-start skill
@@ -74,17 +76,13 @@ Workflow once you know there's mail:
 3. Surface summary + sender to the user concisely. Decide whether to act.
 4. After acting (or skipping), `mailbox-ack.sh <id>` moves it to `delivered/`.
 
-## ca-script integration
+## Agent Stack integration
 
-The user is expected to wire the resume-hook into their `ca` agent-launcher:
-
-```sh
-# inside ca <name>, just before exec'ing copilot:
-HINT="$(~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/mailbox/scripts/mailbox-resume-hook.sh "$NAME" 2>/dev/null || true)"
-copilot --resume "$SESSION_ID" ${HINT:+--prompt "$HINT"}
-```
-
-Without this hook, mail still arrives durably but the recipient won't notice until the user manually says "check mail".
+Set `MAILBOX_INTEGRATION="true"` in
+`~/.config/remote-agent-stack/config`. Agent Stack calls `mailbox-poke.sh` with
+the full backend-specific tmux session name when attaching or starting an
+agent. Without this integration, mail still arrives durably but the recipient
+will not notice until the user manually says "check mail".
 
 ## Pitfalls
 
