@@ -71,8 +71,11 @@ entry.
 Public repo on-disk layout:
 
 ```
+plugin.json              # Copilot allowlist; omits host-native replacements
 .claude-plugin/
-  plugin.json           # explicit allowlist of skill directories
+  plugin.json            # Claude allowlist
+.codex-plugin/
+  plugin.json            # Codex plugin manifest
 skills/
   <name>/
     SKILL.md            # the skill's prompt / protocol
@@ -82,7 +85,13 @@ skills/
   NOTICE.md             # attribution for vendored skills
 ```
 
-Adding a new skill via this repo: drop a `SKILL.md` under `skills/<name>/`, list its directory in `.claude-plugin/plugin.json` `.skills[]`, commit. Re-run `copilot plugin update dfrysinger-skills` on any machine to pull the change.
+Adding a new skill via this repo: drop a `SKILL.md` under `skills/<name>/`,
+list its directory in each host manifest that should expose it, and commit.
+The root `plugin.json` is Copilot-specific, while
+`.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` serve Claude Code
+and Codex. This lets a host omit a plugin skill when it already provides a
+built-in with the same name. Re-run `copilot plugin update
+dfrysinger-skills` on any machine to pull the change.
 
 For a personal-only skill that should not be published, drop the directory
 under `~/.copilot/skills/<name>/` instead and run `/skills reload`.
@@ -91,7 +100,9 @@ under `~/.copilot/skills/<name>/` instead and run `/skills reload`.
 
 Two manual edits a forker should make:
 
-- `.claude-plugin/plugin.json` `name` field — the published plugin slug. Mine is `dfrysinger-skills`; rename it to `<your-handle>-skills` if you republish.
+- The `name` field in `plugin.json`, `.claude-plugin/plugin.json`, and
+  `.codex-plugin/plugin.json` — the published plugin slug. Mine is
+  `dfrysinger-skills`; rename it to `<your-handle>-skills` if you republish.
 - `~/.copilot/copilot-instructions.md` — reword any personal trigger prose to
   your preferences.
 
