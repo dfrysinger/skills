@@ -237,8 +237,22 @@ Use a `rubber-duck` pass when the bounded solution is ambiguous, crosses
 ownership boundaries, or risks broadening.
 
 Larger work arrives with these questions answered by its reviewed design
-document. Implement what it specifies. A design that turns out to be wrong goes
-back to `design-doc`; do not reopen scope or architecture here.
+document. Implement what it specifies and enforce its recorded constraint
+revisit conditions. A design that turns out to be wrong goes back to
+`design-doc`; do not reopen scope or architecture here.
+
+### Reframe gate
+
+For systemic and critical work, stop implementation and return to `design-doc`
+when a recorded revisit condition fires, or when implementation would add a
+new subsystem mainly to preserve an inherited limit or mechanism. Repeated
+movement of a failure to the next internal boundary without user-visible
+progress is evidence that the gate has fired.
+
+Persist the blocked outcome, the implicated constraint and provenance, the
+invariant that would fail if it changed, and the simpler alternative. Further
+implementation resumes only after the work order and its design review accept
+the reframed architecture.
 
 *Handoff point: a design document, or a bug report with recorded acceptance
 criteria and a Definition of Done under its own heading, is a complete work
@@ -725,16 +739,19 @@ The baton this loop hands forward is the plan path, lane, objective, acceptance
 criteria, non-goals, remaining Definition-of-Done items, branch, what has
 landed versus what remains, and the live-proof receipt path, status, candidate
 identity, running identity, first divergence, unverified criteria, and covered
-post-proof deltas. Persist it before compacting: use the existing committed
-repo plan/design for systemic or critical work, and an existing issue, handoff,
-or named session artifact for bounded work. The summary points to this durable
-record; it does not recreate its evidence. When you are still stuck after a
-compact, `rubber-duck` before trying more variations.
+post-proof deltas. For systemic and critical work, it also carries the
+constraint-provenance location, open revisit conditions, and current reframe
+status; persist any `OPEN` reframe record before compacting. Use the existing
+committed repo plan/design for systemic or critical work, and an existing
+issue, handoff, or named session artifact for bounded work. The summary points
+to this durable record; it does not recreate its evidence. When you are still
+stuck after a compact, `rubber-duck` before trying more variations.
 
 ## Rabbit-hole stop rules
 
 Stop and re-scope when any occurs:
 
+- the design's reframe gate or a recorded constraint revisit condition fires;
 - reviewers are finding adjacent issues rather than regressions caused by the
   diff;
 - a proposed fix adds a new subsystem, state owner, or generalized framework

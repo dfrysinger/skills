@@ -58,19 +58,69 @@ coverage, and the final end-to-end run.
 **Complete when** the document names one lane; for critical, a rollback path
 and the evidence that proves the boundary fails closed.
 
-## 3. Write the document
+## 3. Record constraint provenance and the reframe gate
+
+Architecture is shaped by constraints, so record the ones that materially
+narrow the design before selecting mechanisms. For each hard constraint, write:
+
+- the constraint;
+- its provenance: user outcome, policy, platform behavior, measured capacity,
+  compatibility promise, or implementation default;
+- the evidence or owner that makes it binding;
+- the outcome or invariant it protects;
+- the condition that requires it to be revisited.
+
+Every hard numeric limit needs measured demand, platform evidence, or a named
+policy owner. Prior configuration and earlier implementation are provenance,
+not proof that the limit must remain.
+
+Define the design's **reframe gate**. Implementation returns here before adding
+another component when a recorded revisit condition fires, a new subsystem
+mainly preserves an implementation default, repeated fixes merely move failure
+to the next internal boundary, or a proven predecessor now satisfies the
+supported caller with less machinery.
+
+The reframe record answers:
+
+1. What user-visible outcome is blocked?
+2. Which constraint creates the blocker, and where did it come from?
+3. What concrete invariant fails if the constraint changes?
+4. What is the simplest design without that constraint?
+5. Which option has fewer trusted components and maintenance surfaces?
+
+The answer replaces further implementation until the work order and its review
+reflect the new architecture.
+
+Keep one durable reframe status in the work order:
+
+- `CLEAR` means no recorded revisit condition is currently met; state the
+  evidence used to reach that conclusion.
+- `OPEN` means implementation is stopped; record the triggering evidence and
+  answer all five reframe questions above.
+
+Implementation starts or resumes only from `CLEAR`. Closing an `OPEN` record
+requires the revised work order and its design review evidence, not merely an
+author statement that the concern is resolved.
+
+**Complete when** every architecture-shaping constraint has provenance and a
+revisit condition, every hard numeric limit has external or measured
+justification, the document names the conditions that force reframing, and its
+durable reframe status is `CLEAR` with evidence or `OPEN` with all five answers.
+
+## 4. Write the document
 
 Write or update a durable document containing:
 
 - objective and non-goals;
 - the lane from section 2;
+- the constraint-provenance record and reframe gate from section 3;
 - reuse contract — what existing helper, state owner, API, or error pattern
   carries this, and why anything new is required rather than convenient;
 - affected data flow and the existing connection points it touches;
 - realistic failure model — how this breaks in production, not in theory;
 - hard invariants and acceptance criteria;
 - migration and rollback when relevant;
-- deterministic check definitions (section 4);
+- deterministic check definitions (section 5);
 - a short **Definition of Done** under its own heading, covering exactly this
   change's scope.
 
@@ -85,7 +135,7 @@ name.
 are observable — each one names something that can be checked, not a quality
 someone would have to judge.
 
-## 4. Define the check contract
+## 5. Define the check contract
 
 For each proposed test or guard, state:
 
@@ -110,13 +160,15 @@ Name any guard that must exist before implementation to constrain the work, and
 why. `development-loop` writes it; nothing executable is created here.
 Everything else is written alongside the implementation and reviewed with it.
 
-**Complete when** every acceptance criterion in section 3 has at least one
+**Complete when** every acceptance criterion in section 4 has at least one
 check that would fail if the criterion were violated.
 
-## 5. Review the work order
+## 6. Review the work order
 
 Run `dual-review`'s normal bounded loop over the complete design document and
-its check contract.
+its check contract. Tell both reviewers this is a design review so
+`dual-review` applies its disclosed architecture and scope lens before
+implementation detail.
 
 Start with `dual-review`'s standard packet. For this review, both reviewers also
 receive:
@@ -124,7 +176,9 @@ receive:
 - this `design-doc` skill as the authoring and completion rubric;
 - the `scout` report, when one informed the chosen direction;
 - the issue, user decisions, architecture documents, ADRs, invariants, or
-  repository conventions that directly constrain the design.
+  repository conventions that directly constrain the design;
+- the constraint-provenance record, including every inherited default that
+  materially shaped the design.
 
 The design document is the subject under review; the other artifacts are
 evidence and rubric. Keep unrelated discovery, rejected alternatives, and
@@ -132,7 +186,7 @@ historical discussion out of the packet.
 
 **Complete when** `dual-review`'s verification criteria are met.
 
-## 6. Stop
+## 7. Stop
 
 The work order is finished. Present it.
 
@@ -155,6 +209,11 @@ invoked if an instruction to continue already exists.
 - **Designing for hypothetical callers.** Generalization justified by a caller
   that does not exist is the most common way a systemic change becomes a
   critical one.
+- **Inherited mechanism as requirement.** A prior limit, service, or protocol
+  is evidence about history, not proof that the new design must preserve it.
+- **Literal charter compliance.** A work order can remain internally
+  consistent after its assumptions stop serving the user outcome. That is when
+  its reframe gate should fire.
 - **Unobservable acceptance criteria.** "Handles errors gracefully" cannot pass
   or fail. Each criterion names a checkable state.
 - **Check contract as a test list.** Naming tests without stating what each
@@ -169,9 +228,13 @@ The document is done when:
 
 1. the objective is one sentence and the non-goals are explicit;
 2. it names one lane, with rollback and fail-closed evidence when critical;
-3. the reuse contract explains why anything new exists;
-4. acceptance criteria are observable;
-5. every acceptance criterion has a check that would fail if violated;
-6. it carries a Definition of Done under a unique heading;
-7. the bounded `dual-review` process met its verification criteria;
-8. someone who was not in the conversation could build from it.
+3. every architecture-shaping constraint has provenance and a revisit
+   condition;
+4. the durable reframe status is checkable, and implementation proceeds only
+   while it is `CLEAR`;
+5. the reuse contract explains why anything new exists;
+6. acceptance criteria are observable;
+7. every acceptance criterion has a check that would fail if violated;
+8. it carries a Definition of Done under a unique heading;
+9. the bounded `dual-review` process met its verification criteria;
+10. someone who was not in the conversation could build from it.

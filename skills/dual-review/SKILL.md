@@ -84,6 +84,8 @@ Before dispatch, prepare a packet containing:
 - directly relevant design/invariant documents;
 - directly relevant discovery evidence, such as a `scout` report, issue
   decisions, or repository conventions that constrained the chosen direction;
+- for a design review, its constraint-provenance record and recorded revisit
+  conditions;
 - latest targeted tests and live proof, when available;
 - prior kept findings for round 2 or 3;
 - for later rounds, the delta since the preceding review round.
@@ -95,6 +97,22 @@ subsystems without evidence that the changed path reaches them.
 
 If the human-written diff exceeds roughly 400 lines or mixes independent
 behaviors, split it into reviewable slices before dispatch where practical.
+
+### Design review branch
+
+When the subject is a design document or work order, load and give both
+reviewers
+[`references/design-scope-lens.md`](./references/design-scope-lens.md).
+Architecture and scope are reviewed before implementation detail. The lens is
+the single source of truth for supported-caller, inherited-constraint,
+duplication, simplification, enforcement, and reframe questions; do not copy
+its checklist into each reviewer prompt. Put its complete contents in the
+reviewer template's authoritative `<DESIGN_SCOPE_LENS>` slot. For non-design
+reviews, fill that slot with `Not applicable: this is not a design review.`
+
+If the architecture/scope pass finds a material defect, fix that defect before
+reviewing lower-level implementation choices. A later round verifies the prior
+finding and its fix delta rather than restarting design discovery.
 
 ## Reviewer prompt contract
 
@@ -130,6 +148,9 @@ The prompt must enforce:
      affected paths.
    - Round 3 may verify unresolved material findings only. It must not introduce
      unrelated latent issues from untouched code.
+9. **Design-lens acknowledgement.** Every output carries
+   `design_scope_lens`. Design reviewers set `applicable` and `applied` to
+   `true` and summarize the areas checked; other reviewers keep both false.
 
 ## Finding schema
 
@@ -139,6 +160,11 @@ The prompt must enforce:
   "round": 1,
   "review_complete": true,
   "incomplete_reason": null,
+  "design_scope_lens": {
+    "applicable": false,
+    "applied": false,
+    "summary": "Not applicable: this is not a design review."
+  },
   "findings": [
     {
       "file": "path/to/file.ts",
@@ -193,6 +219,12 @@ A medium finding may be fixed opportunistically only when it is likely, clearly
 inside scope, low-risk, and does not broaden the architecture. It never forces
 another review round by itself unless it is a verified violation of an explicit
 acceptance criterion.
+
+The existing disposition table remains authoritative for design reviews. A
+lens finding is an acceptance-criterion violation only when it directly
+contradicts the work order's stated criteria or the governing `design-doc`
+completion rubric; otherwise medium simplification findings remain
+non-blocking follow-ups.
 
 For security, authentication, authorization, and data integrity, difficulty of
 reproduction does not make a finding hypothetical. Use `hypothetical` only when
@@ -396,3 +428,5 @@ The protocol is complete when:
 3. no `must-fix` finding remains;
 4. any verifier was finding-scoped and introduced no new issue;
 5. the review and autonomous closure budgets were respected.
+6. for a design review, both reviewers applied the architecture and scope lens
+   and their output records `design_scope_lens.applied: true`.

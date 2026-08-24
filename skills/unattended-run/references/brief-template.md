@@ -62,7 +62,11 @@ process after compaction without copying each skill's rules.
 > you get stuck. Keep the plan up to date so future agents can pick it up. Use
 > subagents liberally to parallelize work whenever possible. `<PUSH_POLICY>`.
 > Decide every reversible question yourself with rubber-duck rather than asking
-> me. `<COORDINATION>`. `<GRANTS>`. Stay on this course until the objective's
+> me. For systemic or critical work, preserve the plan's decision hierarchy,
+> constraint provenance, revisit conditions, and any active reframe record in
+> the current baton; inherited mechanisms do not become requirements merely
+> because they survived compaction. `<COORDINATION>`. `<GRANTS>`. Stay on this
+> course until the objective's
 > Definition of Done (the "`<DOD_REF>`" section) is met.
 >
 > ### Required process skills
@@ -107,6 +111,10 @@ Charter slots:
   - `I'm not at the computer, so raise your app to the top and test/screenshot freely`
   - `You're authorized to create a testing account and repo on <SERVICE> for me; use <EMAIL_TOOL> to check my email as needed`
   - `Run <CI/workflow systems> as much as you need within reason`
+
+For a systemic or critical run, the filled charter additionally names where
+the governing plan records its constraint provenance and reframe gate, and the
+current baton states whether any revisit condition is open.
 
 ## Worked example
 
