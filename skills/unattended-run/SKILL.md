@@ -91,13 +91,19 @@ scope, under a unique heading both artifacts point at; if it's missing, write it
 first — with `design-doc` for systemic or critical work, or at
 `development-loop`'s handoff point for bounded work.
 
+For systemic or critical work, the charter also points to the plan's decision
+hierarchy, constraint-provenance record, and reframe gate. Its current baton
+names any open revisit condition or active reframe record. A mechanism inherited
+through compaction remains a mechanism, not a binding requirement.
+
 Persist the objective body in its own file, without the `/autopilot` prefix,
 because the detached helper pastes the whole file. Persist the charter
 separately so the schedule can re-read only the standing operating rules.
 
 **Complete when** both files exist, no `<SLOT>` remains, both point at the same
-Definition-of-Done heading, and every skill in the manifest owns work or a gate
-that remains in this run.
+Definition-of-Done heading, every skill in the manifest owns work or a gate
+that remains in this run, and every systemic or critical charter preserves the
+constraint and reframe pointers plus their current status.
 
 **Handoff gate.** The finished brief is a complete work order, but do not
 compact yet. A bare compact returns to an idle prompt; before step 2 there is no
@@ -161,8 +167,9 @@ manage_schedule action=create interval=1h \
   Follow the charter's Required process skills protocol exactly and reconcile
   the current work against it; execute any skill invocation or compaction action
   the charter says is due now rather than merely acknowledging it. Confirm the
-  workspace, push policy, objective, and current phase, and correct any drift
-  before continuing. Stop this schedule once the charter's referenced
+  workspace, push policy, objective, current phase, and any open constraint
+  revisit or reframe condition, and correct any drift before continuing. Stop
+  this schedule once the charter's referenced
   Definition of Done is verifiably met."
 ```
 

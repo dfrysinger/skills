@@ -11,6 +11,7 @@ without adding correctness claims from the author.
 | `<ROUND_NUMBER>` | `1`, `2`, or `3` |
 | `<REVIEW_MODE>` | `discovery`, `fix-verification`, or `resolution-only` |
 | `<SCOPE>` | Repo, base commit, diff path, changed files, objective, acceptance criteria, and explicit non-goals |
+| `<DESIGN_SCOPE_LENS>` | Complete `design-scope-lens.md` for a design review; otherwise `Not applicable: this is not a design review.` |
 | `<REVIEW_SUBJECT>` | Complete artifact or change under review; for a design review, the full design document and check contract |
 | `<GOVERNING_CONTRACT_AND_EVIDENCE>` | Governing skill/process contract plus directly relevant design, invariant, discovery, test, and live-proof evidence |
 | `<DIRECT_RISK_AREAS>` | Tailored risks for this diff only |
@@ -45,6 +46,10 @@ A blocking candidate must satisfy at least one:
 
 An adjacent or pre-existing issue is not blocking unless this diff makes it
 newly reachable or materially worse. Do not turn non-goals into requirements.
+
+# Design architecture and scope contract
+
+<DESIGN_SCOPE_LENS>
 
 # Review subject
 
@@ -150,6 +155,11 @@ Emit one JSON object and no prose:
     "tool_calls": 0,
     "elapsed_minutes": 0,
     "prohibited_commands_run": false
+  },
+  "design_scope_lens": {
+    "applicable": false,
+    "applied": false,
+    "summary": "Not applicable: this is not a design review."
   },
   "prior_resolution": [
     {
