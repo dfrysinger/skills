@@ -93,9 +93,31 @@ export async function generate(root, options = {}) {
   return { version, visibility, written: outputs.map(([path]) => path) };
 }
 
+// The repo being generated is NOT the repo this script lives in. When a
+// consumer runs it out of the packaging submodule, resolving the root from
+// this file's location loads the SUBMODULE's config and writes manifests into
+// the submodule -- so a private repo would emit under the public config, with
+// the visibility assertion silently skipped because that config declares
+// public. Resolve the consuming repo explicitly instead.
+async function resolveRoot() {
+  if (process.env.PACKAGING_ROOT) return resolve(process.env.PACKAGING_ROOT);
+  const flag = process.argv.find((arg) => arg.startsWith("--root="))?.split("=")[1];
+  if (flag) return resolve(flag);
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: process.cwd(),
+    });
+    return stdout.trim();
+  } catch {
+    throw new Error(
+      "cannot determine the repo to generate: run from inside it, or pass --root=<path>",
+    );
+  }
+}
+
 const invokedDirectly = process.argv[1] && import.meta.url.endsWith(process.argv[1].split("/").pop());
 if (invokedDirectly) {
-  const root = resolve(import.meta.dirname, "..", "..");
+  const root = await resolveRoot();
   const explicit = process.argv.find((arg) => arg.startsWith("--version="))?.split("=")[1];
   // A refusal is an expected outcome of this tool, not a crash. Printing a
   // stack trace buries the one line that says why it refused, and the person
