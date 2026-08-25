@@ -26,8 +26,9 @@ assume is included.
   in scope and named in the fail-closed evidence: a post-push secret scan, on
   **both** repos. It is required because a local hook binds neither a second
   machine nor a `--no-verify` commit on this one. It is the repo's first
-  `.github/workflows`, and it carries A14/C12 and A15/C11 so that it is a
-  checked component rather than an unfalsifiable claim.
+  `.github/workflows`, and it carries A14/C12 so that it is a checked component
+  rather than an unfalsifiable claim. It does **not** own A15 — that criterion
+  claims a rejection, and this workflow can only report.
 - **Not multi-user or org distribution.** One owner, private repos, personal
   machines.
 - **Not changing how skills are authored.** `writing-great-skills` and
@@ -332,8 +333,12 @@ secret ruleset live in the **public repo**, under `scripts/`, beside the
 validator they extend.
 
 `skills-private` consumes them as a **git submodule** at `packaging/`, pinned to
-a tag, with the tag string also written to `.packaging-pin` and asserted by the
-generator at emission. The mechanism is named because the alternatives are not
+a tag, with the tag string also written to `.packaging-pin`. A small wrapper
+checked into `skills-private` compares the submodule's checked-out SHA against
+`.packaging-pin` and refuses to invoke the generator on a mismatch. The wrapper
+lives in the consuming repo rather than the submodule on purpose — a validator
+inside the artefact it validates is replaced by the same drift it is meant to
+catch. The mechanism is named because the alternatives are not
 interchangeable:
 
 - a **subtree** or any checked-in copy is materially the vendoring rejected
@@ -376,6 +381,16 @@ catch exactly that, by running the public tier set over the public repo's own
 
 C2c and C9 run **locally, with both trees present**. Public CI is never granted
 access to the private repo.
+
+**Residual risk, accepted:** C11 catches a *literal* drawn from the private tree.
+A pattern tuned **negatively** — narrowed by shape until it stops matching a
+specific private tree, carrying no literal from it — is not observable by any
+scan, because there is nothing to match. C11b's sentinel covers content flowing
+*through* the tooling, but not a human iterating a regex against what they can
+see. The mitigation is procedural and stated here so it is not mistaken for a
+covered case: when step 4 requires a ruleset change, widen the *class* rather
+than narrowing until one tree passes. A class that is described rather than
+fitted cannot encode the tree it was tested against.
 
 ## Affected data flow
 
@@ -455,10 +470,6 @@ name. The blanked skills are whichever fall at the tail — realistically the
    remote-side scan is a report and does not satisfy this invariant on its own;
    it is the detection owner for the bypass paths named in the fail-closed
    section.
-9. No private **content** is committed to, or logged by, the public repo. This
-   is the property that dependency direction was previously and wrongly claimed
-   to provide. It binds the shared `scripts/` tree specifically, because a
-   ruleset tuned against a real private tree can carry that tree's content.
 3. Every manifest emission bumps the plugin version.
 4. All five manifests agree on name, version and description within a repo.
 5. Per-host skill exclusions survive generation.
@@ -466,6 +477,12 @@ name. The blanked skills are whichever fall at the tail — realistically the
 7. The public repo's behaviour is unchanged by adopting the generator: its five
    manifests before and after differ only in version.
 8. The installed cache resolves the version the generator last emitted.
+9. No private **content** reaches the public repo — not in a commit, and not in
+   any output the shared tooling emits while executing over a private tree.
+   This is the property that dependency direction was previously and wrongly
+   claimed to provide. It binds the shared `scripts/` tree specifically,
+   because a ruleset tuned against a real private tree can carry that tree's
+   content.
 
 ## Acceptance criteria
 
@@ -499,13 +516,23 @@ Each is observable.
   alert naming the file and line, delivered to the channel named in the
   fail-closed section, within one workflow run of the push.
 - **A15** A commit to the **public** repo whose `scripts/` diff contains a
-  tier-2 literal drawn from the private tree is rejected.
+  tier-2 literal drawn from the private tree is **rejected by the public repo's
+  pre-commit hook**, on the default commit path. The post-push scan covers the
+  bypass paths for the same content and only alerts — it cannot reject, and
+  A15 does not claim it does.
+- **A18** A unique sentinel value placed in the private tree, after the shared
+  tooling has been run over that tree, appears in **no** public-repo artifact:
+  not in generated manifests, not in the ruleset, not in emitted logs or
+  reports, not in a workflow run log.
 - **A16** After install on this machine, each moved skill resolves by name in
   **all three** hosts — Claude Code, Copilot CLI and Codex — not only in Claude
   Code.
 - **A17** `skills-private` records the pinned tag of the packaging submodule,
-  and the generator refuses to emit when the checked-out submodule does not
-  match `.packaging-pin`.
+  and a **wrapper checked into `skills-private`** — not the submodule — refuses
+  to invoke the generator when the checked-out submodule SHA does not match
+  `.packaging-pin`. The check must live outside the artefact it validates: a
+  generator that verified its own pin would be replaced, along with its
+  verification, by the very drift the pin exists to catch.
 - **A9** Two successive generator emissions produce different versions.
 - **A10** After `marketplace update` + `plugin update`, the installed cache
   contains a directory named for the newly emitted version, and the previously
@@ -532,9 +559,11 @@ Each is observable.
 | C8 | A3 | Enumerate every skill from both plugins after reload; sum description bytes | fails if any description is empty; **records** the total as a tripwire | Sampling two skills cannot see another plugin's blanked tail, which is where the budget failure actually lands. The host does not publish its budget, so the recorded total is a human tripwire and deliberately not a gate — an empty description is the only machine-checkable signal, and it fires only after the overflow. See the follow-up below |
 | C9 | A11, invariant 6 | Compare `skills/` directory listings across both repos | fails if the intersection is non-empty | A duplicated skill produces two divergent versions with no authority |
 | C10 | A2, A4, A16 | Install, reload, then invoke each moved skill by name **in each of the three hosts** | fails if the skill does not load in any host, naming the host | End-to-end proof the move did not strand the skills. Per-host, because the objective names three CLIs and a Claude-only pass would leave two-thirds of it unverified — each host reads a different manifest, so one loading proves nothing about the others |
-| C11 | A15, invariant 9 | Run the **public** tier set over the public repo's own `scripts/` diff, including the secret ruleset itself | fails naming the literal and its line | Step 4 tunes the ruleset against a real private tree; a pattern iterated until it stops matching that tree can carry its content. Scanning only `skills/` would miss the one file most likely to carry it |
+| C11 | A15, invariant 9 (commit half) | The public repo's pre-commit hook runs the **public** tier set over the staged `scripts/` diff, including the secret ruleset itself | commit rejected, naming the literal and its line | Step 4 tunes the ruleset against a real private tree; a pattern iterated until it stops matching that tree can carry its content. Scanning only `skills/` would miss the one file most likely to carry it. The hook owns this because a rejection is claimed — the post-push scan could only report it |
+| C11b | A18, invariant 9 (output half) | Plant a unique sentinel in the private tree; run the generator and scanner over it; then grep every public artifact and every emitted log and workflow run for the sentinel | fails if the sentinel appears anywhere public | "Committed to" and "reaches" are different properties. A scanner that prints matched *lines* from a private file leaks content into a log that a workflow may retain, without ever committing anything. The sentinel tests the property directly rather than pattern-matching its symptoms |
 | C12 | A14 | Commit a planted tier-1 token with `--no-verify`, push to a scratch branch, wait for the workflow | fails unless an alert naming file and line arrives; the scratch branch is then deleted and history rewritten | Proves the only owner that does not depend on the committer's cooperation actually fires. Without it, "the hook rejects commits" is indistinguishable from "the hook is trivially skippable" |
-| C13 | A17 | Check out a submodule commit other than the pinned tag, then run the generator | emission aborts non-zero naming both tags | Drift between the pin and the checkout is otherwise silent, and silent drift is the exact failure the two-repo topology was chosen to avoid |
+| C13 | A17 | Check out a submodule commit other than the pinned tag, then invoke emission through `skills-private`'s own checked-in wrapper | wrapper aborts non-zero before the generator runs, naming the expected and actual SHA | Drift between the pin and the checkout is otherwise silent, and silent drift is the exact failure the two-repo topology was chosen to avoid |
+| C13b | A17, trust | Check out a submodule commit whose generator has the pin comparison **removed**, then invoke emission through the wrapper | wrapper still aborts | The pin check cannot live in the artefact being pinned. If the generator validated its own pin, swapping in a generator without that validation would pass the check — the drifted code would be attesting to its own freshness |
 
 Preference order applied: C1a–C1c, C2b, C9 are state assertions because the
 invariants are about facts. C2, C5–C7 are behavioural checks over the generator
@@ -562,15 +591,18 @@ Every other check is written alongside the work.
    prove C2 with planted tokens of every tier-1 class, C2b by running the
    bootstrap on a fresh clone, C12 by pushing a `--no-verify` commit to a
    scratch branch, and C11 against the public repo's `scripts/` diff. Delete
-   the scratch branch and rewrite its history afterwards.
+   the scratch branch and rewrite its history afterwards. Prove C11b last, once
+   the generator exists: plant the sentinel, run the tooling, then sweep every
+   public artefact and workflow log for it.
 4. Move `bambu-printing` and `bambuddy` in, preserving git history if practical.
    Prove C9, and C2c — that these trees commit here and would be rejected under
    the public tier set. If C2c's private half fails, the tier split is wrong;
    fix the ruleset rather than exempting files, since a per-file exemption is
    how the network map reaches the public repo later.
 5. Add the packaging submodule to `skills-private` at `packaging/`, pinned to
-   the step-1 tag, and write the tag to `.packaging-pin`. Plant C7's version
-   marker in a skill body, then generate manifests; run C3, C4, C1b, C1c, C13.
+   the step-1 tag, write the tag to `.packaging-pin`, and add the wrapper that
+   compares them. Plant C7's version marker in a skill body, then generate
+   manifests; run C3, C4, C1b, C1c, C13, C13b.
    The marker must go in before emission, or C7 has nothing to read back.
 6. Install on this machine **in all three hosts** and run C7, C8, C10. Each host
    reads a different manifest, so each needs its own install and its own
@@ -598,11 +630,12 @@ install leaves recovery independent of the private repo.
 
 - The reframe status is `CLEAR`, with the evidence that closed it, and no
   recorded revisit condition has fired since.
-- All **18** acceptance criteria pass: A1–A8, A8b, A9–A17. Enumerated rather
+- All **19** acceptance criteria pass: A1–A8, A8b, A9–A18. Enumerated rather
   than given as a range, because a range silently drops any criterion added
   out of sequence — A8b and A13 both were, and A13 is the only criterion
   proving the two-tier secret split is actually two-tiered.
-- All **17** checks exist — C1a, C1b, C1c, C2, C2b, C2c, C3–C13 — and have been
+- All **19** checks exist — C1a, C1b, C1c, C2, C2b, C2c, C3–C11, C11b, C12,
+  C13, C13b — and have been
   observed failing for the right reason at least
   once, not merely passing.
 - The validator and generator take the plugin name and declared visibility as
