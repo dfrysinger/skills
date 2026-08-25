@@ -1,0 +1,21 @@
+{
+  "name": "dfrysinger-skills",
+  "visibility": "public",
+  "displayName": "dfrysinger skills",
+  "description": "Agent skills I use day-to-day with GitHub Copilot CLI and other coding agents.",
+  "author": {
+    "name": "Daniel Frysinger"
+  },
+  "repository": "https://github.com/dfrysinger/skills",
+  "license": "MIT",
+  "hostExclusions": {
+    "copilot": ["rubber-duck"]
+  },
+  "emit": {
+    "claudePlugin": ".claude-plugin/plugin.json",
+    "claudeMarketplace": ".claude-plugin/marketplace.json",
+    "copilotPlugin": "plugin.json",
+    "codexPlugin": ".codex-plugin/plugin.json",
+    "copilotMarketplace": ".agents/plugins/marketplace.json"
+  }
+}

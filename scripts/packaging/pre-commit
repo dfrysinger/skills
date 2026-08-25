@@ -1,0 +1,41 @@
+#!/bin/sh
+# Secret gate, installed as .git/hooks/pre-commit by install-hooks.sh.
+#
+# This is the prevention half of the secret invariant. It binds the default
+# commit path on the machine it is installed on -- and nothing more. It is
+# advisory: `git commit --no-verify`, a GitHub web edit, or `gh api` all bypass
+# it. That gap is covered by detection (the post-push scan), not by pretending
+# this hook is a gate it is not.
+set -e
+
+root=$(git rev-parse --show-toplevel)
+
+if [ ! -f "$root/packaging.config.json" ]; then
+  echo "pre-commit: no packaging.config.json; secret gate cannot select a ruleset." >&2
+  echo "pre-commit: refusing to commit rather than scanning with no rules." >&2
+  exit 1
+fi
+
+node "$root/scripts/packaging/scan-secrets.mjs" --staged || {
+  echo "" >&2
+  echo "pre-commit: secret gate rejected this commit." >&2
+  echo "pre-commit: fix the finding above. Do not use --no-verify to get past it." >&2
+  exit 1
+}
+
+# Invariant: no private content reaches the public repo. Tuning a ruleset
+# against a real private tree can carry that tree's content into the pattern
+# itself, so the shared scripts/ tree is scanned under the PUBLIC ruleset even
+# in a private repo -- it is the file most likely to carry what it was tested
+# against.
+staged_scripts=$(git diff --cached --name-only --diff-filter=ACMR -- "scripts/" || true)
+if [ -n "$staged_scripts" ]; then
+  # shellcheck disable=SC2086
+  node "$root/scripts/packaging/scan-secrets.mjs" --visibility=public $staged_scripts || {
+    echo "" >&2
+    echo "pre-commit: shared scripts/ tree carries a value that must not be public." >&2
+    exit 1
+  }
+fi
+
+exit 0
