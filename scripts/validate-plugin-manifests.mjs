@@ -3,7 +3,10 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 
-const root = resolve(import.meta.dirname, "..");
+import { loadConfig, resolveRepoRoot } from "./packaging/config.mjs";
+
+const root = await resolveRepoRoot();
+const config = await loadConfig(root);
 
 async function readJson(path) {
   return JSON.parse(await readFile(resolve(root, path), "utf8"));
@@ -46,14 +49,16 @@ function hasNonEmptyFrontmatterField(frontmatter, field) {
 
 const [copilotPlugin, claudePlugin, claudeMarketplace, codexPlugin, codexMarketplace] =
   await Promise.all([
-    readJson("plugin.json"),
-    readJson(".claude-plugin/plugin.json"),
-    readJson(".claude-plugin/marketplace.json"),
-    readJson(".codex-plugin/plugin.json"),
-    readJson(".agents/plugins/marketplace.json"),
+    readJson(config.emit.copilotPlugin),
+    readJson(config.emit.claudePlugin),
+    readJson(config.emit.claudeMarketplace),
+    readJson(config.emit.codexPlugin),
+    readJson(config.emit.copilotMarketplace),
   ]);
 
-const expectedName = "dfrysinger-skills";
+// Taken from the repo's own config rather than hardcoded, so this validator
+// serves any repo that carries a packaging.config.json.
+const expectedName = config.name;
 const expectedSkillsPath = "./skills/";
 
 for (const [label, manifest] of [
@@ -144,13 +149,23 @@ assert(
   "Claude plugin skills must list every direct skills/ directory",
 );
 const copilotSkills = [...copilotPlugin.skills].sort();
+// Per-host exclusions are declared, not hardcoded: rubber-duck is excluded
+// from Copilot because Copilot ships it as a built-in agent, and a manifest
+// that listed it would shadow the built-in.
+const copilotExclusions = new Set(config.hostExclusions?.copilot ?? []);
 const expectedCopilotSkills = skillDirectories
-  .filter((directory) => directory !== "rubber-duck")
+  .filter((directory) => !copilotExclusions.has(directory))
   .map((directory) => `./skills/${directory}`);
 assert(
   JSON.stringify(copilotSkills) === JSON.stringify(expectedCopilotSkills),
-  "Copilot plugin skills must list every direct skills/ directory except rubber-duck",
+  `Copilot plugin skills must list every direct skills/ directory except: ${[...copilotExclusions].join(", ") || "(none)"}`,
 );
+for (const excluded of copilotExclusions) {
+  assert(
+    skillDirectories.includes(excluded),
+    `hostExclusions.copilot lists "${excluded}", which is not a skills/ directory`,
+  );
+}
 for (const directory of skillDirectories) {
   const skillContent = await readFile(
     resolve(root, "skills", directory, "SKILL.md"),

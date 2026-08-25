@@ -6,29 +6,29 @@
     "name": "Daniel Frysinger"
   },
   "skills": [
-    "./skills/guardrails",
     "./skills/authenticated-browse",
     "./skills/autonomous-github-actions",
-    "./skills/unattended-run",
-    "./skills/self-compact",
-    "./skills/dual-review",
-    "./skills/rubber-duck",
-    "./skills/explain",
     "./skills/design-doc",
     "./skills/development-loop",
+    "./skills/dual-review",
+    "./skills/explain",
     "./skills/git-history-recovery",
     "./skills/github-api-integration",
     "./skills/grill-me",
+    "./skills/guardrails",
     "./skills/handoff",
     "./skills/macos-background-app-control",
     "./skills/macos-photos-library",
     "./skills/mailbox",
     "./skills/prototype",
     "./skills/rotate-session",
+    "./skills/rubber-duck",
     "./skills/scout",
     "./skills/secret-hygiene",
+    "./skills/self-compact",
     "./skills/skill-create",
-    "./skills/writing-great-skills",
-    "./skills/visual-proof"
+    "./skills/unattended-run",
+    "./skills/visual-proof",
+    "./skills/writing-great-skills"
   ]
 }
