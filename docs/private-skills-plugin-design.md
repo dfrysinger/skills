@@ -153,6 +153,77 @@ repo's declared visibility. Approved fixture syntax for documentation examples
 must be defined alongside it, so a public skill can show a payload shape
 without tripping the gate.
 
+## Constraint provenance
+
+Every constraint that materially narrowed this design, where it came from, and
+what would force revisiting it. Prior configuration is provenance, not proof.
+
+| constraint | provenance | evidence / owner | protects | revisit when |
+|---|---|---|---|---|
+| Five manifests per repo | platform behavior | each of the three CLIs reads its own; all five verified working in the public repo | discovery on every host | a host changes its discovery mechanism, or a shared manifest spec appears |
+| Two allowlists, 24 Claude / 23 Copilot | compatibility | `rubber-duck` ships as a Copilot built-in; verified in both manifests | a repo skill shadowing a host built-in | Copilot drops the built-in, or the counts converge |
+| Distribution is a **private git repo** | user outcome | must sync across machines *and* three CLIs; private HTTPS clone + `marketplace add` proven this session | keeping domain skills off a public repo | a host gains native private skill sync |
+| Every emission bumps the version | platform behavior | cache is keyed by version; an unbumped version leaves stale code installed while every surface reports success — observed and initially misdiagnosed this session | installs actually taking effect | the host stops keying its cache by version |
+| Enforcement is a **pre-commit hook** | platform limitation | github.com has no pre-receive at this tier; custom-pattern push protection needs paid Secret Protection | secrets never reaching git | the repo moves to GHES, or Secret Protection is purchased |
+| Secret ruleset is **two-tier** | measured | the trees being migrated carry 14 LAN addresses across 8 distinct hosts; a single always-reject table blocks the migration's own commit | the private repo holding its own payload | a tier-2 class starts appearing in the public repo |
+| A skill lives in exactly one repo | policy (owner) | no synchronization authority exists between the two repos | divergent copies with no authority | a generator gains a defensible sync direction |
+| **Shared infra is a third repo (`skills-infra`)** | **implementation default — not measured, not platform-forced** | none external; chosen while closing a review finding, between "one shared repo" and "vendor into both" | one place to fix a packaging bug | **already fired — see reframe record** |
+
+**Hard numeric limits.** 24/23 skills and 14 LAN addresses are measured. The
+description budget deliberately asserts *no* number: the host does not publish
+one, so C8 records a total as a human tripwire rather than inventing a
+threshold. That is the rubric's requirement met by refusing the limit, not by
+guessing it.
+
+## Reframe gate
+
+Implementation returns here when a revisit condition above fires, a new
+component mainly preserves an implementation default, repeated fixes move
+failure to the next internal boundary, or a proven predecessor satisfies the
+supported caller with less machinery.
+
+### Reframe status: `OPEN`
+
+**Triggering evidence.** The `skills-infra` row is the only constraint in the
+table whose provenance is an implementation default with no external evidence.
+It was decided while closing round-1 finding B4, which asked whether the
+topology was specified at all — the choice was framed as *one shared repo vs.
+vendoring into both*, and a third option was never evaluated: the generator,
+validator, templates and secret ruleset living in the **public repo**, which
+already owns `scripts/validate-plugin-manifests.mjs`, consumed by the private
+repo at a pinned version. Three review rounds verified the decision was
+internally consistent and never asked whether the component should exist.
+
+1. **What user-visible outcome is blocked?** None directly. The cost is a third
+   repository to create, clone, pin, and keep in sync on every machine — carried
+   permanently by a single-owner setup, to serve exactly two consumers.
+2. **Which constraint creates the blocker, and where did it come from?** "Shared
+   infrastructure needs its own repository." It came from framing the question
+   as one-repo-vs-vendoring; neither option was "the existing owner already
+   lives somewhere".
+3. **What concrete invariant fails if the constraint changes?** Examined:
+   invariant 6 governs *skills*, and infra is not a skill; the public repo
+   already carries the validator, so the reuse contract's "fix once" is
+   satisfied by any single home. The secret **ruleset** would become public, but
+   it is a set of generic shapes (`access_code` proximity, hex `tag_uid`,
+   `*.ts.net`), not secrets — treating pattern definitions as sensitive is
+   security through obscurity. **No hard invariant appears to fail.**
+4. **What is the simplest design without that constraint?** Two repos. Infra
+   lives beside the validator it extends in the public repo; `skills-private`
+   consumes it pinned. One fewer repo, clone, and pin relationship, and the
+   "fix once" property is unchanged.
+5. **Which option has fewer trusted components and maintenance surfaces?** The
+   two-repo option, plainly.
+
+**What would keep the third repo:** a concrete incompatibility not yet named —
+e.g. the public repo's release cadence making a pinned consumer unworkable, or
+a requirement that infra be installable independently of either skill set.
+Neither is currently claimed.
+
+This record is `OPEN`, so implementation does not start. Closing it requires a
+revised work order and its design review, not an author statement that the
+concern is resolved.
+
 ## Reuse contract
 
 **Reused as-is.** The public repo's five-manifest layout is proven across all
@@ -183,7 +254,8 @@ mode is silent: a version left unbumped does not error, it just stops the
 plugin cache refreshing, which this session observed and initially misdiagnosed
 as a stale marketplace.
 
-**Topology, decided.** The shared infrastructure lives in **one repository,
+**Topology — under an `OPEN` reframe record; see the reframe gate above.** As
+written, the shared infrastructure lives in **one repository,
 `dfrysinger/skills-infra`**, consumed by both skill repos at a pinned version.
 Vendoring a `scripts/` subtree into each repo is **rejected**: two copies with
 no synchronization authority reintroduce exactly the two-place maintenance the
@@ -365,6 +437,8 @@ install leaves recovery independent of the private repo.
 
 ## Definition of Done — private-skills-plugin
 
+- The reframe status is `CLEAR`, with the evidence that closed it. It is
+  currently `OPEN`, so implementation has not started.
 - All **14** acceptance criteria pass: A1–A8, A8b, A9–A13. Enumerated rather
   than given as a range, because a range silently drops any criterion added
   out of sequence — A8b and A13 both were, and A13 is the only criterion
