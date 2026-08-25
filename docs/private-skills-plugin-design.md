@@ -23,8 +23,11 @@ assume is included.
 - **Not touching the public repo's skill content.** Only its packaging files may
   change, and only to consume the shared generator.
 - **Not general CI.** No test or lint workflow is added. One narrow exception is
-  in scope and named in the fail-closed evidence: a repository-side enforcement
-  of the secret gate, because a local hook alone cannot bind a second machine.
+  in scope and named in the fail-closed evidence: a post-push secret scan, on
+  **both** repos. It is required because a local hook binds neither a second
+  machine nor a `--no-verify` commit on this one. It is the repo's first
+  `.github/workflows`, and it carries A14/C12 and A15/C11 so that it is a
+  checked component rather than an unfalsifiable claim.
 - **Not multi-user or org distribution.** One owner, private repos, personal
   machines.
 - **Not changing how skills are authored.** `writing-great-skills` and
@@ -100,7 +103,23 @@ the component that enforces it, because a rule with no owner is a report.
     explicitly. This is the load-bearing half.
   - *Detection* is a post-push workflow that scans the received ref and alerts.
     It runs after acceptance, so it is a report, not a gate. This is the narrow
-    CI exception named in the non-goals.
+    CI exception named in the non-goals. It is **required, not optional** — see
+    the bypass below for why, and A14/C12 for its criterion and check.
+    The alert channel is the workflow **failing**, which sends GitHub's default
+    failed-run notification to the repo owner. No new notification
+    infrastructure is introduced: a single-owner repo already has exactly one
+    reader, and a scan that merely logged a warning would be the "absence of a
+    warning is not evidence" failure this document rejects elsewhere.
+
+**The hook is bypassable, and this is the honest statement of it.** A
+`pre-commit` hook is advisory: `git commit --no-verify` (or `-n`) skips it, and
+so does any path that does not run hooks at all — a GitHub web edit, `gh api`,
+or an agent or IDE that passes the flag by habit. The gate binds the *default*
+commit path on a bootstrapped machine and nothing more.
+
+This is why the post-push scan is required rather than nice to have: it is the
+only owner in this design that does not depend on the committer's cooperation.
+It cannot prevent, but it is what turns a silent bypass into a known incident.
 
 Absence of a warning is not evidence. Each check must produce an explicit pass
 line naming what it verified.
@@ -116,6 +135,16 @@ it. github.com offers no pre-acceptance gate at this tier, so the exposure
 window is real and bounded only by the bootstrap discipline above. Recovery is
 history rewrite plus credential rotation — the same response the fail-closed
 section already assumes for a leaked access code.
+
+**Residual risk, accepted:** a commit made with `--no-verify`, or through a
+path that runs no hooks (web edit, `gh api`), bypasses the gate on a fully
+bootstrapped machine. Prevention is not available — the owner is a local hook
+and local hooks are advisory. Detection is the post-push scan (A14/C12), so the
+window is between the bypassing commit and the next push. Recovery is again
+history rewrite plus rotation. This risk is accepted rather than closed because
+the alternative owners — a server-side gate, or a wrapper that intercepts every
+git invocation — are respectively unavailable at this tier and trivially
+circumvented.
 
 ### Secret classes in scope
 
@@ -192,13 +221,28 @@ Closed by adopting the simpler architecture, not by argument. The design now
 has **two** repositories; `skills-infra` is not created. The record below is
 kept because a reframe that leaves no trace invites the same component back.
 
-**Evidence for `CLEAR`:** no revisit condition in the provenance table is
-currently met. Every remaining constraint resolves to platform behavior, a
-measured figure, a compatibility promise, or a named owner — none to an
-implementation default. The one row that did (`skills-infra`) was removed
-rather than justified. The replacement row's own revisit condition — a second
-consumer that cannot depend on the public repo — is not met: there are exactly
-two consumers and both are the owner's.
+**Evidence for `CLEAR`.** The rubric requires the revised work order *and its
+design review evidence* — an author's conclusion is explicitly not enough, and
+an earlier revision of this document set `CLEAR` before the review existed. The
+evidence is now:
+
+- A lens-equipped dual review of the revised two-repo work order, both families
+  complete, both recording `design_scope_lens.applied`. Adjudication:
+  `scratchpad/review-lens/adjudication.md`.
+- Both reviewers examined the topology under lens Q4/Q5/Q6 and **neither
+  raised it**. Opus recorded it as checked and upheld: the public repo is a
+  real existing owner of packaging logic, not a convenient one, because
+  `scripts/validate-plugin-manifests.mjs` is already there.
+- Six must-fix findings came out of that round. **None concerned the topology**;
+  they concerned a false security claim, an unspecified interface, two
+  unchecked enforcement paths, and a two-thirds-unverified objective. All are
+  resolved in this revision.
+- No revisit condition in the provenance table is met. Every remaining
+  constraint resolves to platform behavior, a measured figure, a compatibility
+  promise, or a named owner — none to an implementation default. The
+  replacement row's own condition, a second consumer that cannot depend on the
+  public repo, is not met: there are exactly two consumers and both are the
+  owner's.
 
 **Resolution.** The generator, manifest templates and secret ruleset live in
 the **public repo** beside `scripts/validate-plugin-manifests.mjs`, which they
@@ -285,8 +329,23 @@ as a stale marketplace.
 
 **Topology, decided — two repositories.** The generator, manifest templates and
 secret ruleset live in the **public repo**, under `scripts/`, beside the
-validator they extend. `skills-private` consumes them at a **pinned tag** and
-records the tag it generated with, so drift is detectable.
+validator they extend.
+
+`skills-private` consumes them as a **git submodule** at `packaging/`, pinned to
+a tag, with the tag string also written to `.packaging-pin` and asserted by the
+generator at emission. The mechanism is named because the alternatives are not
+interchangeable:
+
+- a **subtree** or any checked-in copy is materially the vendoring rejected
+  below, so it is excluded by the same reasoning;
+- **fetch-at-emission-time** adds a network dependency to every emission on
+  every machine, and makes rollback point 3's "the pin still resolves" false if
+  the tag is later deleted;
+- a **submodule** resolves offline once checked out, records drift as a visible
+  SHA change, and keeps exactly one copy of the logic.
+
+Its cost is that a fresh clone needs `--recursive`, which the second-machine
+bootstrap must therefore cover alongside `gh auth login`.
 
 Two alternatives were rejected. **Vendoring a `scripts/` subtree into each
 repo** reintroduces exactly the two-place maintenance the objective exists to
@@ -296,9 +355,27 @@ a clone and a pinning relationship without a named incompatibility to justify
 them, and the existing validator already established the public repo as the
 owner of packaging logic.
 
-The private repo therefore depends on the public one. That direction is
-deliberate — public code may not read private content, so the dependency can
-never invert into a disclosure path.
+The private repo therefore depends on the public one. **Public code does read
+private content** — the scanner and generator live in the public repo and
+execute over the private tree (C2c, C9), and migration step 4 tunes the ruleset
+in response to what it finds there. Dependency direction is therefore *not* the
+protecting property, and an earlier draft of this document claimed it was.
+
+The property that actually holds, and the one the invariants enforce:
+
+> Private **content** is never committed to, or logged by, the public repo.
+> Shared tooling reads private trees only while executing on the owner's
+> machine.
+
+This matters most where it is least obvious. Step 4 says to fix the ruleset
+rather than exempt files — but a pattern iterated until it stops matching a
+specific private tree is **content-bearing**: it can encode the shape, and
+sometimes the value, of what it was tuned against. Invariant 9 and C11 exist to
+catch exactly that, by running the public tier set over the public repo's own
+`scripts/` diff rather than only over `skills/`.
+
+C2c and C9 run **locally, with both trees present**. Public CI is never granted
+access to the private repo.
 
 ## Affected data flow
 
@@ -308,8 +385,10 @@ dfrysinger/skills  (public, general)                      --> 3 CLIs
    |  consumed at a pinned tag by
    +--> dfrysinger/skills-private  (private, domain)       --> 3 CLIs
 
-The dependency runs private -> public only. Public code never reads private
-content, so it cannot become a disclosure path.
+The dependency runs private -> public only, but public *code* does execute over
+private *content* on the owner's machine. The enforced property is that no
+private content is ever committed to or logged by the public repo — invariant 9,
+C11. See the topology note in the reuse contract.
 ```
 
 Existing connection points touched:
@@ -372,8 +451,14 @@ name. The blanked skills are whichever fall at the tail — realistically the
    every manifest emission.
 2. No secret of a class listed above, in the tier that applies to that repo's
    declared visibility, is committed. Enforcement on every machine that pushes
-   is a commit rejection, not a report; the remote-side scan is a report and
-   does not satisfy this invariant on its own.
+   is a commit rejection **on the default commit path**, not a report. The
+   remote-side scan is a report and does not satisfy this invariant on its own;
+   it is the detection owner for the bypass paths named in the fail-closed
+   section.
+9. No private **content** is committed to, or logged by, the public repo. This
+   is the property that dependency direction was previously and wrongly claimed
+   to provide. It binds the shared `scripts/` tree specifically, because a
+   ruleset tuned against a real private tree can carry that tree's content.
 3. Every manifest emission bumps the plugin version.
 4. All five manifests agree on name, version and description within a repo.
 5. Per-host skill exclusions survive generation.
@@ -410,6 +495,17 @@ Each is observable.
 - **A13** The unmodified `bambu-printing` and `bambuddy` trees commit
   successfully into `skills-private`, and the same trees are rejected when
   scanned under the public repo's tier set.
+- **A14** A tier-1 token committed with `--no-verify` and pushed produces an
+  alert naming the file and line, delivered to the channel named in the
+  fail-closed section, within one workflow run of the push.
+- **A15** A commit to the **public** repo whose `scripts/` diff contains a
+  tier-2 literal drawn from the private tree is rejected.
+- **A16** After install on this machine, each moved skill resolves by name in
+  **all three** hosts — Claude Code, Copilot CLI and Codex — not only in Claude
+  Code.
+- **A17** `skills-private` records the pinned tag of the packaging submodule,
+  and the generator refuses to emit when the checked-out submodule does not
+  match `.packaging-pin`.
 - **A9** Two successive generator emissions produce different versions.
 - **A10** After `marketplace update` + `plugin update`, the installed cache
   contains a directory named for the newly emitted version, and the previously
@@ -435,7 +531,10 @@ Each is observable.
 | C7 | A10, invariant 8 | Plant a version-distinguishing marker line in a skill body before emission. After `marketplace update` + `plugin update` + `/reload-plugins`, invoke that skill and read the marker back | fails unless the cache holds a directory named for the new version **and** the marker returned is the new one | Directory existence is observable by listing, but resolution is not: a stale and a new cache directory coexist, so an `ls`-only check passes in exactly the failing case. The marker is the only signal that names which copy the host actually loaded |
 | C8 | A3 | Enumerate every skill from both plugins after reload; sum description bytes | fails if any description is empty; **records** the total as a tripwire | Sampling two skills cannot see another plugin's blanked tail, which is where the budget failure actually lands. The host does not publish its budget, so the recorded total is a human tripwire and deliberately not a gate — an empty description is the only machine-checkable signal, and it fires only after the overflow. See the follow-up below |
 | C9 | A11, invariant 6 | Compare `skills/` directory listings across both repos | fails if the intersection is non-empty | A duplicated skill produces two divergent versions with no authority |
-| C10 | A2, A4 | Install, reload, then invoke each moved skill by name | fails if the skill does not load | End-to-end proof the move did not strand the skills |
+| C10 | A2, A4, A16 | Install, reload, then invoke each moved skill by name **in each of the three hosts** | fails if the skill does not load in any host, naming the host | End-to-end proof the move did not strand the skills. Per-host, because the objective names three CLIs and a Claude-only pass would leave two-thirds of it unverified — each host reads a different manifest, so one loading proves nothing about the others |
+| C11 | A15, invariant 9 | Run the **public** tier set over the public repo's own `scripts/` diff, including the secret ruleset itself | fails naming the literal and its line | Step 4 tunes the ruleset against a real private tree; a pattern iterated until it stops matching that tree can carry its content. Scanning only `skills/` would miss the one file most likely to carry it |
+| C12 | A14 | Commit a planted tier-1 token with `--no-verify`, push to a scratch branch, wait for the workflow | fails unless an alert naming file and line arrives; the scratch branch is then deleted and history rewritten | Proves the only owner that does not depend on the committer's cooperation actually fires. Without it, "the hook rejects commits" is indistinguishable from "the hook is trivially skippable" |
+| C13 | A17 | Check out a submodule commit other than the pinned tag, then run the generator | emission aborts non-zero naming both tags | Drift between the pin and the checkout is otherwise silent, and silent drift is the exact failure the two-repo topology was chosen to avoid |
 
 Preference order applied: C1a–C1c, C2b, C9 are state assertions because the
 invariants are about facts. C2, C5–C7 are behavioural checks over the generator
@@ -459,20 +558,35 @@ Every other check is written alongside the work.
    the validator's hardcoded `dfrysinger-skills`. Prove C5 and C6 against the
    public repo without adopting yet, then tag it so step 5 has a pin to consume.
 2. Create `skills-private` with an explicit private flag; prove C1a.
-3. Install the pre-commit hook and the post-push detection workflow; prove C2
-   with planted tokens of every tier-1 class, and C2b by running the bootstrap
-   on a fresh clone.
+3. Install the pre-commit hook and the post-push scan workflow on both repos;
+   prove C2 with planted tokens of every tier-1 class, C2b by running the
+   bootstrap on a fresh clone, C12 by pushing a `--no-verify` commit to a
+   scratch branch, and C11 against the public repo's `scripts/` diff. Delete
+   the scratch branch and rewrite its history afterwards.
 4. Move `bambu-printing` and `bambuddy` in, preserving git history if practical.
    Prove C9, and C2c — that these trees commit here and would be rejected under
    the public tier set. If C2c's private half fails, the tier split is wrong;
    fix the ruleset rather than exempting files, since a per-file exemption is
    how the network map reaches the public repo later.
-5. Pin `skills-private` to the step-1 tag and record it. Plant C7's version
-   marker in a skill body, then generate manifests; run C3, C4, C1b, C1c. The
-   marker must go in before emission, or C7 has nothing to read back.
-6. Install on this machine; run C7, C8, C10. Take a tarball of the two skill
-   directories, then delete `~/.claude/skills/bambu-printing` and
-   `~/.claude/skills/bambuddy`.
+5. Add the packaging submodule to `skills-private` at `packaging/`, pinned to
+   the step-1 tag, and write the tag to `.packaging-pin`. Plant C7's version
+   marker in a skill body, then generate manifests; run C3, C4, C1b, C1c, C13.
+   The marker must go in before emission, or C7 has nothing to read back.
+6. Install on this machine **in all three hosts** and run C7, C8, C10. Each host
+   reads a different manifest, so each needs its own install and its own
+   resolution proof:
+   - Claude Code — `claude plugin marketplace add` + `plugin install`, then
+     `/reload-plugins`; resolves via `.claude-plugin/`.
+   - Copilot CLI — installs under `~/.copilot/installed-plugins/_direct/`,
+     registering through `.agents/plugins/marketplace.json`.
+   - Codex — reads `.codex-plugin/plugin.json`, whose `"skills": "./skills/"`
+     is a directory rather than an allowlist.
+
+   Confirm each host's current install invocation from its own documentation
+   before running; the manifest and directory each host reads are stated above
+   and are the stable part. Only after C10 passes in all three: take a tarball
+   of the two skill directories, then delete `~/.claude/skills/bambu-printing`
+   and `~/.claude/skills/bambuddy`.
 7. Switch the public repo's own manifests over to the generator built in step 1;
    prove C5 again post-adoption. Step 1 only builds it — this step makes the
    public repo a consumer of it, which is the change C5 must not perturb.
@@ -484,11 +598,11 @@ install leaves recovery independent of the private repo.
 
 - The reframe status is `CLEAR`, with the evidence that closed it, and no
   recorded revisit condition has fired since.
-- All **14** acceptance criteria pass: A1–A8, A8b, A9–A13. Enumerated rather
+- All **18** acceptance criteria pass: A1–A8, A8b, A9–A17. Enumerated rather
   than given as a range, because a range silently drops any criterion added
   out of sequence — A8b and A13 both were, and A13 is the only criterion
   proving the two-tier secret split is actually two-tiered.
-- All **14** checks exist — C1a, C1b, C1c, C2, C2b, C2c, C3–C10 — and have been
+- All **17** checks exist — C1a, C1b, C1c, C2, C2b, C2c, C3–C13 — and have been
   observed failing for the right reason at least
   once, not merely passing.
 - The validator and generator take the plugin name and declared visibility as
