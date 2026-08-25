@@ -10,12 +10,22 @@ set -e
 root=$(git rev-parse --show-toplevel)
 hook="$root/.git/hooks/pre-commit"
 
+# Same dual layout as the hook itself: owner repo vs consumer repo.
+if [ -d "$root/scripts/packaging" ]; then
+  pkg="$root/scripts/packaging"
+elif [ -d "$root/packaging/scripts/packaging" ]; then
+  pkg="$root/packaging/scripts/packaging"
+else
+  echo "install-hooks: cannot find the packaging tree." >&2
+  exit 1
+fi
+
 if [ -e "$hook" ] && ! grep -q "scan-secrets.mjs" "$hook" 2>/dev/null; then
   echo "install-hooks: $hook exists and is not ours; move it aside first." >&2
   exit 1
 fi
 
-cp "$root/scripts/packaging/pre-commit" "$hook"
+cp "$pkg/pre-commit" "$hook"
 chmod +x "$hook"
 echo "install-hooks: secret gate installed at .git/hooks/pre-commit"
 
@@ -29,7 +39,7 @@ trap 'rm -rf "$tmp"' EXIT
 # a real-shaped literal would make this very file uncommittable. Splitting the
 # key from its value satisfies both.
 printf 'access_%s: %s\n' 'code' 'A1b2C3d4' > "$tmp/canary.md"
-if node "$root/scripts/packaging/scan-secrets.mjs" --visibility=private "$tmp/canary.md" >/dev/null 2>&1; then
+if node "$pkg/scan-secrets.mjs" --visibility=private "$tmp/canary.md" >/dev/null 2>&1; then
   echo "install-hooks: SELF-TEST FAILED - scanner accepted a planted tier-1 token." >&2
   exit 1
 fi

@@ -10,13 +10,26 @@ set -e
 
 root=$(git rev-parse --show-toplevel)
 
+# The packaging tree lives at scripts/packaging/ in the repo that owns it, and
+# under the submodule in any repo that consumes it. One hook serves both rather
+# than forking the file, which would be two copies of a security gate.
+if [ -d "$root/scripts/packaging" ]; then
+  pkg="$root/scripts/packaging"
+elif [ -d "$root/packaging/scripts/packaging" ]; then
+  pkg="$root/packaging/scripts/packaging"
+else
+  echo "pre-commit: cannot find the packaging tree (scripts/packaging or packaging/scripts/packaging)." >&2
+  echo "pre-commit: refusing to commit rather than skipping the secret gate." >&2
+  exit 1
+fi
+
 if [ ! -f "$root/packaging.config.json" ]; then
   echo "pre-commit: no packaging.config.json; secret gate cannot select a ruleset." >&2
   echo "pre-commit: refusing to commit rather than scanning with no rules." >&2
   exit 1
 fi
 
-node "$root/scripts/packaging/scan-secrets.mjs" --staged || {
+node "$pkg/scan-secrets.mjs" --staged || {
   echo "" >&2
   echo "pre-commit: secret gate rejected this commit." >&2
   echo "pre-commit: fix the finding above. Do not use --no-verify to get past it." >&2
@@ -31,7 +44,7 @@ node "$root/scripts/packaging/scan-secrets.mjs" --staged || {
 staged_scripts=$(git diff --cached --name-only --diff-filter=ACMR -- "scripts/" || true)
 if [ -n "$staged_scripts" ]; then
   # shellcheck disable=SC2086
-  node "$root/scripts/packaging/scan-secrets.mjs" --visibility=public $staged_scripts || {
+  node "$pkg/scan-secrets.mjs" --visibility=public $staged_scripts || {
     echo "" >&2
     echo "pre-commit: shared scripts/ tree carries a value that must not be public." >&2
     exit 1
