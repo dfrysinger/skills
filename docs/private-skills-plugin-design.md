@@ -65,7 +65,11 @@ Every step is reversible without data loss:
    from `skills-private`. The tarball exists because (b) depends on the private
    repo being reachable and on the move having preserved content.
 3. The public repo's packaging change is a single commit; revert restores its
-   hand-maintained manifests.
+   hand-maintained manifests. Because `skills-private` consumes a **pinned
+   tag** rather than `main`, reverting the public repo does not break the
+   private repo's ability to regenerate — the pin still resolves. This is the
+   concrete payoff of pinning over tracking a branch, and it is why hosting the
+   generator in the public repo does not couple the two rollbacks.
 
 Rollback trigger: any host fails to load the private plugin after install, or
 the validator reports drift the generator cannot fix.
@@ -167,7 +171,7 @@ what would force revisiting it. Prior configuration is provenance, not proof.
 | Enforcement is a **pre-commit hook** | platform limitation | github.com has no pre-receive at this tier; custom-pattern push protection needs paid Secret Protection | secrets never reaching git | the repo moves to GHES, or Secret Protection is purchased |
 | Secret ruleset is **two-tier** | measured | the trees being migrated carry 14 LAN addresses across 8 distinct hosts; a single always-reject table blocks the migration's own commit | the private repo holding its own payload | a tier-2 class starts appearing in the public repo |
 | A skill lives in exactly one repo | policy (owner) | no synchronization authority exists between the two repos | divergent copies with no authority | a generator gains a defensible sync direction |
-| **Shared infra is a third repo (`skills-infra`)** | **implementation default — not measured, not platform-forced** | none external; chosen while closing a review finding, between "one shared repo" and "vendor into both" | one place to fix a packaging bug | **already fired — see reframe record** |
+| Shared packaging code lives **in the public repo**, consumed by the private repo at a pinned tag | existing owner | `scripts/validate-plugin-manifests.mjs` already lives there and already reads all five manifests; the generator extends it rather than displacing it | one place to fix a packaging bug | a second consumer appears that cannot depend on the public repo, or its release cadence makes pinning unworkable |
 
 **Hard numeric limits.** 24/23 skills and 14 LAN addresses are measured. The
 description budget deliberately asserts *no* number: the host does not publish
@@ -182,9 +186,37 @@ component mainly preserves an implementation default, repeated fixes move
 failure to the next internal boundary, or a proven predecessor satisfies the
 supported caller with less machinery.
 
-### Reframe status: `OPEN`
+### Reframe status: `CLEAR`
 
-**Triggering evidence.** The `skills-infra` row is the only constraint in the
+Closed by adopting the simpler architecture, not by argument. The design now
+has **two** repositories; `skills-infra` is not created. The record below is
+kept because a reframe that leaves no trace invites the same component back.
+
+**Evidence for `CLEAR`:** no revisit condition in the provenance table is
+currently met. Every remaining constraint resolves to platform behavior, a
+measured figure, a compatibility promise, or a named owner — none to an
+implementation default. The one row that did (`skills-infra`) was removed
+rather than justified. The replacement row's own revisit condition — a second
+consumer that cannot depend on the public repo — is not met: there are exactly
+two consumers and both are the owner's.
+
+**Resolution.** The generator, manifest templates and secret ruleset live in
+the **public repo** beside `scripts/validate-plugin-manifests.mjs`, which they
+extend. `skills-private` consumes them at a pinned tag. This removes one
+repository, one clone, and one pinning relationship, and leaves "fix once"
+intact — there is still exactly one home for packaging logic.
+
+**Consequence accepted:** the secret ruleset is public. It is a set of generic
+shapes (`access_code` proximity, hex `tag_uid`, `*.ts.net`), not secrets;
+treating pattern definitions as sensitive is security through obscurity, and
+the tier-2 classes it names are already inferable from any public description
+of a home 3D-printing stack. What stays private is the *values*, which is what
+the gate exists to protect.
+
+---
+
+**Original record, retained.** The `skills-infra` row was the only constraint
+in the
 table whose provenance is an implementation default with no external evidence.
 It was decided while closing round-1 finding B4, which asked whether the
 topology was specified at all — the choice was framed as *one shared repo vs.
@@ -215,14 +247,11 @@ internally consistent and never asked whether the component should exist.
 5. **Which option has fewer trusted components and maintenance surfaces?** The
    two-repo option, plainly.
 
-**What would keep the third repo:** a concrete incompatibility not yet named —
-e.g. the public repo's release cadence making a pinned consumer unworkable, or
-a requirement that infra be installable independently of either skill set.
-Neither is currently claimed.
-
-This record is `OPEN`, so implementation does not start. Closing it requires a
-revised work order and its design review, not an author statement that the
-concern is resolved.
+**What would have kept the third repo:** a concrete incompatibility — the
+public repo's release cadence making a pinned consumer unworkable, or a
+requirement that infra be installable independently of either skill set.
+Neither was claimed then or now, which is why the record closed by removing the
+component rather than defending it.
 
 ## Reuse contract
 
@@ -254,21 +283,33 @@ mode is silent: a version left unbumped does not error, it just stops the
 plugin cache refreshing, which this session observed and initially misdiagnosed
 as a stale marketplace.
 
-**Topology — under an `OPEN` reframe record; see the reframe gate above.** As
-written, the shared infrastructure lives in **one repository,
-`dfrysinger/skills-infra`**, consumed by both skill repos at a pinned version.
-Vendoring a `scripts/` subtree into each repo is **rejected**: two copies with
-no synchronization authority reintroduce exactly the two-place maintenance the
-objective exists to remove, and the drift would be silent. The consuming repos
-record the infra version they were generated with, so drift is detectable.
+**Topology, decided — two repositories.** The generator, manifest templates and
+secret ruleset live in the **public repo**, under `scripts/`, beside the
+validator they extend. `skills-private` consumes them at a **pinned tag** and
+records the tag it generated with, so drift is detectable.
+
+Two alternatives were rejected. **Vendoring a `scripts/` subtree into each
+repo** reintroduces exactly the two-place maintenance the objective exists to
+remove, with silent drift. **A third `skills-infra` repository** was the
+original decision and was removed by the reframe gate above: it added a repo,
+a clone and a pinning relationship without a named incompatibility to justify
+them, and the existing validator already established the public repo as the
+owner of packaging logic.
+
+The private repo therefore depends on the public one. That direction is
+deliberate — public code may not read private content, so the dependency can
+never invert into a disclosure path.
 
 ## Affected data flow
 
 ```
-dfrysinger/skills-infra  (templates + generator + validator + secret ruleset)
-   |  consumed at a pinned version by
-   +--> dfrysinger/skills          (public, general)   --> 3 CLIs
-   +--> dfrysinger/skills-private  (private, domain)   --> 3 CLIs
+dfrysinger/skills  (public, general)                      --> 3 CLIs
+   |  scripts/: validator + generator + templates + secret ruleset
+   |  consumed at a pinned tag by
+   +--> dfrysinger/skills-private  (private, domain)       --> 3 CLIs
+
+The dependency runs private -> public only. Public code never reads private
+content, so it cannot become a disclosure path.
 ```
 
 Existing connection points touched:
@@ -413,8 +454,10 @@ Every other check is written alongside the work.
 
 ## Migration
 
-1. Create `skills-infra`; build the generator, validator and secret ruleset.
-   Prove C5 and C6 against the public repo without adopting yet.
+1. In the **public repo**, build the generator, manifest templates and secret
+   ruleset under `scripts/`, alongside the existing validator, and parameterize
+   the validator's hardcoded `dfrysinger-skills`. Prove C5 and C6 against the
+   public repo without adopting yet, then tag it so step 5 has a pin to consume.
 2. Create `skills-private` with an explicit private flag; prove C1a.
 3. Install the pre-commit hook and the post-push detection workflow; prove C2
    with planted tokens of every tier-1 class, and C2b by running the bootstrap
@@ -424,21 +467,23 @@ Every other check is written alongside the work.
    the public tier set. If C2c's private half fails, the tier split is wrong;
    fix the ruleset rather than exempting files, since a per-file exemption is
    how the network map reaches the public repo later.
-5. Plant C7's version marker in a skill body, then generate manifests; run C3,
-   C4, C1b, C1c. The marker must go in before emission, or C7 has nothing to
-   read back.
+5. Pin `skills-private` to the step-1 tag and record it. Plant C7's version
+   marker in a skill body, then generate manifests; run C3, C4, C1b, C1c. The
+   marker must go in before emission, or C7 has nothing to read back.
 6. Install on this machine; run C7, C8, C10. Take a tarball of the two skill
    directories, then delete `~/.claude/skills/bambu-printing` and
    `~/.claude/skills/bambuddy`.
-7. Adopt the generator in the public repo; prove C5 again post-adoption.
+7. Switch the public repo's own manifests over to the generator built in step 1;
+   prove C5 again post-adoption. Step 1 only builds it — this step makes the
+   public repo a consumer of it, which is the change C5 must not perturb.
 
 Step 6 deletes only after its own checks pass and a tarball exists, so a failed
 install leaves recovery independent of the private repo.
 
 ## Definition of Done — private-skills-plugin
 
-- The reframe status is `CLEAR`, with the evidence that closed it. It is
-  currently `OPEN`, so implementation has not started.
+- The reframe status is `CLEAR`, with the evidence that closed it, and no
+  recorded revisit condition has fired since.
 - All **14** acceptance criteria pass: A1–A8, A8b, A9–A13. Enumerated rather
   than given as a range, because a range silently drops any criterion added
   out of sequence — A8b and A13 both were, and A13 is the only criterion
@@ -448,8 +493,9 @@ install leaves recovery independent of the private repo.
   once, not merely passing.
 - The validator and generator take the plugin name and declared visibility as
   input; no repo name is hardcoded in shared code.
-- Both repos regenerate their manifests from `skills-infra` at a pinned version,
-  and each records the infra version it used.
+- Both repos regenerate their manifests from the public repo's `scripts/`:
+  the public repo from its own working tree, `skills-private` from a pinned
+  tag that it records. `skills-infra` is not created.
 - `bambu-printing` and `bambuddy` load from the private plugin on this machine,
   their local copies are deleted, and a pre-delete tarball exists.
 - The public repo's five manifests differ from their pre-adoption state only in
