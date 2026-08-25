@@ -53,3 +53,26 @@ export function skillPaths(directories, exclusions = []) {
 export function serialize(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
+
+// The repo being operated on is not the repo this code lives in: a consumer
+// runs it out of the packaging submodule. Resolving from import.meta.dirname
+// silently targets the submodule instead, which is how the generator once
+// emitted a private repo's manifests under the public config with the
+// visibility assertion skipped. Every entry point resolves the root here.
+export async function resolveRepoRoot() {
+  if (process.env.PACKAGING_ROOT) return resolve(process.env.PACKAGING_ROOT);
+  const flag = process.argv.find((arg) => arg.startsWith("--root="))?.split("=")[1];
+  if (flag) return resolve(flag);
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  try {
+    const { stdout } = await promisify(execFile)("git", ["rev-parse", "--show-toplevel"], {
+      cwd: process.cwd(),
+    });
+    return stdout.trim();
+  } catch {
+    throw new Error(
+      "cannot determine the repo to operate on: run from inside it, or pass --root=<path>",
+    );
+  }
+}

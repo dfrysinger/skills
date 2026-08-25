@@ -3,9 +3,9 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import { loadConfig } from "./packaging/config.mjs";
+import { loadConfig, resolveRepoRoot } from "./packaging/config.mjs";
 
-const root = resolve(import.meta.dirname, "..");
+const root = await resolveRepoRoot();
 const config = await loadConfig(root);
 
 async function readJson(path) {
