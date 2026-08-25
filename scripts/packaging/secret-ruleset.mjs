@@ -35,8 +35,14 @@ export const TIER_1 = [
   {
     id: "generic-credential",
     label: "generic credential",
+    // The separator must look like an assignment (: = or a quote), NOT bare
+    // whitespace. Allowing whitespace matched ordinary prose -- "Secret
+    // committed." in this repo's own design doc -- and a gate that fires on
+    // prose is one people learn to --no-verify past, which costs more than the
+    // recall it buys. `bearer <token>` keeps whitespace because that is its
+    // real wire form.
     pattern:
-      /\b(?:bearer\s+[A-Za-z0-9._-]{16,}|(?:api[_-]?key|password|passwd|secret|token)["'\s:=]+[^\s"'{}<>]{12,})/i,
+      /\b(?:bearer\s+[A-Za-z0-9._-]{16,}|(?:api[_-]?key|password|passwd|secret|token)\s*["':=]\s*["']?[^\s"'{}<>]{12,})/i,
   },
   {
     id: "private-key",

@@ -298,6 +298,44 @@ requirement that infra be installable independently of either skill set.
 Neither was claimed then or now, which is why the record closed by removing the
 component rather than defending it.
 
+## What the build proved that the design did not
+
+Recorded because each cost real time and none was visible from reading the
+document.
+
+**Shared code must resolve the *consuming* repo, not its own location.** The
+generator and validator both derived their root from `import.meta.dirname`. Run
+from `skills-private` through the packaging submodule, that resolves to the
+submodule — so the generator loaded the **public** config and wrote manifests
+**into the submodule**, and because that config declares `visibility: public`
+the visibility assertion was skipped entirely. Invariant 1 was unenforced in
+the one repo it exists to protect. The validator had the identical bug and
+reported "manifests are consistent" while checking the wrong repo, so C3
+passed falsely. Root resolution now lives in one shared function used by every
+entry point. A check that runs only in the repo that owns the code proves the
+mechanism fires, not that a consumer ever reaches it.
+
+**A generator that sorts cannot adopt an unsorted hand-maintained file.** C5
+failed on its first run: the allowlists were in arbitrary order, so the first
+emission would have rewritten them wholesale and invariant 7 could never have
+been observed. Normalisation belongs in its own commit, before adoption, so the
+one real change is not hidden inside a version-only claim. Note that allowlist
+order is not purely cosmetic — descriptions compete for a shared host budget
+and the tail is what silently blanks.
+
+**A self-testing gate cannot carry its own trigger as a literal.** The
+bootstrap self-test plants a real tier-1 token, which made the installing
+script itself uncommittable under the gate it installs. A fixture-syntax token
+would be skipped by the scanner and prove nothing. Assemble the token at
+runtime so the source carries no match.
+
+**The submodule pulls the whole public repo,** not just its `scripts/` tree,
+because a submodule is a repository. It is only text and it works, but every
+clone of the private repo carries a full copy of the public one. If that
+becomes a problem, the fix is a dedicated packaging repo — which is the
+`skills-infra` the reframe gate removed, so revisit that record rather than
+reintroducing it silently.
+
 ## Reuse contract
 
 **Reused as-is.** The public repo's five-manifest layout is proven across all
@@ -614,11 +652,32 @@ Every other check is written alongside the work.
    - Codex — reads `.codex-plugin/plugin.json`, whose `"skills": "./skills/"`
      is a directory rather than an allowlist.
 
-   Confirm each host's current install invocation from its own documentation
-   before running; the manifest and directory each host reads are stated above
-   and are the stable part. Only after C10 passes in all three: take a tarball
-   of the two skill directories, then delete `~/.claude/skills/bambu-printing`
-   and `~/.claude/skills/bambuddy`.
+   Invocations, as verified during the build (confirm against each host's own
+   documentation, which moves):
+   - `claude plugin marketplace add <owner>/<repo>` then
+     `claude plugin install <plugin>@<marketplace>`.
+   - `copilot plugin install <owner>/<repo>`. It warns that direct installs are
+     deprecated in favour of `plugin@marketplace`; expect this to change.
+   - `codex plugin marketplace add <https url>` then
+     `codex plugin add <plugin>@<marketplace>`.
+
+   **Updating is where this bites.** `claude plugin update <name>` reports
+   `Plugin not found`; it requires `<name>@<marketplace>`. And a successful
+   `marketplace update` says nothing about what is installed — it refreshes the
+   clone only. The cache directory is the sole honest surface, which is what
+   C7's marker exists to read.
+
+   Only after C10 passes in all three: take a tarball of the two skill
+   directories, then delete `~/.claude/skills/bambu-printing` and
+   `~/.claude/skills/bambuddy`.
+
+   **Delete only while the copies are byte-identical.** Compare each local tree
+   against the installed plugin copy first and stop if they differ. A
+   divergence means the local tree carries something the plugin does not, and
+   the tarball would be the only record of it. This gate is cheap and it fired
+   for real during the build: the installed copy still held a test marker from
+   an earlier emission, so the trees differed until the newer version was
+   installed.
 7. Switch the public repo's own manifests over to the generator built in step 1;
    prove C5 again post-adoption. Step 1 only builds it — this step makes the
    public repo a consumer of it, which is the change C5 must not perturb.
