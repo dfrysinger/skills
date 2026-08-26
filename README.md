@@ -1,12 +1,14 @@
 # skills
 
-My agent skills for [GitHub Copilot CLI](https://docs.github.com/copilot/concepts/agents/copilot-cli) and other coding agents. Small, composable, and easy to adapt.
+Reusable agent skills for [GitHub Copilot CLI](https://docs.github.com/copilot/concepts/agents/copilot-cli), Claude Code, and Codex CLI.
+
+These skills help agents plan work, keep long tasks moving, review changes with independent models, verify real behavior, preserve context, and coordinate with other agent sessions.
 
 Inspired by [mattpocock/skills](https://github.com/mattpocock/skills).
 
-## How to install
+## Install
 
-### Copilot CLI
+### GitHub Copilot CLI
 
 ```sh
 copilot plugin install dfrysinger/skills
@@ -26,140 +28,183 @@ codex plugin marketplace add dfrysinger/skills
 codex plugin add dfrysinger-skills@dfrysinger-skills
 ```
 
-Skills register as `dfrysinger-skills` and become available to invoke from your agent session. Direct local installs from a path on disk are deprecated in Copilot CLI; installing from this GitHub repo is the supported path.
+The plugin is registered as `dfrysinger-skills`. Installing from this GitHub repository is the supported Copilot CLI path; direct local plugin installs are deprecated.
 
-## Reference
+## Start here
 
-Core premises: 
+| When you want to... | Use |
+| --- | --- |
+| Explore how a project should solve a problem | [`scout`](./skills/scout/SKILL.md) |
+| Design a systemic or high-risk change | [`design-doc`](./skills/design-doc/SKILL.md) |
+| Build, fix, and ship a change | [`development-loop`](./skills/development-loop/SKILL.md) |
+| Review a change with two independent model families | [`dual-review`](./skills/dual-review/SKILL.md) |
+| Prove a user-visible change works in the real product | [`visual-proof`](./skills/visual-proof/SKILL.md) |
+| Run a long task without losing the plan | [`unattended-run`](./skills/unattended-run/SKILL.md) |
+| Pass work to another named agent | [`handoff`](./skills/handoff/SKILL.md) + [`mailbox`](./skills/mailbox/SKILL.md) |
+| Turn a reusable procedure into a skill | [`skill-create`](./skills/skill-create/SKILL.md) |
 
-Agents can’t review their own work
-- Different models find different problems in reviews
-  
-Agents cant keep track of long term tasks
-- Use loops to keep them on track. Point them to the dod/design/plan/skills they should be using.
-- Use /goal to keep them moving forward between loops.
-- Use deterministic validation techniques to keep the agent within the given architecture.
-  
-Agents can’t verify what they can’t use
-- Unit tests, linting and CI pipelines are great but not enough.
-- Agents must be able to drive their work just like a user does to be able to determine if it works and they are done.
+## How the development flow fits together
 
-## Development Flows
+The default path is:
 
-<img width="5056" height="8704" alt="image" src="https://github.com/user-attachments/assets/ad75e933-cd7b-48a3-ba59-aa418dc4f481" />
+1. [`scout`](./skills/scout/SKILL.md) finds what already exists and recommends whether to reuse, extend, or create.
+2. [`design-doc`](./skills/design-doc/SKILL.md) defines the durable work order when the change affects shared state, public contracts, architecture, security, or another broad boundary.
+3. [`prototype`](./skills/prototype/SKILL.md) sketches major UI changes in disposable HTML before implementation.
+4. [`development-loop`](./skills/development-loop/SKILL.md) owns implementation, targeted checks, live proof, review, and landing.
+5. [`guardrails`](./skills/guardrails/SKILL.md) turns important architecture rules into deterministic checks.
+6. [`visual-proof`](./skills/visual-proof/SKILL.md) captures evidence for behavior that must be seen.
+7. [`dual-review`](./skills/dual-review/SKILL.md) uses independent model families to find and verify material defects.
 
-- **[development-loop](./skills/development-loop/SKILL.md)** : Size development process to the actual risk: bounded bug fixes use focused regression tests and a short review path; anything larger arrives with a reviewed design document from [`design-doc`](./skills/design-doc/SKILL.md) and adds architecture guards and final live proof. Owns forward motion for every change. Uses [`dual-review`](./skills/dual-review/SKILL.md)'s material-risk gate rather than requiring literal zero comments.
+The process scales with risk. A bounded fix should stay bounded. A systemic change earns a design, deterministic architecture checks, and stronger live proof.
 
-- **[design-doc](./skills/design-doc/SKILL.md)** : Write the durable design document that turns a systemic or critical change into a complete work order — objective, non-goals, reuse contract, failure model, invariants, deterministic check contract, Definition of Done — then run the normal bounded [`dual-review`](./skills/dual-review/SKILL.md) loop before any code exists. Owns the scope and architecture call; hands the finished document to [`development-loop`](./skills/development-loop/SKILL.md).
-  
-- **[unattended-run]**
-- **[design-doc]**
-- **[scout]**
-- **[prototype]**
-- **[visual-proof]**
+<img width="5056" height="8704" alt="Development flow from exploration through implementation, proof, and review" src="https://github.com/user-attachments/assets/ad75e933-cd7b-48a3-ba59-aa418dc4f481" />
 
-### Code Review
+## Skill catalog
 
-- **[dual-review](./skills/dual-review/SKILL.md)** : Run latest Claude Opus and latest non-mini/non-codex GPT independently, then verify and risk-triage their findings. Only material defects introduced by the current change block landing; adjacent, hypothetical, and medium suggestions become follow-ups. After the bounded discovery rounds, finding-scoped autonomous closure fixes or removes remaining blockers before escalating only at explicit effort or authority limits.
+### Development and delivery
 
-<img width="1744" height="1696" alt="image" src="https://github.com/user-attachments/assets/cc58660a-3f0f-472a-9f8b-bb0abd878da6" />
+- **[`scout`](./skills/scout/SKILL.md):** Research how to solve a problem before code is written, using evidence from the project, active work, the organization, and the wider ecosystem.
+- **[`design-doc`](./skills/design-doc/SKILL.md):** Write and review a durable work order for a systemic or critical change.
+- **[`prototype`](./skills/prototype/SKILL.md):** Prototype a new or substantially changed screen in throwaway HTML before building it.
+- **[`development-loop`](./skills/development-loop/SKILL.md):** Develop and ship a non-trivial change through a process sized to its actual risk.
+- **[`guardrails`](./skills/guardrails/SKILL.md):** Compile prose architecture rules into deterministic checks that catch structural and behavioral drift.
+- **[`visual-proof`](./skills/visual-proof/SKILL.md):** Capture and inspect visual evidence for a running UI candidate.
+- **[`unattended-run`](./skills/unattended-run/SKILL.md):** Keep a long Copilot CLI run anchored to its plan, operating rules, and completion gates.
 
-- **[deep-code-review]**
+### Review and independent judgment
 
+- **[`dual-review`](./skills/dual-review/SKILL.md):** Run independent reviews with current Claude and GPT model families, verify disputed findings, and block only on material defects introduced by the change.
+- **[`rubber-duck`](./skills/rubber-duck/SKILL.md):** Ask a different model family for one bounded, read-only second opinion. Copilot CLI uses its built-in rubber-duck agent, so this plugin copy is exposed only on hosts that need it.
 
-### Browsing
+<img width="1744" height="1696" alt="Independent review and finding verification flow" src="https://github.com/user-attachments/assets/cc58660a-3f0f-472a-9f8b-bb0abd878da6" />
 
-- **[authenticated-browse](./skills/authenticated-browse/SKILL.md)** : Open a headed Playwright Chromium window so you can complete SSO/MFA/device-trust login manually, then let the agent reuse that persistent profile headlessly to fetch text/HTML/links, screenshot pages, or evaluate JS on internal sites it otherwise can't reach. Per-profile lock; cookies stay on your machine.
+### Agent communication and continuity
 
-### Workflow
+These skills form a small communication stack for long-lived, named agent sessions:
 
-- **[skill-create](./skills/skill-create/SKILL.md)** : Create reusable agent skills through the `writing-great-skills` rubric, portable mechanical validation, and the bounded `dual-review` gate without requiring a lifecycle or curation system.
-- **[git-history-recovery](./skills/git-history-recovery/SKILL.md)** : Recover lost or displaced Git work after an accidental reset/checkout/rebase/stash using reflog, dangling commits, and path-scoped restore.
-- **[explain](./skills/explain/SKILL.md)** : Explain technical work in plain language scoped to the user's actual context — context before the point, no unexplained jargon, no assumed codebase knowledge.
-- **[github-api-integration](./skills/github-api-integration/SKILL.md)** : Class-level playbook for integrating against the GitHub REST + GraphQL APIs — query-complexity limits, OAuth-App vs GitHub-App scope behavior, SAML-SSO null-node redaction, pagination, rate limits, and turning raw API errors into actionable UX.
-- **[autonomous-github-actions](./skills/autonomous-github-actions/SKILL.md)** : Guardrails for agent-initiated, externally-visible GitHub writes — filing issues, opening PRs, posting comments, pushing to repos the user does not own.
-- **[secret-hygiene](./skills/secret-hygiene/SKILL.md)** : Preventive playbook for keeping tokens / API keys / PATs / passwords / private keys out of both the chat transcript (which is sent to the cloud and persisted) and git. Covers the "never ask, never echo, never paste" rule for conversations, plus the layered defenses — gitignore, `.env.example` only, gitleaks pre-commit, GitHub push protection, pre-first-push visibility check — that stop credentials from reaching GitHub. Rotate-first if anything leaks.
-- **[mailbox](./skills/mailbox/SKILL.md)** : Hand off a file or message from one Copilot CLI session to another running in a different tmux pane, addressed by tmux session name. Durable file queue under `~/.copilot/mailbox/<recipient>/`, best-effort `tmux send-keys` wakeup with verification poll, macOS notification fallback, and a resume-hook for the user's `ca` script. Pairs with `handoff` for cross-session continuation. Requires macOS + tmux + the [`ca` agent-naming convention from remote-agent-stack](https://github.com/dfrysinger/remote-agent-stack).
-- **[macos-background-app-control](./skills/macos-background-app-control/SKILL.md)** : Drive a macOS app for verification without stealing focus or moving the cursor — background window screenshots via `CGWindowListCreateImage`, native-chrome control via Accessibility (AX), keystrokes/clicks via `CGEventPostToPid`. Use when verifying a GUI end-to-end while the user is actively working on the same Mac.
+- **[`handoff`](./skills/handoff/SKILL.md):** Write a compact, durable continuation document for another agent or a fresh instance of the same agent.
+- **[`mailbox`](./skills/mailbox/SKILL.md):** Deliver messages and files between named Copilot CLI, Claude Code, and Codex CLI sessions in tmux. Delivery is durable even when the receiving session is offline.
+- **[`self-compact`](./skills/self-compact/SKILL.md):** Compact a Copilot CLI conversation while preserving the durable baton, session-bound state, and one exact next action.
+- **[`rotate-session`](./skills/rotate-session/SKILL.md):** Move a long-lived Copilot CLI session into a fresh conversation that rebuilds context from the retired session's files and history.
+- **[`unattended-run`](./skills/unattended-run/SKILL.md):** Re-brief a long-running agent on a schedule so compaction does not quietly narrow the task or change its operating rules.
 
-### Productivity (vendored from [mattpocock/skills](https://github.com/mattpocock/skills), MIT)
+Two companion tools complete the workflow without pretending to be skills:
 
-See [skills/NOTICE.md](./skills/NOTICE.md) for attribution.
+- **[Agent Stack](https://github.com/dfrysinger/agent-stack)** hosts named agent sessions on macOS and provides the optional `request_help` MCP tool. A blocked agent can ask its user for help through one bounded iMessage and a temporary Screen Sharing link.
+- **Agent Preflight** coordinates agents working in different checkouts of the same repository. It checks active path claims, missing landed changes, overlapping pull requests, and recently pushed branches before work starts. It remains a separate GitHub CLI extension because it manages repository-wide coordination rather than model behavior. Its public packaging is still being prepared.
 
-- **[grill-me](./skills/grill-me/SKILL.md)** : Get relentlessly interviewed about a plan or design until every branch of the decision tree is resolved, with a recommended answer for each question.
-- **[handoff](./skills/handoff/SKILL.md)** : Compact the current conversation into a handoff document (written to OS temp dir) so another agent can pick up the work; includes a "suggested skills" section. **Wired to [`mailbox`](./skills/mailbox/SKILL.md)**: when the user names a recipient session (e.g. "hand off to juliett"), the doc is auto-delivered via the mailbox queue with a tmux-wakeup so the recipient picks it up on their next turn.
-- **[rotate-session](./skills/rotate-session/SKILL.md)** : Retire a session that has grown too large to reload and start a fresh one seeded to rebuild context from the old session's plan, checkpoints, todos, and transcript on disk. Nothing is deleted; the old session stays resumable. The manual equivalent of the size-based rotation offer in [`ca`](https://github.com/dfrysinger/remote-agent-stack).
+`handoff` records what another agent needs to know. `mailbox` delivers it. Agent Help reaches the user when no agent can proceed. Agent Preflight helps agents avoid starting conflicting work in the first place.
 
-Two skills are **user-invoked** — they carry no model-facing trigger, so they
-cost nothing until you type their name: `grill-me` and `writing-great-skills`.
+### Research, GitHub, and safety
 
-## Layout
+- **[`authenticated-browse`](./skills/authenticated-browse/SKILL.md):** Let the user complete SSO or MFA in a headed browser, then reuse that local browser profile for bounded authenticated reading.
+- **[`github-api-integration`](./skills/github-api-integration/SKILL.md):** Handle GitHub REST and GraphQL integration details including scopes, SAML redaction, pagination, rate limits, and actionable errors.
+- **[`autonomous-github-actions`](./skills/autonomous-github-actions/SKILL.md):** Apply guardrails before an agent creates externally visible GitHub writes.
+- **[`secret-hygiene`](./skills/secret-hygiene/SKILL.md):** Keep credentials out of conversations, source control, and published history.
+- **[`git-history-recovery`](./skills/git-history-recovery/SKILL.md):** Recover lost or displaced Git work without rewriting unrelated history.
+- **[`explain`](./skills/explain/SKILL.md):** Explain technical work in plain language without assuming the reader knows the source tree or its internal terminology.
 
-This repository contains curated, shareable skills loaded through the plugin
-manifest. Personal-only skills can live under
-`~/.copilot/skills/<name>/` and load directly in Copilot CLI without a plugin
-entry.
+### Skill authoring
 
-Public repo on-disk layout:
+- **[`skill-create`](./skills/skill-create/SKILL.md):** Create and validate a reusable skill without requiring the full Dreaming lifecycle.
+- **[`writing-great-skills`](./skills/writing-great-skills/SKILL.md):** Structure skills so agents invoke them predictably and can follow them without excess context.
 
-```
-plugin.json              # Copilot allowlist; omits host-native replacements
-.claude-plugin/
-  plugin.json            # Claude allowlist
-.codex-plugin/
-  plugin.json            # Codex plugin manifest
+These two skills are user-invoked and carry no automatic model-facing trigger: `grill-me` and `writing-great-skills`.
+
+### macOS utilities
+
+- **[`macos-background-app-control`](./skills/macos-background-app-control/SKILL.md):** Inspect and control a background macOS app without stealing focus or moving the pointer.
+- **[`macos-photos-library`](./skills/macos-photos-library/SKILL.md):** Query Photos metadata and import app-test screenshots into an iCloud Photos album.
+
+### Focused utilities
+
+- **[`grill-me`](./skills/grill-me/SKILL.md):** Interview the user through every unresolved branch of a plan or design.
+
+## Why these skills exist
+
+The collection is built around three practical limits:
+
+1. **An agent should not be the only reviewer of its own work.** Independent model families find different defects, and disputed findings need verification rather than voting.
+2. **Long tasks need durable state outside the conversation.** Plans, designs, proof receipts, handoffs, and scheduled re-briefs keep work from drifting after compaction or session rotation.
+3. **Tests are necessary but cannot prove every user-facing claim.** Agents also need to drive the real application, observe the result, and preserve evidence tied to the exact candidate they tested.
+
+## Larger companion projects
+
+Some systems are intentionally separate because they need more than a skill prompt:
+
+| Project | Role | Why it is separate |
+| --- | --- | --- |
+| [Agent Stack](https://github.com/dfrysinger/agent-stack) | Named remote agent sessions, tmux integration, mailbox wakeups, and Agent Help | Installs host services, CLI wrappers, and an MCP server |
+| [Dreaming](https://github.com/dfrysinger/dreaming) | Autonomous skill learning, memory curation, and skill-library maintenance | Runs scheduled services and owns lifecycle state |
+| Agent Preflight | Advisory coordination across checkouts and machines | Ships as a GitHub CLI extension with a shared repository ledger |
+| Deep Review | Multi-reviewer ensemble with deduplication, opposing advocates, and an independent judge | Ships custom agents and model-intensive orchestration as its own plugin |
+
+Deep Review is not folded into this repository. Its orchestration is large enough to remain a separate plugin, and its private mirror contains reproduced third-party review prompts with different licensing terms. A public release should first remove or replace material that cannot be redistributed under this repository's MIT license, preserve the verified attribution for the remaining components, and fix the known portability defaults.
+
+## Repository layout
+
+This repository contains curated, shareable skills loaded through host manifests. Personal or machine-specific skills should live outside this public plugin.
+
+```text
+plugin.json                 # Copilot CLI skill allowlist
+.claude-plugin/plugin.json  # Claude Code skill allowlist
+.codex-plugin/plugin.json   # Codex plugin manifest
 skills/
   <name>/
-    SKILL.md            # the skill's prompt / protocol
-    scripts/            # optional: deterministic helpers
-    references/         # optional: long-form notes / docs
-    templates/          # optional: starter files
-  NOTICE.md             # attribution for vendored skills
+    SKILL.md                # Skill prompt and protocol
+    scripts/                # Optional deterministic helpers
+    references/             # Optional long-form documentation
+    templates/              # Optional starter files
+  _lib/                     # Shared shell helpers used by skills
+  NOTICE.md                 # Attribution for vendored skills
 ```
 
-Adding a new skill via this repo: drop a `SKILL.md` under `skills/<name>/`,
-list its directory in each host manifest that should expose it, and commit.
-The root `plugin.json` is Copilot-specific, while
-`.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` serve Claude Code
-and Codex. This lets a host omit a plugin skill when it already provides a
-built-in with the same name. Re-run `copilot plugin update
-dfrysinger-skills` to update Copilot. Claude Code and Codex use marketplace
-installs, so refresh them with their host-specific commands:
+To add a public skill:
+
+1. Add `skills/<name>/SKILL.md` and any support files.
+2. Add the skill directory to each host manifest that should expose it.
+3. Run the repository validation.
+4. Commit the skill and manifest changes together.
+
+The Copilot and Claude manifests can omit a skill when the host already provides a native equivalent. The Codex manifest exposes the skills directory as a whole.
+
+Personal-only skills can live under `~/.copilot/skills/<name>/` and be reloaded with `/skills reload`.
+
+## Update
+
+### GitHub Copilot CLI
 
 ```sh
-# Claude Code
+copilot plugin update dfrysinger-skills
+```
+
+### Claude Code
+
+```sh
 claude plugin marketplace update dfrysinger-skills
 claude plugin update --scope user dfrysinger-skills@dfrysinger-skills
-# Run inside the active Claude Code session:
-/reload-plugins
+```
 
-# Codex CLI (Codex has no in-place plugin update command)
+Then run `/reload-plugins` in the active Claude Code session.
+
+### Codex CLI
+
+Codex does not currently provide an in-place plugin update command:
+
+```sh
 codex plugin marketplace upgrade dfrysinger-skills
 codex plugin remove dfrysinger-skills@dfrysinger-skills
 codex plugin add dfrysinger-skills@dfrysinger-skills
 ```
 
-For a personal-only skill that should not be published, drop the directory
-under `~/.copilot/skills/<name>/` instead and run `/skills reload`.
+## Forking
 
-## Forking and portability
+If you republish this collection:
 
-Two manual edits a forker should make:
-
-- The `name` field in `plugin.json`, `.claude-plugin/plugin.json`, and
-  `.codex-plugin/plugin.json` — the published plugin slug. Mine is
-  `dfrysinger-skills`; rename it to `<your-handle>-skills` if you republish.
-- `~/.copilot/copilot-instructions.md` — reword any personal trigger prose to
-  your preferences.
+1. Change the `name` field in `plugin.json`, `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json`.
+2. Review every host-specific path, personal default, companion-project link, and platform requirement.
+3. Keep the attribution in [`skills/NOTICE.md`](./skills/NOTICE.md) for vendored material.
 
 ## License
 
-MIT. See [LICENSE](./LICENSE).
-
-## FYI: Dreaming
-
-[Dreaming](https://github.com/dfrysinger/dreaming) is the optional autonomous
-companion that learns reusable procedures from completed work, rolls durable
-memory into skills, and consolidates or prunes the personal skill library. Its
-repository contains the automation, installer, operational safeguards, and
-dreaming-specific skills.
+MIT. See [LICENSE](./LICENSE) and [skills/NOTICE.md](./skills/NOTICE.md).
