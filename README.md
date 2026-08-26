@@ -30,6 +30,10 @@ Skills register as `dfrysinger-skills` and become available to invoke from your 
 
 ## Reference
 
+## Development Flows
+
+<img width="5056" height="8704" alt="image" src="https://github.com/user-attachments/assets/f7bd8224-c65b-44a7-8385-2c61b376d753" />
+
 ### Code Review
 
 - **[dual-review](./skills/dual-review/SKILL.md)** : Run latest Claude Opus and latest non-mini/non-codex GPT independently, then verify and risk-triage their findings. Only material defects introduced by the current change block landing; adjacent, hypothetical, and medium suggestions become follow-ups. After the bounded discovery rounds, finding-scoped autonomous closure fixes or removes remaining blockers before escalating only at explicit effort or authority limits.
