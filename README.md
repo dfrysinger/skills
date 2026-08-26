@@ -76,7 +76,7 @@ The process scales with risk. A bounded fix should stay bounded. A systemic chan
 - **[`dual-review`](./skills/dual-review/SKILL.md):** Run independent reviews with current Claude and GPT model families, verify disputed findings, and block only on material defects introduced by the change.
 - **[`rubber-duck`](./skills/rubber-duck/SKILL.md):** Ask a different model family for one bounded, read-only second opinion. Copilot CLI uses its built-in rubber-duck agent, so this plugin copy is exposed only on hosts that need it.
 
-<img width="1744" height="1696" alt="Independent review and finding verification flow" src="https://github.com/user-attachments/assets/cc58660a-3f0f-472a-9f8b-bb0abd878da6" />
+<img width="700" alt="Independent review and finding verification flow" src="https://github.com/user-attachments/assets/cc58660a-3f0f-472a-9f8b-bb0abd878da6" />
 
 ### Agent communication and continuity
 
