@@ -52,11 +52,11 @@ Agents can’t verify what they can’t use
 
 - **[design-doc](./skills/design-doc/SKILL.md)** : Write the durable design document that turns a systemic or critical change into a complete work order — objective, non-goals, reuse contract, failure model, invariants, deterministic check contract, Definition of Done — then run the normal bounded [`dual-review`](./skills/dual-review/SKILL.md) loop before any code exists. Owns the scope and architecture call; hands the finished document to [`development-loop`](./skills/development-loop/SKILL.md).
   
-- **[unattended-run]
-- **[design-doc]
-- **[scout]
-- **[prototype]
-- **[visual-proof]
+- **[unattended-run]**
+- **[design-doc]**
+- **[scout]**
+- **[prototype]**
+- **[visual-proof]**
 
 ### Code Review
 
@@ -64,7 +64,7 @@ Agents can’t verify what they can’t use
 
 <img width="1744" height="1696" alt="image" src="https://github.com/user-attachments/assets/cc58660a-3f0f-472a-9f8b-bb0abd878da6" />
 
-- **[deep-code-review]
+- **[deep-code-review]**
 
 
 ### Browsing
