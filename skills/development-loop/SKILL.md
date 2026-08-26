@@ -1,6 +1,6 @@
 ---
 name: development-loop
-description: Develop and ship one non-trivial code change through a risk-sized loop — establish the failure, triage the blast radius, prove runtime behavior with a machine-validated receipt, review, and land. Use when fixing bugs, building features, refactoring, changing UI, or changing apps, services, agent workflows, pipelines, or SDKs; invoke it before claiming runtime work is ready, opening or updating a PR, or landing. When triage finds shared state, persistence, public contracts, cross-component architecture, security, or fail-closed boundaries, invoke `design-doc` before coding.
+description: Develop and ship one non-trivial code change through a risk-sized loop — establish the failure, triage the blast radius, prove runtime behavior with machine-validated receipts, review, and land. Use when fixing bugs, building features, refactoring, changing UI, or changing apps, services, agent workflows, pipelines, or SDKs; invoke it before claiming runtime work is ready, opening or updating a PR, or landing. When triage finds shared state, persistence, public contracts, cross-component architecture, security, or fail-closed boundaries, invoke `design-doc` before coding.
 ---
 
 # development-loop
@@ -21,9 +21,10 @@ project-specific development/testing skills, and live validation.
 The phase order is fail-closed:
 
 > For user-visible or externally observable runtime behavior, do not start
-> implementation review, broad CI, full lint, PR creation or update, or landing
-> work until the complete acceptance flow has passed in the live app or service
-> on the current tree.
+> implementation review, broad CI, full lint, or PR creation or update until
+> every claim reached by the current delta has current passing proof. Do not
+> land, claim release readiness, or complete the task until the complete final
+> acceptance campaign has passed on the exact frozen tree.
 
 Targeted tests, type checks, and builds needed to make the live candidate
 runnable may happen first. They are development diagnostics, not acceptance
@@ -34,26 +35,39 @@ not an implementation claimed to work.
 ### Durable proof admission
 
 As soon as a task is classified as user-visible or externally observable
-runtime work, create a stable proof id and make the open gate survive context
-loss. In Copilot CLI:
+runtime work, create one stable proof id per independently observable
+boundary or claim and make each open gate survive context loss. Keep dependent
+checkpoints of one user journey in one receipt. Give unrelated systems,
+independent refusal paths, bootstrap boundaries, and tamper lanes separate
+receipts so one repair does not turn every proof into one all-or-nothing replay.
+In Copilot CLI:
 
-1. add a pending `live-proof-<id>` todo whose description names the exact
+1. add a pending `live-proof-<claim-id>` todo for each claim, naming its exact
    trigger and terminal state;
-2. insert or replace the same id in `live_proof_receipts` with status
-   `INCONCLUSIVE`, the planned scenario, and the receipt-artifact path;
-3. keep both open through implementation, compaction, rotation, scheduled
-   turns, review fixes, and candidate rebuilds.
+2. insert or replace the same claim id in `live_proof_receipts` with status
+   `INCONCLUSIVE`, the planned scenario, and its receipt-artifact path;
+3. keep each affected pair open through implementation, compaction, rotation,
+   scheduled turns, review fixes, and candidate rebuilds.
 
 If session SQL is unavailable, create the structured JSON receipt from
 [`references/live-proof-receipt.md`](./references/live-proof-receipt.md)
 immediately and leave its status `INCONCLUSIVE`. Do not rely on a checklist
 that exists only in conversation history.
 
-After any runtime-relevant candidate change, set the durable row and JSON
-receipt to `STALE` before doing more work. Close the todo and write `PASS` to
-the table only after the receipt validator accepts the current candidate. An
-empty todo list is not a completion signal when runtime work never created its
-proof admission record.
+After context loss or resumption, re-derive the required claim set from the
+acceptance criteria and reconcile it one-to-one with the proof todos, durable
+rows, and receipt paths. Create any missing claim record as `INCONCLUSIVE`
+before continuing. An empty or partial proof-record set is never a completion
+signal.
+
+After a runtime-relevant candidate change, first write the change-to-claim
+impact map required by section 6. Mark only affected claim rows `STALE` and open
+successor receipts for them. Preserve unaffected passing receipts as diagnostic
+history under their original fingerprints; they do not authorize a release
+verdict for the new candidate, but they do not mandate immediate replay. Treat
+aggregate release readiness as `STALE` until the final frozen-candidate
+campaign passes. Close a claim todo and write `PASS` only after its receipt
+validator accepts the current candidate.
 
 ### Tracer-bullet UI branch
 
@@ -202,10 +216,11 @@ non-goals before editing — from the design document where one exists, and in
 the existing issue, plan, or session artifact for bounded work. Non-goals are a
 review boundary, not an invitation for reviewers to add requirements.
 
-For runtime work, turn the acceptance criteria into a short live scenario now.
-Name the trigger, each user-visible checkpoint, the terminal success state, and
-the errors or regressions that must be absent. A later partial success cannot
-silently become the proof contract.
+For runtime work, turn the acceptance criteria into short live scenarios now,
+one per independently observable claim. Name each trigger, its user-visible
+checkpoints, terminal success state, and the errors or regressions that must be
+absent. Keep checkpoints together when they jointly establish one claim. A
+later partial success cannot silently become the proof contract.
 
 ## 2. Choose the durable contract
 
@@ -399,10 +414,13 @@ runtime proof and any debugging start from a clean context.*
 
 This is a hard gate for user-visible or externally observable runtime work.
 When classification is unclear, treat the change as runtime work requiring the
-gate. Run the complete acceptance flow in the real app or service before
-implementation review, broad CI, full lint, PR creation or update, or landing
-work. Do not dispatch those tasks in parallel with an active live proof: a
-failed proof invalidates the premise of their work and wastes time.
+gate. Before the first implementation review, run every externally observable
+claim changed by the implementation in the real app or service. After a
+successor edit or review fix, rerun the claims reached by the change-to-claim
+impact map before review continues. The complete frozen-candidate campaign is
+the later landing and release-readiness gate. Do not dispatch review, broad CI,
+full lint, or PR work in parallel with an active live proof: a failed proof
+invalidates the premise of that work and wastes time.
 
 Before starting, record a structured **live-proof receipt** using
 [`references/live-proof-receipt.md`](./references/live-proof-receipt.md):
@@ -419,6 +437,28 @@ Before starting, record a structured **live-proof receipt** using
   and forbidden errors from the acceptance criteria;
 - evidence source: what the agent can inspect directly and what requires a
   human action or confirmation.
+
+### Receipt granularity and impact mapping
+
+Use one receipt for one independently observable boundary or claim. A sequential
+flow whose checkpoints jointly establish one claim stays together. Claims that
+can fail and be repaired independently use separate receipts, even when one
+release campaign eventually requires all of them.
+
+Before rerunning proof after candidate movement, write a durable
+change-to-claim impact map. For every changed executable file, runtime path,
+configuration, dependency, build input, and generated runtime asset, record:
+
+- the runtime path it reaches;
+- the claim receipts it can affect;
+- any shared dependency that broadens reach;
+- the evidence that makes other claims unaffected.
+
+Every runtime-relevant change appears in the map, and every reopened claim has a
+concrete reach path from that change. A broad replay requires a named shared
+dependency or plausible regression path that reaches the additional claims.
+The systemic or critical lane label alone does not broaden rerun scope, and a
+new commit hash alone is not a reach path.
 
 Generate the receipt's candidate object with
 `scripts/validate-live-proof.py fingerprint`; do not hand-write a commit-only
@@ -502,25 +542,31 @@ Use one proof owner and one running candidate. Scheduled turns and parallel
 agents must not restart the app, mutate the worktree, consume the fixture, or
 run a competing scenario; keep them read-only or stop them until proof ends.
 
-The gate opens only with a receipt whose result is `PASS` and whose evidence
-covers every acceptance criterion. `FAIL`, `BLOCKED`, `STALE`, and
-`INCONCLUSIVE` all keep the gate closed. On failure, record the first divergent
-checkpoint, return directly to sections 3-5, and rerun this gate before any
-review or PR work.
+During iterative development, a changed claim's gate opens only with its current
+receipt at `PASS`. Before the first review, every changed externally observable
+claim needs current proof. After a review fix or successor edit, the impact map
+reopens only affected claims; unaffected receipts remain diagnostic history
+until the final campaign. `FAIL`, `BLOCKED`, `STALE`, and `INCONCLUSIVE` keep
+their claim gates closed. On failure, record the first divergent checkpoint,
+return directly to sections 3-5, and rerun that claim before review continues.
 
-Run `scripts/validate-live-proof.py validate <receipt.json>` before opening the
-gate. It must recompute the same candidate fingerprint and accept the complete
-scenario, forbidden-outcome evidence, visual inspection when required, empty
-unverified list, and absence of a manual workaround. Copy the accepted receipt
-path and result into `live_proof_receipts`, then close the matching proof todo.
-The validator's exit code, not the agent's summary, is the admission decision.
+Run `scripts/validate-live-proof.py validate <receipt.json>` before opening a
+claim gate. It must recompute that receipt's exact candidate fingerprint and
+accept the complete scenario, forbidden-outcome evidence, visual inspection
+when required, empty unverified list, and absence of a manual workaround. Copy
+the accepted receipt path and result into `live_proof_receipts`, then close the
+matching claim todo. The validator's exit code, not the agent's summary, is the
+admission decision.
 
 Until the gate passes, describe the state as "candidate ready," "proof in
 progress," or the actual failure status. Do not say the feature works, is
 verified, or is ready to land.
 
-The receipt remains valid only while its covered runtime candidate is
-unchanged. A later delta may be appended without rerunning the live scenario
+Each receipt remains exact to its covered runtime candidate. Candidate movement
+makes it non-current for a new release verdict. In the iterative loop, that
+does not force immediate replay of every unrelated receipt: use the impact map
+to reopen affected claims and retain unaffected receipts as diagnostic history.
+A later delta may be appended to a receipt without rerunning its live scenario
 only when all are true:
 
 - it changes no executable source, runtime configuration, dependency, build
@@ -532,7 +578,15 @@ only when all are true:
 Comments outside generated artifacts, documentation, and test-only changes are
 typical eligible deltas. "Mechanically equivalent" executable edits are not;
 rerun the affected live scenario for those. Any unrecorded or runtime-relevant
-delta makes the receipt `STALE`.
+delta makes the affected receipt `STALE`.
+
+The final frozen-candidate acceptance campaign is stricter than iterative
+replay. Before landing or a release-readiness claim, validate the complete
+required receipt set against one exact candidate fingerprint. Re-derive that
+set from the acceptance criteria and reconcile it one-to-one with the campaign
+receipts before validation. Every required claim is fresh for that candidate,
+the aggregate verdict is `PASS`, and no evidence from different fingerprints
+is combined to fill the campaign.
 
 Before proof, designate evidence and test-output paths that are not build or
 runtime inputs. Creating or cleaning those outputs does not change candidate
@@ -549,14 +603,14 @@ Do not manufacture an expensive external E2E without added evidence value.
 
 Invoke `dual-review` after the change works.
 
-Before dispatching, verify the live-proof receipt is present and still matches
-or explicitly covers the reviewed tree. If runtime work has no passing receipt,
-stop: do not reinterpret scripted checks or a partial scenario as permission
-to review. For a structured receipt, rerun
-`scripts/validate-live-proof.py validate <receipt.json>` and confirm the
-matching `live_proof_receipts` row is `PASS`; a remembered earlier exit code is
-not current evidence. Once the gate passes, run the remaining deterministic
-validation proportionate to the lane, then review.
+Before dispatching, verify every claim affected by the review subject has a
+receipt that matches or explicitly covers the reviewed tree. If an affected
+runtime claim has no passing receipt, stop: do not reinterpret scripted checks
+or an unaffected historical scenario as permission to review. Rerun
+`scripts/validate-live-proof.py validate <receipt.json>` for each affected
+claim and confirm its `live_proof_receipts` row is `PASS`; a remembered earlier
+exit code is not current evidence. Once those claim gates pass, run the
+remaining deterministic validation proportionate to the lane, then review.
 
 Give reviewers:
 
@@ -632,14 +686,23 @@ Non-blocking follow-ups may remain.
 
 After review:
 
+- Write a change-to-claim impact map for the review delta before choosing any
+  reruns. Candidate movement makes aggregate release readiness `STALE`.
 - If review fixes changed runtime behavior, rerun the affected targeted tests
-  and live scenario.
+  and claim receipts.
 - If review produced only a delta eligible under section 6's receipt-validity
-  rule, append it to the receipt and rerun the required deterministic check.
+  rule, append it to each affected receipt and rerun the required deterministic
+  check.
 - If review made a supposedly behavior-preserving executable edit, rerun the
-  affected live scenario as required by section 6.
-- Systemic/critical changes always rerun their final live E2E on the reviewed
-  tree.
+  claims reached by that edit as required by section 6.
+- For systemic or critical work, determine rerun scope from the same reach map.
+  Replay additional claims only when a named shared dependency or plausible
+  regression path reaches them.
+
+After iterative reruns pass, run the complete final acceptance campaign on the
+frozen reviewed candidate. Every required claim is fresh under that one
+fingerprint; prior receipts from other fingerprints remain history, not
+campaign evidence.
 
 If final validation fails, fix the root cause and re-review the **new fix
 delta**, not the entire historical diff, unless the fix materially redesigns
@@ -671,8 +734,9 @@ same candidate.
 Before landing:
 
 - relevant tests/build/type/lint checks are green;
-- the required receipt validator has just accepted the exact tree being landed,
-  and the matching durable proof row and todo are `PASS` and closed;
+- the required receipt validators have just accepted every claim in the final
+  frozen-candidate campaign for the exact tree being landed, and every matching
+  durable proof row and todo is `PASS` and closed;
 - dual review has no `must-fix` finding;
 - the diff still matches the objective and non-goals;
 - test artifacts are cleaned up.
@@ -737,9 +801,10 @@ work.
 
 The baton this loop hands forward is the plan path, lane, objective, acceptance
 criteria, non-goals, remaining Definition-of-Done items, branch, what has
-landed versus what remains, and the live-proof receipt path, status, candidate
-identity, running identity, first divergence, unverified criteria, and covered
-post-proof deltas. For systemic and critical work, it also carries the
+landed versus what remains, the change-to-claim impact map, and each live-proof
+receipt path, status, candidate identity, running identity, first divergence,
+unverified criteria, and covered post-proof deltas. For systemic and critical
+work, it also carries the
 constraint-provenance location, open revisit conditions, and current reframe
 status; persist any `OPEN` reframe record before compacting. Use the existing
 committed repo plan/design for systemic or critical work, and an existing
@@ -803,9 +868,9 @@ literal `findings: []`.
   phases.
 - **Stale or competing live candidates.** A process without tree identity, or
   one restarted by another worker, cannot produce an admissible proof.
-- **Duplicate E2E runs without causal value.** Rerun expensive live proof when
-  section 6's receipt-validity rule requires it, not because unrelated
-  evidence-output churn restarts the scenario.
+- **Duplicate E2E runs without causal value.** Use the change-to-claim impact
+  map to reopen reached claims. A lane label, unrelated candidate movement, or
+  a new commit hash is not by itself a reason to replay every receipt.
 - **Using the full CI matrix as an iterative debugger.** Repeated successor
   pushes discard partial evidence, cancel expensive work, and mix unrelated
   failures into the next attempt. Follow section 5's final-candidate freeze and
@@ -820,9 +885,9 @@ The change is complete when:
 2. objective, acceptance criteria, and non-goals are explicit;
 3. the durable contract is proportional to the lane;
 4. functional behavior is tested;
-5. required live behavior has a machine-validated passing receipt that matches
-   or explicitly covers the exact reviewed tree, with its durable proof row and
-   todo closed only after validation;
+5. required live behavior has a complete final receipt set that the validator
+   accepted against one exact reviewed-tree fingerprint, with every durable
+   proof row and todo closed only after validation;
 6. dual review has no verified in-scope must-fix finding;
 7. post-review validation covers the actual review fixes;
 8. the landed diff remains coherent and scoped.

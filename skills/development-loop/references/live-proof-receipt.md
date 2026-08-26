@@ -9,7 +9,24 @@ an evidence-artifact convention. In Copilot CLI, also mirror its current state
 into `live_proof_receipts` so compaction, rotation, and scheduled turns retain
 the open gate.
 
-## 1. Freeze the candidate
+## 1. Choose the claim boundary
+
+Use one receipt for one independently observable boundary or claim. Keep the
+dependent checkpoints of one sequential user journey together. Split unrelated
+systems, independent refusal paths, bootstrap boundaries, and tamper lanes into
+separate receipts so an iterative repair reopens only the proof it can reach.
+
+Before rerunning after candidate movement, write a change-to-claim impact map
+that names every changed runtime input, the path it reaches, affected receipt
+ids, and any shared dependency that broadens the set. A lane label or new
+commit hash does not establish reach.
+
+The validator remains fingerprint-strict for each receipt. Unaffected receipts
+from an earlier fingerprint remain diagnostic history, not current release
+evidence. Final acceptance validates every required claim fresh against one
+frozen candidate and never combines evidence across fingerprints.
+
+## 2. Freeze the candidate
 
 Designate evidence and test-output paths before proof. They must be untracked
 and unable to affect the build or runtime. Then generate the candidate object:
@@ -30,9 +47,11 @@ recording their contents. Never exclude a tracked file; the helper rejects it.
 
 Copy the returned candidate object into the receipt. Any later tracked change,
 untracked runtime input, or named additional input changes the fingerprint and
-makes the receipt stale.
+makes the receipt non-current for that successor candidate. Preserve an
+unaffected passing receipt as history; validate fresh receipts for every claim
+in the final frozen-candidate campaign.
 
-## 2. Record the complete flow
+## 3. Record the complete flow
 
 ```json
 {
@@ -120,7 +139,7 @@ Checkpoint evidence must use one of four direct kinds: `runtime`, `artifact`,
 validation, but they are not live acceptance evidence and the validator rejects
 `test` as a receipt evidence kind.
 
-## 3. Validate the gate
+## 4. Validate the gate
 
 ```bash
 python3 "$SKILL_DIR/scripts/validate-live-proof.py" validate "$RECEIPT"
