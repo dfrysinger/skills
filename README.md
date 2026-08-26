@@ -30,13 +30,42 @@ Skills register as `dfrysinger-skills` and become available to invoke from your 
 
 ## Reference
 
+Core premises: 
+
+Agents can’t review their own work
+- Different models find different problems in reviews
+  
+Agents cant keep track of long term tasks
+- Use loops to keep them on track. Point them to the dod/design/plan/skills they should be using.
+- Use /goal to keep them moving forward between loops.
+- Use deterministic validation techniques to keep the agent within the given architecture.
+  
+Agents can’t verify what they can’t use
+- Unit tests, linting and CI pipelines are great but not enough.
+- Agents must be able to drive their work just like a user does to be able to determine if it works and they are done.
+
 ## Development Flows
 
-<img width="5056" height="8704" alt="image" src="https://github.com/user-attachments/assets/f7bd8224-c65b-44a7-8385-2c61b376d753" />
+<img width="5056" height="8704" alt="image" src="https://github.com/user-attachments/assets/ad75e933-cd7b-48a3-ba59-aa418dc4f481" />
+
+- **[development-loop](./skills/development-loop/SKILL.md)** : Size development process to the actual risk: bounded bug fixes use focused regression tests and a short review path; anything larger arrives with a reviewed design document from [`design-doc`](./skills/design-doc/SKILL.md) and adds architecture guards and final live proof. Owns forward motion for every change. Uses [`dual-review`](./skills/dual-review/SKILL.md)'s material-risk gate rather than requiring literal zero comments.
+
+- **[design-doc](./skills/design-doc/SKILL.md)** : Write the durable design document that turns a systemic or critical change into a complete work order — objective, non-goals, reuse contract, failure model, invariants, deterministic check contract, Definition of Done — then run the normal bounded [`dual-review`](./skills/dual-review/SKILL.md) loop before any code exists. Owns the scope and architecture call; hands the finished document to [`development-loop`](./skills/development-loop/SKILL.md).
+  
+- **[unattended-run]
+- **[design-doc]
+- **[scout]
+- **[prototype]
+- **[visual-proof]
 
 ### Code Review
 
 - **[dual-review](./skills/dual-review/SKILL.md)** : Run latest Claude Opus and latest non-mini/non-codex GPT independently, then verify and risk-triage their findings. Only material defects introduced by the current change block landing; adjacent, hypothetical, and medium suggestions become follow-ups. After the bounded discovery rounds, finding-scoped autonomous closure fixes or removes remaining blockers before escalating only at explicit effort or authority limits.
+
+<img width="1744" height="1696" alt="image" src="https://github.com/user-attachments/assets/cc58660a-3f0f-472a-9f8b-bb0abd878da6" />
+
+- **[deep-code-review]
+
 
 ### Browsing
 
@@ -45,8 +74,6 @@ Skills register as `dfrysinger-skills` and become available to invoke from your 
 ### Workflow
 
 - **[skill-create](./skills/skill-create/SKILL.md)** : Create reusable agent skills through the `writing-great-skills` rubric, portable mechanical validation, and the bounded `dual-review` gate without requiring a lifecycle or curation system.
-- **[design-doc](./skills/design-doc/SKILL.md)** : Write the durable design document that turns a systemic or critical change into a complete work order — objective, non-goals, reuse contract, failure model, invariants, deterministic check contract, Definition of Done — then run the normal bounded [`dual-review`](./skills/dual-review/SKILL.md) loop before any code exists. Owns the scope and architecture call; hands the finished document to [`development-loop`](./skills/development-loop/SKILL.md).
-- **[development-loop](./skills/development-loop/SKILL.md)** : Size development process to the actual risk: bounded bug fixes use focused regression tests and a short review path; anything larger arrives with a reviewed design document from [`design-doc`](./skills/design-doc/SKILL.md) and adds architecture guards and final live proof. Owns forward motion for every change. Uses [`dual-review`](./skills/dual-review/SKILL.md)'s material-risk gate rather than requiring literal zero comments.
 - **[git-history-recovery](./skills/git-history-recovery/SKILL.md)** : Recover lost or displaced Git work after an accidental reset/checkout/rebase/stash using reflog, dangling commits, and path-scoped restore.
 - **[explain](./skills/explain/SKILL.md)** : Explain technical work in plain language scoped to the user's actual context — context before the point, no unexplained jargon, no assumed codebase knowledge.
 - **[github-api-integration](./skills/github-api-integration/SKILL.md)** : Class-level playbook for integrating against the GitHub REST + GraphQL APIs — query-complexity limits, OAuth-App vs GitHub-App scope behavior, SAML-SSO null-node redaction, pagination, rate limits, and turning raw API errors into actionable UX.
