@@ -70,7 +70,7 @@ IFS=$'\t' read -r result args prompts output < <(
 )
 [[ "$result" -eq 0 ]]
 grep -Fq '["autopilot","--target-session","session-1","--prompt-file"' "$args"
-grep -Fq '"--dedupe-key","autopilot:session:session-1:' "$args"
+! grep -Fq '"--dedupe-key"' "$args"
 ! grep -Fq '"--agent-mode"' "$args"
 grep -Fq '"--timeout","360"]' "$args"
 grep -Fq 'finish the objective' "$prompts"

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -177,7 +177,10 @@ switch (options.kind) {
     }
     break;
   case "autopilot":
-    request.prompt = await readRequiredFile(options["prompt-file"], "--prompt-file");
+    request.prompt = (
+      await readRequiredFile(options["prompt-file"], "--prompt-file")
+    ).replace(/(?:\r?\n)+$/, "");
+    if (!request.prompt) usage("--prompt-file must contain a non-empty objective");
     break;
   case "compact":
     request.customInstructions = await readRequiredFile(
@@ -194,6 +197,12 @@ switch (options.kind) {
   case "new-session":
     request.prompt = await readRequiredFile(options["prompt-file"], "--prompt-file");
     break;
+}
+if (request.kind === "autopilot" && !request.dedupeKey) {
+  const objectiveDigest = createHash("sha256")
+    .update(request.prompt)
+    .digest("hex");
+  request.dedupeKey = `autopilot:session:${target.sessionId}:${objectiveDigest}`;
 }
 
 const pendingDir = join(root, "pending");
