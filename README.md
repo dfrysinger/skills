@@ -35,12 +35,16 @@ codex plugin add dfrysinger-skills@dfrysinger-skills
 The plugin is registered as `dfrysinger-skills`. Installing from this GitHub repository is the supported Copilot CLI path; direct local plugin installs are deprecated.
 
 The Copilot plugin also packages the recipient-local
-[`session-inbox`](./extensions/session-inbox/) SDK extension. It is a runtime
+[`session-inbox`](./extensions/session-inbox/) SDK extension and a portable
+[`mailbox-watcher`](./extensions/mailbox-watcher/) extension. Session-inbox is a runtime
 dependency of `mailbox`, `unattended-run`, `self-compact`, `rotate-session`, and
 the corresponding `handoff` routes. The extension performs the final
 `session.send()`, native compaction, or local `/new` enqueue from inside the
 recipient session; filesystem requests and receipts provide durable
-cross-session IPC. A newly installed or updated extension becomes active when
+machine-local IPC. Mailbox watcher polls a named recipient's durable mailbox
+and bridges synced envelopes into that local request queue. The mailbox root
+may live in OneDrive, but session-inbox heartbeats, locks, and receipts remain
+local. A newly installed or updated extension becomes active when
 the recipient Copilot session starts or reloads its plugins. Claude and Codex
 mailbox recipients retain their guarded terminal fallback.
 
@@ -108,7 +112,7 @@ The process scales with risk. A bounded fix should stay bounded. A systemic chan
 These skills form a small communication stack for long-lived, named agent sessions:
 
 - **[`handoff`](./skills/handoff/SKILL.md):** Write a compact, durable continuation document for another agent or a fresh instance of the same agent.
-- **[`mailbox`](./skills/mailbox/SKILL.md):** Deliver messages and files between named Copilot CLI, Claude Code, and Codex CLI sessions in tmux. Delivery is durable even when the receiving session is offline.
+- **[`mailbox`](./skills/mailbox/SKILL.md):** Deliver messages and files between named Copilot CLI sessions, including through a shared OneDrive mailbox, with a macOS tmux compatibility path for Claude Code and Codex CLI. Delivery is durable even when the receiving session or computer is offline.
 - **[`self-compact`](./skills/self-compact/SKILL.md):** Compact a Copilot CLI conversation while preserving the durable baton, session-bound state, and one exact next action.
 - **[`rotate-session`](./skills/rotate-session/SKILL.md):** Move a long-lived Copilot CLI session into a fresh conversation that rebuilds context from the retired session's files and history.
 - **[`unattended-run`](./skills/unattended-run/SKILL.md):** Re-brief a long-running agent on a schedule so compaction does not quietly narrow the task or change its operating rules.
