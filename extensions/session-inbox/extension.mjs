@@ -321,24 +321,25 @@ async function execute(request) {
       if (!result.success) {
         throw new Error("session history compaction did not succeed");
       }
+      let continuationQueued;
+      let continuationMessageId;
       let continuationDelivered;
-      let continuationDelivery;
       let continuationError;
       if (request.continuationPrompt) {
         try {
-          const continuation = await sendAndConfirm({
+          diagnostics.log("sdk.compact_continuation.started", {
+            mode: "enqueue",
+          });
+          continuationMessageId = await session.send({
             prompt: request.continuationPrompt,
             mode: "enqueue",
           });
-          continuationDelivered =
-            continuation.idleDelivery || continuation.queuedDelivery;
-          if (!continuationDelivered) {
-            continuationError = `SDK delivered the continuation as ${
-              continuation.delivery ?? "unknown"
-            } instead of idle or queued`;
-          }
-          continuationDelivery = continuation.delivery;
+          continuationQueued = true;
+          diagnostics.log("sdk.compact_continuation.queued", {
+            messageId: continuationMessageId,
+          });
         } catch (error) {
+          continuationQueued = false;
           continuationDelivered = false;
           continuationError = error instanceof Error ? error.message : String(error);
         }
@@ -347,8 +348,9 @@ async function execute(request) {
         compacted: true,
         tokensRemoved: result.tokensRemoved,
         messagesRemoved: result.messagesRemoved,
+        ...(continuationQueued === undefined ? {} : { continuationQueued }),
+        ...(continuationMessageId === undefined ? {} : { continuationMessageId }),
         ...(continuationDelivered === undefined ? {} : { continuationDelivered }),
-        ...(continuationDelivery === undefined ? {} : { continuationDelivery }),
         ...(continuationError ? { continuationError } : {}),
       };
     }
@@ -833,7 +835,7 @@ async function pump() {
           objectiveStatus: result?.objectiveStatus,
           activation: result?.activation,
           compacted: result?.compacted,
-          continuationDelivery: result?.continuationDelivery,
+          continuationQueued: result?.continuationQueued,
           commandQueued: result?.commandQueued,
         });
         if (request.kind === "new-session") {
