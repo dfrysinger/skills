@@ -46,6 +46,24 @@ async function runRequest(root, args) {
   return { child, exit };
 }
 
+async function diagnosticEntries(root) {
+  const directory = join(root, "logs");
+  const { readdir } = await import("node:fs/promises");
+  const names = await readdir(directory);
+  const entries = [];
+  for (const name of names) {
+    const content = await readFile(join(directory, name), "utf8");
+    entries.push(
+      ...content
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line)),
+    );
+  }
+  return entries;
+}
+
 test("writes an idle-immediate send request and accepts its receipt", async () => {
   const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
   try {
@@ -95,6 +113,10 @@ test("writes an idle-immediate send request and accepts its receipt", async () =
     const result = await run.exit;
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /receipt:/);
+    const diagnostics = await diagnosticEntries(root);
+    assert.ok(diagnostics.some((entry) => entry.event === "request.published"));
+    assert.ok(diagnostics.some((entry) => entry.event === "receipt.completed"));
+    assert.doesNotMatch(JSON.stringify(diagnostics), /wake the recipient/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -211,6 +233,8 @@ test("rejects multiple fresh instances for one tmux name", async () => {
     ).exit;
     assert.equal(result.code, 64);
     assert.match(result.stderr, /multiple fresh session-inbox instances/);
+    const diagnostics = await diagnosticEntries(root);
+    assert.ok(diagnostics.some((entry) => entry.event === "target.unresolved"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
