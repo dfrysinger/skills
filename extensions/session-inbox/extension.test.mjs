@@ -22,6 +22,10 @@ const sourceDiagnostics = join(
   dirname(fileURLToPath(import.meta.url)),
   "diagnostics.mjs",
 );
+const sourceIdentity = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "session-identity.mjs",
+);
 
 async function waitFor(read, label, attempts = 300) {
   let lastError;
@@ -69,16 +73,19 @@ async function createHarness(initialState = {}) {
   const callsPath = join(root, "calls.jsonl");
   const extensionPath = join(root, "extension.mjs");
   const diagnosticsPath = join(root, "diagnostics.mjs");
+  const identityPath = join(root, "session-identity.mjs");
   const sdkDir = join(root, "node_modules", "@github", "copilot-sdk");
   await mkdir(sdkDir, { recursive: true });
   await cp(sourceExtension, extensionPath);
   await cp(sourceDiagnostics, diagnosticsPath);
+  await cp(sourceIdentity, identityPath);
   await writeState(statePath, {
     processing: false,
     active: false,
     pending: 0,
     delivery: "idle",
     idleCounter: 0,
+    sessionName: "hotel",
     ...initialState,
   });
   await writeFile(callsPath, "");
@@ -139,6 +146,9 @@ export async function joinSession() {
     },
     rpc: {
       metadata: {
+        async snapshot() {
+          return {workspace: {id: "test-session", name: state().sessionName}};
+        },
         async isProcessing() {
           return {processing: state().processing};
         },
@@ -305,6 +315,7 @@ test("extension startup failures are persisted before session join", async () =>
 test("recipient extension gates delivery, deduplicates, and preserves compact phase state", async () => {
   const harness = await createHarness();
   try {
+    assert.equal(harness.heartbeat.sessionName, "hotel");
     await new Promise((resolve) => setTimeout(resolve, 2_200));
 
     await harness.request("idle-send", {

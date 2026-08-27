@@ -1,14 +1,12 @@
-import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { promisify } from "node:util";
 
 import { joinSession } from "@github/copilot-sdk/extension";
 import { createDiagnosticLogger, errorDetails } from "./diagnostics.mjs";
+import { currentSessionName, currentTmuxSession } from "./session-identity.mjs";
 
-const execFileAsync = promisify(execFile);
 const root = process.env.COPILOT_SESSION_INBOX_DIR ?? join(homedir(), ".copilot", "session-inbox");
 const pendingDir = join(root, "pending");
 const processingDir = join(root, "processing");
@@ -42,7 +40,21 @@ try {
   });
   throw error;
 }
-const tmuxSession = await currentTmuxSession();
+let tmuxSession;
+let sessionName;
+let heartbeatRefreshing = false;
+let initialTmuxSessionError;
+let initialSessionNameError;
+try {
+  tmuxSession = await currentTmuxSession();
+} catch (error) {
+  initialTmuxSessionError = error;
+}
+try {
+  sessionName = await currentSessionName(session);
+} catch (error) {
+  initialSessionNameError = error;
+}
 const generation = randomBytes(16).toString("hex");
 const diagnostics = createDiagnosticLogger(
   root,
@@ -52,6 +64,7 @@ const diagnostics = createDiagnosticLogger(
     sessionId: session.sessionId,
     generation,
     tmuxSession,
+    sessionName,
     hostPid: process.ppid,
     pid: process.pid,
   },
@@ -75,21 +88,17 @@ diagnostics.log("extension.started", {
   extensionPath: import.meta.url,
   confirmationTimeoutMs,
 });
-
-async function currentTmuxSession() {
-  if (!process.env.TMUX_PANE) return undefined;
-  try {
-    const { stdout } = await execFileAsync("tmux", [
-      "display-message",
-      "-p",
-      "-t",
-      process.env.TMUX_PANE,
-      "#{session_name}",
-    ]);
-    return stdout.trim() || undefined;
-  } catch {
-    return undefined;
-  }
+if (initialSessionNameError) {
+  diagnostics.log("session.identity_lookup_failed", {
+    identitySource: "session-name",
+    error: errorDetails(initialSessionNameError),
+  });
+}
+if (initialTmuxSessionError) {
+  diagnostics.log("session.identity_lookup_failed", {
+    identitySource: "tmux",
+    error: errorDetails(initialTmuxSessionError),
+  });
 }
 
 function matchesTarget(request) {
@@ -108,14 +117,48 @@ async function writeJson(path, value) {
 }
 
 async function writeHeartbeat() {
-  await writeJson(join(instancesDir, `${session.sessionId}-${generation}.json`), {
-    sessionId: session.sessionId,
-    tmuxSession,
-    generation,
-    hostPid: process.ppid,
-    pid: process.pid,
-    updatedAt: new Date().toISOString(),
-  });
+  if (heartbeatRefreshing) return;
+  heartbeatRefreshing = true;
+  try {
+    let refreshedTmuxSession = tmuxSession;
+    try {
+      refreshedTmuxSession = await currentTmuxSession();
+    } catch (error) {
+      diagnostics.log("session.identity_lookup_failed", {
+        identitySource: "tmux",
+        error: errorDetails(error),
+      });
+    }
+    let refreshedSessionName = sessionName;
+    try {
+      refreshedSessionName = await currentSessionName(session);
+    } catch (error) {
+      diagnostics.log("session.identity_lookup_failed", {
+        identitySource: "session-name",
+        error: errorDetails(error),
+      });
+    }
+    if (
+      refreshedTmuxSession !== tmuxSession ||
+      refreshedSessionName !== sessionName
+    ) {
+      tmuxSession = refreshedTmuxSession;
+      sessionName = refreshedSessionName;
+      diagnostics.setContext({ tmuxSession, sessionName });
+      diagnostics.log("session.identity_changed", { tmuxSession, sessionName });
+    }
+    await writeJson(join(instancesDir, `${session.sessionId}-${generation}.json`), {
+      sessionId: session.sessionId,
+      tmuxSession,
+      sessionName,
+      generation,
+      hostPid: process.ppid,
+      pid: process.pid,
+      updatedAt: new Date().toISOString(),
+    });
+  } finally {
+    heartbeatRefreshing = false;
+  }
 }
 
 async function sendAndConfirm({ prompt, mode = "immediate", agentMode }) {

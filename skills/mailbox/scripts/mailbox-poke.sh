@@ -32,8 +32,23 @@ NAME="$1"; shift
 WAIT=0
 [[ "${1:-}" == "--wait" ]] && WAIT=1
 
+NODE_ARGS=(poke "$NAME")
+[[ "$WAIT" -eq 1 ]] && NODE_ARGS+=(--wait)
+set +e
+NODE_OUTPUT="$(node "$SCRIPT_DIR/mailbox.mjs" "${NODE_ARGS[@]}" 2>&1)"
+NODE_STATUS=$?
+set -e
+if [[ "$NODE_STATUS" -eq 0 ]]; then
+  [[ -n "$NODE_OUTPUT" ]] && printf '%s\n' "$NODE_OUTPUT"
+  exit 0
+elif [[ "$NODE_STATUS" -ne 4 ]]; then
+  [[ -n "$NODE_OUTPUT" ]] && printf '%s\n' "$NODE_OUTPUT" >&2
+  exit 3
+fi
+
 DIR="$MAILBOX_ROOT/$NAME/pending"
-WATERMARK_FILE="$MAILBOX_ROOT/$NAME/.last-poked-id"
+WATERMARK_FILE="${MAILBOX_STATE_ROOT:-$HOME/.copilot/mailbox-state}/watermarks/$NAME.txt"
+mkdir -p "$(dirname "$WATERMARK_FILE")"
 shopt -s nullglob
 ENVS=("$DIR"/*.json)
 [[ ${#ENVS[@]} -eq 0 ]] && exit 0  # no mail, no poke
@@ -52,7 +67,7 @@ PANE="$(
 )"
 if [[ -z "$PANE" || "$PANE" == *$'\n'* ]]; then
   echo "UNVERIFIED: tmux session '$NAME' is not running; the mail is queued for pickup." >&2
-  exit 3
+  exit 4
 fi
 
 if [[ "$(tmux display-message -p -t "$PANE" '#{session_name}' 2>/dev/null || true)" != "$NAME" ]]; then
@@ -82,7 +97,7 @@ if [[ "$BACKEND" == "copilot" ]]; then
   [[ "$WAIT" -eq 1 ]] && TIMEOUT=35
   REQUEST_OUTPUT=""
   if REQUEST_OUTPUT="$(node "$REQUEST_CLI" send \
-    --target-tmux "$NAME" \
+    --target-name "$NAME" \
     --prompt-file "$PROMPT_FILE" \
     --mode immediate \
     --dedupe-key "mailbox:$NAME:$NEWEST_ID" \
@@ -168,7 +183,7 @@ if tmux send-keys -t "$PANE" -l -- "$PROMPT"; then
   if [[ "$SUBMITTED" -eq 1 ]]; then
     # Mark this envelope as already-poked-about so re-attaches don't re-nag.
     # New mail will get a newer ID and re-trigger naturally.
-    printf '%s\n' "$NEWEST_ID" > "$WATERMARK_FILE"
+    printf '%s\n' "$NEWEST_ID" >"$WATERMARK_FILE"
     echo "poked: $NAME (submission observed)"
   else
     # The poke is still sitting in the recipient's input box. Leaving the
