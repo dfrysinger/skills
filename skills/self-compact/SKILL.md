@@ -117,18 +117,20 @@ The submitter accepts exactly one running root `self_compact` tool call whose
 request:
 
 - has the exact tool-call ID supplied by the extension;
-- is the only tool request in its assistant message;
-- contains one complete `brief` argument in the required current format; and
-- has no conflicting root tool or user activity before execution.
+- is the only tool request in its assistant message; and
+- contains one complete `brief` argument in the required current format.
 
 The detached verifier requires the same tool-call identity, the exact handoff
 receipt, and the end of that authorizing turn before creating the SDK request.
 
-The request protocol has no event-boundary or cancellation field. The verifier
-rejects conflicting root activity already persisted before enqueueing, but
-activity that races after request creation can leave the request pending until
-a later idle boundary. Do not interact with the session after the handoff until
-the fixed continuation arrives.
+The SDK request is idle-gated: like a queued user message, it is held until the
+session reaches an idle boundary, then applied. Root activity after the arming
+turn — including autopilot continuation nudges — no longer cancels the run; the
+request simply waits for the next idle. This makes self-compact safe under
+autopilot mode, where the runtime injects continuation turns automatically. You
+do not need to keep the session silent after the handoff; just avoid ending the
+session (for example, do not call `task_complete`) before the fixed
+continuation arrives.
 
 ### Run exclusion and one-shot behavior
 

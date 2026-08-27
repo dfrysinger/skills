@@ -181,11 +181,17 @@ authorization_probe() {
       exit;
     }
 
+    # The SDK compaction request is itself idle-gated and deduplicated by the
+    # session-inbox pump, so activity after the arming turn does not need to be
+    # excluded here: the request simply waits for the next idle boundary, the
+    # same way a queued user message does. This is what lets self-compact run
+    # under autopilot, whose continuation nudges land as root user messages the
+    # moment the arming turn ends. We only wait for that arming turn to close so
+    # the request is submitted at a clean boundary.
     my $saw_turn_end = 0;
     my $assistant_turn_open = 0;
     for my $index ($completion + 1 .. $#events) {
-      my $event = $events[$index];
-      my $type = $event->{type} // "";
+      my $type = $events[$index]{type} // "";
       if ($type eq "assistant.turn_start") {
         $assistant_turn_open = 1;
         next;
@@ -194,22 +200,6 @@ authorization_probe() {
         $assistant_turn_open = 0;
         $saw_turn_end = 1;
         next;
-      }
-      if ($type eq "user.message" ||
-          $type eq "tool.execution_start" ||
-          $type eq "tool.execution_complete") {
-        print "cancel:new root activity followed helper completion\n";
-        exit;
-      }
-      if ($type eq "assistant.message") {
-        my $data = $event->{data};
-        my $requests = $data && ref($data) eq "HASH"
-          ? $data->{toolRequests}
-          : undef;
-        if ($requests && ref($requests) eq "ARRAY" && @$requests) {
-          print "cancel:new root tool request followed helper completion\n";
-          exit;
-        }
       }
     }
     unless ($saw_turn_end && !$assistant_turn_open) {
@@ -472,28 +462,21 @@ continuation_probe() {
       exit 3 unless $event && ref($event) eq "HASH";
       next if defined $event->{agentId};
       my $type = $event->{type} // "";
+      # Only the exact fixed continuation counts. Any other interleaved root
+      # activity (for example an autopilot continuation nudge that raced the
+      # idle boundary) is ignored rather than treated as a lost race: the
+      # session-inbox extension sends the continuation synchronously while the
+      # session is still busy from compaction, so it cannot be starved, and we
+      # keep scanning until it appears.
       if ($type eq "user.message") {
         my $data = $event->{data};
         my $content = $data && ref($data) eq "HASH"
           ? $data->{content}
           : $event->{content};
         if (defined $content && !ref($content) && $content eq $expected) {
-          my $delivery = $data && ref($data) eq "HASH"
-            ? ($data->{delivery} // "")
-            : "";
-          if ($delivery ne "idle") {
-            print "mismatch\n";
-            exit;
-          }
           $matches++;
-          next;
         }
-        print "mismatch\n";
-        exit;
-      }
-      if ($type eq "assistant.turn_start" && !$matches) {
-        print "activity\n";
-        exit;
+        next;
       }
     }
     print $matches == 1 ? "success\n" :
@@ -509,7 +492,6 @@ for _ in $(seq 1 "$MAX_POLLS"); do
     success) break ;;
     wait) ;;
     duplicate) fail "session-inbox delivered the continuation more than once" ;;
-    mismatch|activity) fail "other root activity won the continuation race" ;;
     *) fail "continuation parser returned an invalid state" ;;
   esac
   sleep "$POLL_SECONDS"
