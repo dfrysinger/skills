@@ -1,24 +1,33 @@
 #!/usr/bin/env bash
-# Bind the current SELF_COMPACT_BRIEF to one detached SDK compaction request.
+# Bind one structured self_compact tool call to a detached SDK compaction request.
 
 set -euo pipefail
 umask 077
 
-[ "$#" -eq 0 ] || {
-  echo "usage: submit-compact.sh" >&2
-  echo "submit-compact.sh: emit SELF_COMPACT_BRIEF in the current assistant message and pass no arguments" >&2
+[ "$#" -eq 2 ] && [ "$1" = "--tool-call-id" ] || {
+  echo "usage: submit-compact.sh --tool-call-id ID" >&2
+  echo "submit-compact.sh: invoke through the self_compact extension tool" >&2
   exit 2
 }
+TOOL_CALL_ID="$2"
+case "$TOOL_CALL_ID" in
+  ''|*$'\n'*)
+    echo "submit-compact.sh: tool-call identity is invalid; compact not submitted" >&2
+    exit 2
+    ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SCRIPT_PATH="$SCRIPT_DIR/submit-compact.sh"
 WATCHER="$SCRIPT_DIR/resume-after-compact.sh"
 REQUEST_CLI="${SELF_COMPACT_REQUEST_CLI:-$SCRIPT_DIR/../../../extensions/session-inbox/request.mjs}"
 SESSION_STATE_DIR="${SELF_COMPACT_SESSION_STATE_DIR:-$HOME/.copilot/session-state}"
 TARGET_SESSION="${SELF_COMPACT_TARGET_SESSION:-${COPILOT_AGENT_SESSION_ID:-}}"
 CONTINUATION="Compaction done; resume, do not compact."
 AUTH_SCAN_BYTES="${SELF_COMPACT_AUTH_SCAN_BYTES:-67108864}"
+SUBMIT_SCAN_BYTES="${SELF_COMPACT_SUBMIT_SCAN_BYTES:-1048576}"
 REQUEST_TIMEOUT="${SELF_COMPACT_REQUEST_TIMEOUT_SECONDS:-1800}"
+SUBMIT_POLLS="${SELF_COMPACT_SUBMIT_POLLS:-40}"
+SUBMIT_POLL_SECONDS="${SELF_COMPACT_SUBMIT_POLL_SECONDS:-0.05}"
 
 [ -x "$WATCHER" ] || {
   echo "submit-compact.sh: detached verifier is unavailable; compact not submitted" >&2
@@ -48,12 +57,38 @@ if [ "$AUTH_SCAN_BYTES" -lt 65536 ] || [ "$AUTH_SCAN_BYTES" -gt 67108864 ]; then
   echo "submit-compact.sh: authorization scan bound must be between 65536 and 67108864 bytes; compact not submitted" >&2
   exit 1
 fi
+case "$SUBMIT_SCAN_BYTES" in
+  ''|*[!0-9]*)
+    echo "submit-compact.sh: submit scan bound must be an integer; compact not submitted" >&2
+    exit 1
+    ;;
+esac
+if [ "$SUBMIT_SCAN_BYTES" -lt 65536 ] || [ "$SUBMIT_SCAN_BYTES" -gt 8388608 ]; then
+  echo "submit-compact.sh: submit scan bound must be between 65536 and 8388608 bytes; compact not submitted" >&2
+  exit 1
+fi
 case "$REQUEST_TIMEOUT" in
   ''|*[!0-9]*|0)
     echo "submit-compact.sh: request timeout must be a positive integer; compact not submitted" >&2
     exit 1
     ;;
 esac
+case "$SUBMIT_POLLS" in
+  ''|*[!0-9]*|0)
+    echo "submit-compact.sh: submit poll count must be a positive integer; compact not submitted" >&2
+    exit 1
+    ;;
+esac
+if [ "$SUBMIT_POLLS" -gt 200 ]; then
+  echo "submit-compact.sh: submit poll count must not exceed 200; compact not submitted" >&2
+  exit 1
+fi
+if ! awk -v seconds="$SUBMIT_POLL_SECONDS" 'BEGIN {
+  exit !(seconds ~ /^[0-9]+([.][0-9]+)?$/ && seconds > 0 && seconds <= 1)
+}'; then
+  echo "submit-compact.sh: submit poll interval must be between 0 and 1 second; compact not submitted" >&2
+  exit 1
+fi
 
 NODE_BIN="${SELF_COMPACT_NODE_BIN:-$(command -v node || true)}"
 NOHUP_BIN="${SELF_COMPACT_NOHUP_BIN:-$(command -v nohup || true)}"
@@ -111,19 +146,11 @@ fi
   exit 1
 }
 
-PORTABLE_HELPER_COMMAND=""
-if [ -n "${HOME:-}" ]; then
-  portable_helper_path="${HOME%/}/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh"
-  if [ "$SCRIPT_PATH" = "$portable_helper_path" ]; then
-    PORTABLE_HELPER_COMMAND='"$HOME/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh"'
-  fi
-fi
-
-CANDIDATE_JSON="$(
+scan_candidate() {
   /usr/bin/perl -MJSON::PP -e '
     use strict;
     use warnings;
-    my ($helper, $portable, $maximum, @workspaces) = @ARGV;
+    my ($expected_call_id, $maximum, @workspaces) = @ARGV;
     $maximum =~ /^\d+$/ or die "invalid authorization scan bound\n";
     my @matches;
 
@@ -160,26 +187,29 @@ CANDIDATE_JSON="$(
         next unless ($event->{type} // "") eq "assistant.message";
         my $data = $event->{data};
         next unless $data && ref($data) eq "HASH";
+        my $content = $data->{content};
         my $requests = $data->{toolRequests};
         next unless $requests && ref($requests) eq "ARRAY";
 
         for my $request (@$requests) {
           next unless $request && ref($request) eq "HASH";
-          my $arguments = $request->{arguments};
-          my $command = $arguments && ref($arguments) eq "HASH"
-            ? ($arguments->{command} // "")
-            : "";
-          my %allowed = map { $_ => 1 } (
-            $helper,
-            "'"'"'" . $helper . "'"'"'",
-            "\"" . $helper . "\"",
-            (length($portable) ? ($portable) : ())
-          );
-          next unless ($request->{name} // "") eq "bash" && $allowed{$command};
-          die "helper request was batched with another tool\n"
+          next unless ($request->{name} // "") eq "self_compact";
+          next unless ($request->{toolCallId} // "") eq $expected_call_id;
+          die "self_compact request exposed assistant prose\n"
+            if defined($content) && (ref($content) || length($content));
+          die "self_compact request was batched with another tool\n"
             unless @$requests == 1;
+          my $arguments = $request->{arguments};
           my $call_id = $request->{toolCallId} // "";
           die "helper request has no tool-call identity\n" unless length $call_id;
+          my $brief = $arguments && ref($arguments) eq "HASH"
+            ? ($arguments->{brief} // "")
+            : "";
+          die "self_compact tool has no complete brief\n"
+            unless !ref($brief) &&
+              $brief =~ /\AKeep:[ \t]*\S[^\n]*/ &&
+              $brief =~ /\nDrop:[^\n]*/ &&
+              $brief =~ /\nAfter compaction:[ \t]*\S[^\n]*do not compact again[^\n]*/;
 
           my $turn_start = -1;
           for (my $index = $request_index; $index >= 0; $index--) {
@@ -190,22 +220,6 @@ CANDIDATE_JSON="$(
           }
           die "helper request has no containing assistant turn\n"
             if $turn_start < 0;
-
-          my $brief = "";
-          for my $index ($turn_start + 1 .. $request_index) {
-            my $candidate = $events[$index];
-            next unless ($candidate->{type} // "") eq "assistant.message";
-            my $candidate_data = $candidate->{data};
-            next unless $candidate_data && ref($candidate_data) eq "HASH";
-            my $content = $candidate_data->{content};
-            $brief = $content
-              if defined $content && !ref($content) && length $content;
-          }
-          die "bound assistant turn has no complete SELF_COMPACT_BRIEF\n"
-            unless $brief =~ /\ASELF_COMPACT_BRIEF\n/ &&
-              $brief =~ /\nKeep:[ \t]*\S[^\n]*/ &&
-              $brief =~ /\nDrop:[^\n]*/ &&
-              $brief =~ /\nAfter compaction:[ \t]*\S[^\n]*do not compact again[^\n]*/;
 
           for my $index ($turn_start + 1 .. $request_index - 1) {
             my $prior = $events[$index];
@@ -243,7 +257,7 @@ CANDIDATE_JSON="$(
           my $start_index = $starts[0];
           next unless $start_index > $request_index;
           my $start_data = $events[$start_index]{data};
-          next unless ($start_data->{toolName} // "") eq "bash";
+          next unless ($start_data->{toolName} // "") eq "self_compact";
           for my $index ($start_index + 1 .. $#events) {
             my $later = $events[$index];
             my $type = $later->{type} // "";
@@ -276,12 +290,24 @@ CANDIDATE_JSON="$(
     die "could not bind one running canonical self-compact helper\n"
       unless @matches == 1;
     print encode_json($matches[0]);
-  ' "$SCRIPT_PATH" "$PORTABLE_HELPER_COMMAND" "$AUTH_SCAN_BYTES" \
+  ' "$TOOL_CALL_ID" "$SUBMIT_SCAN_BYTES" \
     "${workspaces[@]}"
-)" || {
+}
+
+CANDIDATE_JSON=""
+CANDIDATE_FOUND=false
+for _ in $(seq 1 "$SUBMIT_POLLS"); do
+  if CANDIDATE_JSON="$(scan_candidate 2>/dev/null)"; then
+    CANDIDATE_FOUND=true
+    break
+  fi
+  sleep "$SUBMIT_POLL_SECONDS"
+done
+if [ "$CANDIDATE_FOUND" = false ]; then
+  scan_candidate >/dev/null || true
   echo "submit-compact.sh: current-turn authorization failed; compact not submitted" >&2
   exit 1
-}
+fi
 
 WORKSPACE="$(
   printf '%s' "$CANDIDATE_JSON" |

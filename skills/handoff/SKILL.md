@@ -57,13 +57,11 @@ steer that preserves nothing empties the conversation as thoroughly as `/new`
 would — while keeping the **same session**, so armed schedules, the SQL
 database, `plan.md`, `checkpoints/`, and `files/` all survive.
 
-The summary is context, not a turn, so compaction alone will not wake you. Emit
-the final assistant message in `self-compact`'s required structure and put the
-standing brief plus resume action in it:
+The summary is context, not a turn, so compaction alone will not wake you. Build
+one private `self_compact` tool argument in `self-compact`'s required structure
+and put the standing brief plus resume action in it:
 
 ```text
-SELF_COMPACT_BRIEF
-
 Keep: Replace the conversation with a standing brief that points at
 <handoff-path> and <plan-doc-path> and names <skills>.
 
@@ -73,15 +71,11 @@ those durable files.
 After compaction: Read the handoff and plan, re-invoke <skills>, and continue the work; do not compact again.
 ```
 
-Then invoke `self-compact`'s helper with zero arguments as the final tool action
-and end the turn. The helper's detached verifier waits for the authorizing turn
+Then call `self_compact` with that one `brief` argument as the final action and
+end the turn. The extension's detached verifier waits for the authorizing turn
 to become idle, requests native compaction through the session-inbox extension,
 proves the matching checkpoint, and sends one fixed SDK continuation. Unlike
 `/new`, the same session retains schedules and SQL state.
-
-```sh
-"$HOME/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh"
-```
 
 ### `/new` (exception): when the old conversation must survive
 

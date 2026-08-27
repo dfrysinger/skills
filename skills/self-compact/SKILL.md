@@ -5,14 +5,16 @@ description: Keep Copilot CLI working context lean while preserving decisions, a
 
 # self-compact
 
-Compact a Copilot CLI conversation through the session-inbox SDK extension.
-The complete compaction payload remains in the final assistant message. The
-helper binds that exact message to one run token, waits for the turn to become
-idle, requests native compaction, and sends one fixed continuation.
+Compact a Copilot CLI conversation through the private `self_compact` extension
+tool and the session-inbox SDK extension. The complete compaction payload stays
+in the structured tool call instead of visible assistant prose. A detached
+verifier binds that exact tool invocation to one run token, waits for the turn
+to become idle, requests native compaction, and sends one fixed continuation.
 
 ## Prerequisites
 
-- Copilot CLI with the plugin's `session-inbox` extension loaded.
+- Copilot CLI with the plugin's `self-compact` and `session-inbox` extensions
+  loaded.
 - A durable plan, design, issue, handoff, or charter for any state that must
   survive independently of the conversation.
 - `handoff` for session retirement or a soft reset built around a standing
@@ -40,13 +42,11 @@ the durable baton. Update that artifact before compacting instead. Drop
 resolved investigation and tool output generically rather than enumerating
 them.
 
-### 2. Emit the final brief
+### 2. Build the private brief
 
-Make the final assistant prose before the helper call use this exact structure:
+Build one `brief` string with this exact structure:
 
 ```text
-SELF_COMPACT_BRIEF
-
 Keep: <complete load-bearing baton>
 
 Drop: <resolved and disposable context>
@@ -54,37 +54,33 @@ Drop: <resolved and disposable context>
 After compaction: <exact next action>; do not compact again.
 ```
 
-The first line must be exactly `SELF_COMPACT_BRIEF`. `Keep:` must be nonempty.
-`Drop:` must be present. `After compaction:` must be nonempty and contain the
-case-sensitive literal `do not compact again`. `Keep:` content and the complete
-`After compaction:` instruction, including that literal, must be on the same
-physical line as their labels. Additional detail may continue on later lines.
+`Keep:` must be the first line and must be nonempty. `Drop:` must be present.
+`After compaction:` must be nonempty and contain the case-sensitive literal
+`do not compact again`. `Keep:` content and the complete `After compaction:`
+instruction, including that literal, must be on the same physical line as
+their labels. Additional detail may continue on later lines.
 
 Default to exactly these three labeled lines and keep the whole brief under
 800 characters. Exceed that only when unrecoverable session-bound state cannot
 fit; never exceed it merely to summarize the conversation or copy a durable
 artifact.
 
-### 3. Submit as the final tool action
+Do not print this brief in assistant prose. It belongs only in the structured
+tool argument, where it remains available in collapsible tool activity and the
+private session event record for debugging.
 
-Run the helper with no arguments:
+### 3. Submit as the final action
 
-```sh
-"$HOME/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh"
-```
+Call `self_compact` with exactly one argument, `brief`, containing the string
+from step 2. Make it the only tool request in the final root assistant turn.
+After it reports that the SDK verifier is armed, end the turn immediately:
+write no closing narration and make no other tool call.
 
-Use that exact double-quoted canonical `$HOME` path. Tilde, arguments,
-assignments, redirections, pipelines, and composed shell commands are not
-supported. Old positional steers and `--continuation` are errors.
-
-The foreground helper verifies that this canonical Bash request is the only
-tool request in the current root assistant turn and binds the complete,
-persisted `SELF_COMPACT_BRIEF`. It acquires a session-scoped lock, starts a
-detached verifier, records a positive handoff, and returns without reading or
-changing terminal input.
-
-After the helper reports that the SDK verifier is armed, end the turn. Ordinary
-closing narration is allowed, but do not make another tool call.
+The extension validates the brief and invokes the private submitter with only
+the current session ID and SDK tool-call ID. The submitter recovers the exact
+brief from the persisted structured tool request, acquires a session-scoped
+lock, starts a detached verifier, records a positive handoff, and returns
+without reading or changing terminal input.
 
 The verifier waits for that exact tool call and its assistant turn to finish,
 then invokes:
@@ -97,8 +93,7 @@ extensions/session-inbox/request.mjs compact
   --timeout <bounded wait>
 ```
 
-The instructions file contains the current assistant message unchanged,
-followed by:
+The instructions file contains the exact `brief` argument followed by:
 
 ```text
 SELF_COMPACT_RUN_TOKEN: <8-lowercase-hex>
@@ -118,11 +113,12 @@ draft remains untouched.
 
 ### Current-turn authorization
 
-The helper accepts exactly one running root Bash tool call whose request:
+The submitter accepts exactly one running root `self_compact` tool call whose
+request:
 
-- uses the canonical zero-argument helper command;
+- has the exact tool-call ID supplied by the extension;
 - is the only tool request in its assistant message;
-- belongs to a root assistant turn with one complete `SELF_COMPACT_BRIEF`; and
+- contains one complete `brief` argument in the required current format; and
 - has no conflicting root tool or user activity before execution.
 
 The detached verifier requires the same tool-call identity, the exact handoff
@@ -172,10 +168,10 @@ matching completion. It never types or retries the continuation.
 
 ## Failure handling
 
-- Missing or malformed current-turn brief: correct the structure and invoke
-  the helper once more as the final action.
+- Missing or malformed tool brief: correct the structure and call
+  `self_compact` once more as the final action.
 - Existing or ambiguous session lock: inspect the exact lock and log paths
-  reported by the helper; do not delete a live or outcome-ambiguous lock.
+  reported by the tool; do not delete a live or outcome-ambiguous lock.
 - Failed session-inbox receipt: inspect the per-run log. No compact was
   accepted, and the lock is released.
 - Ambiguous request result or missing token-bound completion: inspect the
@@ -190,8 +186,8 @@ directory.
 
 ## Verification
 
-- The final assistant message contains the complete brief structure.
-- The helper was invoked with zero arguments as the final tool action.
+- The final assistant message does not expose the brief.
+- `self_compact` was the only and final tool request, with one `brief` argument.
 - The per-run log contains one completed session-inbox receipt.
 - The compact event records the exact brief and run token.
 - The checkpoint number advances and exactly one numbered file exists.
