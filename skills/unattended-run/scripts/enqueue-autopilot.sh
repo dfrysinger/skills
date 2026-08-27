@@ -8,7 +8,6 @@ TARGET_FLAG="${1:-}"
 TARGET="${2:-}"
 OBJECTIVE_FILE="${3:-}"
 TIMEOUT_SECONDS="${AUTOPILOT_HANDOFF_TIMEOUT_SECONDS:-360}"
-OBJECTIVE_DIGEST=""
 REQUEST_OUTPUT=""
 OBJECTIVE_PAYLOAD=""
 
@@ -65,15 +64,6 @@ if grep -Eq '^[[:space:]]*/allow-all([[:space:]]|$)' "$OBJECTIVE_PAYLOAD"; then
   echo "enqueue-autopilot.sh: permission changes remain user-controlled" >&2
   exit 64
 fi
-OBJECTIVE_DIGEST="$(
-  cksum "$OBJECTIVE_PAYLOAD" |
-    awk '{print $1 "-" $2}'
-)"
-[[ "$OBJECTIVE_DIGEST" =~ ^[0-9]+-[0-9]+$ ]] || {
-  echo "enqueue-autopilot.sh: could not fingerprint the validated objective" >&2
-  exit 2
-}
-
 RECEIPT_DIR="${HOME}/.copilot/autopilot-enqueue"
 mkdir -p "$RECEIPT_DIR"
 RECEIPT="${RECEIPT_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-$$.txt"
@@ -98,7 +88,6 @@ finish() {
 if node "$REQUEST_CLI" autopilot \
   "$TARGET_FLAG" "$TARGET" \
   --prompt-file "$OBJECTIVE_PAYLOAD" \
-  --dedupe-key "autopilot:${TARGET_FLAG#--target-}:$TARGET:$OBJECTIVE_DIGEST" \
   --timeout "$TIMEOUT_SECONDS" >"$REQUEST_OUTPUT" 2>&1; then
   if grep -Fq '"objectiveSet":true' "$REQUEST_OUTPUT" &&
     grep -Fq '"delivery":"idle"' "$REQUEST_OUTPUT"; then

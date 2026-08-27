@@ -19,8 +19,9 @@ rules, but it does not replace the persistent objective.
 Persist a complete work order, not a compressed slogan. Autopilot re-reads it
 on every continuation, so include enough context to resume correctly after
 compaction. Store only this objective body in a dedicated file such as
-`docs/<run>-autopilot-objective.md`; the handoff helper passes it unchanged to
-the native command:
+`docs/<run>-autopilot-objective.md`; the handoff helper preserves its interior
+line structure and removes only trailing line endings to match the native
+command parser:
 
 > Work from `<PLAN_DOC>`[ for `<SCOPE>`] in `<WORKSPACE>`.
 >

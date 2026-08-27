@@ -28,8 +28,13 @@ to paste when that handoff is unavailable.
   objective by enqueuing the native `/autopilot` command through
   `commands.enqueue()`, then reads the resulting state with
   `workspaces.readAutopilotObjective()`. It accepts the handoff only when the
-  native state contains the exact objective with an active or completed status
-  and the matching native starting message reports idle delivery.
+  native state contains the exact canonical objective with an active or
+  completed status and the matching native starting message reports idle
+  delivery. The request removes trailing CRLF/LF record endings before enqueue
+  because the native command parser removes them before persistence; all
+  interior line breaks remain unchanged. The request CLI also derives the
+  dedupe key from this canonical text and the resolved session ID, so equivalent
+  LF/CRLF record endings cannot create duplicate native objectives.
 - The request CLI and bundled helper both retain receipts. The helper's receipt
   includes the objective and raw SDK request output; a completed extension
   receipt proves delivery without scraping TUI output.

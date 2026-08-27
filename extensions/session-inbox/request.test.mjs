@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -136,15 +137,13 @@ test("writes a native autopilot objective request", async () => {
       })}\n`,
     );
     const promptFile = join(root, "objective.txt");
-    await writeFile(promptFile, "finish the persistent objective");
+    await writeFile(promptFile, "finish the persistent objective\r\n\n");
     const run = await runRequest(root, [
       "autopilot",
       "--target-session",
       "session-1",
       "--prompt-file",
       promptFile,
-      "--dedupe-key",
-      "autopilot:session:session-1:proof",
       "--timeout",
       "3",
     ]);
@@ -153,7 +152,12 @@ test("writes a native autopilot objective request", async () => {
     assert.equal(request.prompt, "finish the persistent objective");
     assert.equal(request.mode, undefined);
     assert.equal(request.agentMode, undefined);
-    assert.equal(request.dedupeKey, "autopilot:session:session-1:proof");
+    assert.equal(
+      request.dedupeKey,
+      `autopilot:session:session-1:${createHash("sha256")
+        .update("finish the persistent objective")
+        .digest("hex")}`,
+    );
 
     const receiptPath = join(root, "completed", name);
     await mkdir(dirname(receiptPath), { recursive: true });

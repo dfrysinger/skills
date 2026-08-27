@@ -26,9 +26,12 @@ The objective handoff is not a terminal slash-command injection. The bundled
 helper calls `extensions/session-inbox/request.mjs autopilot`. The target
 extension waits for `session.idle`, enqueues the bounded native `/autopilot`
 command through the SDK, reads the resulting native objective state back,
-confirms its text exactly, confirms the native starting message arrived with
-idle delivery, and writes a durable completed or failed receipt. This is
-expected and is **NOT a blocker**:
+confirms its canonical text exactly, confirms the native starting message
+arrived with idle delivery, and writes a durable completed or failed receipt.
+The request removes only trailing line-ending bytes because the native command
+parser removes them before storing objective state; interior line structure is
+preserved. The request CLI derives deduplication from that canonical text and
+the resolved session ID. This is expected and is **NOT a blocker**:
 
 - Do **not** stop, and do **not** ask the user to restart or relaunch the CLI.
 - Never put `/allow-all` in the objective or otherwise change permissions;
