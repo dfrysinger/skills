@@ -87,12 +87,36 @@ example, `juliett` or `kilo`). Attachments are copied rather than symlinked.
 The script prints `wakeup: ... (verified | NOT verified | skipped)` so you know
 whether the live wakeup landed; either way the envelope is durable.
 
+**Confirm the recipient name before sending.** Sending to a misspelled or
+non-live name (for example `whiskey` instead of `whisky`) silently creates a
+new mailbox nobody reads. Check `mailbox-list.sh` for the exact name and a
+recent `delivered` count.
+
+**For any message containing backticks, `$(...)`, `{}`, or quotes, pass the
+body by file or stdin instead of `--message`.** As a shell argument the body is
+subject to command substitution and word splitting, so those characters break
+the send or corrupt the text. The file/stdin forms hand the shell only a path:
+
+```sh
+# From a file you already wrote (recommended for long or code-containing prose):
+mailbox-send.sh <recipient-name> --summary "<short title>" --message-file <path>
+
+# From stdin with a quoted heredoc (no expansion inside 'EOF'):
+mailbox-send.sh <recipient-name> --summary "<short title>" --message-file - <<'EOF'
+Body with `backticks`, $(command), and { braces } — all safe.
+EOF
+```
+
+`--summary-file <path>` does the same for the summary. `--message-file -` and
+`--summary-file -` read stdin. Inline `--message`/`--summary` still work for
+simple one-line text.
+
 The portable entry point, including on Windows, is:
 
 ```sh
 node <plugin>/skills/mailbox/scripts/mailbox.mjs send <recipient-name> \
   --summary "<short title>" \
-  --message "<free text>" \
+  --message-file <path> \
   --file <path>
 ```
 
