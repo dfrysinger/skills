@@ -122,6 +122,49 @@ test("writes an idle-immediate send request and accepts its receipt", async () =
   }
 });
 
+test("writes a native autopilot objective request", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  try {
+    const instancePath = join(root, "instances", "session-1-generation-1.json");
+    await mkdir(dirname(instancePath), { recursive: true });
+    await writeFile(
+      instancePath,
+      `${JSON.stringify({
+        sessionId: "session-1",
+        generation: "generation-1",
+        updatedAt: new Date().toISOString(),
+      })}\n`,
+    );
+    const promptFile = join(root, "objective.txt");
+    await writeFile(promptFile, "finish the persistent objective");
+    const run = await runRequest(root, [
+      "autopilot",
+      "--target-session",
+      "session-1",
+      "--prompt-file",
+      promptFile,
+      "--dedupe-key",
+      "autopilot:session:session-1:proof",
+      "--timeout",
+      "3",
+    ]);
+    const { name, request } = await waitForRequest(root);
+    assert.equal(request.kind, "autopilot");
+    assert.equal(request.prompt, "finish the persistent objective");
+    assert.equal(request.mode, undefined);
+    assert.equal(request.agentMode, undefined);
+    assert.equal(request.dedupeKey, "autopilot:session:session-1:proof");
+
+    const receiptPath = join(root, "completed", name);
+    await mkdir(dirname(receiptPath), { recursive: true });
+    await writeFile(receiptPath, `${JSON.stringify({ status: "completed" })}\n`);
+    const result = await run.exit;
+    assert.equal(result.code, 0, result.stderr);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("returns failure when the recipient writes a failed receipt", async () => {
   const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
   try {

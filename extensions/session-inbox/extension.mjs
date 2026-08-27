@@ -24,6 +24,17 @@ const confirmationTimeoutMs =
   configuredConfirmationTimeoutMs > 0
     ? configuredConfirmationTimeoutMs
     : 10_000;
+const configuredAutopilotConfirmationTimeoutMs = Number.parseInt(
+  process.env.COPILOT_SESSION_INBOX_AUTOPILOT_CONFIRM_TIMEOUT_MS ??
+    process.env.COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS ??
+    "300000",
+  10,
+);
+const autopilotConfirmationTimeoutMs =
+  Number.isFinite(configuredAutopilotConfirmationTimeoutMs) &&
+  configuredAutopilotConfirmationTimeoutMs > 0
+    ? configuredAutopilotConfirmationTimeoutMs
+    : 300_000;
 
 const startupDiagnostics = createDiagnosticLogger(
   root,
@@ -196,6 +207,88 @@ async function sendAndConfirm({ prompt, mode = "immediate", agentMode }) {
   }
 }
 
+async function enqueueAutopilotObjective(prompt) {
+  diagnostics.log("sdk.autopilot_objective.started");
+  let activation;
+  const stopListening = session.on("user.message", (event) => {
+    const messageText = `${event.data.content ?? ""}\n${event.data.transformedContent ?? ""}`;
+    if (
+      ["autopilot-objective", "autopilot"].includes(event.data.source) &&
+      event.data.agentMode === "autopilot" &&
+      messageText.includes(prompt)
+    ) {
+      activation = {
+        delivery: event.data.delivery,
+        idleDelivery: event.data.delivery === "idle",
+      };
+    }
+  });
+  const deadline = Date.now() + autopilotConfirmationTimeoutMs;
+  let objective;
+  try {
+    const result = await session.rpc.commands.enqueue({
+      command: `/autopilot ${prompt}`,
+    });
+    if (result.queued !== true) {
+      throw new Error("autopilot command was not accepted");
+    }
+
+    while (Date.now() < deadline) {
+      if (!objective) {
+        const saved = await session.rpc.workspaces.readAutopilotObjective();
+        if (saved.content) {
+          try {
+            const state = JSON.parse(saved.content);
+            if (
+              state?.current?.objective === prompt &&
+              ["active", "completed"].includes(state.current.status)
+            ) {
+              objective = {
+                objectiveId: state.current.id,
+                objectiveStatus: state.current.status,
+              };
+            }
+          } catch {
+            // The native command may still be replacing an older objective file.
+          }
+        }
+      }
+      if (objective && activation) {
+        if (!activation.idleDelivery) {
+          throw Object.assign(
+            new Error(
+              `autopilot objective started with ${activation.delivery ?? "unknown"} delivery`,
+            ),
+            {
+              result: {
+                ...objective,
+                ...activation,
+                commandQueued: true,
+                objectiveSet: true,
+                activation: activation.delivery,
+              },
+              ambiguousSideEffect: true,
+            },
+          );
+        }
+        diagnostics.log("sdk.autopilot_objective.confirmed", {
+          ...objective,
+          delivery: activation.delivery,
+        });
+        return { ...objective, ...activation };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  } finally {
+    stopListening();
+  }
+  throw new Error(
+    objective
+      ? "autopilot objective was established but its starting message was not confirmed"
+      : "autopilot command did not establish the requested objective",
+  );
+}
+
 async function execute(request) {
   switch (request.kind) {
     case "send":
@@ -204,6 +297,18 @@ async function execute(request) {
         mode: request.mode,
         agentMode: request.agentMode,
       });
+    case "autopilot": {
+      const objective = await enqueueAutopilotObjective(request.prompt);
+      return {
+        commandQueued: true,
+        objectiveSet: true,
+        objectiveId: objective.objectiveId,
+        objectiveStatus: objective.objectiveStatus,
+        delivery: objective.delivery,
+        idleDelivery: objective.idleDelivery,
+        activation: objective.delivery,
+      };
+    }
     case "compact": {
       const result = await session.rpc.history.compact({
         ...(request.customInstructions
@@ -764,6 +869,9 @@ async function pump() {
           deduplicated,
           delivery: result?.delivery,
           idleDelivery: result?.idleDelivery,
+          objectiveSet: result?.objectiveSet,
+          objectiveStatus: result?.objectiveStatus,
+          activation: result?.activation,
           compacted: result?.compacted,
           continuationDelivery: result?.continuationDelivery,
           commandQueued: result?.commandQueued,

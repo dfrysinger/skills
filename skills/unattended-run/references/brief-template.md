@@ -10,14 +10,17 @@ rather than leaving a placeholder.
 
 `/autopilot` is not an agent tool. After arming the charter re-brief, enqueue
 the objective file into the current session through the SDK handoff as the final
-tool action when targeting is safe; otherwise print its contents as an optional
-convenience and proceed. The run stays on course through the charter re-brief
-without it.
+tool action when targeting is safe. The handoff invokes the native autopilot
+command and reads its state back to prove the exact objective was established.
+Otherwise print its contents and explain that the user must paste it to
+establish native autopilot. The charter re-brief continues to restore working
+rules, but it does not replace the persistent objective.
 
 Persist a complete work order, not a compressed slogan. Autopilot re-reads it
 on every continuation, so include enough context to resume correctly after
 compaction. Store only this objective body in a dedicated file such as
-`docs/<run>-autopilot-objective.md`; the handoff helper adds `/autopilot`:
+`docs/<run>-autopilot-objective.md`; the handoff helper passes it unchanged to
+the native command:
 
 > Work from `<PLAN_DOC>`[ for `<SCOPE>`] in `<WORKSPACE>`.
 >

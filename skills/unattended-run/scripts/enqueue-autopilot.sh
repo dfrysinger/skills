@@ -8,7 +8,6 @@ TARGET_FLAG="${1:-}"
 TARGET="${2:-}"
 OBJECTIVE_FILE="${3:-}"
 TIMEOUT_SECONDS="${AUTOPILOT_HANDOFF_TIMEOUT_SECONDS:-360}"
-OBJECTIVE=""
 OBJECTIVE_DIGEST=""
 REQUEST_OUTPUT=""
 OBJECTIVE_PAYLOAD=""
@@ -32,16 +31,26 @@ esac
   exit 2
 }
 
-if ! OBJECTIVE="$(cat -- "$OBJECTIVE_FILE")" ||
-  ! grep -q '[^[:space:]]' <<<"$OBJECTIVE"; then
+umask 077
+OBJECTIVE_PAYLOAD="$(mktemp "${TMPDIR:-/tmp}/copilot-autopilot-objective.XXXXXX")"
+cleanup() {
+  rm -f -- "$REQUEST_OUTPUT" "$OBJECTIVE_PAYLOAD"
+}
+trap cleanup EXIT
+cp -- "$OBJECTIVE_FILE" "$OBJECTIVE_PAYLOAD"
+chmod 600 "$OBJECTIVE_PAYLOAD"
+
+if ! grep -q '[^[:space:]]' "$OBJECTIVE_PAYLOAD"; then
   echo "enqueue-autopilot.sh: objective file must contain a non-empty objective" >&2
   exit 64
 fi
-if grep -Fq '<SLOT>' <<<"$OBJECTIVE"; then
+if grep -Fq '<SLOT>' "$OBJECTIVE_PAYLOAD"; then
   echo "enqueue-autopilot.sh: objective still contains an unresolved <SLOT>" >&2
   exit 64
 fi
-FIRST_INSTRUCTION="$(awk 'NF { sub(/^[[:space:]]+/, ""); print; exit }' <<<"$OBJECTIVE")"
+FIRST_INSTRUCTION="$(
+  awk 'NF { sub(/^[[:space:]]+/, ""); print; exit }' "$OBJECTIVE_PAYLOAD"
+)"
 case "$FIRST_INSTRUCTION" in
   /autopilot*|/goal*)
     echo "enqueue-autopilot.sh: objective file must contain only the objective body" >&2
@@ -52,13 +61,12 @@ case "$FIRST_INSTRUCTION" in
     exit 64
     ;;
 esac
-if grep -Eq '^[[:space:]]*/allow-all([[:space:]]|$)' <<<"$OBJECTIVE"; then
+if grep -Eq '^[[:space:]]*/allow-all([[:space:]]|$)' "$OBJECTIVE_PAYLOAD"; then
   echo "enqueue-autopilot.sh: permission changes remain user-controlled" >&2
   exit 64
 fi
 OBJECTIVE_DIGEST="$(
-  printf '%s' "$OBJECTIVE" |
-    cksum |
+  cksum "$OBJECTIVE_PAYLOAD" |
     awk '{print $1 "-" $2}'
 )"
 [[ "$OBJECTIVE_DIGEST" =~ ^[0-9]+-[0-9]+$ ]] || {
@@ -66,19 +74,10 @@ OBJECTIVE_DIGEST="$(
   exit 2
 }
 
-umask 077
 RECEIPT_DIR="${HOME}/.copilot/autopilot-enqueue"
 mkdir -p "$RECEIPT_DIR"
 RECEIPT="${RECEIPT_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-$$.txt"
 REQUEST_OUTPUT="$(mktemp "${TMPDIR:-/tmp}/copilot-autopilot-request.XXXXXX")"
-OBJECTIVE_PAYLOAD="$(mktemp "${TMPDIR:-/tmp}/copilot-autopilot-objective.XXXXXX")"
-printf '%s' "$OBJECTIVE" >"$OBJECTIVE_PAYLOAD"
-chmod 600 "$OBJECTIVE_PAYLOAD"
-
-cleanup() {
-  rm -f -- "$REQUEST_OUTPUT" "$OBJECTIVE_PAYLOAD"
-}
-trap cleanup EXIT
 
 finish() {
   local status="$1"
@@ -86,7 +85,8 @@ finish() {
   {
     printf 'status=%s\ntime=%s\ntarget_type=%s\ntarget=%s\ndetail=%s\nobjective_begin\n' \
       "$status" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${TARGET_FLAG#--target-}" "$TARGET" "$detail"
-    printf '%s\nobjective_end\nrequest_output_begin\n' "$OBJECTIVE"
+    cat -- "$OBJECTIVE_PAYLOAD"
+    printf '\nobjective_end\nrequest_output_begin\n'
     cat -- "$REQUEST_OUTPUT"
     printf 'request_output_end\n'
   } >"$RECEIPT"
@@ -95,20 +95,19 @@ finish() {
   fi
 }
 
-if node "$REQUEST_CLI" send \
+if node "$REQUEST_CLI" autopilot \
   "$TARGET_FLAG" "$TARGET" \
   --prompt-file "$OBJECTIVE_PAYLOAD" \
-  --agent-mode autopilot \
-  --mode immediate \
   --dedupe-key "autopilot:${TARGET_FLAG#--target-}:$TARGET:$OBJECTIVE_DIGEST" \
   --timeout "$TIMEOUT_SECONDS" >"$REQUEST_OUTPUT" 2>&1; then
-  if grep -Fq '"delivery":"idle"' "$REQUEST_OUTPUT"; then
-    finish "confirmed" "SDK session.send delivered the objective at an idle boundary"
+  if grep -Fq '"objectiveSet":true' "$REQUEST_OUTPUT" &&
+    grep -Fq '"delivery":"idle"' "$REQUEST_OUTPUT"; then
+    finish "confirmed" "SDK established the native autopilot objective and confirmed its idle-delivered starting turn"
     echo "autopilot handoff confirmed; receipt: $RECEIPT"
     exit 0
   fi
-  finish "unconfirmed" "SDK receipt did not prove idle delivery"
-  echo "enqueue-autopilot.sh: SDK receipt did not prove idle delivery; receipt: $RECEIPT" >&2
+  finish "unconfirmed" "SDK receipt did not prove both native objective establishment and idle starting-message delivery"
+  echo "enqueue-autopilot.sh: SDK receipt did not prove native objective establishment and idle starting-message delivery; receipt: $RECEIPT" >&2
   exit 1
 else
   status=$?
