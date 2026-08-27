@@ -122,6 +122,49 @@ test("writes an idle-immediate send request and accepts its receipt", async () =
   }
 });
 
+test("writes a native autopilot objective request", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  try {
+    const instancePath = join(root, "instances", "session-1-generation-1.json");
+    await mkdir(dirname(instancePath), { recursive: true });
+    await writeFile(
+      instancePath,
+      `${JSON.stringify({
+        sessionId: "session-1",
+        generation: "generation-1",
+        updatedAt: new Date().toISOString(),
+      })}\n`,
+    );
+    const promptFile = join(root, "objective.txt");
+    await writeFile(promptFile, "finish the persistent objective");
+    const run = await runRequest(root, [
+      "autopilot",
+      "--target-session",
+      "session-1",
+      "--prompt-file",
+      promptFile,
+      "--dedupe-key",
+      "autopilot:session:session-1:proof",
+      "--timeout",
+      "3",
+    ]);
+    const { name, request } = await waitForRequest(root);
+    assert.equal(request.kind, "autopilot");
+    assert.equal(request.prompt, "finish the persistent objective");
+    assert.equal(request.mode, undefined);
+    assert.equal(request.agentMode, undefined);
+    assert.equal(request.dedupeKey, "autopilot:session:session-1:proof");
+
+    const receiptPath = join(root, "completed", name);
+    await mkdir(dirname(receiptPath), { recursive: true });
+    await writeFile(receiptPath, `${JSON.stringify({ status: "completed" })}\n`);
+    const result = await run.exit;
+    assert.equal(result.code, 0, result.stderr);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("returns failure when the recipient writes a failed receipt", async () => {
   const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
   try {
@@ -262,6 +305,128 @@ test("rejects multiple fresh generations for one session ID", async () => {
         "send",
         "--target-session",
         "session-1",
+        "--prompt-file",
+        promptFile,
+        "--timeout",
+        "0",
+      ])
+    ).exit;
+    assert.equal(result.code, 64);
+    assert.match(result.stderr, /multiple fresh session-inbox instances/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("target name prefers a fresh tmux identity over session-name fallbacks", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  try {
+    const instancesDir = join(root, "instances");
+    await mkdir(instancesDir, { recursive: true });
+    await writeFile(
+      join(instancesDir, "tmux-session.json"),
+      `${JSON.stringify({
+        sessionId: "tmux-session",
+        tmuxSession: "hotel",
+        sessionName: "other-name",
+        generation: "tmux-generation",
+        updatedAt: new Date().toISOString(),
+      })}\n`,
+    );
+    await writeFile(
+      join(instancesDir, "named-session.json"),
+      `${JSON.stringify({
+        sessionId: "named-session",
+        sessionName: "hotel",
+        generation: "named-generation",
+        updatedAt: new Date().toISOString(),
+      })}\n`,
+    );
+    const promptFile = join(root, "prompt.txt");
+    await writeFile(promptFile, "wake the recipient");
+    const run = await runRequest(root, [
+      "send",
+      "--target-name",
+      "hotel",
+      "--prompt-file",
+      promptFile,
+      "--timeout",
+      "0",
+    ]);
+    const { request } = await waitForRequest(root);
+    assert.deepEqual(request.target, {
+      targetName: "hotel",
+      resolvedBy: "tmux",
+      sessionId: "tmux-session",
+      generation: "tmux-generation",
+    });
+    assert.equal((await run.exit).code, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("target name falls back to the current live session name", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  try {
+    const instancePath = join(root, "instances", "named-session.json");
+    await mkdir(dirname(instancePath), { recursive: true });
+    await writeFile(
+      instancePath,
+      `${JSON.stringify({
+        sessionId: "named-session",
+        sessionName: "hotel",
+        generation: "named-generation",
+        updatedAt: new Date().toISOString(),
+      })}\n`,
+    );
+    const promptFile = join(root, "prompt.txt");
+    await writeFile(promptFile, "wake the recipient");
+    const run = await runRequest(root, [
+      "send",
+      "--target-name",
+      "hotel",
+      "--prompt-file",
+      promptFile,
+      "--timeout",
+      "0",
+    ]);
+    const { request } = await waitForRequest(root);
+    assert.deepEqual(request.target, {
+      targetName: "hotel",
+      resolvedBy: "session-name",
+      sessionId: "named-session",
+      generation: "named-generation",
+    });
+    assert.equal((await run.exit).code, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("target name rejects multiple fresh sessions with the same session name", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  try {
+    const instancesDir = join(root, "instances");
+    await mkdir(instancesDir, { recursive: true });
+    for (const sessionId of ["session-1", "session-2"]) {
+      await writeFile(
+        join(instancesDir, `${sessionId}.json`),
+        `${JSON.stringify({
+          sessionId,
+          sessionName: "hotel",
+          generation: `generation-${sessionId}`,
+          updatedAt: new Date().toISOString(),
+        })}\n`,
+      );
+    }
+    const promptFile = join(root, "prompt.txt");
+    await writeFile(promptFile, "wake the recipient");
+    const result = await (
+      await runRequest(root, [
+        "send",
+        "--target-name",
+        "hotel",
         "--prompt-file",
         promptFile,
         "--timeout",

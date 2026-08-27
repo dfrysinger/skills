@@ -22,6 +22,10 @@ const sourceDiagnostics = join(
   dirname(fileURLToPath(import.meta.url)),
   "diagnostics.mjs",
 );
+const sourceIdentity = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "session-identity.mjs",
+);
 
 async function waitFor(read, label, attempts = 300) {
   let lastError;
@@ -69,16 +73,19 @@ async function createHarness(initialState = {}) {
   const callsPath = join(root, "calls.jsonl");
   const extensionPath = join(root, "extension.mjs");
   const diagnosticsPath = join(root, "diagnostics.mjs");
+  const identityPath = join(root, "session-identity.mjs");
   const sdkDir = join(root, "node_modules", "@github", "copilot-sdk");
   await mkdir(sdkDir, { recursive: true });
   await cp(sourceExtension, extensionPath);
   await cp(sourceDiagnostics, diagnosticsPath);
+  await cp(sourceIdentity, identityPath);
   await writeState(statePath, {
     processing: false,
     active: false,
     pending: 0,
     delivery: "idle",
     idleCounter: 0,
+    sessionName: "hotel",
     ...initialState,
   });
   await writeFile(callsPath, "");
@@ -93,7 +100,7 @@ async function createHarness(initialState = {}) {
   await writeFile(
     join(sdkDir, "extension.mjs"),
     `
-import { appendFileSync, chmodSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, readFileSync, writeFileSync } from "node:fs";
 
 const listeners = new Map();
 const state = () => JSON.parse(readFileSync(process.env.MOCK_STATE, "utf8"));
@@ -139,6 +146,9 @@ export async function joinSession() {
     },
     rpc: {
       metadata: {
+        async snapshot() {
+          return {workspace: {id: "test-session", name: state().sessionName}};
+        },
         async isProcessing() {
           return {processing: state().processing};
         },
@@ -161,13 +171,68 @@ export async function joinSession() {
           return {success: true, tokensRemoved: 11, messagesRemoved: 3};
         },
       },
+      workspaces: {
+        async readAutopilotObjective() {
+          record("autopilot-objective.read", {});
+          return {content: state().autopilotObjective ?? null};
+        },
+      },
       commands: {
         async enqueue(options) {
           record("command", options);
-          if (state().rejectCommandAfterRecord) {
+          const current = state();
+          if (current.rejectCommandAfterRecord) {
             throw new Error("mock transport lost the accepted command response");
           }
-          if (state().exitOnEnqueue) process.exit(0);
+          if (
+            options.command.startsWith("/autopilot ") &&
+            !current.suppressAutopilotObjective
+          ) {
+            const objective = options.command.slice("/autopilot ".length);
+            writeFileSync(
+              process.env.MOCK_STATE,
+              JSON.stringify({
+                ...current,
+                autopilotObjective: JSON.stringify({
+                  version: 1,
+                  nextId: 2,
+                  current: {
+                    id: 1,
+                    objective,
+                    status: "active",
+                    autopilotOrigin: "objective",
+                    turnCount: 0,
+                  },
+                }),
+              }) + "\\n",
+            );
+          }
+          if (
+            options.command.startsWith("/autopilot ") &&
+            !current.suppressAutopilotDelivery
+          ) {
+            const objective = options.command.slice("/autopilot ".length);
+            const source = current.autopilotSource ?? "autopilot-objective";
+            queueMicrotask(() =>
+              emit("user.message", {
+                type: "user.message",
+                data: {
+                  content:
+                    source === "autopilot-objective"
+                      ? \`The user set this explicit autopilot objective with /autopilot:\\n\\n\${objective}\\n\\nWork autonomously.\`
+                      : "",
+                  transformedContent:
+                    source === "autopilot"
+                      ? \`Active autopilot objective:\\n\\n\${objective}\\n\\nContinue toward this objective.\`
+                      : undefined,
+                  source,
+                  agentMode: "autopilot",
+                  delivery: current.delivery,
+                },
+              }),
+            );
+          }
+          if (current.exitOnEnqueue) process.exit(0);
           return {queued: true};
         },
       },
@@ -305,6 +370,7 @@ test("extension startup failures are persisted before session join", async () =>
 test("recipient extension gates delivery, deduplicates, and preserves compact phase state", async () => {
   const harness = await createHarness();
   try {
+    assert.equal(harness.heartbeat.sessionName, "hotel");
     await new Promise((resolve) => setTimeout(resolve, 2_200));
 
     await harness.request("idle-send", {
@@ -315,7 +381,59 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
     const idleReceipt = await harness.receipt("completed", "idle-send");
     assert.equal(idleReceipt.result.delivery, "idle");
 
-    await harness.setState({ idleCounter: 1 });
+    await harness.setState({ idleCounter: 1, autopilotSource: "autopilot" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await harness.request("autopilot-objective", {
+      kind: "autopilot",
+      prompt: "finish the durable objective\nand verify its result",
+      dedupeKey: "autopilot-objective",
+    });
+    const autopilotReceipt = await Promise.race([
+      harness.receipt("completed", "autopilot-objective"),
+      harness
+        .receipt("failed", "autopilot-objective")
+        .then((receipt) => assert.fail(JSON.stringify(receipt))),
+    ]);
+    assert.equal(autopilotReceipt.result.objectiveSet, true);
+    assert.equal(autopilotReceipt.result.objectiveStatus, "active");
+    assert.equal(autopilotReceipt.result.activation, "idle");
+    assert.equal(autopilotReceipt.result.idleDelivery, true);
+    const autopilotCalls = (await harness.calls()).filter((call) =>
+      ["command", "autopilot-objective.read"].includes(call.kind),
+    );
+    assert.deepEqual(autopilotCalls.slice(-2), [
+      {
+        kind: "command",
+        value: {
+          command:
+            "/autopilot finish the durable objective\nand verify its result",
+        },
+      },
+      { kind: "autopilot-objective.read", value: {} },
+    ]);
+
+    await harness.setState({ idleCounter: 2 });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await harness.setState({ suppressAutopilotObjective: true });
+    await harness.request("autopilot-unconfirmed", {
+      kind: "autopilot",
+      prompt: "a different objective that never persists",
+      dedupeKey: "autopilot-unconfirmed",
+    });
+    const unconfirmedObjective = await harness.receipt(
+      "failed",
+      "autopilot-unconfirmed",
+    );
+    assert.equal(unconfirmedObjective.ambiguousSideEffect, true);
+    assert.match(
+      unconfirmedObjective.error,
+      /did not establish the requested objective/,
+    );
+    await harness.setState({
+      suppressAutopilotObjective: false,
+      idleCounter: 3,
+    });
+
     await new Promise((resolve) => setTimeout(resolve, 350));
     await harness.setState({ pending: 1 });
     await harness.request("gate-deferred", {
@@ -324,7 +442,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
       mode: "immediate",
     });
     await new Promise((resolve) => setTimeout(resolve, 700));
-    await harness.setState({ pending: 0, idleCounter: 2 });
+    await harness.setState({ pending: 0, idleCounter: 4 });
     await harness.receipt("completed", "gate-deferred");
 
     await harness.setState({ processing: true });
@@ -337,7 +455,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
     await assert.rejects(readFile(join(harness.inbox, "completed", "busy-send.json")), {
       code: "ENOENT",
     });
-    await harness.setState({ processing: false, idleCounter: 3 });
+    await harness.setState({ processing: false, idleCounter: 5 });
     assert.equal((await harness.receipt("completed", "busy-send")).result.delivery, "idle");
 
     await harness.request("dedupe-first", {
@@ -347,7 +465,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
       dedupeKey: "one-shot",
     });
     await harness.receipt("completed", "dedupe-first");
-    await harness.setState({ idleCounter: 4 });
+    await harness.setState({ idleCounter: 6 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("dedupe-second", {
       kind: "send",
@@ -363,7 +481,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
       ).length,
       1,
     );
-    await harness.setState({ delivery: "steering", idleCounter: 5 });
+    await harness.setState({ delivery: "steering", idleCounter: 7 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("non-idle-send", {
       kind: "send",
@@ -374,7 +492,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
     const nonIdle = await harness.receipt("completed", "non-idle-send");
     assert.equal(nonIdle.result.delivery, "steering");
     assert.equal(nonIdle.result.idleDelivery, false);
-    await harness.setState({ delivery: "idle", idleCounter: 6 });
+    await harness.setState({ delivery: "idle", idleCounter: 8 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("non-idle-retry", {
       kind: "send",
@@ -391,7 +509,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
       ).length,
       1,
     );
-    await harness.setState({ idleCounter: 7 });
+    await harness.setState({ idleCounter: 9 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("dedupe-conflict", {
       kind: "send",
@@ -408,7 +526,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
       0,
     );
 
-    await harness.setState({ suppressDelivery: true, idleCounter: 8 });
+    await harness.setState({ suppressDelivery: true, idleCounter: 10 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("unconfirmed-send", {
       kind: "send",
@@ -419,7 +537,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
     const unconfirmed = await harness.receipt("completed", "unconfirmed-send");
     assert.equal(unconfirmed.result.delivery, "unconfirmed");
     assert.equal(unconfirmed.result.idleDelivery, false);
-    await harness.setState({ suppressDelivery: false, idleCounter: 9 });
+    await harness.setState({ suppressDelivery: false, idleCounter: 11 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("unconfirmed-retry", {
       kind: "send",
@@ -440,7 +558,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
       1,
     );
 
-    await harness.setState({ rejectSendAfterRecord: true, idleCounter: 10 });
+    await harness.setState({ rejectSendAfterRecord: true, idleCounter: 12 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("ambiguous-send", {
       kind: "send",
@@ -450,7 +568,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
     });
     const ambiguousSend = await harness.receipt("failed", "ambiguous-send");
     assert.equal(ambiguousSend.ambiguousSideEffect, true);
-    await harness.setState({ rejectSendAfterRecord: false, idleCounter: 11 });
+    await harness.setState({ rejectSendAfterRecord: false, idleCounter: 13 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("ambiguous-send-retry", {
       kind: "send",
@@ -469,7 +587,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
       1,
     );
 
-    await harness.setState({ delivery: "steering", idleCounter: 12 });
+    await harness.setState({ delivery: "steering", idleCounter: 14 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("compact-partial", {
       kind: "compact",
@@ -485,7 +603,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
     await harness.setState({
       delivery: "idle",
       breakDedupeWrite: true,
-      idleCounter: 13,
+      idleCounter: 15,
     });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("compact-receipt-failure", {
@@ -496,7 +614,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
     const failedReceipt = await harness.receipt("failed", "compact-receipt-failure");
     assert.equal(failedReceipt.sideEffectCompleted, true);
     assert.equal(failedReceipt.result.compacted, true);
-    await harness.setState({ idleCounter: 14 });
+    await harness.setState({ idleCounter: 16 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("compact-receipt-blocked-retry", {
       kind: "compact",
@@ -522,7 +640,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
       "compact-receipt-failure",
     );
     assert.equal(recoveredReceipt.recovered, true);
-    await harness.setState({ idleCounter: 15 });
+    await harness.setState({ idleCounter: 17 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("compact-receipt-retry", {
       kind: "compact",

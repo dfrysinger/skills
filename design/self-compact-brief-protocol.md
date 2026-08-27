@@ -1,5 +1,11 @@
 # Self-Compact Brief Protocol
 
+> **Superseded for new callers.** This document records the assistant-prose and
+> Bash-tool protocol shipped before v0.108.4. The current protocol keeps the
+> same verifier, lock, compaction proof, and fixed continuation, but carries the
+> brief in one private `self_compact({ brief })` extension tool call. See
+> [Self-Compact Structured Tool](self-compact-structured-tool.md).
+
 ## Objective
 
 Replace inline compaction steers with a long assistant-side

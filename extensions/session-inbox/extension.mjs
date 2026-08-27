@@ -1,14 +1,12 @@
-import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { promisify } from "node:util";
 
 import { joinSession } from "@github/copilot-sdk/extension";
 import { createDiagnosticLogger, errorDetails } from "./diagnostics.mjs";
+import { currentSessionName, currentTmuxSession } from "./session-identity.mjs";
 
-const execFileAsync = promisify(execFile);
 const root = process.env.COPILOT_SESSION_INBOX_DIR ?? join(homedir(), ".copilot", "session-inbox");
 const pendingDir = join(root, "pending");
 const processingDir = join(root, "processing");
@@ -26,6 +24,17 @@ const confirmationTimeoutMs =
   configuredConfirmationTimeoutMs > 0
     ? configuredConfirmationTimeoutMs
     : 10_000;
+const configuredAutopilotConfirmationTimeoutMs = Number.parseInt(
+  process.env.COPILOT_SESSION_INBOX_AUTOPILOT_CONFIRM_TIMEOUT_MS ??
+    process.env.COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS ??
+    "300000",
+  10,
+);
+const autopilotConfirmationTimeoutMs =
+  Number.isFinite(configuredAutopilotConfirmationTimeoutMs) &&
+  configuredAutopilotConfirmationTimeoutMs > 0
+    ? configuredAutopilotConfirmationTimeoutMs
+    : 300_000;
 
 const startupDiagnostics = createDiagnosticLogger(
   root,
@@ -42,7 +51,21 @@ try {
   });
   throw error;
 }
-const tmuxSession = await currentTmuxSession();
+let tmuxSession;
+let sessionName;
+let heartbeatRefreshing = false;
+let initialTmuxSessionError;
+let initialSessionNameError;
+try {
+  tmuxSession = await currentTmuxSession();
+} catch (error) {
+  initialTmuxSessionError = error;
+}
+try {
+  sessionName = await currentSessionName(session);
+} catch (error) {
+  initialSessionNameError = error;
+}
 const generation = randomBytes(16).toString("hex");
 const diagnostics = createDiagnosticLogger(
   root,
@@ -52,6 +75,7 @@ const diagnostics = createDiagnosticLogger(
     sessionId: session.sessionId,
     generation,
     tmuxSession,
+    sessionName,
     hostPid: process.ppid,
     pid: process.pid,
   },
@@ -75,21 +99,17 @@ diagnostics.log("extension.started", {
   extensionPath: import.meta.url,
   confirmationTimeoutMs,
 });
-
-async function currentTmuxSession() {
-  if (!process.env.TMUX_PANE) return undefined;
-  try {
-    const { stdout } = await execFileAsync("tmux", [
-      "display-message",
-      "-p",
-      "-t",
-      process.env.TMUX_PANE,
-      "#{session_name}",
-    ]);
-    return stdout.trim() || undefined;
-  } catch {
-    return undefined;
-  }
+if (initialSessionNameError) {
+  diagnostics.log("session.identity_lookup_failed", {
+    identitySource: "session-name",
+    error: errorDetails(initialSessionNameError),
+  });
+}
+if (initialTmuxSessionError) {
+  diagnostics.log("session.identity_lookup_failed", {
+    identitySource: "tmux",
+    error: errorDetails(initialTmuxSessionError),
+  });
 }
 
 function matchesTarget(request) {
@@ -108,14 +128,48 @@ async function writeJson(path, value) {
 }
 
 async function writeHeartbeat() {
-  await writeJson(join(instancesDir, `${session.sessionId}-${generation}.json`), {
-    sessionId: session.sessionId,
-    tmuxSession,
-    generation,
-    hostPid: process.ppid,
-    pid: process.pid,
-    updatedAt: new Date().toISOString(),
-  });
+  if (heartbeatRefreshing) return;
+  heartbeatRefreshing = true;
+  try {
+    let refreshedTmuxSession = tmuxSession;
+    try {
+      refreshedTmuxSession = await currentTmuxSession();
+    } catch (error) {
+      diagnostics.log("session.identity_lookup_failed", {
+        identitySource: "tmux",
+        error: errorDetails(error),
+      });
+    }
+    let refreshedSessionName = sessionName;
+    try {
+      refreshedSessionName = await currentSessionName(session);
+    } catch (error) {
+      diagnostics.log("session.identity_lookup_failed", {
+        identitySource: "session-name",
+        error: errorDetails(error),
+      });
+    }
+    if (
+      refreshedTmuxSession !== tmuxSession ||
+      refreshedSessionName !== sessionName
+    ) {
+      tmuxSession = refreshedTmuxSession;
+      sessionName = refreshedSessionName;
+      diagnostics.setContext({ tmuxSession, sessionName });
+      diagnostics.log("session.identity_changed", { tmuxSession, sessionName });
+    }
+    await writeJson(join(instancesDir, `${session.sessionId}-${generation}.json`), {
+      sessionId: session.sessionId,
+      tmuxSession,
+      sessionName,
+      generation,
+      hostPid: process.ppid,
+      pid: process.pid,
+      updatedAt: new Date().toISOString(),
+    });
+  } finally {
+    heartbeatRefreshing = false;
+  }
 }
 
 async function sendAndConfirm({ prompt, mode = "immediate", agentMode }) {
@@ -153,6 +207,88 @@ async function sendAndConfirm({ prompt, mode = "immediate", agentMode }) {
   }
 }
 
+async function enqueueAutopilotObjective(prompt) {
+  diagnostics.log("sdk.autopilot_objective.started");
+  let activation;
+  const stopListening = session.on("user.message", (event) => {
+    const messageText = `${event.data.content ?? ""}\n${event.data.transformedContent ?? ""}`;
+    if (
+      ["autopilot-objective", "autopilot"].includes(event.data.source) &&
+      event.data.agentMode === "autopilot" &&
+      messageText.includes(prompt)
+    ) {
+      activation = {
+        delivery: event.data.delivery,
+        idleDelivery: event.data.delivery === "idle",
+      };
+    }
+  });
+  const deadline = Date.now() + autopilotConfirmationTimeoutMs;
+  let objective;
+  try {
+    const result = await session.rpc.commands.enqueue({
+      command: `/autopilot ${prompt}`,
+    });
+    if (result.queued !== true) {
+      throw new Error("autopilot command was not accepted");
+    }
+
+    while (Date.now() < deadline) {
+      if (!objective) {
+        const saved = await session.rpc.workspaces.readAutopilotObjective();
+        if (saved.content) {
+          try {
+            const state = JSON.parse(saved.content);
+            if (
+              state?.current?.objective === prompt &&
+              ["active", "completed"].includes(state.current.status)
+            ) {
+              objective = {
+                objectiveId: state.current.id,
+                objectiveStatus: state.current.status,
+              };
+            }
+          } catch {
+            // The native command may still be replacing an older objective file.
+          }
+        }
+      }
+      if (objective && activation) {
+        if (!activation.idleDelivery) {
+          throw Object.assign(
+            new Error(
+              `autopilot objective started with ${activation.delivery ?? "unknown"} delivery`,
+            ),
+            {
+              result: {
+                ...objective,
+                ...activation,
+                commandQueued: true,
+                objectiveSet: true,
+                activation: activation.delivery,
+              },
+              ambiguousSideEffect: true,
+            },
+          );
+        }
+        diagnostics.log("sdk.autopilot_objective.confirmed", {
+          ...objective,
+          delivery: activation.delivery,
+        });
+        return { ...objective, ...activation };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  } finally {
+    stopListening();
+  }
+  throw new Error(
+    objective
+      ? "autopilot objective was established but its starting message was not confirmed"
+      : "autopilot command did not establish the requested objective",
+  );
+}
+
 async function execute(request) {
   switch (request.kind) {
     case "send":
@@ -161,6 +297,18 @@ async function execute(request) {
         mode: request.mode,
         agentMode: request.agentMode,
       });
+    case "autopilot": {
+      const objective = await enqueueAutopilotObjective(request.prompt);
+      return {
+        commandQueued: true,
+        objectiveSet: true,
+        objectiveId: objective.objectiveId,
+        objectiveStatus: objective.objectiveStatus,
+        delivery: objective.delivery,
+        idleDelivery: objective.idleDelivery,
+        activation: objective.delivery,
+      };
+    }
     case "compact": {
       const result = await session.rpc.history.compact({
         ...(request.customInstructions
@@ -721,6 +869,9 @@ async function pump() {
           deduplicated,
           delivery: result?.delivery,
           idleDelivery: result?.idleDelivery,
+          objectiveSet: result?.objectiveSet,
+          objectiveStatus: result?.objectiveStatus,
+          activation: result?.activation,
           compacted: result?.compacted,
           continuationDelivery: result?.continuationDelivery,
           commandQueued: result?.commandQueued,

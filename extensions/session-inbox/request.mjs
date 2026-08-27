@@ -25,14 +25,16 @@ function usage(message) {
     console.error(`session-inbox-request: ${message}`);
   }
   console.error(
-    "usage: request.mjs <send|compact|new-session> (--target-tmux NAME | --target-session ID) [options]",
+    "usage: request.mjs <send|autopilot|compact|new-session> (--target-name NAME | --target-tmux NAME | --target-session ID) [options]",
   );
   process.exit(64);
 }
 
 function parseArgs(argv) {
   const [kind, ...rest] = argv;
-  if (!["send", "compact", "new-session"].includes(kind)) usage("invalid request kind");
+  if (!["send", "autopilot", "compact", "new-session"].includes(kind)) {
+    usage("invalid request kind");
+  }
   const options = { kind };
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
@@ -52,48 +54,77 @@ async function readRequiredFile(path, label) {
 }
 
 const options = parseArgs(process.argv.slice(2));
-if (Boolean(options["target-tmux"]) === Boolean(options["target-session"])) {
+const targetCount = [
+  options["target-name"],
+  options["target-tmux"],
+  options["target-session"],
+].filter(Boolean).length;
+if (targetCount !== 1) {
   usage("provide exactly one target");
 }
 const timeoutSeconds = Number(options.timeout ?? "15");
 if (!Number.isFinite(timeoutSeconds) || timeoutSeconds < 0) usage("invalid --timeout");
 
-async function resolveTarget({ tmuxSession, sessionId }) {
+async function resolveTarget({ targetName, tmuxSession, sessionId }) {
   const instancesDir = join(root, "instances");
   let names;
   try {
     names = await readdir(instancesDir);
   } catch (error) {
     if (error?.code === "ENOENT") {
-      usage(`no live session-inbox instance for ${tmuxSession ?? sessionId}`);
+      usage(`no live session-inbox instance for ${targetName ?? tmuxSession ?? sessionId}`);
     }
     throw error;
   }
-  const matches = [];
+  const freshInstances = [];
   for (const name of names) {
     if (!name.endsWith(".json")) continue;
     try {
       const instance = JSON.parse(await readFile(join(instancesDir, name), "utf8"));
       const age = Date.now() - Date.parse(instance.updatedAt);
       if (
-        (tmuxSession ? instance.tmuxSession === tmuxSession : instance.sessionId === sessionId) &&
         instance.sessionId &&
         instance.generation &&
         Number.isFinite(age) &&
         age >= 0 &&
         age <= 15_000
       ) {
-        matches.push(instance);
+        freshInstances.push(instance);
       }
     } catch {
       // A concurrently replaced or malformed heartbeat is not a live target.
     }
   }
+  let matches;
+  let resolvedBy;
+  if (targetName) {
+    const tmuxMatches = freshInstances.filter(
+      (instance) => instance.tmuxSession === targetName,
+    );
+    if (tmuxMatches.length > 0) {
+      matches = tmuxMatches;
+      resolvedBy = "tmux";
+    } else {
+      matches = freshInstances.filter(
+        (instance) => instance.sessionName === targetName,
+      );
+      resolvedBy = "session-name";
+    }
+  } else if (tmuxSession) {
+    matches = freshInstances.filter(
+      (instance) => instance.tmuxSession === tmuxSession,
+    );
+    resolvedBy = "tmux";
+  } else {
+    matches = freshInstances.filter((instance) => instance.sessionId === sessionId);
+    resolvedBy = "session-id";
+  }
   if (matches.length !== 1) {
-    const label = tmuxSession ?? sessionId;
+    const label = targetName ?? tmuxSession ?? sessionId;
     diagnostics.log("target.unresolved", {
-      targetType: tmuxSession ? "tmux" : "session",
+      targetType: targetName ? "name" : tmuxSession ? "tmux" : "session",
       target: label,
+      resolvedBy,
       freshMatches: matches.map((match) => ({
         sessionId: match.sessionId,
         generation: match.generation,
@@ -106,15 +137,18 @@ async function resolveTarget({ tmuxSession, sessionId }) {
     );
   }
   return {
+    ...(targetName ? { targetName, resolvedBy } : {}),
     ...(tmuxSession ? { tmuxSession } : {}),
     sessionId: matches[0].sessionId,
     generation: matches[0].generation,
   };
 }
 
-const target = options["target-tmux"]
-  ? await resolveTarget({ tmuxSession: options["target-tmux"] })
-  : await resolveTarget({ sessionId: options["target-session"] });
+const target = options["target-name"]
+  ? await resolveTarget({ targetName: options["target-name"] })
+  : options["target-tmux"]
+    ? await resolveTarget({ tmuxSession: options["target-tmux"] })
+    : await resolveTarget({ sessionId: options["target-session"] });
 const id = `${new Date().toISOString().replaceAll(/[-:.]/g, "")}-${process.pid}-${randomBytes(4).toString("hex")}`;
 const request = {
   id,
@@ -141,6 +175,9 @@ switch (options.kind) {
       }
       request.agentMode = options["agent-mode"];
     }
+    break;
+  case "autopilot":
+    request.prompt = await readRequiredFile(options["prompt-file"], "--prompt-file");
     break;
   case "compact":
     request.customInstructions = await readRequiredFile(

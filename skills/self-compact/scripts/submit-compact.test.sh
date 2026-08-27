@@ -220,14 +220,12 @@ EOF
 append_authorizing_events() {
   local brief="$1"
   local mode="${2:-canonical}"
-  BRIEF="$brief" MODE="$mode" HELPER="$SCRIPT_DIR/submit-compact.sh" \
+  BRIEF="$brief" MODE="$mode" \
     TOOL_CALL_ID="$FAKE_TOOL_CALL_ID" /usr/bin/perl -MJSON::PP -e '
-      my $command = "\"" . $ENV{HELPER} . "\"";
-      $command .= " --unexpected" if $ENV{MODE} eq "noncanonical";
       my @requests = ({
         toolCallId => $ENV{TOOL_CALL_ID},
-        name => "bash",
-        arguments => {command => $command},
+        name => ($ENV{MODE} eq "wrong-tool" ? "bash" : "self_compact"),
+        arguments => {brief => $ENV{BRIEF}},
       });
       push @requests, {
         toolCallId => "other-call",
@@ -238,17 +236,32 @@ append_authorizing_events() {
       print encode_json({
         agentId => undef,
         type => "assistant.message",
-        data => {content => $ENV{BRIEF}, toolRequests => \@requests},
+        data => {
+          content => ($ENV{MODE} eq "visible-brief" ? $ENV{BRIEF} : ""),
+          toolRequests => \@requests,
+        },
       }), "\n";
       print encode_json({
         agentId => undef,
         type => "tool.execution_start",
         data => {
           toolCallId => $ENV{TOOL_CALL_ID},
-          toolName => "bash",
+          toolName => ($ENV{MODE} eq "wrong-tool" ? "bash" : "self_compact"),
         },
       }), "\n";
     ' >> "$FAKE_EVENTS"
+}
+
+append_completed_prose_turn() {
+  /usr/bin/perl -MJSON::PP -e '
+    print encode_json({agentId => undef, type => "assistant.turn_start"}), "\n";
+    print encode_json({
+      agentId => undef,
+      type => "assistant.message",
+      data => {content => "ordinary prior response", toolRequests => []},
+    }), "\n";
+    print encode_json({agentId => undef, type => "assistant.turn_end"}), "\n";
+  ' >> "$FAKE_EVENTS"
 }
 
 complete_authorizing_turn() {
@@ -298,6 +311,7 @@ complete_authorizing_turn_with_activity() {
 }
 
 run_submit() {
+  local call_id="${1:-$FAKE_TOOL_CALL_ID}"
   local output status=0
   output="$(
     PATH="$FAKE_BIN:$PATH" \
@@ -306,17 +320,20 @@ run_submit() {
       SELF_COMPACT_NODE_BIN="$FAKE_BIN/node" \
       SELF_COMPACT_REQUEST_CLI="$FAKE_BIN/request.mjs" \
       SELF_COMPACT_RUN_TOKEN=0123abcd \
+      SELF_COMPACT_SUBMIT_POLLS=1 \
+      SELF_COMPACT_SUBMIT_POLL_SECONDS=0.01 \
       SELF_COMPACT_AUTH_WAIT_SECONDS=2 \
       SELF_COMPACT_POLL_SECONDS=0.01 \
       SELF_COMPACT_MAX_POLLS=100 \
       SELF_COMPACT_REQUEST_TIMEOUT_SECONDS=3 \
-      "$SCRIPT_DIR/submit-compact.sh" 2>&1
+      "$SCRIPT_DIR/submit-compact.sh" \
+        --tool-call-id "$call_id" 2>&1
   )" || status=$?
   printf '%s\n' "$output"
   return "$status"
 }
 
-brief=$'SELF_COMPACT_BRIEF\n\nKeep: active baton\n\nDrop: resolved detail\n\nAfter compaction: continue the task; do not compact again.'
+brief=$'Keep: active baton\n\nDrop: resolved detail\n\nAfter compaction: continue the task; do not compact again.'
 
 # The SDK path preserves the exact brief, adds one token binding, leaves drafts
 # untouched, logs the receipt, verifies the checkpoint, and sends one continuation.
@@ -340,22 +357,50 @@ assert_count 1 '^1$' "$FAKE_REQUEST_COUNT"
   fail "draft changed"
 [ ! -s "$FAKE_TMUX_CALLS" ] || fail "self-compact called tmux"
 grep -q '"status":"completed"' "$log" || fail "completed receipt was not logged"
+! grep -Fq 'active baton' "$log" || fail "brief leaked into the verifier log"
+wait_for_absent "$FAKE_CASE/session/files/self-compact.lock"
+
+# Ordinary assistant prose from an earlier completed turn does not block the
+# later empty-content self_compact authorization.
+setup_case prior-prose
+append_completed_prose_turn
+append_authorizing_events "$brief"
+output="$(run_submit)" || fail "prior prose blocked the matching tool request"
+lock_token="$(printf '%s\n' "$output" | sed -n 's/^self-compact handoff receipt: //p')"
+log="$(printf '%s\n' "$output" | sed -n 's/^watcher log: //p')"
+complete_authorizing_turn "self-compact handoff receipt: $lock_token"
+wait_for_log 'verified token-bound compaction checkpoint 2 and one SDK continuation' "$log"
+assert_count 1 '^1$' "$FAKE_REQUEST_COUNT"
 wait_for_absent "$FAKE_CASE/session/files/self-compact.lock"
 
 # Malformed or noncanonical current-turn authorization never creates a request.
 setup_case malformed-brief
-append_authorizing_events $'SELF_COMPACT_BRIEF\nKeep:\nDrop: x\nAfter compaction: do not compact again.'
+append_authorizing_events $'Keep:\nDrop: x\nAfter compaction: do not compact again.'
 if run_submit >/dev/null; then
   fail "malformed brief was accepted"
 fi
 [ ! -s "$FAKE_REQUEST_COUNT" ] || fail "malformed brief created a request"
 
-setup_case noncanonical
-append_authorizing_events "$brief" noncanonical
+setup_case wrong-tool
+append_authorizing_events "$brief" wrong-tool
 if run_submit >/dev/null; then
-  fail "noncanonical helper command was accepted"
+  fail "wrong tool was accepted"
 fi
-[ ! -s "$FAKE_REQUEST_COUNT" ] || fail "noncanonical helper created a request"
+[ ! -s "$FAKE_REQUEST_COUNT" ] || fail "wrong tool created a request"
+
+setup_case wrong-tool-call
+append_authorizing_events "$brief"
+if run_submit other-call-id >/dev/null; then
+  fail "wrong tool-call identity was accepted"
+fi
+[ ! -s "$FAKE_REQUEST_COUNT" ] || fail "wrong tool-call identity created a request"
+
+setup_case visible-brief
+append_authorizing_events "$brief" visible-brief
+if run_submit >/dev/null; then
+  fail "brief duplicated into assistant prose was accepted"
+fi
+[ ! -s "$FAKE_REQUEST_COUNT" ] || fail "visible brief created a request"
 
 setup_case batched
 append_authorizing_events "$brief" batched

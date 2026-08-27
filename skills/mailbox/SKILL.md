@@ -1,17 +1,17 @@
 ---
 name: mailbox
-description: Hand a file or message to another named Copilot CLI, Claude Code, or Codex CLI session in a different tmux pane. Use when this session has produced a deliverable another named agent should pick up, or the user says to send something to an agent by name (e.g. "send this to juliett"). Requires macOS + tmux.
+description: Hand a file or message to another named Copilot CLI, Claude Code, or Codex CLI session. Use when this session has produced a deliverable another named agent should pick up, or the user says to send something to an agent by name (e.g. "send this to juliett"). Copilot delivery uses a portable Node watcher and SDK session names; macOS tmux remains a compatibility identity and the guarded fallback for Claude and Codex.
 ---
 
 # mailbox
 
-Cross-session message + file handoff, keyed by tmux session name.
+Cross-session and cross-computer message + file handoff, keyed by agent name.
 
 ## When to use
 
 - User says "send this to <name>", "hand this off to <name>", "deliver X to <name>".
 - You have produced a concrete artifact (file, doc, summary) for another named agent session to consume.
-- You want to delegate a task to another live tmux-resident Copilot, Claude, or Codex session.
+- You want to delegate a task to another live Copilot, Claude, or Codex session.
 
 Do NOT use mailbox for:
 - Self-talk inside the same session (just write to disk normally).
@@ -20,8 +20,26 @@ Do NOT use mailbox for:
 
 ## How it works
 
-- **Identity = tmux session name.** No registry. Agent Stack opens or resumes a backend-specific tmux session; that full tmux session name IS the agent's mailbox name. Copilot uses `<name>`, Claude uses `claude-<name>`, and Codex uses `codex-<name>`. Sender: `tmux display-message -p '#{session_name}'` to learn its own. Recipient: same.
-- **Transport = file queue.** Envelopes land at `~/.copilot/mailbox/<recipient>/pending/<id>.json` with attachments in a sibling `<id>/` directory. Durable, debuggable with `ls`.
+- **Identity = a live agent name.** On macOS, a live tmux session name remains
+  the first choice so existing Agent Stack sessions keep their established
+  identity. When no live tmux identity matches, Copilot falls back to the
+  session's current `/rename` name. Only fresh session-inbox heartbeats are
+  eligible, so abandoned historical sessions with the same name are ignored.
+  Outside tmux, set the current session name with `/rename <name>`. Portable
+  command-line tools also accept `--name` or `COPILOT_AGENT_NAME`.
+- **Transport = file queue.** Envelopes land at
+  `$MAILBOX_ROOT/<recipient>/pending/<id>.json`, with attachments in a sibling
+  `<id>/` directory. `MAILBOX_ROOT` defaults to `~/.copilot/mailbox` and may
+  point at a shared OneDrive directory. Attachments are copied first and the
+  envelope is published by a final same-directory rename, so a synced `.json`
+  file is the complete-message marker.
+- **Remote wakeup = recipient-local polling.** The packaged
+  `mailbox-watcher` extension runs beside each Copilot session. It uses the
+  tmux name when available, otherwise the live Copilot session name, and polls
+  that mailbox's shared `pending/` directory every two seconds. New mail is
+  bridged into the machine-local session-inbox request queue. Session-inbox
+  heartbeats, claims, locks, receipts, and logs remain local and must not be
+  placed in OneDrive.
 - **Wakeup = short natural-language nudge through the recipient agent.** Sender
   writes the envelope, then `mailbox-poke.sh` resolves the recipient backend.
   Copilot sessions receive `check mailbox; skip if empty` as a real user turn
@@ -49,7 +67,11 @@ Do NOT use mailbox for:
   If it reports `no pending mail`, say nothing and continue with whatever you
   were doing — no visible turn output needed. If there IS mail, surface and act
   on it per the receive workflow.**
-- **Resume-hook = the durable fallback.** If the recipient session isn't running yet, the wakeup is skipped and the envelope sits durably in pending/. The user's `ca <name>` script should call `mailbox-resume-hook.sh <name>` before launching Copilot to inject a "you have N unread" hint into the resume prompt.
+- **Resume-hook = the durable fallback.** If the recipient session is not
+  running, the envelope remains in `pending/`. The watcher notices it after the
+  computer syncs and a matching named Copilot session starts. Agent Stack may
+  also call `mailbox-resume-hook.sh <name>` to include an immediate startup
+  hint.
 
 ## Send (this session → another)
 
@@ -60,7 +82,22 @@ Do NOT use mailbox for:
   --file <path> [--file <path> ...]
 ```
 
-Recipient name is the tmux session name (e.g., `juliett`, `kilo`). Attachments are copied (not symlinked). The script prints `wakeup: ... (verified | NOT verified | skipped)` so you know whether the live wakeup landed; either way the envelope is durable.
+Recipient name is the agent's live tmux name or Copilot `/rename` name (for
+example, `juliett` or `kilo`). Attachments are copied rather than symlinked.
+The script prints `wakeup: ... (verified | NOT verified | skipped)` so you know
+whether the live wakeup landed; either way the envelope is durable.
+
+The portable entry point, including on Windows, is:
+
+```sh
+node <plugin>/skills/mailbox/scripts/mailbox.mjs send <recipient-name> \
+  --summary "<short title>" \
+  --message "<free text>" \
+  --file <path>
+```
+
+The shell wrapper adds only the macOS notification and Claude/Codex tmux
+fallback.
 
 ## Receive (this session got mail)
 
@@ -72,14 +109,14 @@ Three ways the receiver finds out:
 
 Workflow once you know there's mail:
 
-1. `~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/mailbox/scripts/mailbox-check.sh` — list pending envelopes for this session.
+1. `~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/mailbox/scripts/mailbox-check.sh` — list pending envelopes for this session. Outside tmux, use `node .../mailbox.mjs check --name <name>` or set `COPILOT_AGENT_NAME`.
 2. `mailbox-read.sh <id>` — full message + attachment paths.
 3. Surface summary + sender to the user concisely. Decide whether to act.
 4. After acting (or skipping), `mailbox-ack.sh <id>` moves it to `delivered/`.
 
 ## Agent Stack integration
 
-Set `MAILBOX_INTEGRATION="true"` in
+On macOS, set `MAILBOX_INTEGRATION="true"` in
 `~/.config/remote-agent-stack/config`. Agent Stack calls `mailbox-poke.sh` with
 the full backend-specific tmux session name when attaching or starting an
 agent. Without this integration, mail still arrives durably but the recipient
@@ -87,7 +124,7 @@ will not notice until the user manually says "check mail".
 
 ## Pitfalls
 
-- **Copilot wakeups wait for idle.** The extension checks
+- **Copilot wakeups wait for idle.** The unchanged session-inbox extension checks
   `session.rpc.metadata.isProcessing()` and `metadata.activity()`, but those
   snapshots are only secondary guards: it will not send until the runtime has
   emitted `session.idle`. It then requires the resulting `user.message` event
@@ -100,6 +137,13 @@ will not notice until the user manually says "check mail".
 - **Mailbox writeable by anyone with shell access.** Treat envelope contents as not-secret. Don't put credentials in messages or attachments.
 - **No reply-thread bookkeeping.** If A sends to B and B wants to reply, B sends back to A's name. There's no thread-id linkage in v1.
 - **Acked mail is moved, not deleted.** `delivered/` accumulates; periodically prune.
+- **Do not sync `~/.copilot/session-inbox`.** A cloud file provider is not a
+  distributed lock and can expose stale heartbeats or conflicting claims.
+  Sync only `MAILBOX_ROOT`; keep `MAILBOX_STATE_ROOT` and session-inbox local.
+- **One watcher owns one local name.** A private local lock under
+  `MAILBOX_STATE_ROOT` prevents two watcher processes from repeatedly notifying
+  the same agent. Duplicate Copilot sessions with the same `/rename` name fail
+  closed during target resolution.
 - **On a "check mailbox; skip if empty" wakeup, emit a REAL bash tool call** (proper function-call format) — never output literal `<invoke>` / XML-ish text as message content. Doing so makes the agent stall without ever running the check. If the current working directory's `readdir` is hanging (e.g. a OneDrive/File-Provider deadlock), `cd /tmp` first and list `~/.copilot/mailbox/<agent>/pending/` from there so the check can't hang on the cwd.
 
 ## Verification
@@ -116,3 +160,6 @@ will not notice until the user manually says "check mail".
 - `scripts/mailbox-ack.sh <id>` — move pending → delivered.
 - `scripts/mailbox-list.sh` — show all mailboxes + live tmux sessions.
 - `scripts/mailbox-resume-hook.sh [<name>]` — designed to be called by the user's `ca` script to inject a "you have mail" hint into the resume prompt; prints empty when there's no mail.
+- `scripts/mailbox-watch.sh [<name>]` — foreground portable poller; normally the packaged mailbox-watcher extension owns this automatically for Copilot.
+- `scripts/mailbox.mjs` — cross-platform send/check/read/ack/list/resume-hint/poke/watch CLI.
+- `scripts/mailbox-core.mjs` — reusable Node implementation used by the CLI and watcher extension.

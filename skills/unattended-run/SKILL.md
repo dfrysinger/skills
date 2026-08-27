@@ -15,17 +15,20 @@ For a long, unattended Copilot CLI run, two things keep the agent on course:
   deliverable of this skill.**
 - An **optional `/autopilot` objective** that drives the *what* until the agent
   determines the task is complete. A detached request asks the session-inbox
-  extension to deliver the objective with `agentMode: "autopilot"` only after
-  the current session becomes idle. Fall back to printing it when that handoff
+  extension to enqueue the native `/autopilot` command only after the current
+  session becomes idle, then reads the native objective state back to prove the
+  exact objective was established. Fall back to printing it when that handoff
   is unavailable.
 
 ## Critical: use the session SDK, not terminal input
 
-The objective handoff is not a slash-command injection. The bundled helper
-calls `extensions/session-inbox/request.mjs send` with `--agent-mode autopilot`
-and `--mode immediate`. The target extension waits for `session.idle`, confirms
-the resulting `user.message` was delivered as `idle`, and writes a durable
-completed or failed receipt. This is expected and is **NOT a blocker**:
+The objective handoff is not a terminal slash-command injection. The bundled
+helper calls `extensions/session-inbox/request.mjs autopilot`. The target
+extension waits for `session.idle`, enqueues the bounded native `/autopilot`
+command through the SDK, reads the resulting native objective state back,
+confirms its text exactly, confirms the native starting message arrived with
+idle delivery, and writes a durable completed or failed receipt. This is
+expected and is **NOT a blocker**:
 
 - Do **not** stop, and do **not** ask the user to restart or relaunch the CLI.
 - Never put `/allow-all` in the objective or otherwise change permissions;
@@ -131,12 +134,10 @@ compact yet. A bare compact returns to an idle prompt; before step 2 there is no
 schedule or objective to create the next turn.
 
 For a same-session handoff, complete step 2 first. Once the re-brief is
-confirmed live, self-hand-off with a **soft reset**. Emit this final assistant
-message using `self-compact`'s brief protocol:
+confirmed live, self-hand-off with a **soft reset**. Build this private
+`self_compact` tool argument using `self-compact`'s brief protocol:
 
 ```text
-SELF_COMPACT_BRIEF
-
 Keep: Replace the conversation with a standing brief pointing at <charter-path>,
 <objective-file>, and their shared Definition of Done.
 
@@ -145,12 +146,12 @@ Drop: Planning history and tool output already captured by the charter.
 After compaction: Continue this charter at step 3, enqueue the objective as the last action of that turn, then end the turn so it fires; do not compact again.
 ```
 
-Invoke `self-compact`'s helper with zero arguments and a Bash `initial_wait` of
-at least 120 seconds as the final tool action. The foreground helper arms and
-hands off to its detached verifier, which authorizes after tool completion,
-submits the compact, and resumes only after the matching compaction event and
-checkpoint land. The live schedule remains the durable recovery path. Missing
-either the schedule or verifier makes the handoff incomplete.
+Call `self_compact` with that one `brief` argument as the final action. The
+extension arms and hands off to its detached verifier, which authorizes after
+tool completion, submits the compact, and resumes only after the matching
+compaction event and checkpoint land. The live schedule remains the durable
+recovery path. Missing either the schedule or verifier makes the handoff
+incomplete.
 
 Use `/new` instead only if the planning conversation must remain separately
 resumable. It starts a fresh session, so the new-session prompt itself must
@@ -239,13 +240,12 @@ This must be the final tool action: emit no prose and call no more tools after
 launching it. The helper executes:
 
 ```text
-send --target-session ID or --target-tmux NAME --prompt-file FILE
-  --agent-mode autopilot --mode immediate
+autopilot --target-session ID or --target-tmux NAME --prompt-file FILE
 ```
 
 It rejects empty, slash-prefixed, permission-changing, or unresolved objectives;
-caps the receipt wait at 360 seconds; requires the SDK receipt to report
-`delivery: "idle"`; preserves the request output and objective under
+caps the receipt wait at 360 seconds; requires the SDK receipt to prove both
+`objectiveSet: true` and `delivery: "idle"`; preserves the request output and objective under
 `~/.copilot/autopilot-enqueue/`; and notifies the user if delivery cannot be
 confirmed. The session-inbox extension also retains its JSON request receipt.
 
@@ -254,16 +254,17 @@ print this fallback and
 continue without blocking:
 
 ```
-Optional — run this whenever you like for a tighter goal-driven loop
-(the run already continues without it via the /every re-brief):
+The native autopilot objective could not be established automatically.
+Without it, the /every re-brief restores the working rules but does not provide
+the same persistent goal-driven continuation:
 
 Paste `/autopilot ` followed by the complete contents of <objective-file>.
 ```
 
 If `/allow-all` is needed, print it for the user; never include it in the SDK
 handoff. The detached helper reports post-launch failure through its receipt and
-macOS notification. The `/every` re-brief remains the load-bearing mechanism
-either way.
+macOS notification. The native objective drives what to finish; the `/every`
+re-brief independently restores how to work after compaction.
 
 **Complete when** the detached handoff was launched as the last action, or the
 fallback was printed because SDK targeting was unavailable.
