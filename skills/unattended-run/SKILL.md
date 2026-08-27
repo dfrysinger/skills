@@ -131,12 +131,10 @@ compact yet. A bare compact returns to an idle prompt; before step 2 there is no
 schedule or objective to create the next turn.
 
 For a same-session handoff, complete step 2 first. Once the re-brief is
-confirmed live, self-hand-off with a **soft reset**. Emit this final assistant
-message using `self-compact`'s brief protocol:
+confirmed live, self-hand-off with a **soft reset**. Build this private
+`self_compact` tool argument using `self-compact`'s brief protocol:
 
 ```text
-SELF_COMPACT_BRIEF
-
 Keep: Replace the conversation with a standing brief pointing at <charter-path>,
 <objective-file>, and their shared Definition of Done.
 
@@ -145,12 +143,12 @@ Drop: Planning history and tool output already captured by the charter.
 After compaction: Continue this charter at step 3, enqueue the objective as the last action of that turn, then end the turn so it fires; do not compact again.
 ```
 
-Invoke `self-compact`'s helper with zero arguments and a Bash `initial_wait` of
-at least 120 seconds as the final tool action. The foreground helper arms and
-hands off to its detached verifier, which authorizes after tool completion,
-submits the compact, and resumes only after the matching compaction event and
-checkpoint land. The live schedule remains the durable recovery path. Missing
-either the schedule or verifier makes the handoff incomplete.
+Call `self_compact` with that one `brief` argument as the final action. The
+extension arms and hands off to its detached verifier, which authorizes after
+tool completion, submits the compact, and resumes only after the matching
+compaction event and checkpoint land. The live schedule remains the durable
+recovery path. Missing either the schedule or verifier makes the handoff
+incomplete.
 
 Use `/new` instead only if the planning conversation must remain separately
 resumable. It starts a fresh session, so the new-session prompt itself must
