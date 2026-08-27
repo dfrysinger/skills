@@ -287,9 +287,9 @@ complete_authorizing_turn() {
     ' >> "$FAKE_EVENTS"
 }
 
-complete_authorizing_turn_with_activity() {
+complete_authorizing_turn_with_autopilot_nudge() {
   local receipt="$1"
-  local batch="$FAKE_CASE/turn-end-with-activity.jsonl"
+  local batch="$FAKE_CASE/turn-end-with-autopilot-nudge.jsonl"
   RECEIPT="$receipt" TOOL_CALL_ID="$FAKE_TOOL_CALL_ID" \
     /usr/bin/perl -MJSON::PP -e '
       print encode_json({
@@ -301,11 +301,25 @@ complete_authorizing_turn_with_activity() {
         },
       }), "\n";
       print encode_json({agentId => undef, type => "assistant.turn_end"}), "\n";
+      # Autopilot injects a continuation nudge as a root user message the moment
+      # the arming turn ends, then the agent produces one brief response turn.
       print encode_json({
         agentId => undef,
         type => "user.message",
-        data => {content => "intervening activity"},
+        data => {
+          content => "",
+          delivery => "idle",
+          isAutopilotContinuation => JSON::PP::true,
+          source => "autopilot",
+        },
       }), "\n";
+      print encode_json({agentId => undef, type => "assistant.turn_start"}), "\n";
+      print encode_json({
+        agentId => undef,
+        type => "assistant.message",
+        data => {content => "", toolRequests => []},
+      }), "\n";
+      print encode_json({agentId => undef, type => "assistant.turn_end"}), "\n";
     ' > "$batch"
   cat "$batch" >> "$FAKE_EVENTS"
 }
@@ -409,16 +423,17 @@ if run_submit >/dev/null; then
 fi
 [ ! -s "$FAKE_REQUEST_COUNT" ] || fail "batched helper created a request"
 
-# Root activity already present after the authorizing turn cancels before enqueue.
-setup_case post-turn-activity
+# Autopilot continuation nudges (and any other root activity) after the arming
+# turn no longer cancel the run: the SDK request is idle-gated and simply waits
+# for the next idle boundary, so self-compact completes under autopilot.
+setup_case autopilot-nudge
 append_authorizing_events "$brief"
-output="$(run_submit)" || fail "post-turn-activity case did not arm"
+output="$(run_submit)" || fail "autopilot-nudge case did not arm"
 lock_token="$(printf '%s\n' "$output" | sed -n 's/^self-compact handoff receipt: //p')"
 log="$(printf '%s\n' "$output" | sed -n 's/^watcher log: //p')"
-complete_authorizing_turn_with_activity "self-compact handoff receipt: $lock_token"
-wait_for_log 'new root activity followed helper completion' "$log"
-[ ! -s "$FAKE_REQUEST_COUNT" ] ||
-  fail "post-turn activity still created a request"
+complete_authorizing_turn_with_autopilot_nudge "self-compact handoff receipt: $lock_token"
+wait_for_log 'verified token-bound compaction checkpoint 2 and one SDK continuation' "$log"
+assert_count 1 '^1$' "$FAKE_REQUEST_COUNT"
 wait_for_absent "$FAKE_CASE/session/files/self-compact.lock"
 
 # A live or ambiguous per-session owner excludes a second run.
@@ -521,7 +536,7 @@ output="$(run_submit)" || fail "wrong-continuation case did not arm"
 lock_token="$(printf '%s\n' "$output" | sed -n 's/^self-compact handoff receipt: //p')"
 log="$(printf '%s\n' "$output" | sed -n 's/^watcher log: //p')"
 complete_authorizing_turn "self-compact handoff receipt: $lock_token"
-wait_for_log 'other root activity won the continuation race' "$log"
+wait_for_log 'matching compact landed without the fixed continuation' "$log"
 [ -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
   fail "wrong continuation did not retain exclusion"
 
