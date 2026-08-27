@@ -60,7 +60,22 @@ process after compaction without copying each skill's rules.
 > an in-flight revision with the older persisted version.
 > Use rubber-duck to brainstorm solutions and align on paths forward whenever
 > you get stuck. Keep the plan up to date so future agents can pick it up. Use
-> subagents liberally to parallelize work whenever possible. `<PUSH_POLICY>`.
+> `/dfrysinger-skills:development-loop` critical-path audit at run start, every
+> phase boundary, and every scheduled re-brief: rebuild ready work and
+> dependencies, mark the critical path, assign every substantial independent
+> ready scope to an available subagent when delegation is safe, and advance
+> another ready item whenever the current one is waiting. If I assigned
+> independent agents, treat them as first-class owners: keep their scopes,
+> workspaces or branches, owed evidence, blockers, and integration boundaries
+> in the baton; unblock them promptly and consume their frozen reviewed commits
+> without duplicating their work. Give every file-writing delegate an isolated
+> worktree or checkout and never use the coordinator's worktree as a concurrent
+> write target. Keep the
+> coordinator focused on integration, decisions, unblocking, and unowned
+> critical-path work. Batch coherent fixes before expensive builds, verifiers,
+> or CI, and use proof impact mapping instead of replaying unaffected claims.
+> Preserve actual serial gates, including one proof owner and one running
+> candidate during live proof. `<PUSH_POLICY>`.
 > Decide every reversible question yourself with rubber-duck rather than asking
 > me. For systemic or critical work, preserve the plan's decision hierarchy,
 > constraint provenance, revisit conditions, and any active reframe record in
@@ -102,8 +117,13 @@ Charter slots:
   approval-gated production actions such as deployment, merge-queue mutation,
   infrastructure changes, or writes to shared resources.
 - **`<COORDINATION>`** — when peers share the effort:
-  `If coordinating with other agents, don't wait for them to push to main —
-  cherry-pick what you need from their worktree/branch`. Omit when solo.
+  name every user-assigned agent, its owned scope, workspace or branch, expected
+  receipt or frozen handoff, and the durable surface used to monitor and
+  unblock it. Give every file-writing agent an isolated worktree or checkout.
+  Include: `Do not wait for an agent to push to main; consume its reviewed
+  frozen commit from its owned branch or worktree as soon as its dependencies
+  and integration boundary are ready.` Omit only when no independent agents
+  were assigned.
 - **`<GRANTS>`** — the standing permissions that keep the run unattended;
   compose only the ones that apply, and keep token authorization here (not in
   the objective):
@@ -139,7 +159,12 @@ current baton states whether any revisit condition is open.
 > worktree. Follow the required process skills below. Use rubber-duck to
 > brainstorm solutions and align on
 > paths forward whenever you get stuck. Keep the plan up to date so future agents
-> can pick it up. Use subagents liberally to parallelize work whenever possible.
+> can pick it up. At run start, every phase boundary, and every hourly
+> re-brief, run `/dfrysinger-skills:development-loop`'s critical-path audit:
+> rebuild ready work and dependencies, assign every substantial independent
+> ready scope to an available subagent when delegation is safe, batch coherent
+> fixes before expensive gates, and advance other ready work during waits while
+> preserving exclusive live-proof gates.
 > Push to remote and merge when each phase is done, tested E2E and reviewed
 > clean. Decide every reversible question yourself with rubber-duck rather than
 > asking me. Stay on this course until the objective's Definition of Done (the
