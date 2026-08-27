@@ -11,6 +11,7 @@
   "hostExclusions": {
     "copilot": ["rubber-duck"]
   },
+  "copilotExtensions": "./extensions",
   "emit": {
     "claudePlugin": ".claude-plugin/plugin.json",
     "claudeMarketplace": ".claude-plugin/marketplace.json",

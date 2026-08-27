@@ -2,144 +2,118 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$SCRIPT_DIR/../../_lib/copilot-pane.sh"
+REQUEST_CLI="${SESSION_INBOX_REQUEST_CLI:-$SCRIPT_DIR/../../../extensions/session-inbox/request.mjs}"
+USAGE="usage: enqueue-autopilot.sh (--target-session ID | --target-tmux NAME) <objective-file>"
+TARGET_FLAG="${1:-}"
+TARGET="${2:-}"
+OBJECTIVE_FILE="${3:-}"
+TIMEOUT_SECONDS="${AUTOPILOT_HANDOFF_TIMEOUT_SECONDS:-360}"
+OBJECTIVE=""
+OBJECTIVE_DIGEST=""
+REQUEST_OUTPUT=""
+OBJECTIVE_PAYLOAD=""
 
-pane="${1:-}"
-objective_file="${2:-}"
-objective=""
-receipt_dir="${HOME}/.copilot/autopilot-enqueue"
-mkdir -p "$receipt_dir"
-receipt="${receipt_dir}/$(date -u +%Y%m%dT%H%M%SZ)-$$.txt"
-buffer_name="copilot-autopilot-$$"
-payload_file=""
-handoff_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+case "$TARGET_FLAG" in
+  --target-session|--target-tmux) ;;
+  *) echo "enqueue-autopilot.sh: $USAGE" >&2; exit 64 ;;
+esac
+
+[[ -n "$TARGET" && -r "$OBJECTIVE_FILE" ]] || {
+  echo "enqueue-autopilot.sh: $USAGE" >&2
+  exit 64
+}
+[[ "$TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] &&
+  ((TIMEOUT_SECONDS >= 1 && TIMEOUT_SECONDS <= 360)) || {
+  echo "enqueue-autopilot.sh: timeout must be between 1 and 360 seconds" >&2
+  exit 64
+}
+[[ -r "$REQUEST_CLI" ]] || {
+  echo "enqueue-autopilot.sh: session-inbox request helper is unavailable" >&2
+  exit 2
+}
+
+if ! OBJECTIVE="$(cat -- "$OBJECTIVE_FILE")" ||
+  ! grep -q '[^[:space:]]' <<<"$OBJECTIVE"; then
+  echo "enqueue-autopilot.sh: objective file must contain a non-empty objective" >&2
+  exit 64
+fi
+if grep -Fq '<SLOT>' <<<"$OBJECTIVE"; then
+  echo "enqueue-autopilot.sh: objective still contains an unresolved <SLOT>" >&2
+  exit 64
+fi
+FIRST_INSTRUCTION="$(awk 'NF { sub(/^[[:space:]]+/, ""); print; exit }' <<<"$OBJECTIVE")"
+case "$FIRST_INSTRUCTION" in
+  /autopilot*|/goal*)
+    echo "enqueue-autopilot.sh: objective file must contain only the objective body" >&2
+    exit 64
+    ;;
+  /allow-all*)
+    echo "enqueue-autopilot.sh: permission changes remain user-controlled" >&2
+    exit 64
+    ;;
+esac
+if grep -Eq '^[[:space:]]*/allow-all([[:space:]]|$)' <<<"$OBJECTIVE"; then
+  echo "enqueue-autopilot.sh: permission changes remain user-controlled" >&2
+  exit 64
+fi
+OBJECTIVE_DIGEST="$(
+  printf '%s' "$OBJECTIVE" |
+    cksum |
+    awk '{print $1 "-" $2}'
+)"
+[[ "$OBJECTIVE_DIGEST" =~ ^[0-9]+-[0-9]+$ ]] || {
+  echo "enqueue-autopilot.sh: could not fingerprint the validated objective" >&2
+  exit 2
+}
+
+umask 077
+RECEIPT_DIR="${HOME}/.copilot/autopilot-enqueue"
+mkdir -p "$RECEIPT_DIR"
+RECEIPT="${RECEIPT_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-$$.txt"
+REQUEST_OUTPUT="$(mktemp "${TMPDIR:-/tmp}/copilot-autopilot-request.XXXXXX")"
+OBJECTIVE_PAYLOAD="$(mktemp "${TMPDIR:-/tmp}/copilot-autopilot-objective.XXXXXX")"
+printf '%s' "$OBJECTIVE" >"$OBJECTIVE_PAYLOAD"
+chmod 600 "$OBJECTIVE_PAYLOAD"
+
+cleanup() {
+  rm -f -- "$REQUEST_OUTPUT" "$OBJECTIVE_PAYLOAD"
+}
+trap cleanup EXIT
 
 finish() {
   local status="$1"
   local detail="$2"
   {
-    printf 'status=%s\ntime=%s\npane=%s\nhandoff_id=%s\ndetail=%s\nobjective_begin\n' \
-      "$status" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pane" "$handoff_id" "$detail"
-    printf '%s\nobjective_end\n' "$objective"
-  } >"$receipt"
+    printf 'status=%s\ntime=%s\ntarget_type=%s\ntarget=%s\ndetail=%s\nobjective_begin\n' \
+      "$status" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${TARGET_FLAG#--target-}" "$TARGET" "$detail"
+    printf '%s\nobjective_end\nrequest_output_begin\n' "$OBJECTIVE"
+    cat -- "$REQUEST_OUTPUT"
+    printf 'request_output_end\n'
+  } >"$RECEIPT"
   if [[ "$status" != "confirmed" ]] && command -v osascript >/dev/null 2>&1; then
-    osascript -e 'display notification "Autopilot handoff failed. The latest receipt in ~/.copilot/autopilot-enqueue contains the objective." with title "Copilot unattended run"' >/dev/null 2>&1 || true
+    osascript -e 'display notification "Autopilot handoff failed. The latest receipt in ~/.copilot/autopilot-enqueue contains the objective and SDK result." with title "Copilot unattended run"' >/dev/null 2>&1 || true
   fi
 }
 
-cleanup() {
-  if [[ -n "$payload_file" ]]; then
-    rm -f "$payload_file"
+if node "$REQUEST_CLI" send \
+  "$TARGET_FLAG" "$TARGET" \
+  --prompt-file "$OBJECTIVE_PAYLOAD" \
+  --agent-mode autopilot \
+  --mode immediate \
+  --dedupe-key "autopilot:${TARGET_FLAG#--target-}:$TARGET:$OBJECTIVE_DIGEST" \
+  --timeout "$TIMEOUT_SECONDS" >"$REQUEST_OUTPUT" 2>&1; then
+  if grep -Fq '"delivery":"idle"' "$REQUEST_OUTPUT"; then
+    finish "confirmed" "SDK session.send delivered the objective at an idle boundary"
+    echo "autopilot handoff confirmed; receipt: $RECEIPT"
+    exit 0
   fi
-  tmux delete-buffer -b "$buffer_name" >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
-
-highest_objective_number() {
-  grep -Eo 'Started autopilot objective #[0-9]+:' |
-    grep -Eo '[0-9]+' |
-    sort -n |
-    tail -1
-}
-
-if [[ -z "$objective_file" || ! -r "$objective_file" ]]; then
-  finish "invalid" "readable objective file is required"
-  exit 64
-fi
-
-if ! objective="$(cat -- "$objective_file")" || [[ -z "$objective" ]]; then
-  finish "invalid" "objective file must contain a non-empty objective"
-  exit 64
-fi
-
-if [[ -z "$pane" ]]; then
-  finish "invalid" "tmux pane is required"
-  exit 64
-fi
-
-if [[ "$objective" == /autopilot* ]]; then
-  finish "invalid" "objective file must contain the objective body without the slash command"
-  exit 64
-fi
-
-if ! tmux display-message -p -t "$pane" '#{pane_id}' >/dev/null 2>&1; then
-  finish "unavailable" "tmux pane is not available"
-  exit 2
-fi
-
-if ! cp_pane_is_copilot "$pane"; then
-  finish "unavailable" "target pane is not running Copilot CLI"
-  exit 2
-fi
-
-idle_samples=0
-for _ in $(seq 1 300); do
-  if ! screen="$(tmux capture-pane -p -J -t "$pane" 2>/dev/null)"; then
-    finish "unavailable" "tmux pane disappeared while waiting for idle"
-    exit 2
-  fi
-  if ! cp_is_loaded <<<"$screen" ||
-    ! cp_input_is_empty <<<"$screen" ||
-    cp_is_busy <<<"$screen"; then
-    idle_samples=0
-  else
-    idle_samples=$((idle_samples + 1))
-    if ((idle_samples >= 2)); then
-      break
-    fi
-  fi
-  sleep 1
-done
-
-if ((idle_samples < 2)); then
-  if ! cp_is_loaded <<<"${screen:-}" ||
-    ! cp_input_is_empty <<<"${screen:-}"; then
-    finish "timeout" "Copilot prompt did not become ready within 300 seconds"
-  else
-    finish "timeout" "pane did not reach a stable idle boundary within 300 seconds"
-  fi
+  finish "unconfirmed" "SDK receipt did not prove idle delivery"
+  echo "enqueue-autopilot.sh: SDK receipt did not prove idle delivery; receipt: $RECEIPT" >&2
   exit 1
+else
+  status=$?
 fi
 
-baseline_number="$(highest_objective_number <<<"$screen" || true)"
-baseline_number="${baseline_number:-0}"
-
-payload_file="$(mktemp "${TMPDIR:-/tmp}/copilot-autopilot.XXXXXX")"
-chmod 600 "$payload_file"
-printf '/autopilot [handoff-id:%s] %s' "$handoff_id" "$objective" >"$payload_file"
-
-if ! tmux load-buffer -b "$buffer_name" "$payload_file"; then
-  finish "unavailable" "tmux could not stage the objective"
-  exit 2
-fi
-if ! tmux paste-buffer -p -r -d -b "$buffer_name" -t "$pane"; then
-  finish "unavailable" "tmux pane disappeared before objective entry"
-  exit 2
-fi
-sleep 0.5
-if ! tmux send-keys -t "$pane" Enter; then
-  finish "unavailable" "tmux pane disappeared before objective submission"
-  exit 2
-fi
-
-for _ in $(seq 1 60); do
-  if ! screen="$(tmux capture-pane -p -J -t "$pane" 2>/dev/null)"; then
-    finish "unavailable" "tmux pane disappeared while confirming objective"
-    exit 2
-  fi
-  current_number="$(highest_objective_number <<<"$screen" || true)"
-  current_number="${current_number:-0}"
-  if ((current_number > baseline_number)); then
-    finish "confirmed" "objective accepted"
-    exit 0
-  fi
-  if grep -Fq "Autopilot objective: [handoff-id:${handoff_id}]" <<<"$screen" ||
-    grep -Fq "Started autopilot objective: [handoff-id:${handoff_id}]" <<<"$screen"; then
-    finish "confirmed" "objective accepted by legacy CLI"
-    exit 0
-  fi
-  sleep 1
-done
-
-finish "unconfirmed" "no accepted-objective confirmation appeared within 60 seconds"
-exit 1
+finish "failed" "session-inbox request failed with exit status $status"
+echo "enqueue-autopilot.sh: SDK handoff failed; receipt: $RECEIPT" >&2
+exit "$status"

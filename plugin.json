@@ -29,5 +29,6 @@
     "./skills/unattended-run",
     "./skills/visual-proof",
     "./skills/writing-great-skills"
-  ]
+  ],
+  "extensions": "./extensions"
 }

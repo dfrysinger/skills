@@ -2,8 +2,8 @@
 
 Background on the **optional** `/autopilot` objective. You never need this to
 run the skill — `/autopilot`/`/goal` are not agent tools, and the `/every`
-re-brief you arm yourself is what keeps a run on course. When running inside
-tmux, the skill may best-effort enqueue the objective through the CLI input;
+re-brief you arm yourself is what keeps a run on course. The skill may
+best-effort deliver the objective through the target session's SDK extension;
 otherwise it prints the objective for the user.
 
 ## The objective and the continuation loop
@@ -19,29 +19,28 @@ otherwise it prints the objective for the user.
 
 ## Launching the run
 
-- The agent may hand off a persisted multi-line `/autopilot` objective through
-  its current tmux pane after the `/every` reminder is live. The bundled
-  detached helper requires a ready Copilot CLI prompt, waits for the active
-  turn to reach an idle boundary, then uses bracketed paste so the complete
-  objective is one input submission. A unique handoff ID at the start of the
-  submitted objective distinguishes a new legacy confirmation from stale pane
-  output. The helper fails closed rather than pasting into another application
-  or an uninitialized terminal.
-- Confirm acceptance from visible TUI output. Current builds print
-  `Started autopilot objective #<n>:`; older builds print
-  `Autopilot objective:`. Either means injection succeeded.
-- Do not report injection failure if either accepted-objective confirmation is
-  visible, even when the charter reminder is described separately.
+- The agent may hand off a persisted multi-line objective after the `/every`
+  reminder is live. The bundled detached helper calls the session-inbox request
+  CLI with `send`, the target session ID or tmux session name,
+  `--prompt-file`, `--agent-mode autopilot`, and `--mode immediate`.
+- The extension waits for the target to become idle before calling
+  `session.send()`. It accepts the handoff only when the matching
+  `user.message` event reports `delivery: "idle"`.
+- The request CLI and bundled helper both retain receipts. The helper's receipt
+  includes the objective and raw SDK request output; a completed extension
+  receipt proves delivery without scraping TUI output.
+- The 360-second delivery budget is a stop guard, not a retry trigger. A timeout
+  leaves the extension request available for diagnosis; do not create a second
+  objective handoff until the first receipt is resolved.
 - `/allow-all` remains user-controlled. Print it when needed; never
-  self-enqueue a permission escalation.
+  include a permission escalation in the objective handoff.
 - Autopilot mode is sticky by default for the next prompt. This is expected and
   requires no cleanup after the current objective finishes.
 - The skill must not enqueue `/autopilot off`, change `stayInAutopilot`, or
   otherwise alter the user's selected mode.
 - Escape / Ctrl+C cancels and stops autopilot from continuing.
 
-These remain user-interface slash commands, not agent tools. A synchronous
-`tmux send-keys` loop launched by the active turn cannot verify its own next
-turn and must not be used. The detached helper verifies visible acceptance; if
-the handoff is unavailable, print the objective and do not ask the user to
-restart the CLI.
+The SDK handoff selects autopilot mode directly; it does not type a slash
+command. Run it detached as the final action so the current turn can end and
+the extension's idle gate can open. If the handoff is unavailable, print the
+objective and do not ask the user to restart the CLI.

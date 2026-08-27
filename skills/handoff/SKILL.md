@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Compact the current conversation into a structured handoff document for another agent — or for a fresh instance of yourself — to pick up where this one left off. Use when the user says "hand off to <name>", "do a handoff", "summarize this session for another agent", wants to pass work to a different Copilot CLI session, or when the `self-compact` rule calls for a self-handoff (a null-steered soft-reset `/compact`, or `/new`). If a recipient is named (e.g., "hand off to juliett"), the skill auto-delivers via the mailbox skill after writing the doc.
+description: Compact the current conversation into a structured handoff document for another agent — or for a fresh instance of yourself — to pick up where this one left off. Use when the user says "hand off to <name>", "do a handoff", "summarize this session for another agent", wants to pass work to a different Copilot CLI session, or when the `self-compact` rule calls for a self-handoff through native compaction or `/new`. If a recipient is named (e.g., "hand off to juliett"), the skill auto-delivers via the mailbox skill after writing the doc.
 argument-hint: "What will the next session be used for? Optionally include a recipient name (e.g., 'send to juliett about X') to auto-deliver via the mailbox skill, or say 'self' to restart yourself fresh."
 ---
 
@@ -23,13 +23,17 @@ If the user passed arguments, treat them as a description of what the next sessi
 If the user names a recipient session ("send to juliett", "hand this to kilo", "deliver to alpha", etc.) AND the `mailbox` skill is available, after writing the handoff document automatically dispatch it via mailbox so the recipient agent picks it up without manual file passing:
 
 ```sh
-~/.copilot/skills/mailbox/scripts/mailbox-send.sh <recipient> \
+~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/mailbox/scripts/mailbox-send.sh <recipient> \
   --summary "handoff: <one-line topic>" \
   --message "Continuing <topic>. Read the attached handoff doc, then resume." \
   --file <path-to-handoff-doc>
 ```
 
-The recipient's mailbox skill will surface this on its next `/mailbox` dispatch (immediate if their tmux session is running, on next `ca <recipient>` if they're cold). Tell the user: "Handoff sent to <recipient> — they'll see it on their next turn."
+For a Copilot recipient with the plugin extension loaded, mailbox requests an
+SDK user turn only at a verified idle boundary. Claude and Codex retain the
+guarded terminal fallback. If no live wakeup is verified, the durable envelope
+waits for the recipient's next resume. Tell the user: "Handoff sent to
+<recipient> — they'll see it on their next turn."
 
 If the user did NOT name a recipient, do not invoke mailbox; just write the doc and report the path so the user can hand it off manually or via `/mailbox` themselves.
 
@@ -46,7 +50,7 @@ conversation that reads the doc and continues.
 There are two ways to restart. **Prefer the soft reset** — it gives you the same
 clean slate without losing anything.
 
-### Soft reset (preferred): a null-steered `/compact`
+### Soft reset (preferred): native SDK compaction
 
 The compaction steer has total authority over what the summary contains, so a
 steer that preserves nothing empties the conversation as thoroughly as `/new`
@@ -69,19 +73,22 @@ those durable files.
 After compaction: Read the handoff and plan, re-invoke <skills>, and continue the work; do not compact again.
 ```
 
-Then invoke `self-compact`'s helper with zero arguments and a Bash
-`initial_wait` of at least 120 seconds as the final tool action, and end the
-turn. This overwrites the live conversation in place, so unlike `/new` there is
-no old session to resume. The helper's detached verifier authorizes after the
-foreground tool returns, then owns submission, completion proof, and the
-post-compact wakeup.
+Then invoke `self-compact`'s helper with zero arguments as the final tool action
+and end the turn. The helper's detached verifier waits for the authorizing turn
+to become idle, requests native compaction through the session-inbox extension,
+proves the matching checkpoint, and sends one fixed SDK continuation. Unlike
+`/new`, the same session retains schedules and SQL state.
+
+```sh
+"$HOME/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/self-compact/scripts/submit-compact.sh"
+```
 
 ### `/new` (exception): when the old conversation must survive
 
 Use `/new` only when you want the old conversation preserved as a separately
 resumable session — for example, when the user may still want to interrogate it.
-It keeps the same tmux window and Copilot process, but starts a **new session**
-and backgrounds the old one, so the fresh conversation loses:
+It starts a **new session** in the same local Copilot process and backgrounds
+the old one, so the fresh conversation loses:
 
 - any armed schedules (`/every` reminders stay bound to the old session);
 - the session SQL database (the `todos` table and any custom tables);
@@ -120,9 +127,9 @@ Steps:
 1. Write the handoff doc (as above) and persist the durable plan doc.
 2. Commit or stash the working tree so the fresh conversation starts from a
    settled state.
-3. As the **last action of the turn**, from inside tmux, send `/new` with a seed
+3. As the **last action of the turn**, submit the rotation helper with a seed
    prompt that points the fresh conversation at the handoff doc, then end the
-   turn so the queued command runs next:
+   turn:
 
 ```sh
 OLD='<old-id>'
@@ -141,12 +148,12 @@ fi
   "$OLD" "$SEED" --consume-prompt
 ```
 
-Send the seed with that script rather than typing `/new` into the pane. A
-message that arrives while the CLI is busy is **queued**, and a queued message
-only drains at a turn boundary, which a brand-new session never reaches on its
-own, so a hand-typed seed can sit undelivered while the session looks empty. The
-script waits for the prompt to render before submitting, confirms the fresh
-session recorded it, and re-sends if it did not. It writes the outcome to
+Send the seed with that script rather than typing `/new` into a pane. The
+session-inbox extension waits for a verified idle boundary, queues one local
+`/new`, and never retries it. The script verifies a fresh session heartbeat
+from the same Copilot process and the exact seed in that session's event log.
+A durable request marker covers the case where `/new` tears down the old
+extension before it can finish its receipt. It writes the outcome to
 `/tmp/rotate-session-<old-id>.log`, so report what that log says rather than a
 handoff you did not observe. The unique `mktemp` input prevents concurrent
 rotations from reading each other's handoffs; the script snapshots it before
@@ -154,10 +161,6 @@ backgrounding and consumes the input only because the caller passes
 `--consume-prompt`. The prompt must contain the exact value of `OLD`. If seed
 creation or writing fails, stop rather than reading or reusing an existing
 file.
-
-`/new <prompt>` starts a clean conversation seeded with that prompt in the same
-tmux window and Copilot process, with no relaunch and no confirmation dialog.
-Outside tmux, report the handoff path and let the user run `/new` themselves.
 
 ### Retiring a long-lived session
 

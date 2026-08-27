@@ -14,6 +14,10 @@ Inspired by [mattpocock/skills](https://github.com/mattpocock/skills).
 copilot plugin install dfrysinger/skills
 ```
 
+The bundled SDK extension currently requires Copilot CLI experimental mode.
+Enable it with `/experimental on` (or start Copilot with `--experimental`);
+the CLI restarts after the setting changes.
+
 ### Claude Code
 
 ```sh
@@ -29,6 +33,16 @@ codex plugin add dfrysinger-skills@dfrysinger-skills
 ```
 
 The plugin is registered as `dfrysinger-skills`. Installing from this GitHub repository is the supported Copilot CLI path; direct local plugin installs are deprecated.
+
+The Copilot plugin also packages the recipient-local
+[`session-inbox`](./extensions/session-inbox/) SDK extension. It is a runtime
+dependency of `mailbox`, `unattended-run`, `self-compact`, `rotate-session`, and
+the corresponding `handoff` routes. The extension performs the final
+`session.send()`, native compaction, or local `/new` enqueue from inside the
+recipient session; filesystem requests and receipts provide durable
+cross-session IPC. A newly installed or updated extension becomes active when
+the recipient Copilot session starts or reloads its plugins. Claude and Codex
+mailbox recipients retain their guarded terminal fallback.
 
 ## Start here
 

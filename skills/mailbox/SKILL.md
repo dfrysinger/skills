@@ -22,20 +22,21 @@ Do NOT use mailbox for:
 
 - **Identity = tmux session name.** No registry. Agent Stack opens or resumes a backend-specific tmux session; that full tmux session name IS the agent's mailbox name. Copilot uses `<name>`, Claude uses `claude-<name>`, and Codex uses `codex-<name>`. Sender: `tmux display-message -p '#{session_name}'` to learn its own. Recipient: same.
 - **Transport = file queue.** Envelopes land at `~/.copilot/mailbox/<recipient>/pending/<id>.json` with attachments in a sibling `<id>/` directory. Durable, debuggable with `ls`.
-- **Wakeup = short natural-language nudge via tmux send-keys.** Sender writes
-  the envelope, then `mailbox-poke.sh` resolves the recipient pane and requires
-  a recognized Copilot, Claude, or Codex process, initialized backend-specific
-  footer, and empty input box
-  before sending `check mailbox; skip if empty` with a short unique marker
-  derived from the envelope ID. The shared parser in
+- **Wakeup = short natural-language nudge through the recipient agent.** Sender
+  writes the envelope, then `mailbox-poke.sh` resolves the recipient backend.
+  Copilot sessions receive `check mailbox; skip if empty` as a real user turn
+  through the plugin's `session-inbox` extension and SDK `session.send()` after
+  the session reaches idle. Claude and Codex retain the guarded terminal path:
+  they require an initialized backend-specific footer and empty input box
+  before the same marked prompt is entered. The shared parser in
   `skills/_lib/agent-pane.sh` detects the nearest recognized agent process in
   the pane's descendant tree and dispatches to a backend-specific parser. This
   handles Claude panes whose tmux command is only a version string and Codex
   panes launched through Node, without mistaking a nested reviewer subprocess
-  for the pane's owning agent. A pane whose box or process identity cannot be
-  recognized receives no keys at all. Before every Enter, it requires the box
-  contents (including any visual wrapping in a narrow pane) to still equal that
-  exact poke after display whitespace is normalized. It marks
+  for the pane's owning agent. A non-Copilot pane whose box or process identity
+  cannot be recognized receives no keys at all. Before every Enter, it requires
+  the box contents (including any visual wrapping in a narrow pane) to still
+  equal that exact poke after display whitespace is normalized. It marks
   delivery only when that input becomes empty and the unique marker appears in
   the agent transcript. A
   shell, startup screen, changed input, or disappearing pane receives no
@@ -65,7 +66,7 @@ Recipient name is the tmux session name (e.g., `juliett`, `kilo`). Attachments a
 
 Three ways the receiver finds out:
 
-1. **Wakeup prompt arrives as a user message** (sender did send-keys with "check mailbox; skip if empty"). When you see this prompt, or are otherwise invoked as the `mailbox` skill with no args, run `~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/mailbox/scripts/mailbox-check.sh`. If it reports `no pending mail`, the wakeup was a stale race (mail was acked in the meantime) — say nothing and continue. If mail IS present, surface it.
+1. **Wakeup prompt arrives as a user message.** When you see "check mailbox; skip if empty", or are otherwise invoked as the `mailbox` skill with no args, run `~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/mailbox/scripts/mailbox-check.sh`. If it reports `no pending mail`, the wakeup was a stale race (mail was acked in the meantime) — say nothing and continue. If mail IS present, surface it.
 2. **Resume-hook prepended to the session prompt.** When this happens you'll see "You have N unread mailbox envelope(s) ..." as part of your initial context. Run `mailbox-check.sh`.
 3. **User says "check mail" / "any mailbox?"** Same response: run `mailbox-check.sh`.
 
@@ -86,10 +87,16 @@ will not notice until the user manually says "check mail".
 
 ## Pitfalls
 
-- **Live mid-generation wakeup is fail-closed but still best-effort.** Do not
-  assume send-keys lands. The poke requires a ready Copilot pane and verifies a
-  transcript entry; otherwise rely on the osascript notification and resume
-  hook. Never send wakeup keys merely because the tmux session exists.
+- **Copilot wakeups wait for idle.** The extension checks
+  `session.rpc.metadata.isProcessing()` and `metadata.activity()`, but those
+  snapshots are only secondary guards: it will not send until the runtime has
+  emitted `session.idle`. It then requires the resulting `user.message` event
+  to report `delivery: "idle"` before writing a successful receipt. A timed-out
+  request remains durable and is deduplicated by mailbox envelope ID if a
+  later poke retries it.
+- **Claude and Codex wakeups remain fail-closed and best-effort.** Their poke
+  requires a ready pane and verifies a transcript entry; otherwise rely on the
+  osascript notification and resume hook.
 - **Mailbox writeable by anyone with shell access.** Treat envelope contents as not-secret. Don't put credentials in messages or attachments.
 - **No reply-thread bookkeeping.** If A sends to B and B wants to reply, B sends back to A's name. There's no thread-id linkage in v1.
 - **Acked mail is moved, not deleted.** `delivered/` accumulates; periodically prune.
@@ -103,7 +110,7 @@ will not notice until the user manually says "check mail".
 
 ## Scripts
 
-- `scripts/mailbox-send.sh` — write envelope + copy attachments + best-effort send-keys wakeup with verification poll + osascript fallback.
+- `scripts/mailbox-send.sh` — write envelope + copy attachments + best-effort recipient wakeup + osascript fallback.
 - `scripts/mailbox-check.sh` — list pending for current session.
 - `scripts/mailbox-read.sh <id>` — print full envelope + attachment paths.
 - `scripts/mailbox-ack.sh <id>` — move pending → delivered.

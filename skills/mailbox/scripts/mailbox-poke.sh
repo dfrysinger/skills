@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # mailbox-poke.sh <session-name> [--wait]
 #
-# If <session-name>'s mailbox has pending mail, send a natural-language
-# wakeup prompt into its tmux pane that nudges the agent to invoke the mailbox
-# skill (which then runs mailbox-check.sh).
+# If <session-name>'s mailbox has pending mail, send a natural-language wakeup
+# prompt through the recipient backend. Copilot uses the session-inbox SDK
+# extension; Claude and Codex retain guarded terminal submission.
 #
 # Why not "/mailbox"? Slash dispatch races cold-start skill-snapshot
 # loading: the input box appears before skills are registered, so a slash
@@ -13,9 +13,10 @@
 # load delay.
 #
 # Modes:
-#   (default) — require a recognized, ready agent CLI with empty input now.
-#   --wait    — poll for that same ready state for up to 30s. Use this
-#              immediately after launching a fresh Copilot.
+#   (default) — wait up to 15s for a Copilot SDK receipt, or require a ready
+#               Claude/Codex input now.
+#   --wait    — extend the Copilot receipt wait to 30s, or poll Claude/Codex
+#               readiness for up to 30s after a fresh launch.
 #
 # Designed to be backgrounded by the user's `ca` launcher:
 #   ( mailbox-poke.sh "$NAME" --wait ) &
@@ -24,6 +25,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/_common.sh"
 . "$SCRIPT_DIR/../../_lib/agent-pane.sh"
+REQUEST_CLI="$SCRIPT_DIR/../../../extensions/session-inbox/request.mjs"
 
 [[ $# -lt 1 ]] && { echo "usage: mailbox-poke.sh <name> [--wait]" >&2; exit 2; }
 NAME="$1"; shift
@@ -64,6 +66,39 @@ if [[ -z "$BACKEND" ]]; then
   exit 3
 fi
 
+MARKER="[mb:${NEWEST_ID##*-}]"
+PROMPT="check mailbox; skip if empty $MARKER"
+
+if [[ "$BACKEND" == "copilot" ]]; then
+  if [[ ! -r "$REQUEST_CLI" ]]; then
+    echo "UNVERIFIED: session-inbox request helper is unavailable; the mail is queued." >&2
+    exit 3
+  fi
+  PROMPT_FILE="$(mktemp "${TMPDIR:-/tmp}/mailbox-poke.XXXXXX")" || exit 3
+  trap 'rm -f -- "$PROMPT_FILE"' EXIT
+  chmod 600 "$PROMPT_FILE"
+  printf '%s' "$PROMPT" >"$PROMPT_FILE"
+  TIMEOUT=15
+  [[ "$WAIT" -eq 1 ]] && TIMEOUT=35
+  REQUEST_OUTPUT=""
+  if REQUEST_OUTPUT="$(node "$REQUEST_CLI" send \
+    --target-tmux "$NAME" \
+    --prompt-file "$PROMPT_FILE" \
+    --mode immediate \
+    --dedupe-key "mailbox:$NAME:$NEWEST_ID" \
+    --timeout "$TIMEOUT" 2>&1)"; then
+    if grep -Fq '"delivery":"idle"' <<<"$REQUEST_OUTPUT"; then
+      printf '%s\n' "$NEWEST_ID" >"$WATERMARK_FILE"
+      echo "poked: $NAME (SDK idle delivery verified)"
+      exit 0
+    fi
+    echo "UNVERIFIED: '$NAME' received the SDK wakeup outside an idle boundary; the envelope remains pending and durable dedupe prevents duplicate delivery." >&2
+    exit 3
+  fi
+  echo "UNVERIFIED: '$NAME' did not acknowledge the SDK wakeup; the envelope and request remain queued." >&2
+  exit 3
+fi
+
 agent_ready() { ap_pane_accepts_input "$PANE" "$BACKEND"; }
 
 if [[ "$WAIT" -eq 1 ]]; then
@@ -78,8 +113,6 @@ if ! agent_ready; then
   exit 3
 fi
 
-MARKER="[mb:${NEWEST_ID##*-}]"
-PROMPT="check mailbox; skip if empty $MARKER"
 PROMPT_SIGNATURE="$(ap_input_signature <<<"$PROMPT")"
 
 # Reads the pane into BOX ("empty", "text", or "none") and INPUT_SIGNATURE.
