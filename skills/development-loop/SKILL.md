@@ -32,6 +32,42 @@ evidence. The conditional pre-build guard review in section 4 is the only
 implementation-review exception; it reviews a guard that constrains the work,
 not an implementation claimed to work.
 
+### Critical-path audit
+
+An efficient loop keeps every independent ready item moving while preserving
+the serial evidence gates. Run this audit at task start, after compaction or
+resumption, at each phase boundary, and whenever the current action is waiting:
+
+1. Map the remaining work into ready items, dependencies, and work that must be
+   exclusive. Mark the critical path.
+2. Execute cheap direct work immediately and batch independent tool calls.
+   Give every substantial independent ready scope to a subagent when the host
+   supports it and delegation is safe. Delegated scopes must have separate
+   context and no overlapping ownership; one agent owns a scope until it
+   completes or fails. Every delegate that writes files gets an isolated
+   worktree or checkout; read-only delegates may share a source tree. The
+   coordinator's worktree is never a concurrent write target.
+3. When the user assigned independent agents, treat them as first-class owners.
+   Record each agent's scope, workspace or branch, expected evidence, and
+   integration boundary in the durable baton. Keep them supplied with
+   decisions and dependencies, monitor their durable results, unblock them
+   promptly, and consume frozen reviewed commits without waiting for `main`.
+4. Keep the coordinating agent on integration, critical-path work, decisions,
+   and blockers that no delegate can own. When one action is waiting, advance
+   another ready item instead of polling or idling.
+5. Batch causally related fixes into one coherent candidate before expensive
+   builds, verifiers, or CI. Use the change-to-claim impact map to rerun only
+   the proof reached by that candidate.
+
+Parallelism stops at an actual dependency or exclusive boundary. One proof
+owner and one running candidate remain mandatory during live proof, and review,
+broad CI, or PR work stays closed until the affected live claims pass.
+
+The audit is complete when every ready item has an active owner or is being
+executed directly, no owner is waiting for information the coordinator already
+has, scopes do not overlap, and every intentionally serial item names the gate
+that makes it serial.
+
 ### Durable proof admission
 
 As soon as a task is classified as user-visible or externally observable
@@ -316,6 +352,9 @@ unattended run, section 3's `unattended-run` handoff must already have armed
 its live re-brief and owns this reset; a bare compact returns to an idle prompt.
 If the re-brief is not live, run `unattended-run` now instead of compacting.
 For an attended run, invoke `self-compact`.*
+
+Run the critical-path audit before starting the diff. Repeat it whenever a
+build, external agent, approval, or live system becomes the current wait.
 
 Preserve a healthy development process before creating another one. When the
 same worktree already has a watcher-backed app or service running, classify the
@@ -799,6 +838,11 @@ normally. Naming the skill is the instruction; a general intention to compact
 is not one, and is why agents arrive at review with a context full of resolved
 work.
 
+Every unattended re-brief also reruns the critical-path audit. It reconciles
+the remaining dependency graph, delegated ownership, current waits, candidate
+batching, and proof replay scope against this skill rather than merely
+confirming that a charter still exists.
+
 The baton this loop hands forward is the plan path, lane, objective, acceptance
 criteria, non-goals, remaining Definition-of-Done items, branch, what has
 landed versus what remains, the change-to-claim impact map, and each live-proof
@@ -890,7 +934,9 @@ The change is complete when:
    proof row and todo closed only after validation;
 6. dual review has no verified in-scope must-fix finding;
 7. post-review validation covers the actual review fixes;
-8. the landed diff remains coherent and scoped.
+8. the landed diff remains coherent and scoped; and
+9. the critical-path audit ran at each required trigger, and no remaining
+   ready scope is unowned, overlapping, or serial without a named gate.
 
 Changes to the mechanism-probe rule also pass the behavioral fixture in
 [`references/mechanism-probe-fixture.md`](./references/mechanism-probe-fixture.md).

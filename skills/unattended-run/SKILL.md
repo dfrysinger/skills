@@ -63,7 +63,8 @@ work autonomously. If self-enqueue is unavailable, print the objective instead.
 ### 1. Draft the charter and the objective
 Fill both artifacts in [`references/brief-template.md`](references/brief-template.md):
 the **charter** (the standing *how* — required process skills, push policy,
-autonomy mandate, plan hygiene, subagents, coordination, standing grants) and
+autonomy mandate, plan hygiene, critical-path audit, delegated ownership,
+coordination, standing grants) and
 the **objective** (plan doc, scope, outcome, boundaries, and observable
 done-condition).
 
@@ -86,6 +87,27 @@ and one-time investigation skills are not standing process dependencies.
 `unattended-run` itself never belongs in the manifest, because re-invoking it
 could create another schedule.
 
+Every charter includes the `/dfrysinger-skills:development-loop` critical-path
+audit, even when another skill governs the run. At run start and every
+scheduled re-brief, the agent must:
+
+- rebuild the remaining dependency graph and mark the critical path;
+- assign every substantial independent ready scope to an available subagent;
+- when the user assigned independent agents, reconcile each agent's explicit
+  scope, workspace or branch, evidence owed, blockers, and integration boundary;
+- give every file-writing delegate an isolated worktree or checkout and keep
+  the coordinator's worktree free of concurrent writers;
+- keep the coordinator on integration, decisions, unblocking, and unowned
+  critical-path work;
+- batch coherent fixes before expensive gates and avoid replaying unaffected
+  proof; and
+- advance other ready work during waits without violating one-owner live-proof
+  or other exclusive gates.
+
+The charter names any user-assigned agent roster and its durable coordination
+surface. "Use subagents liberally" alone is not a sufficient delegation
+contract.
+
 The plan must carry a plain **Definition of Done** covering exactly this run's
 scope, under a unique heading both artifacts point at; if it's missing, write it
 first — with `design-doc` for systemic or critical work, or at
@@ -102,8 +124,9 @@ separately so the schedule can re-read only the standing operating rules.
 
 **Complete when** both files exist, no `<SLOT>` remains, both point at the same
 Definition-of-Done heading, every skill in the manifest owns work or a gate
-that remains in this run, and every systemic or critical charter preserves the
-constraint and reframe pointers plus their current status.
+that remains in this run, the charter contains the complete critical-path
+audit and any assigned-agent roster, and every systemic or critical charter
+preserves the constraint and reframe pointers plus their current status.
 
 **Handoff gate.** The finished brief is a complete work order, but do not
 compact yet. A bare compact returns to an idle prompt; before step 2 there is no
@@ -166,10 +189,16 @@ manage_schedule action=create interval=1h \
   baton. Never replace an in-flight revision with the older persisted version.
   Follow the charter's Required process skills protocol exactly and reconcile
   the current work against it; execute any skill invocation or compaction action
-  the charter says is due now rather than merely acknowledging it. Confirm the
-  workspace, push policy, objective, current phase, and any open constraint
-  revisit or reframe condition, and correct any drift before continuing. Stop
-  this schedule once the charter's referenced
+  the charter says is due now rather than merely acknowledging it. Run
+  /dfrysinger-skills:development-loop's critical-path audit: rebuild ready work
+  and dependencies, reconcile every delegated owner and blocker, assign every
+  independent ready scope that can run safely in parallel, batch work before
+  expensive gates, and advance another ready item during waits. Confirm the
+  workspace, push policy, objective, current phase, proof gates, and any open
+  constraint revisit or reframe condition, and correct any drift before
+  continuing. During active live proof, remain read-only and advance only work
+  that cannot mutate the candidate, its worktree, its fixture, or its running
+  process. Stop this schedule once the charter's referenced
   Definition of Done is verifiably met."
 ```
 
@@ -180,8 +209,8 @@ own off-switch, so it disengages on arrival rather than nagging forever.
 **Complete when** the charter file names its governing, execution, and context
 skills, and `manage_schedule action=list` shows exactly one reminder for this
 objective live, pointed at that file, with a prompt that follows the charter's
-**Required process skills** protocol. A same-session compact is forbidden until
-this criterion passes.
+**Required process skills** protocol and requires the critical-path audit. A
+same-session compact is forbidden until this criterion passes.
 
 ### 3. Hand off `/autopilot` at the next idle boundary
 After the charter exists and the `/every` reminder is live, enqueue the
