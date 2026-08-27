@@ -25,14 +25,16 @@ function usage(message) {
     console.error(`session-inbox-request: ${message}`);
   }
   console.error(
-    "usage: request.mjs <send|compact|new-session> (--target-name NAME | --target-tmux NAME | --target-session ID) [options]",
+    "usage: request.mjs <send|autopilot|compact|new-session> (--target-name NAME | --target-tmux NAME | --target-session ID) [options]",
   );
   process.exit(64);
 }
 
 function parseArgs(argv) {
   const [kind, ...rest] = argv;
-  if (!["send", "compact", "new-session"].includes(kind)) usage("invalid request kind");
+  if (!["send", "autopilot", "compact", "new-session"].includes(kind)) {
+    usage("invalid request kind");
+  }
   const options = { kind };
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
@@ -173,6 +175,9 @@ switch (options.kind) {
       }
       request.agentMode = options["agent-mode"];
     }
+    break;
+  case "autopilot":
+    request.prompt = await readRequiredFile(options["prompt-file"], "--prompt-file");
     break;
   case "compact":
     request.customInstructions = await readRequiredFile(
