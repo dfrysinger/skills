@@ -1,27 +1,44 @@
 #!/usr/bin/env bash
 # mailbox-send.sh <recipient-name> --summary "..." --message "..." [--file PATH ...]
+#
+# For prose containing backticks, $(), braces, or quotes, prefer the file/stdin
+# forms so the shell never has to escape the body:
+#   --message-file <path>   read the message from a file ("-" reads stdin)
+#   --summary-file <path>    read the summary from a file ("-" reads stdin)
 # Writes a durable envelope under ~/.copilot/mailbox/<recipient>/pending/, copies
 # any attachments, then attempts a best-effort SDK wakeup by live session name.
 # Claude and Codex retain the guarded tmux fallback on macOS.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/_common.sh"
 
-usage() { echo "usage: mailbox-send.sh <recipient> --summary <s> --message <m> [--file <path>]..." >&2; exit 2; }
+usage() {
+  echo "usage: mailbox-send.sh <recipient> (--summary <s> | --summary-file <path>) (--message <m> | --message-file <path>) [--file <path>]..." >&2
+  echo "       --message-file/--summary-file take a path; '-' reads stdin (avoids shell-escaping prose)" >&2
+  exit 2
+}
 [[ $# -lt 1 ]] && usage
 RECIPIENT="$1"; shift
-SUMMARY=""; MESSAGE=""; FILES=()
+SUMMARY=""; MESSAGE=""; SUMMARY_FILE=""; MESSAGE_FILE=""; FILES=()
+HAVE_SUMMARY=0; HAVE_MESSAGE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --summary) SUMMARY="$2"; shift 2 ;;
-    --message) MESSAGE="$2"; shift 2 ;;
-    --file)    FILES+=("$2"); shift 2 ;;
+    --summary)      SUMMARY="$2"; HAVE_SUMMARY=1; shift 2 ;;
+    --message)      MESSAGE="$2"; HAVE_MESSAGE=1; shift 2 ;;
+    --summary-file) SUMMARY_FILE="$2"; HAVE_SUMMARY=1; shift 2 ;;
+    --message-file) MESSAGE_FILE="$2"; HAVE_MESSAGE=1; shift 2 ;;
+    --file)         FILES+=("$2"); shift 2 ;;
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
 done
-[[ -z "$SUMMARY" || -z "$MESSAGE" ]] && usage
+[[ -n "$SUMMARY" && -n "$SUMMARY_FILE" ]] && { echo "provide either --summary or --summary-file, not both" >&2; usage; }
+[[ -n "$MESSAGE" && -n "$MESSAGE_FILE" ]] && { echo "provide either --message or --message-file, not both" >&2; usage; }
+[[ "$HAVE_SUMMARY" -eq 1 && "$HAVE_MESSAGE" -eq 1 ]] || usage
 
 FROM_NAME="$(own_name 2>/dev/null || echo unknown)"
-NODE_ARGS=(send "$RECIPIENT" --summary "$SUMMARY" --message "$MESSAGE" --from "$FROM_NAME" --no-wakeup)
+NODE_ARGS=(send "$RECIPIENT")
+if [[ -n "$SUMMARY_FILE" ]]; then NODE_ARGS+=(--summary-file "$SUMMARY_FILE"); else NODE_ARGS+=(--summary "$SUMMARY"); fi
+if [[ -n "$MESSAGE_FILE" ]]; then NODE_ARGS+=(--message-file "$MESSAGE_FILE"); else NODE_ARGS+=(--message "$MESSAGE"); fi
+NODE_ARGS+=(--from "$FROM_NAME" --no-wakeup)
 if [[ ${#FILES[@]} -gt 0 ]]; then
   for f in "${FILES[@]}"; do NODE_ARGS+=(--file "$f"); done
 fi
@@ -56,5 +73,10 @@ esac
 
 # Always-on macOS notification — works regardless of TUI state.
 if command -v osascript >/dev/null 2>&1; then
-  osascript -e "display notification \"$SUMMARY\" with title \"mailbox -> $RECIPIENT\" subtitle \"from $FROM_NAME\"" 2>/dev/null || true
+  NOTIFY_SUMMARY="$SUMMARY"
+  if [[ -z "$NOTIFY_SUMMARY" && -n "$SUMMARY_FILE" && "$SUMMARY_FILE" != "-" && -f "$SUMMARY_FILE" ]]; then
+    NOTIFY_SUMMARY="$(head -n1 "$SUMMARY_FILE" 2>/dev/null || true)"
+  fi
+  NOTIFY_SUMMARY="${NOTIFY_SUMMARY//\"/\'}"
+  osascript -e "display notification \"$NOTIFY_SUMMARY\" with title \"mailbox -> $RECIPIENT\" subtitle \"from $FROM_NAME\"" 2>/dev/null || true
 fi

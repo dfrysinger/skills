@@ -1,6 +1,26 @@
 #!/usr/bin/env node
 
 import { createMailbox, POKE_NO_ACTIVE_COPILOT, POKE_UNVERIFIED, resolveOwnName } from "./mailbox-core.mjs";
+import { readFile } from "node:fs/promises";
+
+async function readStdin() {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+// Resolve a text field from either an inline --<label> value or a
+// --<label>-file path (where "-" reads stdin). Reading prose from a file or
+// stdin frees callers from shell-escaping backticks, $(), braces, and quotes.
+async function resolveTextInput(label, inlineValue, filePath) {
+  if (inlineValue !== undefined && filePath !== undefined) {
+    usage(`provide either --${label} or --${label}-file, not both`);
+  }
+  if (filePath === undefined) return inlineValue;
+  const text = filePath === "-" ? await readStdin() : await readFile(filePath, "utf8");
+  return text;
+}
+
 
 function usage(message) {
   if (message) console.error(`mailbox: ${message}`);
@@ -77,11 +97,21 @@ try {
       );
       if (positional.length !== 1) usage("send requires one recipient");
       const sender = (await resolveOwnName(options.from)) ?? "unknown";
+      const summaryText = await resolveTextInput(
+        "summary",
+        options.summary,
+        options["summary-file"],
+      );
+      const messageText = await resolveTextInput(
+        "message",
+        options.message,
+        options["message-file"],
+      );
       const result = await mailbox.send({
         recipient: positional[0],
         sender,
-        summary: options.summary,
-        message: options.message,
+        summary: summaryText === undefined ? undefined : summaryText.trim(),
+        message: messageText === undefined ? undefined : messageText.replace(/\n$/, ""),
         files: options.file ?? [],
         wake: !options["no-wakeup"],
         wait: Boolean(options.wait),
