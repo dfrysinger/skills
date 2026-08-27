@@ -29,6 +29,7 @@
     "./skills/skill-create",
     "./skills/unattended-run",
     "./skills/visual-proof",
+    "./skills/walkthrough-video",
     "./skills/writing-great-skills"
   ]
 }

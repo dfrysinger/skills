@@ -258,6 +258,12 @@ checkpoints, terminal success state, and the errors or regressions that must be
 absent. Keep checkpoints together when they jointly establish one claim. A
 later partial success cannot silently become the proof contract.
 
+For a pull request with a new or materially expanded user-facing visual
+journey, also record `walkthrough: required` and invoke `walkthrough-video`
+after live proof passes. A UI fix may use `visual-proof`'s paired screenshots;
+pure API, service, or CLI behavior with no graphical UX records
+`walkthrough: not required` and its reason.
+
 ## 2. Choose the durable contract
 
 Do not require a standalone architecture document or permanent invariant guard
@@ -531,6 +537,13 @@ checkpoints when the acceptance criteria name them. A screenshot of one state
 or a source read succeeding after manual recovery does not prove the whole
 flow.
 
+For a new user-facing visual journey, the passing live receipt opens a
+presentation-evidence gate before PR creation. Keep it pending through static
+review so review fixes do not force avoidable recordings. The movie helps
+reviewers see the feature but never substitutes for checkpoint evidence in
+this section. Fixes may proceed with `visual-proof`'s paired screenshots unless
+the user explicitly requests video.
+
 Confirm every checkpoint and the observable end state, not merely a harness
 exit code, scripted test result, log line, or helper self-report. Inspect the
 actual app/service state out-of-band. Any unexplained user-visible error,
@@ -743,6 +756,12 @@ frozen reviewed candidate. Every required claim is fresh under that one
 fingerprint; prior receipts from other fingerprints remain history, not
 campaign evidence.
 
+For a new user-facing visual journey, invoke `walkthrough-video` now, after the
+final reviewed candidate is frozen and before creating or updating its PR.
+Rehearse and record the supported journey, fully decode and inspect the movie,
+and obtain its hosted PR-media URL. Runtime-relevant movement after recording
+makes the walkthrough stale and reopens this step.
+
 If final validation fails, fix the root cause and re-review the **new fix
 delta**, not the entire historical diff, unless the fix materially redesigns
 the change.
@@ -779,6 +798,9 @@ Before landing:
 - dual review has no `must-fix` finding;
 - the diff still matches the objective and non-goals;
 - test artifacts are cleaned up.
+- a PR for a new user-facing visual journey has a reachable movie in its
+  `## Walkthrough` section, bound to the demonstrated candidate; a UI fix has
+  its required before/after screenshots instead.
 
 Apply the same validator, durable-row, and closed-todo gate before
 `task_complete` or any final statement that the runtime change works, even
@@ -936,7 +958,10 @@ The change is complete when:
 7. post-review validation covers the actual review fixes;
 8. the landed diff remains coherent and scoped; and
 9. the critical-path audit ran at each required trigger, and no remaining
-   ready scope is unowned, overlapping, or serial without a named gate.
+   ready scope is unowned, overlapping, or serial without a named gate; and
+10. every PR that adds a new user-facing visual journey contains its validated
+    candidate-bound walkthrough movie, while fixes retain their required
+    screenshot evidence.
 
 Changes to the mechanism-probe rule also pass the behavioral fixture in
 [`references/mechanism-probe-fixture.md`](./references/mechanism-probe-fixture.md).
