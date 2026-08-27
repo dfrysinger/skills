@@ -632,20 +632,31 @@ test("recipient extension submits SDK work without idle gates and preserves phas
       1,
     );
 
-    await harness.setState({ delivery: "steering", idleCounter: 14 });
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    await harness.request("compact-partial", {
-      kind: "compact",
-      customInstructions: "compact proof",
-      continuationPrompt: "resume proof",
+    await harness.setState({
+      suppressDelivery: true,
+      processing: true,
+      active: true,
+      pending: 1,
+      idleCounter: 14,
     });
-    const compactPartial = await harness.receipt("completed", "compact-partial");
-    assert.equal(compactPartial.result.compacted, true);
-    assert.equal(compactPartial.result.continuationDelivered, false);
-    assert.equal(compactPartial.result.continuationDelivery, "steering");
-    assert.match(compactPartial.result.continuationError, /instead of idle/);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await harness.request("compact-unconfirmed-continuation", {
+      kind: "compact",
+      customInstructions: "long-running active turn proof",
+      continuationPrompt: "queue without waiting for its later event",
+    });
+    const compactUnconfirmed = await harness.receipt(
+      "completed",
+      "compact-unconfirmed-continuation",
+    );
+    assert.equal(compactUnconfirmed.result.compacted, true);
+    assert.equal(compactUnconfirmed.result.continuationQueued, true);
+    assert.equal(typeof compactUnconfirmed.result.continuationMessageId, "string");
+    assert.equal(compactUnconfirmed.result.continuationDelivered, undefined);
+    assert.equal(compactUnconfirmed.result.continuationError, undefined);
 
     await harness.setState({
+      suppressDelivery: false,
       delivery: "queued",
       processing: true,
       active: true,
@@ -663,8 +674,9 @@ test("recipient extension submits SDK work without idle gates and preserves phas
       "compact-queued-continuation",
     );
     assert.equal(compactQueued.result.compacted, true);
-    assert.equal(compactQueued.result.continuationDelivered, true);
-    assert.equal(compactQueued.result.continuationDelivery, "queued");
+    assert.equal(compactQueued.result.continuationQueued, true);
+    assert.equal(typeof compactQueued.result.continuationMessageId, "string");
+    assert.equal(compactQueued.result.continuationDelivered, undefined);
     assert.equal(compactQueued.result.continuationError, undefined);
 
     await harness.setState({

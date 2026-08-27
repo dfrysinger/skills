@@ -163,7 +163,9 @@ native message queue:
 Compaction done; resume, do not compact.
 ```
 
-The verifier requires exactly one matching root `user.message` with native
+The session-inbox receipt proves that the native queue accepted the message; it
+does not wait for a short transport timeout to observe the later turn. The
+verifier then requires exactly one matching root `user.message` with native
 `idle` or `queued` delivery after the matching completion. It never types or
 retries the continuation.
 

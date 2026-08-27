@@ -176,6 +176,9 @@ fi
 continuation_delivered=true
 [ "${FAKE_REQUEST_MODE:-success}" != continuation-failed ] ||
   continuation_delivered=false
+continuation_result="\"continuationDelivered\":$continuation_delivered"
+[ "${FAKE_REQUEST_MODE:-success}" != queued-continuation ] ||
+  continuation_result='"continuationQueued":true'
 receipt_status=completed
 receipt_extra=""
 receipt_exit=0
@@ -187,7 +190,7 @@ fi
 printf '%s\n' \
   'request: fake' \
   'receipt: fake' \
-  "{\"id\":\"fake\",\"status\":\"$receipt_status\",\"sessionId\":\"$target\"$receipt_extra,\"result\":{\"compacted\":true,\"tokensRemoved\":10,\"messagesRemoved\":2,\"continuationDelivered\":$continuation_delivered}}"
+  "{\"id\":\"fake\",\"status\":\"$receipt_status\",\"sessionId\":\"$target\"$receipt_extra,\"result\":{\"compacted\":true,\"tokensRemoved\":10,\"messagesRemoved\":2,$continuation_result}}"
 exit "$receipt_exit"
 EOF
 chmod +x "$FAKE_BIN/request.mjs"

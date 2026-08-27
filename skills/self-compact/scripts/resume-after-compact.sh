@@ -336,6 +336,9 @@ receipt_state="$(
         if ($result && ref($result) eq "HASH" &&
             exists $result->{continuationDelivered}) {
           $continuation = $result->{continuationDelivered} ? "delivered" : "failed";
+        } elsif ($result && ref($result) eq "HASH" &&
+                 ($result->{continuationQueued} // 0)) {
+          $continuation = "queued";
         }
       }
       print $valid ? "completed\t$continuation" : "invalid";
@@ -343,6 +346,7 @@ receipt_state="$(
 )"
 case "$receipt_state" in
   completed$'\t'delivered) CONTINUATION_RECEIPT=delivered ;;
+  completed$'\t'queued) CONTINUATION_RECEIPT=queued ;;
   completed$'\t'failed) CONTINUATION_RECEIPT=failed ;;
   completed$'\t'unknown) CONTINUATION_RECEIPT=unknown ;;
   *) CONTINUATION_RECEIPT=invalid ;;
