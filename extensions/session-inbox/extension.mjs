@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 import { joinSession } from "@github/copilot-sdk/extension";
+import { createDiagnosticLogger, errorDetails } from "./diagnostics.mjs";
 
 const execFileAsync = promisify(execFile);
 const root = process.env.COPILOT_SESSION_INBOX_DIR ?? join(homedir(), ".copilot", "session-inbox");
@@ -26,9 +27,35 @@ const confirmationTimeoutMs =
     ? configuredConfirmationTimeoutMs
     : 10_000;
 
-const session = await joinSession();
+const startupDiagnostics = createDiagnosticLogger(
+  root,
+  `extension-bootstrap-${process.pid}.jsonl`,
+  { component: "extension", hostPid: process.ppid, pid: process.pid },
+);
+let session;
+try {
+  session = await joinSession();
+} catch (error) {
+  startupDiagnostics.log("extension.start_failed", {
+    phase: "joinSession",
+    error: errorDetails(error),
+  });
+  throw error;
+}
 const tmuxSession = await currentTmuxSession();
 const generation = randomBytes(16).toString("hex");
+const diagnostics = createDiagnosticLogger(
+  root,
+  `${session.sessionId}-${generation}.jsonl`,
+  {
+    component: "extension",
+    sessionId: session.sessionId,
+    generation,
+    tmuxSession,
+    hostPid: process.ppid,
+    pid: process.pid,
+  },
+);
 let pumping = false;
 let idleReady = false;
 let idleEpoch = 0;
@@ -44,6 +71,10 @@ await Promise.all(
     commandsDir,
   ].map((dir) => mkdir(dir, { recursive: true, mode: 0o700 })),
 );
+diagnostics.log("extension.started", {
+  extensionPath: import.meta.url,
+  confirmationTimeoutMs,
+});
 
 async function currentTmuxSession() {
   if (!process.env.TMUX_PANE) return undefined;
@@ -96,6 +127,7 @@ async function sendAndConfirm({ prompt, mode = "immediate", agentMode }) {
     if (event.data.content === prompt) resolveDelivered(event);
   });
   try {
+    diagnostics.log("sdk.send.started", { mode, agentMode });
     const messageId = await session.send({
       prompt,
       mode,
@@ -107,6 +139,10 @@ async function sendAndConfirm({ prompt, mode = "immediate", agentMode }) {
         setTimeout(() => resolve(undefined), confirmationTimeoutMs),
       ),
     ]);
+    diagnostics.log(event ? "sdk.send.confirmed" : "sdk.send.unconfirmed", {
+      messageId,
+      delivery: event?.data.delivery,
+    });
     return {
       messageId,
       delivery: event?.data.delivery ?? "unconfirmed",
@@ -318,6 +354,11 @@ async function recoverStalePendingRequests() {
     } catch {
       continue;
     }
+    diagnostics.log("recovery.pending_claimed", {
+      requestId: request.id,
+      kind: request.kind,
+      ownerGeneration: target.generation,
+    });
     await writeJson(stagePath(processingDir, name), {
       ownerGeneration: target.generation,
       stage: "claimed",
@@ -367,6 +408,12 @@ async function recoverStaleClaims() {
         continue;
       }
       if (!(await acquireRecoveryLock(name))) continue;
+      diagnostics.log("recovery.locked", {
+        requestId: request.id,
+        kind: request.kind,
+        stage: stage.stage,
+        ownerGeneration,
+      });
 
       const receiptBase = {
         id: request.id,
@@ -391,6 +438,10 @@ async function recoverStaleClaims() {
           });
           await rm(processingStagePath, { force: true });
           await rename(processingPath, join(pendingDir, name));
+          diagnostics.log("recovery.requeued", {
+            requestId: request.id,
+            kind: request.kind,
+          });
         } else if (
           stage.stage === "executed" &&
           stage.fingerprint === requestFingerprint(request)
@@ -416,6 +467,11 @@ async function recoverStaleClaims() {
           await rm(join(failedDir, name), { force: true });
           await rm(processingPath, { force: true });
           await rm(processingStagePath, { force: true });
+          diagnostics.log("recovery.completed", {
+            requestId: request.id,
+            kind: request.kind,
+            delivery: stage.result?.delivery,
+          });
         } else {
           const ambiguousSideEffect = stage.stage === "executing";
           const error =
@@ -446,12 +502,22 @@ async function recoverStaleClaims() {
           });
           await rm(processingPath, { force: true });
           await rm(processingStagePath, { force: true });
+          diagnostics.log(
+            ambiguousSideEffect ? "recovery.ambiguous" : "recovery.failed",
+            {
+              requestId: request.id,
+              kind: request.kind,
+              stage: stage.stage,
+              error: { message: error },
+            },
+          );
         }
       } finally {
         await rm(recoveryLockPath(name), { force: true });
       }
     }
   } catch (error) {
+    diagnostics.log("recovery.crashed", { error: errorDetails(error) });
     console.error(
       `session-inbox recovery failed: ${error instanceof Error ? error.message : String(error)}`,
     );
@@ -513,6 +579,12 @@ async function pump() {
       } catch {
         continue;
       }
+      diagnostics.log("request.claimed", {
+        requestId: request.id,
+        kind: request.kind,
+        fingerprint: requestFingerprint(request),
+        hasDedupeKey: Boolean(request.dedupeKey),
+      });
       await writeJson(claimedStagePath, {
         ownerGeneration: generation,
         stage: "claimed",
@@ -555,6 +627,11 @@ async function pump() {
             }
             result = record.result;
             deduplicated = true;
+            diagnostics.log("request.deduplicated", {
+              requestId: request.id,
+              kind: request.kind,
+              delivery: result?.delivery,
+            });
           } catch (error) {
             if (error?.code !== "ENOENT") throw error;
           }
@@ -568,6 +645,7 @@ async function pump() {
             throw new Error("dedupe key has an unfinished prior request");
           }
           const epoch = idleEpoch;
+          const idleWasReady = idleReady;
           const [processingNow, activityNow, pendingNow] = await Promise.all([
             session.rpc.metadata.isProcessing(),
             session.rpc.metadata.activity(),
@@ -582,6 +660,15 @@ async function pump() {
           ) {
             idleReady = false;
             removeClaim = false;
+            diagnostics.log("request.deferred", {
+              requestId: request.id,
+              kind: request.kind,
+              idleReady: idleWasReady,
+              idleEpochChanged: epoch !== idleEpoch,
+              processing: processingNow.processing,
+              activeWork: activityNow.hasActiveWork,
+              pendingQueueItems: pendingNow.items.length,
+            });
             await rename(claimedPath, pendingPath);
             await rm(claimedStagePath, { force: true });
             break;
@@ -594,6 +681,10 @@ async function pump() {
             updatedAt: new Date().toISOString(),
           });
           sideEffectStarted = true;
+          diagnostics.log("request.executing", {
+            requestId: request.id,
+            kind: request.kind,
+          });
           result = await execute(request);
           operationCompleted = true;
           removeClaim = false;
@@ -624,6 +715,16 @@ async function pump() {
           result,
         });
         removeClaim = true;
+        diagnostics.log("request.completed", {
+          requestId: request.id,
+          kind: request.kind,
+          deduplicated,
+          delivery: result?.delivery,
+          idleDelivery: result?.idleDelivery,
+          compacted: result?.compacted,
+          continuationDelivery: result?.continuationDelivery,
+          commandQueued: result?.commandQueued,
+        });
         if (request.kind === "new-session") {
           try {
             await rm(commandMarkerPath(request.id), { force: true });
@@ -667,6 +768,14 @@ async function pump() {
           ...(!operationCompleted && ambiguousSideEffect ? { result } : {}),
           error: error instanceof Error ? error.message : String(error),
         });
+        diagnostics.log("request.failed", {
+          requestId: request.id,
+          kind: request.kind,
+          sideEffectStarted,
+          operationCompleted,
+          ambiguousSideEffect,
+          error: errorDetails(error),
+        });
         if (ambiguousSideEffect) removeClaim = true;
       } finally {
         if (removeClaim) {
@@ -680,6 +789,7 @@ async function pump() {
       break;
     }
   } catch (error) {
+    diagnostics.log("pump.crashed", { error: errorDetails(error) });
     console.error(
       `session-inbox pump failed: ${error instanceof Error ? error.message : String(error)}`,
     );
@@ -703,8 +813,10 @@ async function armAfterIdleEvent() {
 session.on("user.message", () => {
   idleEpoch += 1;
   idleReady = false;
+  diagnostics.log("session.user_message", { idleEpoch });
 });
 session.on("session.idle", () => {
+  diagnostics.log("session.idle", { idleEpoch });
   void armAfterIdleEvent();
 });
 

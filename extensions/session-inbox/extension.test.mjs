@@ -18,6 +18,10 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const sourceExtension = join(dirname(fileURLToPath(import.meta.url)), "extension.mjs");
+const sourceDiagnostics = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "diagnostics.mjs",
+);
 
 async function waitFor(read, label, attempts = 300) {
   let lastError;
@@ -64,9 +68,11 @@ async function createHarness(initialState = {}) {
   const statePath = join(root, "state.json");
   const callsPath = join(root, "calls.jsonl");
   const extensionPath = join(root, "extension.mjs");
+  const diagnosticsPath = join(root, "diagnostics.mjs");
   const sdkDir = join(root, "node_modules", "@github", "copilot-sdk");
   await mkdir(sdkDir, { recursive: true });
   await cp(sourceExtension, extensionPath);
+  await cp(sourceDiagnostics, diagnosticsPath);
   await writeState(statePath, {
     processing: false,
     active: false,
@@ -106,6 +112,9 @@ setInterval(() => {
 }, 20);
 
 export async function joinSession() {
+  if (state().rejectJoin) {
+    throw new Error("mock SDK join failed");
+  }
   return {
     sessionId: "test-session",
     on(name, listener) {
@@ -186,12 +195,14 @@ export async function joinSession() {
     child.on("exit", (code, signal) => resolve({ code, signal, stderr }));
   });
 
-  const heartbeat = await waitFor(async () => {
-    const instances = join(inbox, "instances");
-    const names = await readdir(instances);
-    const name = names.find((entry) => entry.endsWith(".json"));
-    return name ? readJson(join(instances, name)) : undefined;
-  }, "extension heartbeat");
+  const heartbeat = initialState.rejectJoin
+    ? undefined
+    : await waitFor(async () => {
+        const instances = join(inbox, "instances");
+        const names = await readdir(instances);
+        const name = names.find((entry) => entry.endsWith(".json"));
+        return name ? readJson(join(instances, name)) : undefined;
+      }, "extension heartbeat");
 
   async function setState(patch) {
     await writeState(statePath, { ...(await readJson(statePath)), ...patch });
@@ -236,6 +247,23 @@ export async function joinSession() {
       .map((line) => JSON.parse(line));
   }
 
+  async function diagnosticEntries() {
+    const directory = join(inbox, "logs");
+    const names = await readdir(directory);
+    const entries = [];
+    for (const name of names) {
+      const content = await readFile(join(directory, name), "utf8");
+      entries.push(
+        ...content
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line)),
+      );
+    }
+    return entries;
+  }
+
   async function stop() {
     if (child.exitCode === null) child.kill("SIGTERM");
     await exit;
@@ -243,8 +271,36 @@ export async function joinSession() {
     await rm(root, { recursive: true, force: true });
   }
 
-  return { root, inbox, child, exit, heartbeat, request, receipt, calls, setState, stop };
+  return {
+    root,
+    inbox,
+    child,
+    exit,
+    heartbeat,
+    request,
+    receipt,
+    calls,
+    diagnosticEntries,
+    setState,
+    stop,
+  };
 }
+
+test("extension startup failures are persisted before session join", async () => {
+  const harness = await createHarness({ rejectJoin: true });
+  try {
+    const result = await harness.exit;
+    assert.notEqual(result.code, 0);
+    const diagnostics = await harness.diagnosticEntries();
+    const failure = diagnostics.find(
+      (entry) => entry.event === "extension.start_failed",
+    );
+    assert.equal(failure.phase, "joinSession");
+    assert.equal(failure.error.message, "mock SDK join failed");
+  } finally {
+    await harness.stop();
+  }
+});
 
 test("recipient extension gates delivery, deduplicates, and preserves compact phase state", async () => {
   const harness = await createHarness();
@@ -259,6 +315,18 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
     const idleReceipt = await harness.receipt("completed", "idle-send");
     assert.equal(idleReceipt.result.delivery, "idle");
 
+    await harness.setState({ idleCounter: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await harness.setState({ pending: 1 });
+    await harness.request("gate-deferred", {
+      kind: "send",
+      prompt: "gate-deferred prompt",
+      mode: "immediate",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await harness.setState({ pending: 0, idleCounter: 2 });
+    await harness.receipt("completed", "gate-deferred");
+
     await harness.setState({ processing: true });
     await harness.request("busy-send", {
       kind: "send",
@@ -269,7 +337,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
     await assert.rejects(readFile(join(harness.inbox, "completed", "busy-send.json")), {
       code: "ENOENT",
     });
-    await harness.setState({ processing: false, idleCounter: 1 });
+    await harness.setState({ processing: false, idleCounter: 3 });
     assert.equal((await harness.receipt("completed", "busy-send")).result.delivery, "idle");
 
     await harness.request("dedupe-first", {
@@ -279,7 +347,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
       dedupeKey: "one-shot",
     });
     await harness.receipt("completed", "dedupe-first");
-    await harness.setState({ idleCounter: 2 });
+    await harness.setState({ idleCounter: 4 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("dedupe-second", {
       kind: "send",
@@ -295,8 +363,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
       ).length,
       1,
     );
-
-    await harness.setState({ delivery: "steering", idleCounter: 3 });
+    await harness.setState({ delivery: "steering", idleCounter: 5 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("non-idle-send", {
       kind: "send",
@@ -307,7 +374,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
     const nonIdle = await harness.receipt("completed", "non-idle-send");
     assert.equal(nonIdle.result.delivery, "steering");
     assert.equal(nonIdle.result.idleDelivery, false);
-    await harness.setState({ delivery: "idle", idleCounter: 4 });
+    await harness.setState({ delivery: "idle", idleCounter: 6 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("non-idle-retry", {
       kind: "send",
@@ -324,7 +391,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
       ).length,
       1,
     );
-    await harness.setState({ idleCounter: 5 });
+    await harness.setState({ idleCounter: 7 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("dedupe-conflict", {
       kind: "send",
@@ -341,7 +408,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
       0,
     );
 
-    await harness.setState({ suppressDelivery: true, idleCounter: 6 });
+    await harness.setState({ suppressDelivery: true, idleCounter: 8 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("unconfirmed-send", {
       kind: "send",
@@ -352,7 +419,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
     const unconfirmed = await harness.receipt("completed", "unconfirmed-send");
     assert.equal(unconfirmed.result.delivery, "unconfirmed");
     assert.equal(unconfirmed.result.idleDelivery, false);
-    await harness.setState({ suppressDelivery: false, idleCounter: 7 });
+    await harness.setState({ suppressDelivery: false, idleCounter: 9 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("unconfirmed-retry", {
       kind: "send",
@@ -373,7 +440,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
       1,
     );
 
-    await harness.setState({ rejectSendAfterRecord: true, idleCounter: 8 });
+    await harness.setState({ rejectSendAfterRecord: true, idleCounter: 10 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("ambiguous-send", {
       kind: "send",
@@ -383,7 +450,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
     });
     const ambiguousSend = await harness.receipt("failed", "ambiguous-send");
     assert.equal(ambiguousSend.ambiguousSideEffect, true);
-    await harness.setState({ rejectSendAfterRecord: false, idleCounter: 9 });
+    await harness.setState({ rejectSendAfterRecord: false, idleCounter: 11 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("ambiguous-send-retry", {
       kind: "send",
@@ -402,7 +469,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
       1,
     );
 
-    await harness.setState({ delivery: "steering", idleCounter: 10 });
+    await harness.setState({ delivery: "steering", idleCounter: 12 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("compact-partial", {
       kind: "compact",
@@ -418,7 +485,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
     await harness.setState({
       delivery: "idle",
       breakDedupeWrite: true,
-      idleCounter: 11,
+      idleCounter: 13,
     });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("compact-receipt-failure", {
@@ -429,7 +496,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
     const failedReceipt = await harness.receipt("failed", "compact-receipt-failure");
     assert.equal(failedReceipt.sideEffectCompleted, true);
     assert.equal(failedReceipt.result.compacted, true);
-    await harness.setState({ idleCounter: 12 });
+    await harness.setState({ idleCounter: 14 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("compact-receipt-blocked-retry", {
       kind: "compact",
@@ -455,7 +522,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
       "compact-receipt-failure",
     );
     assert.equal(recoveredReceipt.recovered, true);
-    await harness.setState({ idleCounter: 13 });
+    await harness.setState({ idleCounter: 15 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("compact-receipt-retry", {
       kind: "compact",
@@ -474,6 +541,23 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
       ).length,
       1,
     );
+    const diagnostics = await harness.diagnosticEntries();
+    assert.ok(diagnostics.some((entry) => entry.event === "extension.started"));
+    assert.ok(diagnostics.some((entry) => entry.event === "request.completed"));
+    assert.ok(diagnostics.some((entry) => entry.event === "request.failed"));
+    assert.ok(diagnostics.some((entry) => entry.event === "sdk.send.unconfirmed"));
+    assert.ok(
+      diagnostics.some(
+        (entry) =>
+          entry.event === "request.deferred" &&
+          entry.requestId === "gate-deferred" &&
+          entry.idleReady === true &&
+          entry.pendingQueueItems === 1,
+      ),
+    );
+    const serializedDiagnostics = JSON.stringify(diagnostics);
+    assert.doesNotMatch(serializedDiagnostics, /idle prompt/);
+    assert.doesNotMatch(serializedDiagnostics, /receipt failure proof/);
   } finally {
     await harness.stop();
   }

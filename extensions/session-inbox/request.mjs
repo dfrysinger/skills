@@ -5,8 +5,25 @@ import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { createDiagnosticLogger, errorDetails } from "./diagnostics.mjs";
+
+const root = process.env.COPILOT_SESSION_INBOX_DIR ?? join(homedir(), ".copilot", "session-inbox");
+const diagnostics = createDiagnosticLogger(
+  root,
+  `requests-${new Date().toISOString().slice(0, 10)}.jsonl`,
+  { component: "request", pid: process.pid },
+);
+process.on("uncaughtException", (error) => {
+  diagnostics.log("request.crashed", { error: errorDetails(error) });
+  console.error(error);
+  process.exit(1);
+});
+
 function usage(message) {
-  if (message) console.error(`session-inbox-request: ${message}`);
+  if (message) {
+    diagnostics.log("request.invalid", { error: { message } });
+    console.error(`session-inbox-request: ${message}`);
+  }
   console.error(
     "usage: request.mjs <send|compact|new-session> (--target-tmux NAME | --target-session ID) [options]",
   );
@@ -41,8 +58,6 @@ if (Boolean(options["target-tmux"]) === Boolean(options["target-session"])) {
 const timeoutSeconds = Number(options.timeout ?? "15");
 if (!Number.isFinite(timeoutSeconds) || timeoutSeconds < 0) usage("invalid --timeout");
 
-const root = process.env.COPILOT_SESSION_INBOX_DIR ?? join(homedir(), ".copilot", "session-inbox");
-
 async function resolveTarget({ tmuxSession, sessionId }) {
   const instancesDir = join(root, "instances");
   let names;
@@ -76,6 +91,14 @@ async function resolveTarget({ tmuxSession, sessionId }) {
   }
   if (matches.length !== 1) {
     const label = tmuxSession ?? sessionId;
+    diagnostics.log("target.unresolved", {
+      targetType: tmuxSession ? "tmux" : "session",
+      target: label,
+      freshMatches: matches.map((match) => ({
+        sessionId: match.sessionId,
+        generation: match.generation,
+      })),
+    });
     usage(
       matches.length === 0
         ? `no fresh session-inbox instance for ${label}`
@@ -100,6 +123,12 @@ const request = {
   kind: options.kind,
   ...(options["dedupe-key"] ? { dedupeKey: options["dedupe-key"] } : {}),
 };
+diagnostics.setContext({
+  requestId: id,
+  kind: options.kind,
+  targetSessionId: target.sessionId,
+  targetGeneration: target.generation,
+});
 
 switch (options.kind) {
   case "send":
@@ -138,6 +167,12 @@ const pendingPath = join(pendingDir, `${id}.json`);
 await mkdir(pendingDir, { recursive: true, mode: 0o700 });
 await writeFile(temporaryPath, `${JSON.stringify(request, null, 2)}\n`, { mode: 0o600 });
 await rename(temporaryPath, pendingPath);
+diagnostics.log("request.published", {
+  requestPath: pendingPath,
+  hasDedupeKey: Boolean(request.dedupeKey),
+  mode: request.mode,
+  agentMode: request.agentMode,
+});
 console.log(`request: ${pendingPath}`);
 
 if (timeoutSeconds === 0) process.exit(0);
@@ -150,6 +185,13 @@ while (Date.now() < deadline) {
   ]) {
     try {
       const receipt = JSON.parse(await readFile(path, "utf8"));
+      diagnostics.log(success ? "receipt.completed" : "receipt.failed", {
+        receiptPath: path,
+        receiptStatus: receipt.status,
+        delivery: receipt.result?.delivery,
+        ambiguousSideEffect: receipt.ambiguousSideEffect === true,
+        error: receipt.error ? { message: receipt.error } : undefined,
+      });
       console.log(`receipt: ${path}`);
       console.log(JSON.stringify(receipt));
       process.exit(success ? 0 : 1);
@@ -160,5 +202,9 @@ while (Date.now() < deadline) {
   await new Promise((resolve) => setTimeout(resolve, 200));
 }
 
+diagnostics.log("receipt.timeout", {
+  timeoutSeconds,
+  pendingPath,
+});
 console.error(`session-inbox-request: timed out waiting for ${id}`);
 process.exit(2);
