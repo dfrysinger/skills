@@ -1,6 +1,6 @@
 ---
 name: explain
-description: Explain work to someone who steers it but never reads the code. Use proactively before summarizing what you built, finished, or found; before presenting options or a recommendation; when handing off or catching someone up on a project; whenever the user asks you to explain, teach, or walk through something; and when asking the user a clarifying question.
+description: Explain work to someone who steers it but never reads the code and may not know or remember how the system works. Use proactively before summarizing what you built, finished, or found; before presenting options or a recommendation; when handing off or catching someone up on a project; whenever the user asks you to explain, teach, walk through something, or show how it works in practice; and when asking the user a clarifying question.
 author: skill-review
 ---
 
@@ -26,8 +26,11 @@ ones. The detail belongs in what you describe — the pieces, the order, the
 choice you made — not in the vocabulary you describe it with. Write so that
 someone with no involvement in the project could follow the whole thing.
 
-Assume no memory of the code, the design, or the decisions — including their
-own.
+The reader may not know how the system works at all. If they learned it before,
+assume they do not remember it now. Do not depend on a previous explanation,
+source-code terminology, or an unstated relationship between parts. Re-establish
+the purpose, the important pieces, and how they fit together before asking the
+reader to reason about a change. This includes decisions they made themselves.
 
 ## The shape
 
@@ -48,7 +51,18 @@ pattern others will build on.
    before.
 3. **How it is built** — the architecture in detail: the pieces, what each one
    owns, how they connect, what happens in what order, and which existing parts
-   of the system it builds on. This is where the detail budget goes.
+   of the system it builds on. This is where the detail budget goes. Whenever
+   possible, follow the description with one concrete end-to-end journey:
+   - Start with a person, agent, or scheduled event doing something realistic.
+   - Walk through what happens next in order, naming which part acts, what it
+     receives, what it produces, and what the person sees.
+   - Continue through the user-visible result. When failure or recovery is
+     important to the decision, show that path in the same concrete terms.
+   - Use real details when they are known. Otherwise invent a small,
+     representative example and label it **Illustrative example** so nobody
+     mistakes it for observed behavior or evidence.
+   - Keep the example faithful to the actual design. It should make the
+     mechanics visible, not replace them with an analogy.
 4. **Where it is weak** — say each of these plainly and unprompted, since the
    reader has no other way to find them:
    - **Whether it duplicates something.** For anything introducing a component
@@ -82,6 +96,10 @@ pattern others will build on.
 - **Describe the approach, not the outcome.** "Handled the edge case" is
   unreviewable. Say what the code now does, concretely enough that a bad choice
   is visible to someone who cannot see it.
+- **Prefer a worked journey to a list of abstractions.** A list of components
+  says what exists but not how the product works. Anchor the explanation in a
+  realistic run through the system, then connect each step back to the piece
+  that owns it.
 - **A long explanation a stranger can follow beats a short one they cannot.**
   Compress only when asked for a shorter version.
 - **Ordinary complete sentences.** Plain is not clipped, and not telegraphic.
@@ -99,6 +117,8 @@ pattern others will build on.
 Re-read the draft. For work that earns the full shape, it names each piece and
 how they connect, says which existing parts it builds on and what came back
 when you looked for work that already did this, says what reusing it elsewhere
-would take, and ends with the decision you need or states that none is needed.
-For a contained change, it says what changed and what it touches, in words a
-stranger could follow.
+would take, includes a concrete end-to-end journey whenever one can make the
+system easier to understand, and ends with the decision you need or states that
+none is needed. Any invented details are explicitly labeled illustrative. For
+a contained change, it says what changed and what it touches, in words a
+stranger with no memory of the system could follow.
