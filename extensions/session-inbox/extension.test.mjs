@@ -367,7 +367,7 @@ test("extension startup failures are persisted before session join", async () =>
   }
 });
 
-test("recipient extension gates delivery, deduplicates, and preserves compact phase state", async () => {
+test("recipient extension submits SDK work without idle gates and preserves phase state", async () => {
   const harness = await createHarness();
   try {
     assert.equal(harness.heartbeat.sessionName, "hotel");
@@ -435,28 +435,73 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
     });
 
     await new Promise((resolve) => setTimeout(resolve, 350));
-    await harness.setState({ pending: 1 });
-    await harness.request("gate-deferred", {
-      kind: "send",
-      prompt: "gate-deferred prompt",
-      mode: "immediate",
+    await harness.setState({ processing: true, active: true, pending: 2 });
+    await harness.request("busy-compact", {
+      kind: "compact",
+      customInstructions: "compact during active autopilot",
     });
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    await harness.setState({ pending: 0, idleCounter: 4 });
-    await harness.receipt("completed", "gate-deferred");
+    assert.equal(
+      (await harness.receipt("completed", "busy-compact")).result.compacted,
+      true,
+    );
+    assert.ok(
+      (await harness.calls()).some(
+        (call) =>
+          call.kind === "compact" &&
+          call.value.customInstructions ===
+            "compact during active autopilot",
+      ),
+    );
 
-    await harness.setState({ processing: true });
     await harness.request("busy-send", {
       kind: "send",
-      prompt: "deferred prompt",
-      mode: "immediate",
+      prompt: "queue during active work",
+      mode: "enqueue",
     });
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    await assert.rejects(readFile(join(harness.inbox, "completed", "busy-send.json")), {
-      code: "ENOENT",
+    assert.equal(
+      (await harness.receipt("completed", "busy-send")).result.delivery,
+      "idle",
+    );
+    assert.deepEqual(
+      (await harness.calls()).find(
+        (call) =>
+          call.kind === "send" &&
+          call.value.prompt === "queue during active work",
+      ),
+      {
+        kind: "send",
+        value: {
+          prompt: "queue during active work",
+          mode: "enqueue",
+        },
+      },
+    );
+
+    await harness.setState({ delivery: "queued" });
+    await harness.request("busy-autopilot", {
+      kind: "autopilot",
+      prompt: "queue the objective during active work",
+      dedupeKey: "busy-autopilot",
     });
-    await harness.setState({ processing: false, idleCounter: 5 });
-    assert.equal((await harness.receipt("completed", "busy-send")).result.delivery, "idle");
+    const busyAutopilot = await harness.receipt("completed", "busy-autopilot");
+    assert.equal(busyAutopilot.result.objectiveSet, true);
+    assert.equal(busyAutopilot.result.delivery, "queued");
+    assert.equal(busyAutopilot.result.queuedDelivery, true);
+    assert.ok(
+      (await harness.calls()).some(
+        (call) =>
+          call.kind === "command" &&
+          call.value.command ===
+            "/autopilot queue the objective during active work",
+      ),
+    );
+    await harness.setState({
+      processing: false,
+      active: false,
+      pending: 0,
+      delivery: "idle",
+      idleCounter: 4,
+    });
 
     await harness.request("dedupe-first", {
       kind: "send",
@@ -601,9 +646,31 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
     assert.match(compactPartial.result.continuationError, /instead of idle/);
 
     await harness.setState({
+      delivery: "queued",
+      processing: true,
+      active: true,
+      pending: 1,
+      idleCounter: 15,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await harness.request("compact-queued-continuation", {
+      kind: "compact",
+      customInstructions: "queued continuation proof",
+      continuationPrompt: "resume through the native queue",
+    });
+    const compactQueued = await harness.receipt(
+      "completed",
+      "compact-queued-continuation",
+    );
+    assert.equal(compactQueued.result.compacted, true);
+    assert.equal(compactQueued.result.continuationDelivered, true);
+    assert.equal(compactQueued.result.continuationDelivery, "queued");
+    assert.equal(compactQueued.result.continuationError, undefined);
+
+    await harness.setState({
       delivery: "idle",
       breakDedupeWrite: true,
-      idleCounter: 15,
+      idleCounter: 16,
     });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("compact-receipt-failure", {
@@ -614,7 +681,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
     const failedReceipt = await harness.receipt("failed", "compact-receipt-failure");
     assert.equal(failedReceipt.sideEffectCompleted, true);
     assert.equal(failedReceipt.result.compacted, true);
-    await harness.setState({ idleCounter: 16 });
+    await harness.setState({ idleCounter: 17 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("compact-receipt-blocked-retry", {
       kind: "compact",
@@ -640,7 +707,7 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
       "compact-receipt-failure",
     );
     assert.equal(recoveredReceipt.recovered, true);
-    await harness.setState({ idleCounter: 17 });
+    await harness.setState({ idleCounter: 18 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("compact-receipt-retry", {
       kind: "compact",
@@ -666,12 +733,14 @@ test("recipient extension gates delivery, deduplicates, and preserves compact ph
     assert.ok(diagnostics.some((entry) => entry.event === "sdk.send.unconfirmed"));
     assert.ok(
       diagnostics.some(
-        (entry) =>
-          entry.event === "request.deferred" &&
-          entry.requestId === "gate-deferred" &&
-          entry.idleReady === true &&
-          entry.pendingQueueItems === 1,
+        (entry) => entry.event === "sdk.autopilot_objective.queued",
       ),
+    );
+    assert.equal(
+      diagnostics.some(
+        (entry) => entry.event === "request.deferred",
+      ),
+      false,
     );
     const serializedDiagnostics = JSON.stringify(diagnostics);
     assert.doesNotMatch(serializedDiagnostics, /idle prompt/);

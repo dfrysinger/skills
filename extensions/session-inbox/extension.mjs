@@ -81,8 +81,6 @@ const diagnostics = createDiagnosticLogger(
   },
 );
 let pumping = false;
-let idleReady = false;
-let idleEpoch = 0;
 
 await Promise.all(
   [
@@ -201,6 +199,7 @@ async function sendAndConfirm({ prompt, mode = "immediate", agentMode }) {
       messageId,
       delivery: event?.data.delivery ?? "unconfirmed",
       idleDelivery: event?.data.delivery === "idle",
+      queuedDelivery: event?.data.delivery === "queued",
     };
   } finally {
     unsubscribe();
@@ -220,6 +219,7 @@ async function enqueueAutopilotObjective(prompt) {
       activation = {
         delivery: event.data.delivery,
         idleDelivery: event.data.delivery === "idle",
+        queuedDelivery: event.data.delivery === "queued",
       };
     }
   });
@@ -232,6 +232,7 @@ async function enqueueAutopilotObjective(prompt) {
     if (result.queued !== true) {
       throw new Error("autopilot command was not accepted");
     }
+    diagnostics.log("sdk.autopilot_objective.queued");
 
     while (Date.now() < deadline) {
       if (!objective) {
@@ -254,7 +255,7 @@ async function enqueueAutopilotObjective(prompt) {
         }
       }
       if (objective && activation) {
-        if (!activation.idleDelivery) {
+        if (!activation.idleDelivery && !activation.queuedDelivery) {
           throw Object.assign(
             new Error(
               `autopilot objective started with ${activation.delivery ?? "unknown"} delivery`,
@@ -306,6 +307,7 @@ async function execute(request) {
         objectiveStatus: objective.objectiveStatus,
         delivery: objective.delivery,
         idleDelivery: objective.idleDelivery,
+        queuedDelivery: objective.queuedDelivery,
         activation: objective.delivery,
       };
     }
@@ -324,19 +326,16 @@ async function execute(request) {
       let continuationError;
       if (request.continuationPrompt) {
         try {
-          const processing = await session.rpc.metadata.isProcessing();
-          if (processing.processing) {
-            throw new Error("session remained busy after compaction");
-          }
           const continuation = await sendAndConfirm({
             prompt: request.continuationPrompt,
-            mode: "immediate",
+            mode: "enqueue",
           });
-          continuationDelivered = continuation.idleDelivery;
-          if (!continuation.idleDelivery) {
+          continuationDelivered =
+            continuation.idleDelivery || continuation.queuedDelivery;
+          if (!continuationDelivered) {
             continuationError = `SDK delivered the continuation as ${
               continuation.delivery ?? "unknown"
-            } instead of idle`;
+            } instead of idle or queued`;
           }
           continuationDelivery = continuation.delivery;
         } catch (error) {
@@ -695,18 +694,9 @@ async function findDedupeReservation(request, currentName) {
 }
 
 async function pump() {
-  if (pumping || recovering || !idleReady) return;
+  if (pumping || recovering) return;
   pumping = true;
   try {
-    const [processing, activity] = await Promise.all([
-      session.rpc.metadata.isProcessing(),
-      session.rpc.metadata.activity(),
-    ]);
-    if (processing.processing || activity.hasActiveWork) {
-      idleReady = false;
-      return;
-    }
-
     const names = (await readdir(pendingDir))
       .filter((name) => name.endsWith(".json"))
       .sort();
@@ -792,36 +782,6 @@ async function pump() {
             }
             throw new Error("dedupe key has an unfinished prior request");
           }
-          const epoch = idleEpoch;
-          const idleWasReady = idleReady;
-          const [processingNow, activityNow, pendingNow] = await Promise.all([
-            session.rpc.metadata.isProcessing(),
-            session.rpc.metadata.activity(),
-            session.rpc.queue.pendingItems(),
-          ]);
-          if (
-            !idleReady ||
-            epoch !== idleEpoch ||
-            processingNow.processing ||
-            activityNow.hasActiveWork ||
-            pendingNow.items.length > 0
-          ) {
-            idleReady = false;
-            removeClaim = false;
-            diagnostics.log("request.deferred", {
-              requestId: request.id,
-              kind: request.kind,
-              idleReady: idleWasReady,
-              idleEpochChanged: epoch !== idleEpoch,
-              processing: processingNow.processing,
-              activeWork: activityNow.hasActiveWork,
-              pendingQueueItems: pendingNow.items.length,
-            });
-            await rename(claimedPath, pendingPath);
-            await rm(claimedStagePath, { force: true });
-            break;
-          }
-          idleReady = false;
           await writeJson(claimedStagePath, {
             ownerGeneration: generation,
             stage: "executing",
@@ -933,7 +893,6 @@ async function pump() {
           await rm(claimedPath, { force: true });
           await rm(claimedStagePath, { force: true });
         }
-        void armAfterIdleEvent();
       }
 
       // A send or command may have started or replaced the foreground turn.
@@ -949,31 +908,9 @@ async function pump() {
   }
 }
 
-async function armAfterIdleEvent() {
-  await new Promise((resolve) => setTimeout(resolve, 250));
-  const [processing, activity, pending] = await Promise.all([
-    session.rpc.metadata.isProcessing(),
-    session.rpc.metadata.activity(),
-    session.rpc.queue.pendingItems(),
-  ]);
-  if (processing.processing || activity.hasActiveWork || pending.items.length > 0) return;
-  idleReady = true;
-  void pump();
-}
-
-session.on("user.message", () => {
-  idleEpoch += 1;
-  idleReady = false;
-  diagnostics.log("session.user_message", { idleEpoch });
-});
-session.on("session.idle", () => {
-  diagnostics.log("session.idle", { idleEpoch });
-  void armAfterIdleEvent();
-});
-
 await writeHeartbeat();
 setInterval(() => void writeHeartbeat(), 5_000);
 setInterval(() => void recoverStaleClaims(), 5_000);
 setInterval(() => void pump(), 500);
 setTimeout(() => void recoverStaleClaims(), 1_000);
-setTimeout(() => void armAfterIdleEvent(), 2_000);
+setTimeout(() => void pump(), 250);

@@ -160,11 +160,15 @@ else
   continuation_text="$(cat "$continuation")"
 fi
 if [ "${FAKE_REQUEST_MODE:-success}" != continuation-failed ]; then
-  CONTENT="$continuation_text" /usr/bin/perl -MJSON::PP -e '
+  continuation_delivery=idle
+  [ "${FAKE_REQUEST_MODE:-success}" != queued-continuation ] ||
+    continuation_delivery=queued
+  CONTENT="$continuation_text" DELIVERY="$continuation_delivery" \
+    /usr/bin/perl -MJSON::PP -e '
     print encode_json({
       agentId => undef,
       type => "user.message",
-      data => {content => $ENV{CONTENT}, delivery => "idle"},
+      data => {content => $ENV{CONTENT}, delivery => $ENV{DELIVERY}},
     }), "\n";
   ' >> "$FAKE_EVENTS"
 fi
@@ -358,6 +362,18 @@ assert_count 1 '^1$' "$FAKE_REQUEST_COUNT"
 [ ! -s "$FAKE_TMUX_CALLS" ] || fail "self-compact called tmux"
 grep -q '"status":"completed"' "$log" || fail "completed receipt was not logged"
 ! grep -Fq 'active baton' "$log" || fail "brief leaked into the verifier log"
+wait_for_absent "$FAKE_CASE/session/files/self-compact.lock"
+
+# Native queued delivery is also a verified continuation.
+setup_case queued-continuation
+export FAKE_REQUEST_MODE=queued-continuation
+append_authorizing_events "$brief"
+output="$(run_submit)" || fail "queued continuation case did not arm"
+lock_token="$(printf '%s\n' "$output" | sed -n 's/^self-compact handoff receipt: //p')"
+log="$(printf '%s\n' "$output" | sed -n 's/^watcher log: //p')"
+complete_authorizing_turn "self-compact handoff receipt: $lock_token"
+wait_for_log 'verified token-bound compaction checkpoint 2 and one SDK continuation' "$log"
+assert_count 1 '^1$' "$FAKE_REQUEST_COUNT"
 wait_for_absent "$FAKE_CASE/session/files/self-compact.lock"
 
 # Ordinary assistant prose from an earlier completed turn does not block the

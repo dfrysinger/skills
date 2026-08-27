@@ -26,8 +26,12 @@ if (process.env.MOCK_MODE === "fail") {
   console.log('{"status":"failed","error":"recipient rejected request"}');
   process.exit(1);
 }
-if (process.env.MOCK_MODE === "non-idle") {
+if (process.env.MOCK_MODE === "queued") {
   console.log('{"status":"completed","result":{"objectiveSet":true,"delivery":"queued"}}');
+  process.exit(0);
+}
+if (process.env.MOCK_MODE === "steering") {
+  console.log('{"status":"completed","result":{"objectiveSet":true,"delivery":"steering"}}');
   process.exit(0);
 }
 if (process.env.MOCK_MODE === "missing-objective") {
@@ -85,6 +89,12 @@ IFS=$'\t' read -r result args _ output < <(
 [[ "$result" -eq 0 ]]
 grep -Fq '["autopilot","--target-tmux","whisky","--prompt-file"' "$args"
 
+IFS=$'\t' read -r result _ _ output < <(
+  run_case queued queued --target-session session-queued "keep working"
+)
+[[ "$result" -eq 0 ]]
+grep -Fq 'autopilot handoff confirmed; receipt:' "$output"
+
 IFS=$'\t' read -r result _ prompts _ < <(
   run_case immutable mutate-source --target-session session-immutable \
     "validated immutable objective"
@@ -114,16 +124,16 @@ grep -Fq 'status=failed' "$receipt"
 grep -Fq 'recipient rejected request' "$receipt"
 
 IFS=$'\t' read -r result _ _ output < <(
-  run_case non-idle non-idle --target-session session-3 "keep working"
+  run_case steering steering --target-session session-3 "keep working"
 )
 [[ "$result" -eq 1 ]]
-grep -Fq 'did not prove native objective establishment and idle starting-message delivery' "$output"
+grep -Fq 'did not prove native objective establishment and idle/queued starting-message delivery' "$output"
 
 IFS=$'\t' read -r result _ _ output < <(
   run_case missing-objective missing-objective --target-session session-3b "keep working"
 )
 [[ "$result" -eq 1 ]]
-grep -Fq 'did not prove native objective establishment and idle starting-message delivery' "$output"
+grep -Fq 'did not prove native objective establishment and idle/queued starting-message delivery' "$output"
 
 for invalid in '/autopilot do it' '/goal do it' '/allow-all' 'contains <SLOT>'; do
   IFS=$'\t' read -r result _ _ _ < <(

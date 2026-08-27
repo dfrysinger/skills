@@ -99,15 +99,15 @@ if [[ "$BACKEND" == "copilot" ]]; then
   if REQUEST_OUTPUT="$(node "$REQUEST_CLI" send \
     --target-name "$NAME" \
     --prompt-file "$PROMPT_FILE" \
-    --mode immediate \
+    --mode enqueue \
     --dedupe-key "mailbox:$NAME:$NEWEST_ID" \
     --timeout "$TIMEOUT" 2>&1)"; then
-    if grep -Fq '"delivery":"idle"' <<<"$REQUEST_OUTPUT"; then
+    if grep -Eq '"delivery":"(idle|queued)"' <<<"$REQUEST_OUTPUT"; then
       printf '%s\n' "$NEWEST_ID" >"$WATERMARK_FILE"
-      echo "poked: $NAME (SDK idle delivery verified)"
+      echo "poked: $NAME (SDK native delivery verified)"
       exit 0
     fi
-    echo "UNVERIFIED: '$NAME' received the SDK wakeup outside an idle boundary; the envelope remains pending and durable dedupe prevents duplicate delivery." >&2
+    echo "UNVERIFIED: '$NAME' received the SDK wakeup outside the native idle/queued paths; the envelope remains pending and durable dedupe prevents duplicate delivery." >&2
     exit 3
   fi
   echo "UNVERIFIED: '$NAME' did not acknowledge the SDK wakeup; the envelope and request remain queued." >&2
