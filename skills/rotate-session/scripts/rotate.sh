@@ -3,31 +3,24 @@
 #
 #   rotate.sh <old-session-id> <prompt-file> [--consume-prompt]
 #
-# Typing `/new <prompt>` into the CLI input is racy. The CLI queues any message
-# that arrives while it is busy, and a queued message only drains at a turn
-# boundary. A freshly created session has no turn in flight, so the seed can sit
-# in the queue indefinitely while the session looks empty. This script closes
-# that gap by refusing to submit until the whole prompt is on screen, and by
-# confirming the fresh session actually received a message rather than assuming
-# it did.
-#
-# Prompt validation and snapshotting happen synchronously. The tmux interaction
-# runs in a detached child because the caller's turn ends when rotation fires.
+# The seed is snapshotted and logged synchronously. A detached request then asks
+# the session-inbox extension to create one new seeded session only after the
+# old session reaches idle.
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$SCRIPT_DIR/../../_lib/copilot-pane.sh"
-
+REQUEST_CLI="${SESSION_INBOX_REQUEST_CLI:-$SCRIPT_DIR/../../../extensions/session-inbox/request.mjs}"
 USAGE="usage: rotate.sh <old-session-id> <prompt-file> [--consume-prompt]"
 OLD="${1:?$USAGE}"
 PROMPT_FILE="${2:?$USAGE}"
 CONSUME_PROMPT="${3:-}"
-PANE="${TMUX_PANE:?TMUX_PANE is not set. This script drives a tmux pane and cannot run outside one; print the expanded /new command for the user to run instead (see the SKILL.md outside-tmux branch).}"
 STATE="$HOME/.copilot/session-state"
+INSTANCES="$HOME/.copilot/session-inbox/instances"
 LOG="${ROTATE_LOG:-/tmp/rotate-session-$OLD.log}"
 TMP_ROOT="${TMPDIR:-/tmp}"
 TMP_ROOT="${TMP_ROOT%/}"
+TIMEOUT_SECONDS="${ROTATE_SESSION_TIMEOUT_SECONDS:-360}"
 [ -n "$TMP_ROOT" ] || TMP_ROOT=/
 
 case "$CONSUME_PROMPT" in
@@ -35,6 +28,15 @@ case "$CONSUME_PROMPT" in
   *) echo "rotate.sh: $USAGE" >&2; exit 1 ;;
 esac
 
+[[ "$TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] &&
+  ((TIMEOUT_SECONDS >= 1 && TIMEOUT_SECONDS <= 360)) || {
+  echo "rotate.sh: timeout must be between 1 and 360 seconds" >&2
+  exit 1
+}
+[ -r "$REQUEST_CLI" ] || {
+  echo "rotate.sh: session-inbox request helper is unavailable" >&2
+  exit 1
+}
 [ -s "$PROMPT_FILE" ] || { echo "rotate.sh: prompt file is empty" >&2; exit 1; }
 [ -d "$STATE/$OLD" ] || { echo "rotate.sh: no such session $OLD" >&2; exit 1; }
 
@@ -50,9 +52,6 @@ case "$PROMPT" in
     ;;
 esac
 
-# Freeze the prompt before the detached child starts. The caller's input file
-# may be cleaned up or replaced after this command returns; the recovery copy
-# remains private to this rotation and is retained only when seeding fails.
 umask 077
 RECOVERY_FILE=$(mktemp "$TMP_ROOT/copilot-rotate-recovery-$OLD.XXXXXX") || {
   echo "rotate.sh: could not create private prompt snapshot" >&2
@@ -67,9 +66,6 @@ if ! printf '%s' "$PROMPT" >"$RECOVERY_FILE"; then
   exit 1
 fi
 
-# Record the recovery path before detaching so an interrupted child cannot
-# leave an undiscoverable snapshot. Keep the checked descriptor open for the
-# child so pathname changes cannot break later result logging.
 if ! exec 3>>"$LOG"; then
   if rm -f -- "$RECOVERY_FILE"; then
     echo "rotate.sh: could not open rotation log; original prompt retained at $PROMPT_FILE" >&2
@@ -80,7 +76,7 @@ if ! exec 3>>"$LOG"; then
 fi
 if ! printf '%s\n' \
   "=== rotate $OLD at $(date -Iseconds) ===" \
-  "recovery snapshot: $RECOVERY_FILE (removed after successful seeding)" >&3; then
+  "recovery snapshot: $RECOVERY_FILE (removed after replacement session and seed verification)" >&3; then
   exec 3>&-
   if rm -f -- "$RECOVERY_FILE"; then
     echo "rotate.sh: could not write rotation log; original prompt retained at $PROMPT_FILE" >&2
@@ -90,8 +86,6 @@ if ! printf '%s\n' \
   exit 1
 fi
 
-# Documented callers opt in to consuming their unique temporary input. The
-# explicit flag keeps generic prompt files caller-owned.
 if [ "$CONSUME_PROMPT" = "--consume-prompt" ] && ! rm -f -- "$PROMPT_FILE"; then
   echo "RESULT: prompt consumption failed; recovery copy preserved at $RECOVERY_FILE" >&3
   exec 3>&-
@@ -99,112 +93,118 @@ if [ "$CONSUME_PROMPT" = "--consume-prompt" ] && ! rm -f -- "$PROMPT_FILE"; then
   exit 1
 fi
 
-# The input box is read through the shared pane parser, which knows both the
-# boxed and caret layouts. A long prompt wraps across several rows, so the whole
-# region has to be read.
-_input_region() { cp_capture "$PANE" | cp_input_region; }
-
-# Wrapping inserts newlines and padding at arbitrary points, so compare with all
-# whitespace removed.
-_squash() { cp_input_signature; }
-
-_input_is_empty() {
-  local t
-  t=$(_input_region) || return 1
-  [ -z "$(_squash <<<"$t")" ]
-}
-
-_sessions_here() {
-  local cwd="$PWD" ws
-  for ws in "$STATE"/*/workspace.yaml; do
-    [ -r "$ws" ] || continue
-    [ "$(awk -F': ' '/^cwd: /{sub(/[[:space:]]+$/,"",$2);print $2;exit}' "$ws")" = "$cwd" ] || continue
-    basename "$(dirname "$ws")"
-  done
-}
-
-# Types text and presses Enter until the input box is empty. Returns non-zero if
-# the payload never fully rendered, so the caller never submits a truncated one.
-_type_and_submit() {
-  local text="$1" marker attempt
-  # The tail is what stays visible once a long prompt wraps.
-  marker=$(printf '%s' "$text" | tail -c 60 | _squash)
-
-  tmux send-keys -t "$PANE" -l -- "$text"
-
-  for attempt in $(seq 1 40); do
-    _input_region | _squash | grep -qF -- "$marker" && break
-    sleep 0.5
-  done
-  if ! _input_region | _squash | grep -qF -- "$marker"; then
-    echo "prompt never fully rendered in the input box; not submitting" >>"$LOG"
-    return 1
-  fi
-
-  for attempt in $(seq 1 10); do
-    tmux send-keys -t "$PANE" Enter
-    sleep 1.5
-    _input_is_empty && return 0
-  done
-  return 1
-}
-
-_seeded() { [ -s "$STATE/$1/events.jsonl" ]; }
-
-_finish_success() {
-  local result="$1"
-  if ! rm -f -- "$RECOVERY_FILE"; then
-    echo "RESULT: $result, but recovery cleanup failed; prompt preserved at $RECOVERY_FILE"
-    exit 1
-  fi
-  echo "RESULT: $result"
-  exit 0
-}
-
 (
   exec 1>&3 2>&1
   exec 3>&-
-  BEFORE=$(_sessions_here | sort)
 
-  if ! _type_and_submit "/new $PROMPT"; then
-    echo "RESULT: rotation did not fire; the old session is untouched; prompt preserved at $RECOVERY_FILE"
-    exit 1
+  REQUEST_OUTPUT="$RECOVERY_FILE.request-output"
+  request_status=0
+  node "$REQUEST_CLI" new-session \
+    --target-session "$OLD" \
+    --prompt-file "$RECOVERY_FILE" \
+    --timeout "$TIMEOUT_SECONDS" >"$REQUEST_OUTPUT" 2>&1 ||
+    request_status=$?
+  cat "$REQUEST_OUTPUT"
+
+  read -r HOST_PID REQUEST_BOUNDARY < <(
+    OLD="$OLD" /usr/bin/perl -MJSON::PP -ne '
+      my $value = eval { decode_json($_) };
+      next unless $value && ref($value) eq "HASH";
+      if (($value->{status} // "") eq "completed" &&
+          ($value->{sessionId} // "") eq $ENV{OLD} &&
+          ($value->{result}{commandQueued} // 0)) {
+        print(($value->{hostPid} // ""), "\t", ($value->{completedAt} // ""), "\n");
+      }
+    ' <"$REQUEST_OUTPUT"
+  )
+  if ! [[ "$HOST_PID" =~ ^[0-9]+$ ]] || [ -z "$REQUEST_BOUNDARY" ]; then
+    REQUEST_ID="$(
+      sed -n 's#^request: .*/\([^/]*\)\.json$#\1#p' "$REQUEST_OUTPUT" |
+        tail -1
+    )"
+    MARKER="$HOME/.copilot/session-inbox/commands/$REQUEST_ID.json"
+    read -r HOST_PID REQUEST_BOUNDARY < <(
+      OLD="$OLD" /usr/bin/perl -MJSON::PP -0777 -e '
+        my $value = eval { decode_json(<STDIN>) };
+        if ($value && ref($value) eq "HASH" &&
+            ($value->{sessionId} // "") eq $ENV{OLD}) {
+          print(($value->{hostPid} // ""), "\t", ($value->{startedAt} // ""), "\n");
+        }
+      ' <"$MARKER" 2>/dev/null
+    )
   fi
+  [[ "$HOST_PID" =~ ^[0-9]+$ ]] && [ -n "$REQUEST_BOUNDARY" ] || {
+    failure_status="$request_status"
+    [ "$failure_status" -ne 0 ] || failure_status=1
+    echo "RESULT: rotation request failed with exit status $request_status and no accepted local command lineage; prompt preserved at $RECOVERY_FILE; request output preserved at $REQUEST_OUTPUT"
+    exit "$failure_status"
+  }
 
-  # Wait for the replacement session to appear.
   NEW=""
-  for _ in $(seq 1 60); do
-    NEW=$(comm -13 <(printf '%s\n' "$BEFORE") <(_sessions_here | sort) | head -1)
+  for _ in $(seq 1 120); do
+    NEW="$(
+      /usr/bin/perl -MJSON::PP -e '
+        use strict;
+        use warnings;
+        my ($old, $host_pid, $boundary, @paths) = @ARGV;
+        my @matches;
+        for my $path (@paths) {
+          next unless -r $path;
+          next unless (stat($path))[9] >= time - 15;
+          open my $fh, "<", $path or next;
+          my $value = eval { decode_json(do { local $/; <$fh> }) };
+          next unless $value && ref($value) eq "HASH";
+          next unless ($value->{hostPid} // "") eq $host_pid;
+          next unless ($value->{updatedAt} // "") ge $boundary;
+          next if ($value->{sessionId} // "") eq $old;
+          push @matches, $value->{sessionId}
+            if ($value->{sessionId} // "") ne "";
+        }
+        print $matches[0] if @matches == 1;
+      ' "$OLD" "$HOST_PID" "$REQUEST_BOUNDARY" "$INSTANCES"/*.json 2>/dev/null
+    )"
     [ -n "$NEW" ] && break
-    sleep 1
+    sleep 0.5
   done
-  if [ -z "$NEW" ]; then
-    echo "RESULT: no new session appeared; prompt preserved at $RECOVERY_FILE"
+  [ -n "$NEW" ] || {
+    echo "RESULT: /new was accepted but no unique replacement session appeared in the same local CLI process; prompt preserved at $RECOVERY_FILE; request output preserved at $REQUEST_OUTPUT"
     exit 1
-  fi
-  echo "new session: $NEW"
+  }
 
-  # A seeded session records the prompt as its first event. A bare `/new` leaves
-  # no event log at all, which is the failure this script exists to catch.
-  for _ in $(seq 1 30); do
-    _seeded "$NEW" && break
-    sleep 1
+  SEEDED=false
+  for _ in $(seq 1 120); do
+    if [ -r "$STATE/$NEW/events.jsonl" ] &&
+      PROMPT="$PROMPT" /usr/bin/perl -MJSON::PP -ne '
+        our $matched;
+        my $event = eval { decode_json($_) };
+        next unless $event && ref($event) eq "HASH";
+        my $data = $event->{data};
+        if (($event->{type} // "") eq "user.message" &&
+            $data && ref($data) eq "HASH" &&
+            ($data->{content} // "") eq $ENV{PROMPT}) {
+          $matched = 1;
+          last;
+        }
+        END { exit($matched ? 0 : 1) }
+      ' "$STATE/$NEW/events.jsonl"; then
+      SEEDED=true
+      break
+    fi
+    sleep 0.5
   done
+  [ "$SEEDED" = true ] || {
+    echo "RESULT: rotated to $NEW but its seed was not observed; prompt preserved at $RECOVERY_FILE; request output preserved at $REQUEST_OUTPUT"
+    exit 1
+  }
 
-  if _seeded "$NEW"; then
-    _finish_success "rotated to $NEW, seeded"
+  if rm -f -- "$RECOVERY_FILE" "$REQUEST_OUTPUT"; then
+    echo "RESULT: rotated to $NEW, seeded"
+    exit 0
   fi
-
-  echo "seed did not arrive; re-sending it as a plain message"
-  DUP="NOTE: the original copy of this message was queued rather than delivered, so it may still arrive again later. If it does, treat it as a duplicate: do not redo the work and do not arm a second schedule. "
-  if _type_and_submit "$DUP$PROMPT" && { sleep 5; _seeded "$NEW"; }; then
-    _finish_success "rotated to $NEW, seeded on retry"
-  fi
-
-  echo "RESULT: rotated to $NEW but it is NOT seeded; prompt preserved at $RECOVERY_FILE"
+  echo "RESULT: rotated to $NEW and seeded, but recovery cleanup failed; prompt preserved at $RECOVERY_FILE"
   exit 1
 ) &
 
 disown 2>/dev/null
 exec 3>&-
-echo "rotation started; result will be written to $LOG"
+echo "rotation requested; result will be written to $LOG"

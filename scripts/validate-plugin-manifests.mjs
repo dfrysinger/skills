@@ -160,6 +160,10 @@ assert(
   JSON.stringify(copilotSkills) === JSON.stringify(expectedCopilotSkills),
   `Copilot plugin skills must list every direct skills/ directory except: ${[...copilotExclusions].join(", ") || "(none)"}`,
 );
+assert(
+  copilotPlugin.extensions === config.copilotExtensions,
+  "Copilot plugin extensions must match packaging.config.json",
+);
 for (const excluded of copilotExclusions) {
   assert(
     skillDirectories.includes(excluded),

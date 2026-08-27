@@ -21,6 +21,7 @@ export function copilotPlugin(config, version, directories) {
     description: config.description,
     author: config.author,
     skills: skillPaths(directories, config.hostExclusions?.copilot),
+    ...(config.copilotExtensions ? { extensions: config.copilotExtensions } : {}),
   };
 }
 

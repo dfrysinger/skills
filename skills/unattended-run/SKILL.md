@@ -1,6 +1,6 @@
 ---
 name: unattended-run
-description: Keep a long, unattended Copilot CLI run on course. Arm an `/every` charter re-brief that restores the run's operating rules after compaction, then hand off an optional `/autopilot` objective at the next idle tmux boundary. Use when starting a long autopilot or `/goal` run against a plan doc, sharpening its objective, or preventing drift across context compactions.
+description: Keep a long, unattended Copilot CLI run on course. Arm an `/every` charter re-brief that restores the run's operating rules after compaction, then hand off an optional autopilot objective through the session-inbox SDK extension at the next idle boundary. Use when starting a long autopilot or `/goal` run against a plan doc, sharpening its objective, or preventing drift across context compactions.
 ---
 
 # unattended-run
@@ -14,33 +14,30 @@ For a long, unattended Copilot CLI run, two things keep the agent on course:
   `manage_schedule` before any same-session compact. It is the load-bearing
   deliverable of this skill.**
 - An **optional `/autopilot` objective** that drives the *what* until the agent
-  determines the task is complete. `/autopilot` is not an agent tool. Inside
-  tmux, a detached handoff waits for the current turn to become idle before it
-  types the objective. Fall back to printing it when that handoff is
-  unavailable.
+  determines the task is complete. A detached request asks the session-inbox
+  extension to deliver the objective with `agentMode: "autopilot"` only after
+  the current session becomes idle. Fall back to printing it when that handoff
+  is unavailable.
 
-## Critical: `/autopilot` is UI injection, not an agent tool
+## Critical: use the session SDK, not terminal input
 
-`/autopilot` and `/goal` are user-only slash commands. They will **not** appear
-in your tool list. Self-enqueue works by typing into the current tmux pane, just
-like a mailbox wakeup; it does not make the slash command directly callable or
-verifiable as a tool. This is expected and is **NOT a blocker**:
+The objective handoff is not a slash-command injection. The bundled helper
+calls `extensions/session-inbox/request.mjs send` with `--agent-mode autopilot`
+and `--mode immediate`. The target extension waits for `session.idle`, confirms
+the resulting `user.message` was delivered as `idle`, and writes a durable
+completed or failed receipt. This is expected and is **NOT a blocker**:
 
 - Do **not** stop, and do **not** ask the user to restart or relaunch the CLI.
-- Do **not** report the run as blocked because you can't see `/goal`.
-- Never self-enqueue `/allow-all`; permission escalation remains an explicit
-  user choice.
+- Never put `/allow-all` in the objective or otherwise change permissions;
+  permission escalation remains an explicit user choice.
 - Do not tell the agent to call `task_complete`. Current CLI releases expose
   completion internally only while autopilot is active; the objective should
   define observable completion and let the CLI handle the transition.
 - Autopilot remaining selected after completion is expected and harmless. It
   affects only how the next prompt is handled; do not turn it off as cleanup.
-- A slash command you inject lands at the **next turn boundary**, like any user
-  message — including mid-run under autopilot. Synchronous self-injection from
-  an active tool call races the turn that launched it: the command cannot be
-  interpreted while that turn is still working, so short confirmation loops
-  produce false failures or lose the input during redraw. Use the detached
-  idle-boundary handoff in step 3. To self-compact during a run,
+- The SDK request lands at the **next idle boundary**. Run the helper detached
+  and end the current turn; its 360-second maximum wait preserves the handoff
+  budget and prevents an unbounded watcher. To self-compact during a run,
   use `self-compact`, which queues the compact and arms a watcher that submits
   continuation only after the session's `summary_count` proves compaction
   landed. Then end your turn. Selected autopilot mode alone does not reliably
@@ -48,8 +45,9 @@ verifiable as a tool. This is expected and is **NOT a blocker**:
 - The run does **not** need `/autopilot` to proceed — the `/every` re-brief you
   arm yourself is what keeps it on course.
 
-Arm the re-brief, self-enqueue the objective when safe, and continue the actual
-work autonomously. If self-enqueue is unavailable, print the objective instead.
+Arm the re-brief, send the objective through the target session's extension
+when safe, and continue the actual work autonomously. If the extension is
+unavailable, print the objective instead.
 
 ## When to use
 
@@ -97,7 +95,7 @@ names any open revisit condition or active reframe record. A mechanism inherited
 through compaction remains a mechanism, not a binding requirement.
 
 Persist the objective body in its own file, without the `/autopilot` prefix,
-because the detached helper pastes the whole file. Persist the charter
+because the detached helper sends the whole file. Persist the charter
 separately so the schedule can re-read only the standing operating rules.
 
 **Complete when** both files exist, no `<SLOT>` remains, both point at the same
@@ -185,37 +183,45 @@ this criterion passes.
 
 ### 3. Hand off `/autopilot` at the next idle boundary
 After the charter exists and the `/every` reminder is live, enqueue the
-persisted objective into your own Copilot CLI input when all of these hold:
+persisted objective into your own Copilot CLI session when all of these hold:
 
-- `TMUX_PANE` is set and `tmux display-message -p -t "$TMUX_PANE"
-  '#{pane_id}'` succeeds.
 - The user has not asked you to leave autopilot disabled.
 - The objective file is readable, self-contained, and fully resolved, with no
   `<SLOT>`.
+- You know either the current Copilot session ID or the exact tmux session name
+  whose session-inbox extension should receive the request. Prefer the session
+  ID from the current session context; use the tmux name only as a targeting
+  fallback.
 
 Launch the bundled handoff as a **detached** Bash process, then end the current
 turn immediately:
 
 ```bash
 "<skill-dir>/scripts/enqueue-autopilot.sh" \
-  "$TMUX_PANE" \
+  --target-session '<current-session-id>' \
   '<objective-file>'
 ```
 
+When only the tmux session name is available, replace the target arguments with
+`--target-tmux '<exact-tmux-session-name>'`.
+
 Invoke Bash with `mode:"async"`, `detach:true`, and a short `initial_wait`.
 This must be the final tool action: emit no prose and call no more tools after
-launching it. The helper waits until the pane has left `Working`, requires two
-stable idle observations from a ready Copilot CLI prompt, pastes the complete
-multi-line objective as one bracketed input, prefixes a unique handoff ID,
-submits once, and verifies either a newer
-`Started autopilot objective #<n>:` or a legacy confirmation carrying that
-handoff ID. It writes a receipt under `~/.copilot/autopilot-enqueue/` and
-notifies the user if delivery cannot be confirmed.
+launching it. The helper executes:
 
-Do not replace this with an inline `tmux send-keys` loop. The helper must outlive
-the turn that launched it; otherwise it is observing the race it created.
+```text
+send --target-session ID or --target-tmux NAME --prompt-file FILE
+  --agent-mode autopilot --mode immediate
+```
 
-If tmux targeting is unavailable before launch, print this fallback and
+It rejects empty, slash-prefixed, permission-changing, or unresolved objectives;
+caps the receipt wait at 360 seconds; requires the SDK receipt to report
+`delivery: "idle"`; preserves the request output and objective under
+`~/.copilot/autopilot-enqueue/`; and notifies the user if delivery cannot be
+confirmed. The session-inbox extension also retains its JSON request receipt.
+
+If neither target can be identified or the request helper is unavailable,
+print this fallback and
 continue without blocking:
 
 ```
@@ -225,13 +231,13 @@ Optional — run this whenever you like for a tighter goal-driven loop
 Paste `/autopilot ` followed by the complete contents of <objective-file>.
 ```
 
-If `/allow-all` is needed, print it for the user; never self-enqueue it. The
-detached helper reports post-launch failure through its receipt and macOS
-notification. The `/every` re-brief remains the load-bearing mechanism either
-way.
+If `/allow-all` is needed, print it for the user; never include it in the SDK
+handoff. The detached helper reports post-launch failure through its receipt and
+macOS notification. The `/every` re-brief remains the load-bearing mechanism
+either way.
 
 **Complete when** the detached handoff was launched as the last action, or the
-fallback was printed because tmux targeting was unavailable.
+fallback was printed because SDK targeting was unavailable.
 
 ### 4. Stop cleanly when the Definition of Done is met
 When every Definition-of-Done item is verifiably met:

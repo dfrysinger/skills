@@ -5,13 +5,14 @@ description: Keep Copilot CLI working context lean while preserving decisions, a
 
 # self-compact
 
-Compact a Copilot CLI conversation without squeezing the retained state into
-the editor command. The full compaction payload lives in the final assistant
-message. The helper submits one short control and resumes with one fixed wake.
+Compact a Copilot CLI conversation through the session-inbox SDK extension.
+The complete compaction payload remains in the final assistant message. The
+helper binds that exact message to one run token, waits for the turn to become
+idle, requests native compaction, and sends one fixed continuation.
 
 ## Prerequisites
 
-- Copilot CLI running inside tmux.
+- Copilot CLI with the plugin's `session-inbox` extension loaded.
 - A durable plan, design, issue, handoff, or charter for any state that must
   survive independently of the conversation.
 - `handoff` for session retirement or a soft reset built around a standing
@@ -62,19 +63,7 @@ physical line as their labels. Additional detail may continue on later lines.
 Default to exactly these three labeled lines and keep the whole brief under
 800 characters. Exceed that only when unrecoverable session-bound state cannot
 fit; never exceed it merely to summarize the conversation or copy a durable
-artifact. A normal brief looks like:
-
-```text
-SELF_COMPACT_BRIEF
-
-Keep: Continue from `docs/feature-plan.md` in `/worktree` on `feature/x`; watcher PID 123 remains intentionally paused.
-
-Drop: Resolved history and tool output already reflected in the plan.
-
-After compaction: Re-read the plan baton, confirm PID 123 is still paused, and execute its next unchecked item; do not compact again.
-```
-
-The brief is part of the conversation and is not typed into the editor.
+artifact.
 
 ### 3. Submit as the final tool action
 
@@ -86,131 +75,126 @@ Run the helper with no arguments:
 
 Use that exact double-quoted canonical `$HOME` path. Tilde, arguments,
 assignments, redirections, pipelines, and composed shell commands are not
-supported. The verifier resolves that one portable spelling to the installed
-helper and rejects every other expansion or composition. Set the Bash tool's
-`initial_wait` to at least 120 seconds for compatibility with older installed
-versions and to keep startup errors in the initiating turn.
+supported. Old positional steers and `--continuation` are errors.
 
-Old positional steers and `--continuation` are errors. Do not shorten the brief
-or retry with invented instructions when a run fails.
+The foreground helper verifies that this canonical Bash request is the only
+tool request in the current root assistant turn and binds the complete,
+persisted `SELF_COMPACT_BRIEF`. It acquires a session-scoped lock, starts a
+detached verifier, records a positive handoff, and returns without reading or
+changing terminal input.
 
-The foreground helper records its root-agent Bash tool-call identity, transfers
-the session lock to a detached verifier, writes a positive handoff, and returns
-without mutating the editor. After the initiating interaction has persisted and
-quiesced, the verifier binds that tool call to the complete brief and submits:
+After the helper reports that the SDK verifier is armed, end the turn. Ordinary
+closing narration is allowed, but do not make another tool call.
+
+The verifier waits for that exact tool call and its assistant turn to finish,
+then invokes:
 
 ```text
-/compact Use SELF_COMPACT_BRIEF. B:<8-hex>
+extensions/session-inbox/request.mjs compact
+  --target-session <current session>
+  --instructions-file <bound instructions>
+  --continuation-file <fixed continuation>
+  --timeout <bounded wait>
 ```
 
-The token identifies this run in `session.compaction_complete`. It is not
-required to appear in checkpoint prose.
+The instructions file contains the current assistant message unchanged,
+followed by:
 
-After the helper reports that the verifier is armed, end the turn. Ordinary
-closing narration is allowed, but do not make another tool call.
+```text
+SELF_COMPACT_RUN_TOKEN: <8-lowercase-hex>
+```
+
+That exact token-bearing payload must appear on the matching compaction
+completion event.
 
 ## Safety contract
 
-### Draft isolation
+### Draft non-interference
 
-Immediately before typing the control command, the shared input helper:
+Self-compact does not capture the pane, type into the editor, press keys, stash
+input, clear input, resize a window, or otherwise use tmux to drive Copilot.
+The SDK request is handled only after the session is idle, so an unsubmitted
+draft remains untouched.
 
-- refreshes attached tmux clients and stabilizes the prompt capture;
-- verifies a UTF-8 locale before parsing Copilot's Unicode editor;
-- uses Ctrl-S to classify and stash visible or hidden drafts;
-- requires an observably empty editor before one literal paste;
-- preserves logical row boundaries and rejects multiline ownership;
-- cancels on new user or assistant activity;
-- bounds Ctrl-U and Esc recovery and restores any temporary geometry change.
+### Current-turn authorization
 
-A restored or modified draft cannot be submitted as the compact command. If
-the run observed or stashed any draft, Enter requires an exact stable one-row
-render of the control command.
+The helper accepts exactly one running root Bash tool call whose request:
 
-### Timed ambiguous-render fallback
+- uses the canonical zero-argument helper command;
+- is the only tool request in its assistant message;
+- belongs to a root assistant turn with one complete `SELF_COMPACT_BRIEF`; and
+- has no conflicting root tool or user activity before execution.
 
-When the editor was genuinely empty and no visible or hidden draft was observed
-or stashed, the compact command may use a bounded fallback:
+The detached verifier requires the same tool-call identity, the exact handoff
+receipt, and the end of that authorizing turn before creating the SDK request.
 
-1. Paste the fixed command once.
-2. Prefer exact one-row verification for five seconds.
-3. If rendering remains empty, unreadable, or unstable, wait up to a total of
-   30 seconds while checking activity and menu state.
-4. Press Enter once only if no readable mismatch, multiline buffer, menu, or
-   activity appeared.
+The request protocol has no event-boundary or cancellation field. The verifier
+rejects conflicting root activity already persisted before enqueueing, but
+activity that races after request creation can leave the request pending until
+a later idle boundary. Do not interact with the session after the handoff until
+the fixed continuation arrives.
 
-A known prefix, suffix, altered byte, restored draft, or second prompt row
-always fails closed. The continuation never uses this fallback.
+### Run exclusion and one-shot behavior
 
-### Run exclusion and completion identity
+One session-scoped owner-token lock excludes concurrent helper runs. The
+verifier creates one request with a run-specific dedupe key and never retries
+it.
 
-One session-scoped owner-token lock excludes concurrent helper runs. Ownership
-passes to the detached watcher before editor mutation. Ambiguous transferred
-locks fail closed rather than allowing a second compact.
+A definitive failed receipt releases the lock. A timeout, missing receipt, or
+missing token-bound completion is ambiguous and retains the lock so another
+run cannot silently duplicate a compact. Do not delete an ambiguous lock
+until its per-run log and session-inbox receipt directories establish the
+outcome.
 
-The watcher accepts only the first completion after the observed compact start
-when all of these match:
+### Completion and checkpoint identity
 
-- `success` is true;
-- `customInstructions` contains this run's exact token-bearing instruction;
-- `checkpointNumber` advances beyond the baseline summary count;
-- `workspace.yaml` reaches that checkpoint number; and
-- exactly one numbered checkpoint file exists.
+After a completed SDK receipt, the verifier still requires:
+
+- `success` on a root `session.compaction_complete` event;
+- `customInstructions` equal to the exact brief plus this run's token;
+- a checkpoint number greater than the baseline `summary_count`;
+- `workspace.yaml` reaching that checkpoint number; and
+- exactly one numbered checkpoint file.
 
 Checkpoint prose is not searched for a marker.
 
 ### Continuation
 
-When no post-compact activity already exists, the watcher submits this exact
-strictly verified wake:
+The session-inbox extension checks that compaction left the session idle and
+sends this exact immediate continuation:
 
 ```text
 Compaction done; resume, do not compact.
 ```
 
-The resumed agent reads the generated checkpoint and follows the
-`After compaction:` instruction from the brief. The watcher is one-shot. It
-does not retry compaction or shorten instructions.
-
-## Outside tmux
-
-Do not claim automatic submission. Emit the complete `SELF_COMPACT_BRIEF`, then
-give the user this command:
-
-```text
-/compact Use SELF_COMPACT_BRIEF.
-```
-
-After compaction, the user can send:
-
-```text
-Compaction done; resume, do not compact.
-```
+The verifier requires exactly one matching root `user.message` after the
+matching completion. It never types or retries the continuation.
 
 ## Failure handling
 
-- Missing or malformed current-turn brief: write the required structure and
-  invoke the helper once more as the final action.
-- Existing or ambiguous session lock: inspect the exact lock path reported by
-  the helper. Do not delete it while a watcher is live.
-- Command mismatch, multiline input, activity, or draft-bearing unreadable
-  rendering: the helper sends no Enter.
-- No compaction start, failed completion, wrong token, missing checkpoint, or
-  continuation mismatch: the watcher exits without retrying.
-- A compact that succeeded without continuation: send the fixed continuation
-  manually. Do not rerun the compact helper.
+- Missing or malformed current-turn brief: correct the structure and invoke
+  the helper once more as the final action.
+- Existing or ambiguous session lock: inspect the exact lock and log paths
+  reported by the helper; do not delete a live or outcome-ambiguous lock.
+- Failed session-inbox receipt: inspect the per-run log. No compact was
+  accepted, and the lock is released.
+- Ambiguous request result or missing token-bound completion: inspect the
+  per-run log plus `~/.copilot/session-inbox/{processing,completed,failed}`.
+  Do not rerun while the lock remains.
+- Successful compact with failed checkpoint or continuation verification:
+  do not compact again. The exclusion lock remains. If continuation is absent,
+  send the fixed continuation manually.
 
-Detached failures remain in the per-run log under the active session's
-`files/` directory and do not create a tmux crash overlay.
+Detached output remains in the per-run log under the active session's `files/`
+directory.
 
 ## Verification
 
 - The final assistant message contains the complete brief structure.
-- The helper was invoked with zero arguments and `initial_wait` of at least 120
-  seconds as the final tool action.
-- The compact event records this run's token-bearing custom instructions.
-- The checkpoint number advances and its file exists without requiring marker
-  prose.
-- The fixed continuation occurs only when no post-compact activity exists.
-- Any preserved draft returns unchanged.
-- No second compact, watcher, or session lock remains after completion.
+- The helper was invoked with zero arguments as the final tool action.
+- The per-run log contains one completed session-inbox receipt.
+- The compact event records the exact brief and run token.
+- The checkpoint number advances and exactly one numbered file exists.
+- The fixed continuation occurs exactly once.
+- Existing terminal input is unchanged.
+- No second request, live verifier, or non-ambiguous session lock remains.

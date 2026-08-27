@@ -81,8 +81,8 @@ if tmux has-session -t "$RECIPIENT" 2>/dev/null; then
 fi
 
 case "$WAKEUP_STATUS" in
-  delivered)     echo "wakeup: send-keys -> $RECIPIENT (verified)" ;;
-  unverified)    echo "wakeup: send-keys -> $RECIPIENT (NOT verified) — envelope waits in pending/ and will be re-poked" ;;
+  delivered)     echo "wakeup: recipient accepted the mailbox nudge (verified)" ;;
+  unverified)    echo "wakeup: recipient did not acknowledge the nudge (NOT verified) — envelope waits in pending/ and will be re-poked" ;;
   not_attempted) echo "wakeup: skipped (no tmux session named '$RECIPIENT'; envelope waits in pending/)" ;;
 esac
 

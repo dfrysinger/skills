@@ -1,96 +1,85 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
-
-# The pane parser must satisfy every case against both input-box layouts, so
-# the whole suite runs once per style rather than testing one and assuming the
-# other.
-if [ -z "${MOCK_TUI:-}" ]; then
-  for style in boxed caret; do
-    MOCK_TUI="$style" "${BASH_SOURCE[0]}" "$@" || {
-      echo "rotate-session tests: FAILED for $style layout" >&2
-      exit 1
-    }
-  done
-  exit 0
-fi
 
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rotate.sh"
-ROOT=$(mktemp -d "${TMPDIR:-/tmp}/rotate-session-test.XXXXXX")
+ROOT="$(mktemp -d "${TMPDIR:-/tmp}/rotate-session-test.XXXXXX")"
 trap '/bin/rm -rf -- "$ROOT"' EXIT
 
-mkdir -p "$ROOT/bin" "$ROOT/home/.copilot/session-state"
+mkdir -p "$ROOT/home/.copilot/session-state" "$ROOT/tmp"
+MOCK_REQUEST="$ROOT/request.mjs"
+cat >"$MOCK_REQUEST" <<'EOF'
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
-cat >"$ROOT/bin/seq" <<'EOF'
-#!/usr/bin/env bash
-echo 1
+const args = process.argv.slice(2);
+appendFileSync(process.env.MOCK_ARGS, `${JSON.stringify(args)}\n`);
+const promptFileIndex = args.indexOf("--prompt-file");
+const targetIndex = args.indexOf("--target-session");
+const oldSession = args[targetIndex + 1];
+const newSession = `${oldSession}-new`;
+let prompt = "";
+if (promptFileIndex >= 0) {
+  prompt = readFileSync(args[promptFileIndex + 1], "utf8");
+  appendFileSync(process.env.MOCK_SEEDS, `${prompt}\n`);
+}
+if (process.env.MOCK_MODE === "fail") {
+  console.log('{"status":"failed","error":"command execution rejected"}');
+  process.exit(1);
+}
+const instances = join(process.env.HOME, ".copilot", "session-inbox", "instances");
+const state = join(process.env.HOME, ".copilot", "session-state", newSession);
+const completedAt = new Date().toISOString();
+mkdirSync(instances, { recursive: true });
+mkdirSync(state, { recursive: true });
+writeFileSync(
+  join(instances, `${oldSession}-prior.json`),
+  `${JSON.stringify({
+    sessionId: `${oldSession}-prior`,
+    generation: "prior-generation",
+    hostPid: 4242,
+    updatedAt: "2000-01-01T00:00:00.000Z",
+  })}\n`,
+);
+writeFileSync(
+  join(instances, `${newSession}.json`),
+  `${JSON.stringify({
+    sessionId: newSession,
+    generation: "new-generation",
+    hostPid: 4242,
+    updatedAt: completedAt,
+  })}\n`,
+);
+writeFileSync(
+  join(state, "events.jsonl"),
+  `${JSON.stringify({ type: "user.message", data: { content: prompt, delivery: "idle" } })}\n`,
+);
+if (process.env.MOCK_MODE === "receipt-lost") {
+  const commands = join(process.env.HOME, ".copilot", "session-inbox", "commands");
+  mkdirSync(commands, { recursive: true });
+  writeFileSync(
+    join(commands, "mock-request.json"),
+    `${JSON.stringify({
+      requestId: "mock-request",
+      sessionId: oldSession,
+      hostPid: 4242,
+      startedAt: completedAt,
+    })}\n`,
+  );
+  console.log("request: /tmp/mock-request.json");
+  process.exit(2);
+}
+console.log("request: /tmp/request.json");
+console.log("receipt: /tmp/completed.json");
+console.log(
+  JSON.stringify({
+    status: "completed",
+    sessionId: oldSession,
+    hostPid: 4242,
+    completedAt,
+    result: { commandQueued: true },
+  }),
+);
 EOF
-
-cat >"$ROOT/bin/sleep" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-
-cat >"$ROOT/bin/rm" <<'EOF'
-#!/usr/bin/env bash
-if [ "${FAIL_RECOVERY_RM:-0}" = 1 ]; then
-  case "${@: -1}" in
-    */copilot-rotate-recovery-*) exit 1 ;;
-  esac
-fi
-exec /bin/rm "$@"
-EOF
-
-cat >"$ROOT/bin/tmux" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-case "${1:-}" in
-  capture-pane)
-    # MOCK_TUI selects the input-box layout so both the current boxed style and
-    # the older caret style stay covered.
-    if [ "${MOCK_TUI:-caret}" = boxed ]; then
-      printf '%s\n' ' ▄▄▄▄▄▄▄▄'
-      printf '%s\n' '  ❯ an earlier user message'
-      printf '%s\n' ' ▀▀▀▀▀▀▀▀'
-      printf '%s\n' ' ~/w  Session: 1 AIC used'
-      printf '%s\n' '╻▄▄▄▄▄▄▄▄'
-      if [ "${MOCK_MODE:-success}" = success ]; then
-        printf '┃%s\n' "$(cat "$MOCK_INPUT" 2>/dev/null || true)"
-      else
-        printf '┃\n'
-      fi
-      printf '%s\n' '╹▀▀▀▀▀▀▀▀'
-      printf '%s\n' ' ← open sidebar · / commands'
-    else
-      printf '%s\n' '────────'
-      if [ "${MOCK_MODE:-success}" = success ]; then
-        printf '❯ %s\n' "$(cat "$MOCK_INPUT" 2>/dev/null || true)"
-      else
-        printf '❯ \n'
-      fi
-      printf '%s\n' '────────'
-    fi
-    ;;
-  send-keys)
-    if [ "${*: -2:1}" = -- ]; then
-      printf '%s' "${@: -1}" >"$MOCK_INPUT"
-    elif [ "${@: -1}" = Enter ]; then
-      : >"$MOCK_INPUT"
-      if [ "${MOCK_MODE:-success}" = success ]; then
-        mkdir -p "$HOME/.copilot/session-state/$MOCK_NEW"
-        printf 'cwd: %s\n' "$PWD" >"$HOME/.copilot/session-state/$MOCK_NEW/workspace.yaml"
-        printf '{}\n' >"$HOME/.copilot/session-state/$MOCK_NEW/events.jsonl"
-      fi
-    fi
-    ;;
-  *)
-    exit 2
-    ;;
-esac
-EOF
-
-chmod +x "$ROOT/bin/"*
 
 wait_for_result() {
   local log="$1"
@@ -108,34 +97,22 @@ start_case() {
   local label="$3"
   local prompt="$4"
   local consume="${5:-yes}"
-  local fail_recovery_rm="${6:-0}"
   local state="$ROOT/home/.copilot/session-state/$old"
-  local input log io new
+  local input="$ROOT/$label-input.txt"
+  local log="$ROOT/$label.log"
+  local args="$ROOT/$label-args.jsonl"
+  local seeds="$ROOT/$label-seeds.txt"
 
   mkdir -p "$state"
-  printf 'cwd: %s\n' "$ROOT" >"$state/workspace.yaml"
-  input=$(mktemp "$ROOT/copilot-rotate-input-$old.XXXXXX")
   printf '%s' "$prompt" >"$input"
-  log="$ROOT/$label.log"
-  io="$ROOT/$label.input"
-  new="new-$old"
 
-  args=("$old" "$input")
-  [ "$consume" = yes ] && args+=(--consume-prompt)
+  local -a invocation=("$SCRIPT" "$old" "$input")
+  [ "$consume" = yes ] && invocation+=(--consume-prompt)
 
-  (
-    cd "$ROOT"
-    HOME="$ROOT/home" \
-      TMPDIR="$ROOT/" \
-      PATH="$ROOT/bin:$PATH" \
-      TMUX_PANE=%1 \
-      ROTATE_LOG="$log" \
-      MOCK_MODE="$mode" \
-      MOCK_INPUT="$io" \
-      MOCK_NEW="$new" \
-      FAIL_RECOVERY_RM="$fail_recovery_rm" \
-      "$SCRIPT" "${args[@]}" >/dev/null
-  )
+  HOME="$ROOT/home" TMPDIR="$ROOT/tmp" ROTATE_LOG="$log" \
+    SESSION_INBOX_REQUEST_CLI="$MOCK_REQUEST" \
+    MOCK_ARGS="$args" MOCK_SEEDS="$seeds" MOCK_MODE="$mode" \
+    "${invocation[@]}" >"$ROOT/$label.out"
 
   if [ "$consume" = yes ]; then
     [ ! -e "$input" ]
@@ -143,72 +120,85 @@ start_case() {
     [ -e "$input" ]
   fi
 
-  printf '%s\t%s\n' "$log" "$input"
+  printf '%s\t%s\t%s\t%s\n' "$log" "$args" "$seeds" "$input"
 }
 
 bash -n "$SCRIPT"
 
-IFS=$'\t' read -r success_log _ < <(
+IFS=$'\t' read -r success_log success_args success_seeds _ < <(
   start_case old-success success success 'continue retired session old-success'
 )
 wait_for_result "$success_log"
-grep -q 'recovery snapshot:' "$success_log"
-grep -q 'seeded$' "$success_log"
-! find "$ROOT" -maxdepth 1 -name 'copilot-rotate-recovery-old-success.*' | grep -q .
+grep -Fq 'recovery snapshot:' "$success_log"
+grep -Fq 'RESULT: rotated to old-success-new, seeded' "$success_log"
+grep -Fq '["new-session","--target-session","old-success","--prompt-file"' "$success_args"
+grep -Fq '"--timeout","360"]' "$success_args"
+grep -Fq 'continue retired session old-success' "$success_seeds"
+! find "$ROOT/tmp" -maxdepth 1 -name 'copilot-rotate-recovery-old-success.*' | grep -q .
 
-IFS=$'\t' read -r fail_a_log _ < <(
-  start_case old-a fail-render fail-a 'continue retired session old-a with alpha baton'
+IFS=$'\t' read -r failure_log _ failure_seeds _ < <(
+  start_case old-failure fail failure 'continue retired session old-failure'
 )
-IFS=$'\t' read -r fail_b_log _ < <(
-  start_case old-b fail-render fail-b 'continue retired session old-b with beta baton'
-)
-wait_for_result "$fail_a_log"
-wait_for_result "$fail_b_log"
-recovery_a=$(sed -n 's/.*prompt preserved at //p' "$fail_a_log" | tail -1)
-recovery_b=$(sed -n 's/.*prompt preserved at //p' "$fail_b_log" | tail -1)
-[ -f "$recovery_a" ] && [ -f "$recovery_b" ] && [ "$recovery_a" != "$recovery_b" ]
-grep -q 'old-a with alpha baton' "$recovery_a"
-! grep -q 'old-b with beta baton' "$recovery_a"
-grep -q 'old-b with beta baton' "$recovery_b"
-! grep -q 'old-a with alpha baton' "$recovery_b"
-[ "$(stat -f '%Lp' "$recovery_a")" = 600 ]
+wait_for_result "$failure_log"
+grep -Fq 'rotation request failed with exit status 1' "$failure_log"
+grep -Fq 'request output preserved at ' "$failure_log"
+recovery="$(sed -n 's/^recovery snapshot: \([^ ]*\).*/\1/p' "$failure_log" | tail -1)"
+[ -f "$recovery" ]
+[ -f "$recovery.request-output" ]
+grep -Fq 'continue retired session old-failure' "$recovery"
+grep -Fq 'continue retired session old-failure' "$failure_seeds"
+[ "$(stat -f '%Lp' "$recovery")" = 600 ]
 
-IFS=$'\t' read -r generic_log generic_input < <(
-  start_case old-generic fail-render generic 'continue retired session old-generic' no
+IFS=$'\t' read -r lost_receipt_log _ _ _ < <(
+  start_case old-receipt-lost receipt-lost receipt-lost \
+    'continue retired session old-receipt-lost'
+)
+wait_for_result "$lost_receipt_log"
+grep -Fq 'RESULT: rotated to old-receipt-lost-new, seeded' "$lost_receipt_log" || {
+  cat "$lost_receipt_log" >&2
+  exit 1
+}
+
+IFS=$'\t' read -r generic_log _ _ generic_input < <(
+  start_case old-generic success generic 'continue retired session old-generic' no
 )
 wait_for_result "$generic_log"
 [ -f "$generic_input" ]
 
-IFS=$'\t' read -r cleanup_log _ < <(
-  start_case old-cleanup success cleanup 'continue retired session old-cleanup' no 1
-)
-wait_for_result "$cleanup_log"
-grep -q 'recovery cleanup failed; prompt preserved at ' "$cleanup_log"
-cleanup_recovery=$(sed -n 's/.*prompt preserved at //p' "$cleanup_log" | tail -1)
-[ -f "$cleanup_recovery" ]
-
-invalid="$ROOT/copilot-rotate-input-old-invalid.test"
+invalid="$ROOT/invalid-input.txt"
 mkdir -p "$ROOT/home/.copilot/session-state/old-invalid"
 printf 'wrong session' >"$invalid"
-if HOME="$ROOT/home" TMPDIR="$ROOT/" TMUX_PANE=%1 \
+if HOME="$ROOT/home" TMPDIR="$ROOT/tmp" SESSION_INBOX_REQUEST_CLI="$MOCK_REQUEST" \
+  MOCK_ARGS="$ROOT/invalid-args" MOCK_SEEDS="$ROOT/invalid-seeds" \
   "$SCRIPT" old-invalid "$invalid" --consume-prompt >"$ROOT/invalid.out" 2>&1; then
   exit 1
 fi
-grep -q 'prompt does not name expected session old-invalid' "$ROOT/invalid.out"
+grep -Fq 'prompt does not name expected session old-invalid' "$ROOT/invalid.out"
 [ -f "$invalid" ]
-! find "$ROOT" -maxdepth 1 -name 'copilot-rotate-recovery-old-invalid.*' | grep -q .
+[ ! -e "$ROOT/invalid-args" ]
 
-log_failure="$ROOT/copilot-rotate-input-old-log-failure.test"
+log_failure="$ROOT/log-failure-input.txt"
 mkdir -p "$ROOT/home/.copilot/session-state/old-log-failure"
 printf 'continue retired session old-log-failure' >"$log_failure"
-if HOME="$ROOT/home" TMPDIR="$ROOT/" PATH="$ROOT/bin:$PATH" TMUX_PANE=%1 \
-  ROTATE_LOG="$ROOT/missing/rotation.log" MOCK_INPUT="$ROOT/log-failure.input" \
+if HOME="$ROOT/home" TMPDIR="$ROOT/tmp" SESSION_INBOX_REQUEST_CLI="$MOCK_REQUEST" \
+  ROTATE_LOG="$ROOT/missing/rotation.log" MOCK_ARGS="$ROOT/log-failure-args" \
+  MOCK_SEEDS="$ROOT/log-failure-seeds" \
   "$SCRIPT" old-log-failure "$log_failure" --consume-prompt >"$ROOT/log-failure.out" 2>&1; then
   exit 1
 fi
-grep -q 'could not open rotation log; original prompt retained at ' "$ROOT/log-failure.out"
+grep -Fq 'could not open rotation log; original prompt retained at ' "$ROOT/log-failure.out"
 [ -f "$log_failure" ]
-[ ! -e "$ROOT/log-failure.input" ]
-! find "$ROOT" -maxdepth 1 -name 'copilot-rotate-recovery-old-log-failure.*' | grep -q .
+[ ! -e "$ROOT/log-failure-args" ]
 
-echo "rotate-session tests: pass (${MOCK_TUI} layout)"
+timeout_input="$ROOT/timeout-input.txt"
+mkdir -p "$ROOT/home/.copilot/session-state/old-timeout"
+printf 'continue retired session old-timeout' >"$timeout_input"
+if HOME="$ROOT/home" TMPDIR="$ROOT/tmp" ROTATE_SESSION_TIMEOUT_SECONDS=361 \
+  SESSION_INBOX_REQUEST_CLI="$MOCK_REQUEST" \
+  "$SCRIPT" old-timeout "$timeout_input" >"$ROOT/timeout.out" 2>&1; then
+  exit 1
+fi
+grep -Fq 'timeout must be between 1 and 360 seconds' "$ROOT/timeout.out"
+
+! grep -Eq 'send-keys|capture-pane|paste-buffer|load-buffer' "$SCRIPT"
+echo "rotate-session tests: pass"

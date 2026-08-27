@@ -2,16 +2,17 @@
 
 Two artifacts: the **charter** you persist and re-feed on the `/every` reminder
 (the load-bearing one you arm yourself), and the **optional objective** you
-best-effort self-enqueue through tmux or print as a fallback for `/autopilot`.
-Fill every `<SLOT>`; delete any clause that doesn't apply rather than leaving a
-placeholder.
+best-effort send through the session-inbox SDK extension or print as a fallback
+for `/autopilot`. Fill every `<SLOT>`; delete any clause that doesn't apply
+rather than leaving a placeholder.
 
 ## Objective — OPTIONAL, persisted and handed to `/autopilot`
 
 `/autopilot` is not an agent tool. After arming the charter re-brief, enqueue
-the objective file into the current tmux pane as the final tool action when
-targeting is safe; otherwise print its contents as an optional convenience and
-proceed. The run stays on course through the charter re-brief without it.
+the objective file into the current session through the SDK handoff as the final
+tool action when targeting is safe; otherwise print its contents as an optional
+convenience and proceed. The run stays on course through the charter re-brief
+without it.
 
 Persist a complete work order, not a compressed slogan. Autopilot re-reads it
 on every continuation, so include enough context to resume correctly after

@@ -43,9 +43,8 @@ it. Tell the user which ones you carried.
 
 ### 3. Rotate
 
-Which path you take depends on whether this session is running inside tmux —
-`$TMUX_PANE` is set when it is. The script drives the pane directly, so it only
-works on the tmux path and exits non-zero without it.
+The bundled script targets the old session by ID through the session-inbox SDK
+extension. It does not require tmux or terminal rendering.
 
 Base the seed prompt on this, adding the schedules from step 2 and anything the
 user wants the fresh session to do first:
@@ -68,13 +67,16 @@ for my go-ahead before acting.
 The template asks only for `todos`, so name any custom SQL tables that matter.
 The fresh session reads recorded state, not live state.
 
-**Inside tmux** (`$TMUX_PANE` set), run the script, which does the typing, the
-submission, and the verification. Use it rather than sending `/new` yourself: a message that arrives
-while the CLI is busy is **queued**, and a queued message only drains at a turn
-boundary, which a brand-new session never reaches on its own, so a hand-typed
-seed can sit undelivered while the session looks empty. Watching for the literal
-`/new ` to leave the pane does not catch that, because it leaves the pane either
-way.
+Run the script rather than sending `/new` yourself. It snapshots the seed and
+opens the durable result log synchronously, then backgrounds one session-inbox
+request equivalent to:
+
+```text
+new-session --target-session OLD --prompt-file SEED
+```
+
+The target extension processes the request only after the old session is idle.
+The request is one-shot: the script never retries `/new` or resends the seed.
 
 ```sh
 OLD='<old-session-id>'
@@ -105,25 +107,31 @@ existing seed file.
 
 Make this the **last action of the turn** and end the turn, because `/new`
 replaces the conversation you are running in. The script backgrounds itself, so
-it returns `rotation started` immediately and writes the outcome to the log
-afterwards.
+it returns `rotation requested` immediately and writes the request path,
+extension receipt, and final result to the log afterwards.
 
-**Outside tmux** (`$TMUX_PANE` unset), the script cannot reach a pane. Print the
-fully expanded `/new …` command with the seed prompt inlined, tell the user to
-run it, and end the turn. **Complete when** the user has the full command in
-front of them — nothing else happens on this path, so do not report a rotation.
+A completed `new-session` receipt means the local CLI accepted the queued
+`/new`; it is not the final proof. The script then requires exactly one fresh
+replacement heartbeat from the same local CLI process, with an update after
+that receipt, and verifies the exact seed in the replacement event log before
+removing the recovery snapshot. If `/new` tears down the old extension before
+it can write the receipt, a request-bound command marker supplies the same
+process lineage and boundary for verification. The fresh session must still
+read the result log during recovery. A failure or timeout with no verified
+replacement preserves the private recovery snapshot and warns that the request
+may still be queued. Do not issue another rotation until the first request's
+outcome is resolved.
 
-**Complete when** (tmux path) the script has printed `rotation started` and you
-have ended the turn without further tool calls. The fresh session confirms the outcome from
-the log, which records either `seeded` or `seeded on retry` for a success. If
-you are still running after this, the rotation did not fire, so report that
-rather than a rotation.
+**Complete when** the script has printed `rotation requested` and you have ended
+the turn without further tool calls. The fresh session confirms the outcome
+from `/tmp/rotate-session-<OLD>.log`. If you are still running after the request
+should have completed, report the logged result rather than assuming rotation.
 
 ## Notes
 
-- If the log ends in `NOT seeded`, the prompt is in the private recovery file
-  it names.
-  Paste it into the fresh session by hand.
+- If the log reports a failed or timed-out request, the prompt is in the private
+  recovery file it names. Resolve the existing request receipt before deciding
+  whether to paste or retry anything.
 - Reading `~/.copilot/session-state` sits outside most agent workspaces, so the
   fresh session may hit an "Allow directory access" prompt. Choosing "add these
   directories to the allowed list" makes it one-time.
