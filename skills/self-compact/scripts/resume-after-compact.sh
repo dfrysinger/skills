@@ -481,7 +481,7 @@ continuation_probe() {
           my $delivery = $data && ref($data) eq "HASH"
             ? ($data->{delivery} // "")
             : "";
-          if ($delivery ne "idle") {
+          if ($delivery ne "idle" && $delivery ne "queued") {
             print "mismatch\n";
             exit;
           }

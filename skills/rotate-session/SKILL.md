@@ -75,8 +75,9 @@ request equivalent to:
 new-session --target-session OLD --prompt-file SEED
 ```
 
-The target extension processes the request only after the old session is idle.
-The request is one-shot: the script never retries `/new` or resends the seed.
+The target extension places `/new` in the old session's native FIFO command
+queue immediately. The CLI chooses when it executes the command. The request
+is one-shot: the script never retries `/new` or resends the seed.
 
 ```sh
 OLD='<old-session-id>'

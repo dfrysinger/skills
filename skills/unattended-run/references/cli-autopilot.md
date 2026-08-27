@@ -24,13 +24,13 @@ to paste when that handoff is unavailable.
   reminder is live. The bundled detached helper calls the session-inbox request
   CLI with the bounded `autopilot` request, the target session ID or tmux
   session name, and `--prompt-file`.
-- The extension waits for the target to become idle, persists the native
-  objective by enqueuing the native `/autopilot` command through
-  `commands.enqueue()`, then reads the resulting state with
+- The extension immediately submits the native `/autopilot` command through
+  `commands.enqueue()`, whose local FIFO queue chooses when the command runs.
+  It then reads the resulting state with
   `workspaces.readAutopilotObjective()`. It accepts the handoff only when the
   native state contains the exact canonical objective with an active or
-  completed status and the matching native starting message reports idle
-  delivery. The request removes trailing CRLF/LF record endings before enqueue
+  completed status and the matching native starting message reports idle or
+  queued delivery. The request removes trailing CRLF/LF record endings before enqueue
   because the native command parser removes them before persistence; all
   interior line breaks remain unchanged. The request CLI also derives the
   dedupe key from this canonical text and the resolved session ID, so equivalent
@@ -55,6 +55,6 @@ to paste when that handoff is unavailable.
 
 The SDK handoff establishes native objective state and selects autopilot mode
 directly; it does not type a slash command. Run it detached as the final action
-so the current turn can end and the extension's idle gate can open. If the
-handoff is unavailable, print the objective and do not ask the user to restart
-the CLI.
+so the current turn can end and the queued command can run. The detached
+confirmation watcher does not delay submission. If the handoff is unavailable,
+print the objective and do not ask the user to restart the CLI.

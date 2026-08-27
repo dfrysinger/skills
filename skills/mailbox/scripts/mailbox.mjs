@@ -180,7 +180,7 @@ try {
         wait: Boolean(options.wait),
       });
       if (result.status === "delivered") {
-        console.log(`poked: ${positional[0]} (SDK idle delivery verified)`);
+        console.log(`poked: ${positional[0]} (SDK native delivery verified)`);
       } else if (result.status === "no-active-copilot") {
         console.error(
           `UNAVAILABLE: no active Copilot session named '${positional[0]}'; the mail remains queued.`,

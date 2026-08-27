@@ -143,6 +143,7 @@ test("recipient-local watcher wakes a live session by its Copilot session name",
     assert.equal(request.target.targetName, "hotel");
     assert.equal(request.target.resolvedBy, "session-name");
     assert.equal(request.target.sessionId, "hotel-session");
+    assert.equal(request.mode, "enqueue");
     assert.equal(request.dedupeKey, `mailbox:hotel:${sent.envelope.id}`);
     assert.match(request.prompt, /^check mailbox; skip if empty \[mb:/);
 

@@ -167,7 +167,7 @@ diagnostics.setContext({
 switch (options.kind) {
   case "send":
     request.prompt = await readRequiredFile(options["prompt-file"], "--prompt-file");
-    request.mode = options.mode ?? "immediate";
+    request.mode = options.mode ?? "enqueue";
     if (!["enqueue", "immediate"].includes(request.mode)) usage("invalid --mode");
     if (options["agent-mode"]) {
       if (!["interactive", "plan", "autopilot", "shell"].includes(options["agent-mode"])) {

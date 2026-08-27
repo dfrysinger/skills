@@ -65,7 +65,7 @@ async function diagnosticEntries(root) {
   return entries;
 }
 
-test("writes an idle-immediate send request and accepts its receipt", async () => {
+test("writes an explicit immediate send request and accepts its receipt", async () => {
   const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
   try {
     const instancePath = join(root, "instances", "hotel-session.json");
@@ -198,6 +198,7 @@ test("returns failure when the recipient writes a failed receipt", async () => {
       sessionId: "session-1",
       generation: "generation-1",
     });
+    assert.equal(request.mode, "enqueue");
     const receiptPath = join(root, "failed", name);
     await mkdir(dirname(receiptPath), { recursive: true });
     await writeFile(

@@ -156,15 +156,16 @@ Checkpoint prose is not searched for a marker.
 
 ### Continuation
 
-The session-inbox extension checks that compaction left the session idle and
-sends this exact immediate continuation:
+The session-inbox extension submits this exact continuation through the CLI's
+native message queue:
 
 ```text
 Compaction done; resume, do not compact.
 ```
 
-The verifier requires exactly one matching root `user.message` after the
-matching completion. It never types or retries the continuation.
+The verifier requires exactly one matching root `user.message` with native
+`idle` or `queued` delivery after the matching completion. It never types or
+retries the continuation.
 
 ## Failure handling
 

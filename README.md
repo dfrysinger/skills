@@ -50,11 +50,10 @@ mailbox recipients retain their guarded terminal fallback.
 
 Session-inbox diagnostics are written as newline-delimited JSON under
 `~/.copilot/session-inbox/logs/`. Extension logs are named by session and
-generation; request-side events share a daily log. They record lifecycle,
-targeting, idle/defer decisions, SDK delivery classification, recovery, and
-errors without deliberately recording prompt, compaction-instruction, or
-continuation content. Files are mode `0600` and entries older than 14 days are
-removed when a logger starts.
+generation; request-side events share a daily log. They record lifecycle, targeting, native request submission, SDK delivery
+classification, recovery, and errors without deliberately recording prompt,
+compaction-instruction, or continuation content. Files are mode `0600` and
+entries older than 14 days are removed when a logger starts.
 
 ## Start here
 
