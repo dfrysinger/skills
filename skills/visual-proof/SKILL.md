@@ -1,6 +1,6 @@
 ---
 name: visual-proof
-description: Capture and inspect visual evidence for a current running UI candidate, rejecting blank, stale, unopened, or unfalsifiable screenshots. Use for every user-visible UI fix or feature before review, PR creation, landing, or a success claim; also use when a change note claims a screenshot or another skill needs runtime proof a human can see. This skill supplies the visual section of development-loop's machine-validated live-proof receipt; it does not replace full interaction proof.
+description: Capture and inspect visual evidence for a current running UI candidate, rejecting blank, stale, unopened, or unfalsifiable screenshots. Use for every user-visible UI fix or feature before review, PR creation, landing, or a success claim; also use when a change note claims a screenshot or another skill needs runtime proof a human can see. Fixes may use paired screenshots, while a new user-facing UX also invokes walkthrough-video for its PR movie. This skill supplies the visual section of development-loop's machine-validated live-proof receipt; it does not replace full interaction proof.
 ---
 
 # visual-proof
@@ -171,13 +171,17 @@ worktree, or stash the fix, capture, reapply, and recheck the intended diff.
 
 **New behavior** has no before. Pair the after against the approved
 `prototype` sketch or the acceptance criteria, and name which one in the
-durable record.
+durable record. When it adds or materially expands a user-facing visual
+journey, invoke `walkthrough-video` after the still-image claims pass. Its
+candidate-bound movie is required in the pull request; these captures remain
+the precise evidence for layout, contrast, and individual states.
 
 A lone after labelled `no baseline` is a report, not a pair, and does not
 satisfy an acceptance criterion that calls for a visual regression check.
 
 Complete when the after has its named counterpart and the only difference
-between them is the behavior you changed.
+between them is the behavior you changed, and any new visual journey has been
+handed to `walkthrough-video`.
 
 ## 6. Put it where the user will find it
 

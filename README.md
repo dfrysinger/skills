@@ -39,6 +39,7 @@ The plugin is registered as `dfrysinger-skills`. Installing from this GitHub rep
 | Build, fix, and ship a change | [`development-loop`](./skills/development-loop/SKILL.md) |
 | Review a change with two independent model families | [`dual-review`](./skills/dual-review/SKILL.md) |
 | Prove a user-visible change works in the real product | [`visual-proof`](./skills/visual-proof/SKILL.md) |
+| Add a video walkthrough of new UX to a pull request | [`walkthrough-video`](./skills/walkthrough-video/SKILL.md) |
 | Run a long task without losing the plan | [`unattended-run`](./skills/unattended-run/SKILL.md) |
 | Pass work to another named agent | [`handoff`](./skills/handoff/SKILL.md) + [`mailbox`](./skills/mailbox/SKILL.md) |
 | Turn a reusable procedure into a skill | [`skill-create`](./skills/skill-create/SKILL.md) |
@@ -52,8 +53,9 @@ The default path is:
 3. [`prototype`](./skills/prototype/SKILL.md) sketches major UI changes in disposable HTML before implementation.
 4. [`development-loop`](./skills/development-loop/SKILL.md) owns implementation, targeted checks, live proof, review, and landing.
 5. [`guardrails`](./skills/guardrails/SKILL.md) turns important architecture rules into deterministic checks.
-6. [`visual-proof`](./skills/visual-proof/SKILL.md) captures evidence for behavior that must be seen.
-7. [`dual-review`](./skills/dual-review/SKILL.md) uses independent model families to find and verify material defects.
+6. [`visual-proof`](./skills/visual-proof/SKILL.md) captures precise still-image evidence for behavior that must be seen.
+7. [`walkthrough-video`](./skills/walkthrough-video/SKILL.md) records and attaches the real journey for pull requests that add new UX.
+8. [`dual-review`](./skills/dual-review/SKILL.md) uses independent model families to find and verify material defects.
 
 The process scales with risk. A bounded fix should stay bounded. A systemic change earns a design, deterministic architecture checks, and stronger live proof.
 
@@ -69,6 +71,7 @@ The process scales with risk. A bounded fix should stay bounded. A systemic chan
 - **[`development-loop`](./skills/development-loop/SKILL.md):** Develop and ship a non-trivial change through a process sized to its actual risk.
 - **[`guardrails`](./skills/guardrails/SKILL.md):** Compile prose architecture rules into deterministic checks that catch structural and behavioral drift.
 - **[`visual-proof`](./skills/visual-proof/SKILL.md):** Capture and inspect visual evidence for a running UI candidate.
+- **[`walkthrough-video`](./skills/walkthrough-video/SKILL.md):** Record, validate, inspect, and attach a candidate-bound walkthrough for pull requests that add new UX.
 - **[`unattended-run`](./skills/unattended-run/SKILL.md):** Keep a long Copilot CLI run anchored to its plan, operating rules, and completion gates.
 
 ### Review and independent judgment
