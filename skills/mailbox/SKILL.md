@@ -92,6 +92,14 @@ Without this hook, mail still arrives durably but the recipient won't notice unt
   assume send-keys lands. The poke requires a ready Copilot pane and verifies a
   transcript entry; otherwise rely on the osascript notification and resume
   hook. Never send wakeup keys merely because the tmux session exists.
+- **Restart a Copilot CLI that cannot receive mail.** A missing fresh
+  session-inbox heartbeat or repeated unverified wakeups is a CLI recovery
+  problem, not a reason to leave critical work queued. Restart the named
+  agent's CLI immediately, preserving and resuming its exact session ID when
+  the session loads. If the session file is corrupt or cannot load, start a
+  fresh session in the same named tmux pane and send one context-complete
+  replacement handoff. Wait for current extensions to load, then verify one
+  session-inbox or mailbox delivery before considering the agent reachable.
 - **Mailbox writeable by anyone with shell access.** Treat envelope contents as not-secret. Don't put credentials in messages or attachments.
 - **No reply-thread bookkeeping.** If A sends to B and B wants to reply, B sends back to A's name. There's no thread-id linkage in v1.
 - **Acked mail is moved, not deleted.** `delivered/` accumulates; periodically prune.
