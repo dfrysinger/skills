@@ -272,7 +272,9 @@ appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, "called\\n");
         message: "mailbox hotel@macbook-pro belongs to machine macbook-pro",
       });
     }
-    assert.deepEqual(await mailbox.list(), []);
+    assert.deepEqual(await mailbox.list(), [
+      { name: "hotel@macbook-pro", pending: 1, delivered: 0 },
+    ]);
     await assert.rejects(readFile(callLog, "utf8"), { code: "ENOENT" });
     await assert.rejects(
       readFile(join(stateRoot, "watchers", "hotel@macbook-pro.lock"), "utf8"),

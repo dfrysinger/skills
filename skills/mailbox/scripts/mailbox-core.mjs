@@ -502,7 +502,7 @@ export function createMailbox(options = {}) {
     for (const entry of mailboxes.filter((candidate) => candidate.isDirectory())) {
       let name;
       try {
-        name = requireLocalAddress(entry.name).address;
+        name = parseMailboxAddress(entry.name).address;
       } catch {
         continue;
       }
