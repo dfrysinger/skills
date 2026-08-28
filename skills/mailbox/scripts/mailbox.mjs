@@ -215,7 +215,16 @@ try {
       const { positional, options } = parseOptions(args, new Set(["once"]));
       if (positional.length > 1) usage("watch accepts at most one agent name");
       const address = positional[0] ?? (await requiredOwnName(options.name));
-      const targetName = parseMailboxAddress(address).name;
+      const parsedAddress = parseMailboxAddress(address);
+      if (
+        parsedAddress.machine &&
+        parsedAddress.machine !== mailbox.machineName
+      ) {
+        throw new Error(
+          `mailbox ${parsedAddress.address} belongs to machine ${parsedAddress.machine}`,
+        );
+      }
+      const targetName = parsedAddress.name;
       const intervalMs = Number(options.interval ?? "2000");
       const controller = new AbortController();
       for (const signal of ["SIGINT", "SIGTERM"]) {

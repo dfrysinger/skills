@@ -148,6 +148,20 @@ test("mailbox addresses preserve valid qualified names and reject malformed inpu
   }
 });
 
+test("explicit unqualified-only mode ignores malformed machine configuration", () => {
+  const previousMachine = process.env.COPILOT_AGENT_MACHINE;
+  try {
+    process.env.COPILOT_AGENT_MACHINE = "Surface Pro";
+    assert.throws(() => createMailbox(), /COPILOT_AGENT_MACHINE/);
+    assert.deepEqual(createMailbox({ machineName: null }).localAddresses("hotel"), [
+      "hotel",
+    ]);
+  } finally {
+    if (previousMachine === undefined) delete process.env.COPILOT_AGENT_MACHINE;
+    else process.env.COPILOT_AGENT_MACHINE = previousMachine;
+  }
+});
+
 test("qualified recipients use a separate mailbox and suppress remote local wakeup", async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-qualified-"));
   const previousCallLog = process.env.MOCK_MAILBOX_REQUEST_CALLS;
@@ -182,7 +196,10 @@ appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, "called\\n");
     assert.equal(sent.wakeup.status, "remote-pending");
     await assert.rejects(readFile(callLog, "utf8"), { code: "ENOENT" });
     assert.equal((await senderMailbox.check("hotel")).length, 0);
-    assert.equal((await senderMailbox.check("hotel@surface-pro")).length, 1);
+    assert.equal(
+      JSON.parse(await readFile(sent.envelopePath, "utf8")).to.name,
+      "hotel@surface-pro",
+    );
     assert.equal((await senderMailbox.checkLocal("hotel")).length, 0);
 
     const recipientMailbox = createMailbox({
@@ -200,6 +217,78 @@ appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, "called\\n");
     assert.equal(
       (await recipientMailbox.readLocal("hotel", sent.envelope.id)).envelope.message,
       "deliver only to surface-pro",
+    );
+  } finally {
+    if (previousCallLog === undefined) {
+      delete process.env.MOCK_MAILBOX_REQUEST_CALLS;
+    } else {
+      process.env.MOCK_MAILBOX_REQUEST_CALLS = previousCallLog;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("foreign qualified recipient operations fail before scanning or marking", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-foreign-address-"));
+  const previousCallLog = process.env.MOCK_MAILBOX_REQUEST_CALLS;
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const stateRoot = join(root, "state");
+    const callLog = join(root, "request-calls.jsonl");
+    const mockRequest = join(root, "mock-request.mjs");
+    process.env.MOCK_MAILBOX_REQUEST_CALLS = callLog;
+    await writeFile(
+      mockRequest,
+      `import { appendFileSync } from "node:fs";
+appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, "called\\n");
+`,
+    );
+    const mailbox = createMailbox({
+      mailboxRoot,
+      stateRoot,
+      requestCli: mockRequest,
+      machineName: "thinkpad",
+    });
+    const sent = await mailbox.send({
+      recipient: "hotel@macbook-pro",
+      sender: "windows-proof",
+      summary: "foreign route",
+      message: "must remain remote",
+      wake: false,
+    });
+
+    for (const operation of [
+      () => mailbox.check("hotel@macbook-pro"),
+      () => mailbox.read("hotel@macbook-pro", sent.envelope.id),
+      () => mailbox.acknowledge("hotel@macbook-pro", sent.envelope.id),
+      () => mailbox.poke("hotel@macbook-pro", { targetName: "hotel" }),
+      () =>
+        mailbox.watch("hotel@macbook-pro", {
+          targetName: "hotel",
+          once: true,
+        }),
+    ]) {
+      await assert.rejects(operation(), {
+        message: "mailbox hotel@macbook-pro belongs to machine macbook-pro",
+      });
+    }
+    assert.deepEqual(await mailbox.list(), []);
+    await assert.rejects(readFile(callLog, "utf8"), { code: "ENOENT" });
+    await assert.rejects(
+      readFile(join(stateRoot, "watchers", "hotel@macbook-pro.lock"), "utf8"),
+      { code: "ENOENT" },
+    );
+    await assert.rejects(
+      readFile(
+        join(
+          stateRoot,
+          "notified",
+          "hotel@macbook-pro",
+          `${sent.envelope.id}.notified`,
+        ),
+        "utf8",
+      ),
+      { code: "ENOENT" },
     );
   } finally {
     if (previousCallLog === undefined) {

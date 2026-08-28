@@ -164,7 +164,10 @@ export async function resolveOwnName(explicitName) {
 export function createMailbox(options = {}) {
   const mailboxRoot = options.mailboxRoot ?? defaultMailboxRoot();
   const stateRoot = options.stateRoot ?? defaultStateRoot();
-  const machineName = configuredMachineName(options.machineName);
+  const machineName =
+    options.machineName === null
+      ? undefined
+      : configuredMachineName(options.machineName);
   const requestCli =
     options.requestCli ??
     join(
@@ -187,6 +190,16 @@ export function createMailbox(options = {}) {
       agentName,
       ...(machineName ? [`${agentName}@${machineName}`] : []),
     ];
+  }
+
+  function requireLocalAddress(address) {
+    const parsed = parseMailboxAddress(address);
+    if (parsed.machine && parsed.machine !== machineName) {
+      throw new Error(
+        `mailbox ${parsed.address} belongs to machine ${parsed.machine}`,
+      );
+    }
+    return parsed;
   }
 
   async function attachmentsAreReady(address, envelope, requireStableAttachments) {
@@ -371,11 +384,11 @@ export function createMailbox(options = {}) {
   }
 
   async function check(address) {
-    return pendingEnvelopes(parseMailboxAddress(address).address);
+    return pendingEnvelopes(requireLocalAddress(address).address);
   }
 
   async function read(address, id) {
-    const mailboxAddress = parseMailboxAddress(address).address;
+    const mailboxAddress = requireLocalAddress(address).address;
     validateName(id, "envelope id");
     const path = join(mailboxDirectory(mailboxAddress, "pending"), `${id}.json`);
     const envelope = JSON.parse(await readFile(path, "utf8"));
@@ -390,7 +403,7 @@ export function createMailbox(options = {}) {
   }
 
   async function acknowledge(address, id) {
-    const mailboxAddress = parseMailboxAddress(address).address;
+    const mailboxAddress = requireLocalAddress(address).address;
     validateName(id, "envelope id");
     const pending = mailboxDirectory(mailboxAddress, "pending");
     const delivered = mailboxDirectory(mailboxAddress, "delivered");
@@ -489,7 +502,7 @@ export function createMailbox(options = {}) {
     for (const entry of mailboxes.filter((candidate) => candidate.isDirectory())) {
       let name;
       try {
-        name = parseMailboxAddress(entry.name).address;
+        name = requireLocalAddress(entry.name).address;
       } catch {
         continue;
       }
@@ -579,7 +592,7 @@ export function createMailbox(options = {}) {
       requireStableAttachments = false,
     } = {},
   ) {
-    const mailboxAddress = parseMailboxAddress(address).address;
+    const mailboxAddress = requireLocalAddress(address).address;
     validateName(targetName, "target name");
     const envelopes = await pendingEnvelopes(mailboxAddress, {
       requireStableAttachments,
@@ -717,7 +730,7 @@ export function createMailbox(options = {}) {
       signal,
     } = {},
   ) {
-    const mailboxAddress = parseMailboxAddress(address).address;
+    const mailboxAddress = requireLocalAddress(address).address;
     validateName(targetName, "target name");
     if (!Number.isFinite(intervalMs) || intervalMs < 100) {
       throw new Error("watch interval must be at least 100 ms");
