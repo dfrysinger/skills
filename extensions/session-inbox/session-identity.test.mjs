@@ -10,21 +10,33 @@ import {
   preferredAgentName,
 } from "./session-identity.mjs";
 
-test("identity prefers the current tmux name and refreshes after a rename", async () => {
+async function writeExecutable(root, body) {
+  if (process.platform === "win32") {
+    const executable = join(root, "tmux.cmd");
+    await writeFile(executable, `@echo off\r\n${body}\r\n`);
+    return executable;
+  }
+  const executable = join(root, "tmux");
+  await writeFile(executable, `#!/usr/bin/env bash\n${body}\n`);
+  await chmod(executable, 0o700);
+  return executable;
+}
+
+test("identity prefers the current tmux name and refreshes after a rename", {
+  skip: process.platform === "win32",
+}, async () => {
   const root = await mkdtemp(join(tmpdir(), "session-identity-"));
   const previousPath = process.env.PATH;
   const previousPane = process.env.TMUX_PANE;
   const previousState = process.env.MOCK_TMUX_NAME;
   try {
-    const executable = join(root, "tmux");
     const state = join(root, "tmux-name");
-    await writeFile(
-      executable,
-      `#!/usr/bin/env bash
-cat "$MOCK_TMUX_NAME"
-`,
+    await writeExecutable(
+      root,
+      process.platform === "win32"
+        ? 'type "%MOCK_TMUX_NAME%"'
+        : 'cat "$MOCK_TMUX_NAME"',
     );
-    await chmod(executable, 0o700);
     process.env.PATH = `${root}${delimiter}${previousPath}`;
     process.env.TMUX_PANE = "%1";
     process.env.MOCK_TMUX_NAME = state;
@@ -76,14 +88,17 @@ test("identity falls back to the current live Copilot session name", async () =>
   }
 });
 
-test("identity falls back to the session name when tmux lookup fails", async () => {
+test("identity falls back to the session name when tmux lookup fails", {
+  skip: process.platform === "win32",
+}, async () => {
   const root = await mkdtemp(join(tmpdir(), "session-identity-failed-tmux-"));
   const previousPath = process.env.PATH;
   const previousPane = process.env.TMUX_PANE;
   try {
-    const executable = join(root, "tmux");
-    await writeFile(executable, "#!/usr/bin/env bash\nexit 1\n");
-    await chmod(executable, 0o700);
+    await writeExecutable(
+      root,
+      process.platform === "win32" ? "exit /b 1" : "exit 1",
+    );
     process.env.PATH = `${root}${delimiter}${previousPath}`;
     process.env.TMUX_PANE = "%stale";
     const session = {

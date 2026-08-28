@@ -27,6 +27,11 @@ Do NOT use mailbox for:
   eligible, so abandoned historical sessions with the same name are ignored.
   Outside tmux, set the current session name with `/rename <name>`. Portable
   command-line tools also accept `--name` or `COPILOT_AGENT_NAME`.
+- **Cross-computer address = `name@machine`.** An unqualified name such as
+  `hotel` is an intentional live broadcast to currently running matching
+  watchers. Address one computer explicitly with `hotel@surface-pro`. Set the
+  stable machine label with `COPILOT_AGENT_MACHINE`; there is no hostname
+  fallback, and labels must be unique within one shared `MAILBOX_ROOT`.
 - **Transport = file queue.** Envelopes land at
   `$MAILBOX_ROOT/<recipient>/pending/<id>.json`, with attachments in a sibling
   `<id>/` directory. `MAILBOX_ROOT` defaults to `~/.copilot/mailbox` and may
@@ -36,8 +41,9 @@ Do NOT use mailbox for:
 - **Remote wakeup = recipient-local polling.** The packaged
   `mailbox-watcher` extension runs beside each Copilot session. It uses the
   tmux name when available, otherwise the live Copilot session name, and polls
-  that mailbox's shared `pending/` directory every two seconds. New mail is
-  bridged into the machine-local session-inbox request queue. Session-inbox
+  the unqualified mailbox plus its configured `name@machine` mailbox every two
+  seconds. Qualified mail is mapped back to the ordinary local session name.
+  New mail is bridged into the machine-local session-inbox request queue. Session-inbox
   heartbeats, claims, locks, receipts, and logs remain local and must not be
   placed in OneDrive.
 - **Wakeup = short natural-language nudge through the recipient agent.** Sender
@@ -87,13 +93,13 @@ Do NOT use mailbox for:
 
 Recipient name is the agent's live tmux name or Copilot `/rename` name (for
 example, `juliett` or `kilo`). Attachments are copied rather than symlinked.
-The script prints `wakeup: ... (verified | NOT verified | skipped)` so you know
+The script prints `wakeup: ... (verified | deferred | NOT verified | skipped)` so you know
 whether the live wakeup landed; either way the envelope is durable.
 
 The portable entry point, including on Windows, is:
 
 ```sh
-node <plugin>/skills/mailbox/scripts/mailbox.mjs send <recipient-name> \
+node <plugin>/skills/mailbox/scripts/mailbox.mjs send <recipient-name[@machine]> \
   --summary "<short title>" \
   --message "<free text>" \
   --file <path>
@@ -101,6 +107,11 @@ node <plugin>/skills/mailbox/scripts/mailbox.mjs send <recipient-name> \
 
 The shell wrapper adds only the macOS notification and Claude/Codex tmux
 fallback.
+
+For a qualified remote recipient, the sender publishes the durable envelope but
+does not wake a same-name session on the sender's computer. The recipient
+machine's watcher delivers it after OneDrive sync. A nonmatching machine leaves
+the envelope pending and cannot read or acknowledge it.
 
 ## Receive (this session got mail)
 
@@ -148,16 +159,18 @@ will not notice until the user manually says "check mail".
 - **Do not sync `~/.copilot/session-inbox`.** A cloud file provider is not a
   distributed lock and can expose stale heartbeats or conflicting claims.
   Sync only `MAILBOX_ROOT`; keep `MAILBOX_STATE_ROOT` and session-inbox local.
-- **One watcher owns one local name.** A private local lock under
-  `MAILBOX_STATE_ROOT` prevents two watcher processes from repeatedly notifying
-  the same agent. Duplicate Copilot sessions with the same `/rename` name fail
-  closed during target resolution.
+- **One watcher owns each full mailbox address.** A configured session owns
+  separate private locks for `hotel` and `hotel@surface-pro`. Duplicate Copilot
+  sessions with the same `/rename` name still fail closed during local target
+  resolution.
 - **Sender and watcher share one notification claim.** Publishing a local
   envelope and the recipient's two-second watcher can notice the same mail at
   nearly the same time. A short machine-local claim under
-  `MAILBOX_STATE_ROOT/notifying/` lets only one path submit the SDK request; the
-  other reports that notification is already in progress. Failed or abandoned
-  claims are released or reclaimed, while the durable envelope remains pending.
+  `MAILBOX_STATE_ROOT/notifying/` uses the full mailbox address, so only one
+  path submits each route's SDK request while broadcast and qualified routes
+  remain independent. The other path reports that notification is already in
+  progress. Failed or abandoned claims are released or reclaimed, while the
+  durable envelope remains pending.
 - **Attachment stabilization must not erase notification state.** The watcher
   may temporarily exclude an envelope whose synced attachments have not yet
   remained unchanged for two polls. Marker cleanup compares against every
@@ -168,7 +181,7 @@ will not notice until the user manually says "check mail".
 ## Verification
 
 - `mailbox-list.sh` — pending/delivered counts per mailbox + active tmux sessions.
-- `mailbox-send.sh` reports `wakeup: ... (verified|NOT verified|skipped)` — anything other than `verified` means rely on the resume-hook or human notification.
+- `mailbox-send.sh` reports `wakeup: ... (verified|deferred|NOT verified|skipped)` — `deferred` means a qualified remote envelope is durable but its machine watcher has not confirmed delivery; anything other than `verified` means rely on the resume-hook or human notification.
 - `git -C ~/.copilot/skills status` clean after sending or receiving (mailbox queue lives at `~/.copilot/mailbox/`, not tracked in the skills repo).
 
 ## Scripts

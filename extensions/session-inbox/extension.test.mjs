@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  chmod,
   cp,
   mkdir,
   mkdtemp,
@@ -100,7 +99,7 @@ async function createHarness(initialState = {}) {
   await writeFile(
     join(sdkDir, "extension.mjs"),
     `
-import { appendFileSync, chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 
 const listeners = new Map();
 const state = () => JSON.parse(readFileSync(process.env.MOCK_STATE, "utf8"));
@@ -172,7 +171,8 @@ export async function joinSession() {
           record("compact", options);
           const current = state();
           if (current.breakDedupeWrite) {
-            chmodSync(process.env.MOCK_DEDUPE_DIR, 0o500);
+            rmSync(process.env.MOCK_DEDUPE_DIR, {recursive: true, force: true});
+            writeFileSync(process.env.MOCK_DEDUPE_DIR, "block dedupe directory");
           }
           return {success: true, tokensRemoved: 11, messagesRemoved: 3};
         },
@@ -338,7 +338,6 @@ export async function joinSession() {
   async function stop() {
     if (child.exitCode === null) child.kill("SIGTERM");
     await exit;
-    await chmod(join(inbox, "dedupe"), 0o700).catch(() => {});
     await rm(root, { recursive: true, force: true });
   }
 
@@ -720,7 +719,8 @@ test("recipient extension submits SDK work without idle gates and preserves phas
       ).length,
       1,
     );
-    await chmod(join(harness.inbox, "dedupe"), 0o700);
+    await rm(join(harness.inbox, "dedupe"), { recursive: true, force: true });
+    await mkdir(join(harness.inbox, "dedupe"), { recursive: true });
     await harness.setState({ breakDedupeWrite: false });
     const recoveredReceipt = await harness.receipt(
       "completed",

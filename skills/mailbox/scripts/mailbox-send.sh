@@ -42,6 +42,8 @@ POKE_STATUS=$?
 set -e
 if [[ "$POKE_STATUS" -eq 0 ]]; then
   WAKEUP_STATUS="delivered"
+elif [[ "$POKE_STATUS" -eq 5 ]]; then
+  WAKEUP_STATUS="deferred"
 elif [[ "$POKE_STATUS" -eq 4 ]]; then
   WAKEUP_STATUS="not_attempted"
 else
@@ -50,6 +52,7 @@ fi
 
 case "$WAKEUP_STATUS" in
   delivered)     echo "wakeup: recipient accepted the mailbox nudge (verified)" ;;
+  deferred)      echo "wakeup: deferred to the recipient machine watcher; envelope waits in pending/" ;;
   unverified)    echo "wakeup: recipient did not acknowledge the nudge (NOT verified) — envelope waits in pending/ and will be re-poked" ;;
   not_attempted) echo "wakeup: skipped (no active session named '$RECIPIENT'; envelope waits in pending/)" ;;
 esac

@@ -34,20 +34,62 @@ try {
   throw error;
 }
 
-const mailbox = createMailbox();
+let mailbox;
+try {
+  mailbox = createMailbox();
+} catch (error) {
+  if (!process.env.COPILOT_AGENT_MACHINE) throw error;
+  diagnostics.log("watcher.machine_identity_invalid", {
+    configuredValue: process.env.COPILOT_AGENT_MACHINE,
+    error: errorDetails(error),
+  });
+  mailbox = createMailbox({ machineName: null });
+}
+diagnostics.setContext({ machineName: mailbox.machineName });
+diagnostics.log("watcher.machine_identity", {
+  machineName: mailbox.machineName,
+  configured: Boolean(mailbox.machineName),
+});
 let activeName;
-let activeController;
-let activeWatcher;
+const activeWatchers = new Map();
 let refreshing = false;
 let shuttingDown = false;
 let identityInterval;
 
-async function stopActiveWatcher() {
-  if (!activeWatcher) return;
-  activeController.abort();
-  await activeWatcher;
-  activeController = undefined;
-  activeWatcher = undefined;
+async function stopActiveWatchers() {
+  const watchers = [...activeWatchers.values()];
+  for (const { controller } of watchers) controller.abort();
+  await Promise.all(watchers.map(({ promise }) => promise));
+  for (const watcher of watchers) {
+    if (activeWatchers.get(watcher.address) === watcher) {
+      activeWatchers.delete(watcher.address);
+    }
+  }
+}
+
+function startWatcher(address, targetName) {
+  const controller = new AbortController();
+  const watcher = { address, controller, promise: undefined };
+  watcher.promise = mailbox
+    .watch(address, {
+      targetName,
+      intervalMs,
+      signal: controller.signal,
+    })
+    .catch((error) => {
+      diagnostics.log("watcher.failed", {
+        sessionId: session.sessionId,
+        agentName: targetName,
+        mailbox: address,
+        error: errorDetails(error),
+      });
+    })
+    .then(() => {
+      if (activeWatchers.get(address) === watcher) {
+        activeWatchers.delete(address);
+      }
+    });
+  activeWatchers.set(address, watcher);
 }
 
 async function refreshIdentity() {
@@ -75,35 +117,32 @@ async function refreshIdentity() {
       });
     }
     const nextName = tmuxSession ?? sessionName;
-    if (nextName === activeName && activeWatcher) return;
-
-    await stopActiveWatcher();
-    diagnostics.log("watcher.identity_changed", {
-      sessionId: session.sessionId,
-      previousName: activeName,
-      agentName: nextName,
-      identitySource: tmuxSession ? "tmux" : sessionName ? "session-name" : undefined,
-    });
-    activeName = nextName;
+    if (nextName !== activeName) {
+      await stopActiveWatchers();
+      diagnostics.log("watcher.identity_changed", {
+        sessionId: session.sessionId,
+        previousName: activeName,
+        agentName: nextName,
+        identitySource: tmuxSession ? "tmux" : sessionName ? "session-name" : undefined,
+      });
+      activeName = nextName;
+    }
     if (!activeName) return;
 
-    activeController = new AbortController();
-    const watcher = mailbox
-      .watch(activeName, {
-        intervalMs,
-        signal: activeController.signal,
-      })
-      .catch((error) => {
-        diagnostics.log("watcher.failed", {
-          sessionId: session.sessionId,
-          agentName: activeName,
-          error: errorDetails(error),
-        });
+    const addresses = mailbox.localAddresses(activeName);
+    const started = [];
+    for (const address of addresses) {
+      if (activeWatchers.has(address)) continue;
+      startWatcher(address, activeName);
+      started.push(address);
+    }
+    if (started.length > 0) {
+      diagnostics.log("watcher.addresses_started", {
+        sessionId: session.sessionId,
+        agentName: activeName,
+        mailboxes: started,
       });
-    activeWatcher = watcher;
-    void watcher.finally(() => {
-      if (activeWatcher === watcher) activeWatcher = undefined;
-    });
+    }
   } catch (error) {
     diagnostics.log("watcher.identity_failed", {
       sessionId: session.sessionId,
@@ -122,7 +161,7 @@ async function shutdown(signal) {
     sessionId: session.sessionId,
     signal,
   });
-  await stopActiveWatcher();
+  await stopActiveWatchers();
   process.exit(0);
 }
 

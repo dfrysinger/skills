@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 
-import { createMailbox, POKE_NO_ACTIVE_COPILOT, POKE_UNVERIFIED, resolveOwnName } from "./mailbox-core.mjs";
+import {
+  createMailbox,
+  parseMailboxAddress,
+  POKE_NO_ACTIVE_COPILOT,
+  POKE_REMOTE_PENDING,
+  POKE_UNVERIFIED,
+  resolveOwnName,
+} from "./mailbox-core.mjs";
 
 function usage(message) {
   if (message) console.error(`mailbox: ${message}`);
@@ -94,8 +101,11 @@ try {
           break;
         case "no-active-copilot":
           console.log(
-            `wakeup: skipped (no active Copilot session named '${positional[0]}'; envelope waits in pending/)`,
+            `wakeup: skipped (no active Copilot session named '${parseMailboxAddress(positional[0]).name}'; envelope waits in pending/)`,
           );
+          break;
+        case "remote-pending":
+          console.log(`wakeup: ${result.wakeup.detail}`);
           break;
         case "unverified":
           console.log(
@@ -111,15 +121,17 @@ try {
       const { positional, options } = parseOptions(args);
       if (positional.length !== 0) usage("check takes no positional arguments");
       const name = await requiredOwnName(options.name);
-      const envelopes = await mailbox.check(name);
+      const envelopes = await mailbox.checkLocal(name);
       if (envelopes.length === 0) {
-        console.log(`no pending mail for ${name}`);
+        console.log(`no pending mail for ${mailbox.localAddresses(name).join(" or ")}`);
         break;
       }
-      console.log(`${name} has ${envelopes.length} pending envelope(s):`);
-      for (const { envelope, path } of envelopes) {
+      console.log(
+        `${mailbox.localAddresses(name).join(" + ")} have ${envelopes.length} pending envelope(s):`,
+      );
+      for (const { envelope, path, mailboxAddress } of envelopes) {
         console.log(
-          `  [${envelope.id}]  from=${envelope.from.name}  sent=${envelope.sent_at}`,
+          `  [${envelope.id}]  mailbox=${mailboxAddress}  from=${envelope.from.name}  sent=${envelope.sent_at}`,
         );
         console.log(`     summary: ${envelope.summary}`);
         if (envelope.attachments.length > 0) {
@@ -137,7 +149,7 @@ try {
       const { positional, options } = parseOptions(args);
       if (positional.length !== 1) usage("read requires one envelope id");
       const name = await requiredOwnName(options.name);
-      const result = await mailbox.read(name, positional[0]);
+      const result = await mailbox.readLocal(name, positional[0]);
       printEnvelope(result.envelope, result.attachmentDirectory);
       break;
     }
@@ -145,7 +157,7 @@ try {
       const { positional, options } = parseOptions(args);
       if (positional.length !== 1) usage("ack requires one envelope id");
       const name = await requiredOwnName(options.name);
-      await mailbox.acknowledge(name, positional[0]);
+      await mailbox.acknowledgeLocal(name, positional[0]);
       console.log(`acked: ${positional[0]} -> delivered/`);
       break;
     }
@@ -176,7 +188,14 @@ try {
     case "poke": {
       const { positional, options } = parseOptions(args, new Set(["wait"]));
       if (positional.length !== 1) usage("poke requires one agent name");
+      const address = parseMailboxAddress(positional[0]);
+      if (address.machine && address.machine !== mailbox.machineName) {
+        console.log(`poke: deferred to mailbox watcher on ${address.machine}`);
+        process.exitCode = POKE_REMOTE_PENDING;
+        break;
+      }
       const result = await mailbox.poke(positional[0], {
+        targetName: address.name,
         wait: Boolean(options.wait),
       });
       if (result.status === "delivered") {
@@ -197,16 +216,27 @@ try {
     case "watch": {
       const { positional, options } = parseOptions(args, new Set(["once"]));
       if (positional.length > 1) usage("watch accepts at most one agent name");
-      const name = await requiredOwnName(positional[0] ?? options.name);
+      const address = positional[0] ?? (await requiredOwnName(options.name));
+      const parsedAddress = parseMailboxAddress(address);
+      if (
+        parsedAddress.machine &&
+        parsedAddress.machine !== mailbox.machineName
+      ) {
+        throw new Error(
+          `mailbox ${parsedAddress.address} belongs to machine ${parsedAddress.machine}`,
+        );
+      }
+      const targetName = parsedAddress.name;
       const intervalMs = Number(options.interval ?? "2000");
       const controller = new AbortController();
       for (const signal of ["SIGINT", "SIGTERM"]) {
         process.on(signal, () => controller.abort());
       }
       console.log(
-        `watching ${mailbox.mailboxRoot}/${name}/pending every ${intervalMs} ms`,
+        `watching ${mailbox.mailboxRoot}/${address}/pending for local session ${targetName} every ${intervalMs} ms`,
       );
-      await mailbox.watch(name, {
+      await mailbox.watch(address, {
+        targetName,
         intervalMs,
         once: Boolean(options.once),
         signal: controller.signal,

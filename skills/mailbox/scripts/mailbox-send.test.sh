@@ -10,6 +10,9 @@ mkdir -p "$ROOT/bin"
 cat >"$ROOT/bin/node" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$MAILBOX_SEND_NODE_ARGS"
+if [[ "$2" == "poke" ]]; then
+  exit "${FAKE_POKE_STATUS:-0}"
+fi
 EOF
 chmod +x "$ROOT/bin/node"
 
@@ -43,4 +46,14 @@ set -e
 }
 grep -Fq "send hotel --summary no attachments --message bash 3.2 empty array proof" \
   "$MAILBOX_SEND_NODE_ARGS"
+
+export FAKE_POKE_STATUS=5
+output="$(/bin/bash "$SCRIPT_DIR/mailbox-send.sh" hotel@other-machine \
+  --summary "remote target" \
+  --message "durable remote publication")"
+grep -Fq "wakeup: deferred to the recipient machine watcher" <<<"$output" ||
+  {
+    printf '%s\n' "$output" >&2
+    exit 1
+  }
 echo "mailbox-send tests passed"
