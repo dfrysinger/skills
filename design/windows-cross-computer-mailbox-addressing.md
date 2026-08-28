@@ -217,11 +217,11 @@ Set `COPILOT_AGENT_MACHINE` on each computer before sending qualified mail. Roll
 
 ## Current baton
 
-- **Phase:** externally blocked on the physical Mac/Windows campaign.
+- **Phase:** physical campaign complete; ready for pull request.
 - **Branch:** `dfrysinger/windows-mailbox-validation`.
-- **Critical path:** run the same frozen branch on a physical Mac sharing the mailbox root with Windows; prove both qualified directions and controlled unqualified broadcast; then open and land the pull request.
-- **Current candidate evidence:** Code candidate `0262409` has eight validator-accepted receipts covering Windows extension ownership, local and qualified native delivery, foreign watcher refusal, malformed-machine fallback, independent watcher retry, unknown-qualified persistence, controlled two-runtime broadcast with acknowledgement withheld, OneDrive offline/restart dedupe, attachment stability gating, held-file rename recovery, and diagnostics exclusion. The focused mailbox/session-inbox suite passes with 30 tests and 2 Windows tmux-only skips. The repository-wide Node run has one unrelated `self-compact` `spawn EFTYPE` failure reproduced on the base commit.
-- **Open proof claims:** only the required physical Mac/Windows campaign. The second independent runtime used for current broadcast and Mac-labeled qualified evidence ran on Windows and is not represented as physical-Mac proof.
+- **Critical path:** open the pull request with the reviewed design, deterministic checks, validator-accepted Windows receipts, and physical Mac/Windows receipts; inspect review feedback; then land.
+- **Current candidate evidence:** Candidate `ca4ac3b` has eight validator-accepted Windows receipts plus physical receipts under the shared OneDrive proof root. A physical Mac and Windows computer sharing only `MAILBOX_ROOT` proved Windows-to-Mac `hotel@macbook-pro`, Mac-to-Windows `hotel@surface-pro`, an unused qualified target remaining pending, same-name local ambiguity failing closed and recovering, and one unqualified `hotel` envelope producing exactly one native turn per physical computer. Broadcast acknowledgement was withheld until the Mac published a durable barrier signal; Windows then acknowledged once and observed pending zero and delivered one. The focused mailbox/session-inbox suite passes with 30 tests and 2 Windows tmux-only skips. The repository-wide Node run has one unrelated `self-compact` `spawn EFTYPE` failure reproduced on the base commit.
+- **Open proof claims:** none.
 - **Reframe status:** `CLEAR`; replacement design passed bounded Claude Opus and GPT review with no material finding.
 - **Implementation review:** round two closed all ownership and watcher-lifecycle findings. Both Claude slices identified a non-blocking remote-mailbox list visibility regression; `0262409` restored read-only remote counts without weakening recipient ownership.
 
