@@ -500,7 +500,7 @@ export function createMailbox(options = {}) {
           "--prompt-file",
           promptPath,
           "--mode",
-          "enqueue",
+          "immediate",
           "--dedupe-key",
           `mailbox:${name}:${newest.id}`,
           "--timeout",
@@ -508,13 +508,9 @@ export function createMailbox(options = {}) {
         ],
         {},
       );
-      if (
-        result.code === 0 &&
-        (result.stdout.includes('"delivery":"idle"') ||
-          result.stdout.includes('"delivery":"queued"'))
-      ) {
+      if (result.code === 0 && result.stdout.includes('"messageAccepted":true')) {
         await markNotified(name, [...pendingIds]);
-        diagnostics.log("wakeup.delivered", {
+        diagnostics.log("wakeup.accepted", {
           mailbox: name,
           envelopeId: newest.id,
         });

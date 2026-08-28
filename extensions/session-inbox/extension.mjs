@@ -197,6 +197,7 @@ async function sendAndConfirm({ prompt, mode = "immediate", agentMode }) {
     });
     return {
       messageId,
+      messageAccepted: true,
       delivery: event?.data.delivery ?? "unconfirmed",
       idleDelivery: event?.data.delivery === "idle",
       queuedDelivery: event?.data.delivery === "queued",
