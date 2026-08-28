@@ -100,9 +100,11 @@ if [[ "$BACKEND" == "copilot" ]]; then
     --target-name "$NAME" \
     --prompt-file "$PROMPT_FILE" \
     --mode immediate \
-    --dedupe-key "mailbox:$NAME:$NEWEST_ID" \
+    --dedupe-key "mailbox:immediate-v2:$NAME:$NEWEST_ID" \
     --timeout "$TIMEOUT" 2>&1)"; then
-    if grep -Fq '"messageAccepted":true' <<<"$REQUEST_OUTPUT"; then
+    if grep -Fq '"messageAccepted":true' <<<"$REQUEST_OUTPUT" ||
+      grep -Eq '"messageId":"[^"]+"' <<<"$REQUEST_OUTPUT" ||
+      grep -Eq '"delivery":"(idle|queued|steering)"' <<<"$REQUEST_OUTPUT"; then
       printf '%s\n' "$NEWEST_ID" >"$WATERMARK_FILE"
       echo "poked: $NAME (SDK wakeup accepted)"
       exit 0
