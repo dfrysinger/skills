@@ -464,7 +464,46 @@ export function createMailbox(options = {}) {
     );
   }
 
-  async function poke(
+  async function acquireNotificationClaim(name) {
+    const path = join(stateRoot, "notifying", `${validateName(name)}.lock`);
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const handle = await open(path, "wx", 0o600);
+        await handle.writeFile(
+          `${JSON.stringify({
+            pid: process.pid,
+            name,
+            startedAt: new Date().toISOString(),
+          })}\n`,
+        );
+        await handle.close();
+        return async () => rm(path, { force: true });
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+        let owner;
+        try {
+          owner = JSON.parse(await readFile(path, "utf8"));
+        } catch {
+          owner = undefined;
+        }
+        const age = Date.now() - Date.parse(owner?.startedAt);
+        if (Number.isFinite(age) && age <= 60_000 && owner?.pid) {
+          try {
+            process.kill(owner.pid, 0);
+            return undefined;
+          } catch (ownerError) {
+            if (ownerError?.code === "EPERM") return undefined;
+            if (ownerError?.code !== "ESRCH") throw ownerError;
+          }
+        }
+        await rm(path, { force: true });
+      }
+    }
+    throw new Error(`could not acquire mailbox notification claim for ${name}`);
+  }
+
+  async function pokeWithoutClaim(
     name,
     { wait = false, requireStableAttachments = false } = {},
   ) {
@@ -537,6 +576,23 @@ export function createMailbox(options = {}) {
       };
     } finally {
       await rm(promptPath, { force: true });
+    }
+  }
+
+  async function poke(
+    name,
+    { wait = false, requireStableAttachments = false } = {},
+  ) {
+    validateName(name);
+    const release = await acquireNotificationClaim(name);
+    if (!release) {
+      diagnostics.log("wakeup.in_progress", { mailbox: name });
+      return { status: "in-progress" };
+    }
+    try {
+      return await pokeWithoutClaim(name, { wait, requireStableAttachments });
+    } finally {
+      await release();
     }
   }
 

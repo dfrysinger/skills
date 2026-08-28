@@ -44,7 +44,9 @@ recipient session; filesystem requests and receipts provide durable
 machine-local IPC. Mailbox watcher polls a named recipient's durable mailbox
 and bridges synced envelopes into that local request queue. The mailbox root
 may live in OneDrive, but session-inbox heartbeats, locks, and receipts remain
-local. A newly installed or updated extension becomes active when
+local. Sender-side delivery and the recipient watcher share a short local
+notification claim so they cannot both submit the same envelope during the
+pre-marker window. A newly installed or updated extension becomes active when
 the recipient Copilot session starts or reloads its plugins. Run
 `node extensions/session-inbox/reload-all.mjs` to reload every fresh local
 Copilot session, or append session names to reload only those sessions. The

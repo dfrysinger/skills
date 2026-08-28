@@ -152,6 +152,12 @@ will not notice until the user manually says "check mail".
   `MAILBOX_STATE_ROOT` prevents two watcher processes from repeatedly notifying
   the same agent. Duplicate Copilot sessions with the same `/rename` name fail
   closed during target resolution.
+- **Sender and watcher share one notification claim.** Publishing a local
+  envelope and the recipient's two-second watcher can notice the same mail at
+  nearly the same time. A short machine-local claim under
+  `MAILBOX_STATE_ROOT/notifying/` lets only one path submit the SDK request; the
+  other reports that notification is already in progress. Failed or abandoned
+  claims are released or reclaimed, while the durable envelope remains pending.
 - **On a "check mailbox; skip if empty" wakeup, emit a REAL bash tool call** (proper function-call format) — never output literal `<invoke>` / XML-ish text as message content. Doing so makes the agent stall without ever running the check. If the current working directory's `readdir` is hanging (e.g. a OneDrive/File-Provider deadlock), `cd /tmp` first and list `~/.copilot/mailbox/<agent>/pending/` from there so the check can't hang on the cwd.
 
 ## Verification
