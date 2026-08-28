@@ -143,7 +143,7 @@ test("recipient-local watcher wakes a live session by its Copilot session name",
     assert.equal(request.target.targetName, "hotel");
     assert.equal(request.target.resolvedBy, "session-name");
     assert.equal(request.target.sessionId, "hotel-session");
-    assert.equal(request.mode, "enqueue");
+    assert.equal(request.mode, "immediate");
     assert.equal(request.dedupeKey, `mailbox:hotel:${sent.envelope.id}`);
     assert.match(request.prompt, /^check mailbox; skip if empty \[mb:/);
 
@@ -154,7 +154,11 @@ test("recipient-local watcher wakes a live session by its Copilot session name",
       receiptPath,
       `${JSON.stringify({
         status: "completed",
-        result: { delivery: "idle", idleDelivery: true },
+        result: {
+          messageAccepted: true,
+          delivery: "unconfirmed",
+          idleDelivery: false,
+        },
       })}\n`,
     );
     await watching;
@@ -166,7 +170,7 @@ test("recipient-local watcher wakes a live session by its Copilot session name",
     );
     const diagnostics = await readFile(join(stateRoot, "logs", "mailbox.jsonl"), "utf8");
     assert.match(diagnostics, /"event":"watcher.started"/);
-    assert.match(diagnostics, /"event":"wakeup.delivered"/);
+    assert.match(diagnostics, /"event":"wakeup.accepted"/);
     assert.doesNotMatch(diagnostics, /wake through the local bridge/);
   } finally {
     if (previousInboxRoot === undefined) {
@@ -191,7 +195,7 @@ test("late-arriving older envelopes receive a new notification", async () => {
       mockRequest,
       `import { appendFileSync } from "node:fs";
 appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, JSON.stringify(process.argv.slice(2)) + "\\n");
-console.log('{"status":"completed","result":{"delivery":"idle"}}');
+console.log('{"status":"completed","result":{"messageAccepted":true,"delivery":"idle"}}');
 `,
     );
     const pending = join(mailboxRoot, "hotel", "pending");
@@ -243,7 +247,7 @@ test("watcher waits for synced attachments to exist and stabilize", async () => 
       mockRequest,
       `import { appendFileSync } from "node:fs";
 appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, "called\\n");
-console.log('{"status":"completed","result":{"delivery":"idle"}}');
+console.log('{"status":"completed","result":{"messageAccepted":true,"delivery":"idle"}}');
 `,
     );
     const id = "20260827T100000Z-attachment";

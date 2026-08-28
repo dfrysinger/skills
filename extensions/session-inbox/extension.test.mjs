@@ -535,6 +535,7 @@ test("recipient extension submits SDK work without idle gates and preserves phas
       dedupeKey: "non-idle-one-shot",
     });
     const nonIdle = await harness.receipt("completed", "non-idle-send");
+    assert.equal(nonIdle.result.messageAccepted, true);
     assert.equal(nonIdle.result.delivery, "steering");
     assert.equal(nonIdle.result.idleDelivery, false);
     await harness.setState({ delivery: "idle", idleCounter: 8 });
@@ -580,6 +581,7 @@ test("recipient extension submits SDK work without idle gates and preserves phas
       dedupeKey: "unconfirmed-one-shot",
     });
     const unconfirmed = await harness.receipt("completed", "unconfirmed-send");
+    assert.equal(unconfirmed.result.messageAccepted, true);
     assert.equal(unconfirmed.result.delivery, "unconfirmed");
     assert.equal(unconfirmed.result.idleDelivery, false);
     await harness.setState({ suppressDelivery: false, idleCounter: 11 });

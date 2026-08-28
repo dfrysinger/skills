@@ -29,7 +29,7 @@ printf '%s\n' "$*" >>"$FAKE_NODE_CALLS"
 if [[ "$1" == */mailbox.mjs && "$2" == poke ]]; then
   recipient="$3"
   case "${FAKE_MAILBOX_NODE_STATUS:-0}" in
-    0) printf 'poked: %s (SDK native delivery verified)\n' "$recipient" ;;
+    0) printf 'poked: %s (SDK wakeup accepted)\n' "$recipient" ;;
     3) printf "UNVERIFIED: '%s' did not acknowledge the SDK wakeup; the mail remains queued.\n" "$recipient" >&2 ;;
     4) printf "UNAVAILABLE: no active Copilot session named '%s'.\n" "$recipient" >&2 ;;
   esac
@@ -108,12 +108,14 @@ FAKE_MAILBOX_NODE_STATUS=0
 export FAKE_RECIPIENT FAKE_BACKEND FAKE_MAILBOX_NODE_STATUS
 make_mail hotel 20260827T000000Z-sdkproof
 output="$("$SCRIPT" hotel)"
-grep -Fq 'poked: hotel (SDK native delivery verified)' <<<"$output" ||
+grep -Fq 'poked: hotel (SDK wakeup accepted)' <<<"$output" ||
   fail "Copilot SDK success was not reported"
 grep -Fq 'mailbox.mjs poke hotel' "$FAKE_NODE_CALLS" ||
   fail "Copilot path did not use the portable Node mailbox"
-grep -Fq 'SDK native delivery verified' "$SCRIPT_DIR/mailbox.mjs" ||
-  fail "portable Node mailbox does not report the neutral native delivery result"
+grep -Fq -- '--mode immediate' "$SCRIPT" ||
+  fail "Copilot path did not request immediate SDK delivery"
+grep -Fq 'SDK wakeup accepted' "$SCRIPT_DIR/mailbox.mjs" ||
+  fail "portable Node mailbox does not report SDK acceptance"
 [ ! -s "$FAKE_TMUX_CALLS" ] ||
   fail "Copilot mailbox path used tmux send-keys"
 

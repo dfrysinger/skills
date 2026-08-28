@@ -43,9 +43,10 @@ Do NOT use mailbox for:
 - **Wakeup = short natural-language nudge through the recipient agent.** Sender
   writes the envelope, then `mailbox-poke.sh` resolves the recipient backend.
   Copilot sessions receive `check mailbox; skip if empty` as a real user turn
-  through the plugin's `session-inbox` extension and queued SDK
-  `session.send()`. The CLI decides when the queued turn runs; the extension
-  does not wait for idle before submitting it. Claude and Codex retain the
+  through the plugin's `session-inbox` extension and immediate SDK
+  `session.send()`. An active Copilot turn receives the nudge through its
+  steering lane, while an idle session starts it normally. The extension does
+  not wait for idle before submitting it. Claude and Codex retain the
   guarded terminal path:
   they require an initialized backend-specific footer and empty input box
   before the same marked prompt is entered. The shared parser in
@@ -126,13 +127,13 @@ will not notice until the user manually says "check mail".
 
 ## Pitfalls
 
-- **Copilot wakeups use the native queue.** Session-inbox submits the user
-  message immediately with SDK delivery mode `enqueue`, even while the
-  recipient is working. The CLI chooses when to run it. The detached request
-  may continue waiting for the resulting `user.message` event before it writes
-  a confirmed receipt; that confirmation wait does not delay queue submission.
-  A timed-out request remains durable and is deduplicated by mailbox envelope
-  ID if a later poke retries it.
+- **Copilot wakeups use immediate native delivery.** Session-inbox submits the
+  user message with SDK delivery mode `immediate`, so an active long-running or
+  autopilot turn receives it as steering instead of leaving it stranded in the
+  normal FIFO queue. Once `session.send()` returns a message ID, the watcher
+  records the envelope as notified and does not retry it every polling cycle.
+  The durable envelope remains pending until the recipient reads and
+  acknowledges it.
 - **Claude and Codex wakeups remain fail-closed and best-effort.** Their poke
   requires a ready pane and verifies a transcript entry; otherwise rely on the
   osascript notification and resume hook.
