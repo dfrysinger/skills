@@ -15,6 +15,14 @@ const failedDir = join(root, "failed");
 const instancesDir = join(root, "instances");
 const dedupeDir = join(root, "dedupe");
 const commandsDir = join(root, "commands");
+let pluginVersion;
+try {
+  pluginVersion = JSON.parse(
+    await readFile(new URL("../../plugin.json", import.meta.url), "utf8"),
+  ).version;
+} catch {
+  // Development harnesses and project-local copies may not have a plugin manifest.
+}
 const configuredConfirmationTimeoutMs = Number.parseInt(
   process.env.COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS ?? "10000",
   10,
@@ -95,6 +103,7 @@ await Promise.all(
 );
 diagnostics.log("extension.started", {
   extensionPath: import.meta.url,
+  pluginVersion,
   confirmationTimeoutMs,
 });
 if (initialSessionNameError) {
@@ -163,6 +172,7 @@ async function writeHeartbeat() {
       generation,
       hostPid: process.ppid,
       pid: process.pid,
+      pluginVersion,
       updatedAt: new Date().toISOString(),
     });
   } finally {
@@ -373,6 +383,8 @@ async function execute(request) {
       }
       return { commandQueued: true };
     }
+    case "reload-extensions":
+      return { reloadRequested: true };
     default:
       throw new Error(`unsupported session inbox request kind: ${request.kind}`);
   }
@@ -838,6 +850,7 @@ async function pump() {
           compacted: result?.compacted,
           continuationQueued: result?.continuationQueued,
           commandQueued: result?.commandQueued,
+          reloadRequested: result?.reloadRequested,
         });
         if (request.kind === "new-session") {
           try {
@@ -849,6 +862,14 @@ async function pump() {
               }`,
             );
           }
+        }
+        if (request.kind === "reload-extensions") {
+          await rm(claimedPath, { force: true });
+          await rm(claimedStagePath, { force: true });
+          removeClaim = false;
+          diagnostics.log("extensions.reload_started", { requestId: request.id });
+          await session.rpc.extensions.reload();
+          diagnostics.log("extensions.reload_returned", { requestId: request.id });
         }
       } catch (error) {
         const ambiguousSideEffect =

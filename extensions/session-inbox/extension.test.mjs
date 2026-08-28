@@ -161,6 +161,12 @@ export async function joinSession() {
           return {items: Array.from({length: state().pending}, (_, index) => ({index}))};
         },
       },
+      extensions: {
+        async reload() {
+          record("extensions.reload", {});
+          if (state().exitOnReload) process.exit(0);
+        },
+      },
       history: {
         async compact(options) {
           record("compact", options);
@@ -783,6 +789,28 @@ test("new-session marker survives extension teardown before its receipt", async 
     assert.match(marker.promptSha256, /^[0-9a-f]{64}$/);
     await assert.rejects(
       readFile(join(harness.inbox, "completed", "rotate-without-receipt.json")),
+      { code: "ENOENT" },
+    );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("extension reload receipt is durable before the extension exits", async () => {
+  const harness = await createHarness({ exitOnReload: true });
+  try {
+    await harness.request("reload-extension", {
+      kind: "reload-extensions",
+    });
+    const receipt = await harness.receipt("completed", "reload-extension");
+    assert.equal(receipt.result.reloadRequested, true);
+    const result = await harness.exit;
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(
+      (await harness.calls()).some((call) => call.kind === "extensions.reload"),
+    );
+    await assert.rejects(
+      readFile(join(harness.inbox, "processing", "reload-extension.json")),
       { code: "ENOENT" },
     );
   } finally {

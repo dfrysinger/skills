@@ -45,8 +45,17 @@ machine-local IPC. Mailbox watcher polls a named recipient's durable mailbox
 and bridges synced envelopes into that local request queue. The mailbox root
 may live in OneDrive, but session-inbox heartbeats, locks, and receipts remain
 local. A newly installed or updated extension becomes active when
-the recipient Copilot session starts or reloads its plugins. Claude and Codex
-mailbox recipients retain their guarded terminal fallback.
+the recipient Copilot session starts or reloads its plugins. Run
+`node extensions/session-inbox/reload-all.mjs` to reload every fresh local
+Copilot session, or append session names to reload only those sessions. The
+script verifies that each session publishes a new heartbeat with the installed
+plugin version. An older session-inbox extension receives a one-time immediate
+prompt to invoke its own reload action; subsequent updates reload directly
+without model involvement. Sessions with a stale or missing inbox, or which do
+not publish the replacement heartbeat, are collected in a final
+`Restart required:` summary so the calling agent can report exactly which
+Copilot CLIs need `/restart`. Claude and Codex mailbox recipients retain their
+guarded terminal fallback.
 
 Session-inbox diagnostics are written as newline-delimited JSON under
 `~/.copilot/session-inbox/logs/`. Extension logs are named by session and
