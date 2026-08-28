@@ -290,6 +290,20 @@ export function createMailbox(options = {}) {
     return envelopes;
   }
 
+  async function pendingEnvelopeIds(name) {
+    const directory = mailboxDirectory(name, "pending");
+    try {
+      return new Set(
+        (await readdir(directory))
+          .filter((entry) => entry.endsWith(".json"))
+          .map((entry) => entry.slice(0, -5)),
+      );
+    } catch (error) {
+      if (error?.code === "ENOENT") return new Set();
+      throw error;
+    }
+  }
+
   async function send({
     recipient,
     sender = "unknown",
@@ -584,22 +598,64 @@ export function createMailbox(options = {}) {
     );
   }
 
-  async function poke(
-    address,
+  async function acquireNotificationClaim(address) {
+    const mailboxAddress = parseMailboxAddress(address).address;
+    const path = join(stateRoot, "notifying", `${mailboxAddress}.lock`);
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const handle = await open(path, "wx", 0o600);
+        await handle.writeFile(
+          `${JSON.stringify({
+            pid: process.pid,
+            address: mailboxAddress,
+            startedAt: new Date().toISOString(),
+          })}\n`,
+        );
+        await handle.close();
+        return async () => rm(path, { force: true });
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+        let owner;
+        try {
+          owner = JSON.parse(await readFile(path, "utf8"));
+        } catch {
+          owner = undefined;
+        }
+        const age = Date.now() - Date.parse(owner?.startedAt);
+        if (Number.isFinite(age) && age <= 60_000 && owner?.pid) {
+          try {
+            process.kill(owner.pid, 0);
+            return undefined;
+          } catch (ownerError) {
+            if (ownerError?.code === "EPERM") return undefined;
+            if (ownerError?.code !== "ESRCH") throw ownerError;
+          }
+        }
+        await rm(path, { force: true });
+      }
+    }
+    throw new Error(
+      `could not acquire mailbox notification claim for ${mailboxAddress}`,
+    );
+  }
+
+  async function pokeWithoutClaim(
+    mailboxAddress,
     {
-      targetName = parseMailboxAddress(address).name,
+      targetName,
       wait = false,
       requireStableAttachments = false,
     } = {},
   ) {
-    const mailboxAddress = requireLocalAddress(address).address;
     validateName(targetName, "target name");
+    const allPendingIds = await pendingEnvelopeIds(mailboxAddress);
     const envelopes = await pendingEnvelopes(mailboxAddress, {
       requireStableAttachments,
     });
     if (envelopes.length === 0) return { status: "empty" };
-    const pendingIds = new Set(envelopes.map(({ envelope }) => envelope.id));
-    const notified = await notifiedIds(mailboxAddress, pendingIds);
+    const readyIds = new Set(envelopes.map(({ envelope }) => envelope.id));
+    const notified = await notifiedIds(mailboxAddress, allPendingIds);
     const unnotified = envelopes.filter(({ envelope }) => !notified.has(envelope.id));
     if (unnotified.length === 0) {
       return { status: "already-poked", envelopeId: envelopes.at(-1).envelope.id };
@@ -627,21 +683,21 @@ export function createMailbox(options = {}) {
           "--prompt-file",
           promptPath,
           "--mode",
-          "enqueue",
+          "immediate",
           "--dedupe-key",
-          `mailbox:${mailboxAddress}:${newest.id}`,
+          `mailbox:immediate-v2:${mailboxAddress}:${newest.id}`,
           "--timeout",
           wait ? "35" : "15",
         ],
         {},
       );
-      if (
-        result.code === 0 &&
-        (result.stdout.includes('"delivery":"idle"') ||
-          result.stdout.includes('"delivery":"queued"'))
-      ) {
-        await markNotified(mailboxAddress, [...pendingIds]);
-        diagnostics.log("wakeup.delivered", {
+      const accepted =
+        result.stdout.includes('"messageAccepted":true') ||
+        /"messageId":"[^"]+"/.test(result.stdout) ||
+        /"delivery":"(?:idle|queued|steering)"/.test(result.stdout);
+      if (result.code === 0 && accepted) {
+        await markNotified(mailboxAddress, [...readyIds]);
+        diagnostics.log("wakeup.accepted", {
           mailbox: mailboxAddress,
           targetName,
           envelopeId: newest.id,
@@ -666,6 +722,32 @@ export function createMailbox(options = {}) {
       };
     } finally {
       await rm(promptPath, { force: true });
+    }
+  }
+
+  async function poke(
+    address,
+    {
+      targetName = parseMailboxAddress(address).name,
+      wait = false,
+      requireStableAttachments = false,
+    } = {},
+  ) {
+    const mailboxAddress = requireLocalAddress(address).address;
+    validateName(targetName, "target name");
+    const release = await acquireNotificationClaim(mailboxAddress);
+    if (!release) {
+      diagnostics.log("wakeup.in_progress", { mailbox: mailboxAddress });
+      return { status: "in-progress" };
+    }
+    try {
+      return await pokeWithoutClaim(mailboxAddress, {
+        targetName,
+        wait,
+        requireStableAttachments,
+      });
+    } finally {
+      await release();
     }
   }
 

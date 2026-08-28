@@ -92,6 +92,7 @@ Rollback by reverting the addressing commit and reinstalling the last known-good
 | Watcher observes both `<agent>` and `<agent>@<machine>`. | Explicit updated handoff architecture. | Preserve broadcast and add deterministic one-computer routing. | Two concurrent watcher loops cannot share lifecycle safely or create excessive duplicate work. |
 | Qualified mail maps to local target `<agent>`. | Session-inbox resolves only local live Copilot session names; the handoff forbids qualified local identity. | Machine qualification stays in shared storage and local ambiguity remains fail closed. | Session-inbox gains a supported first-class routing identity separate from session name. |
 | Notification markers and locks use the full mailbox address. | Existing local dedupe/lock owners plus updated handoff requirement. | Broadcast and qualified envelopes cannot suppress or lock each other. | Measured evidence shows one process must own both addresses atomically. |
+| Sender and watcher share the current machine-local notification claim, keyed by full mailbox address. | Current `main` serializes immediate sender wakeup against the two-second watcher to prevent duplicate SDK requests. | The addressing change preserves the newer race fix while keeping unqualified and qualified routes independent. | Session-inbox provides one idempotent notification primitive that makes the filesystem claim redundant. |
 | Unqualified broadcast is limited to currently live watchers. | Existing single shared acknowledgement move and explicit decision to preserve broadcast without adding per-recipient state. | Avoid claiming durable fan-out the architecture cannot provide. | A supported caller requires guaranteed delivery to offline or late-starting broadcast recipients. |
 | Fresh instance age remains 15 seconds; watcher loop two seconds; request loop 500 ms; attachment gate two stable scans; rename retry ten times at 200 ms. | Shipped compatibility defaults, with existing tests and macOS receipts; no Windows evidence currently implicates them. | Preserve proven behavior while measuring Windows. | Windows traces show a limit directly violates an acceptance criterion. |
 
@@ -111,13 +112,13 @@ Reframe also fires when repeated fixes merely move failure between the two share
 4. **Simplest design without the rejected mechanism:** validate the full address, store it under the full address directory, and have the configured watcher map it back to local target `hotel`.
 5. **Fewer trusted components:** the address-directory design reuses the envelope schema, mailbox functions, watcher, local session resolver, and acknowledgement path; the prior field design added mixed-version interpretation and filter logic inside every read.
 
-**Durable reframe status: CLEAR.** The updated handoff is authoritative, the simpler address-directory design satisfies it using existing owners, and no revisit condition is currently met. Implementation begins only after this replacement work order passes design review.
+**Durable reframe status: CLEAR.** The updated handoff is authoritative, the address-directory design satisfies it using existing owners, and current `main`'s notification-claim work composes by changing the claim key from a local name to the validated full mailbox address. No new state owner or revisit condition is introduced.
 
 ## Reuse contract
 
 Reuse:
 
-- `mailbox-core.mjs` for publication, attachment readiness, per-address notification markers, per-address locks, acknowledgement, retries, and diagnostics;
+- `mailbox-core.mjs` for publication, attachment readiness, per-address notification markers, full-address notification claims and watcher locks, acknowledgement, retries, and diagnostics;
 - `mailbox.mjs` as the portable Windows CLI;
 - `mailbox-watcher/extension.mjs` for joined-session identity and lifecycle;
 - `session-identity.mjs` for tmux-first/macOS and `/rename` fallback identity;
@@ -138,9 +139,9 @@ When the joined Copilot session identity changes, the extension stops both old w
 5. The ThinkPad extension obtains local session name `hotel` and configured machine `thinkpad`.
 6. The extension owns watcher loops for `hotel` and `hotel@thinkpad`; another machine such as `macbook-pro` owns `hotel` and `hotel@macbook-pro`.
 7. The qualified watcher calls the existing mailbox polling path with shared address `hotel@thinkpad` and local target `hotel`.
-8. Attachment stability and the full-address local `.notified` marker gate notification.
+8. Attachment stability, a short machine-local notification claim keyed by full address, and the full-address `.notified` marker gate notification.
 9. `request.mjs --target-name hotel` resolves exactly one fresh local session generation.
-10. Session-inbox submits SDK mode `enqueue`; the native event is `idle` or `queued`, never `steering`.
+10. Session-inbox submits the current immediate request contract. Accepted request receipts prevent sender/watcher duplication; the final current-runtime proof requires one native `idle` or `queued` turn, never `steering`.
 11. Recipient CLI `check`, `read`, and `ack` inspect `hotel` and, when configured, `hotel@thinkpad`.
 12. Acknowledgement moves the selected address's JSON and attachment directory to that address's `delivered/`.
 
@@ -164,7 +165,7 @@ When the joined Copilot session identity changes, the extension stops both old w
 1. Shared mailbox addresses and envelope recipients use the same validated full string.
 2. Machine qualification never enters session-inbox identity or target resolution.
 3. One configured extension owns at most one watcher for each of its unqualified and qualified addresses.
-4. Locks and notification markers are keyed by full mailbox address.
+4. Watcher locks, notification claims, notification markers, and SDK dedupe keys are keyed by full mailbox address.
 5. A qualified watcher targets the unqualified local Copilot session name.
 6. A machine never scans, reads, acknowledges, or marks another machine's qualified address.
 7. Recipient CLI actions cover both local addresses and fail on an envelope ID ambiguous across them.
@@ -200,6 +201,7 @@ When the joined Copilot session identity changes, the extension stops both old w
 | Qualified sender wakeup test | A computer with local session `hotel` sends `hotel@thinkpad` while its machine is different or unconfigured, then while configured as `thinkpad` | Remote case publishes with no local request and reports deferred wakeup; matching-local case targets only local `hotel` | A same-name session can be woken on the wrong computer. |
 | Recipient aggregate test | Place unique and duplicate IDs across both local addresses | check lists both; read/ack selects unique address; duplicate ID refuses | Agent can miss or arbitrarily consume mail. |
 | Broadcast/qualified marker test | Same envelope IDs across address directories | Independent markers under full addresses | One route suppresses another. |
+| Full-address notification claim test | Race sender and watcher against `hotel@thinkpad` | One SDK request; the competing path reports notification in progress; the claim is released | The current-main serialization fix was lost or qualification causes routes to share a claim. |
 | Existing mailbox/session-inbox suites | Run Node tests on Windows | All portable tests pass; tmux-only tests skip explicitly | Existing behavior regressed. |
 | Windows lock probe | Hold attachment during acknowledgement, release it | Both JSON and attachment move once | Retry or pair integrity failed. |
 | Attachment live receipt | JSON first, missing/changed attachment, then stable | No request until second identical scan; one later turn | Partial attachment can reach the agent. |

@@ -160,6 +160,12 @@ export async function joinSession() {
           return {items: Array.from({length: state().pending}, (_, index) => ({index}))};
         },
       },
+      extensions: {
+        async reload() {
+          record("extensions.reload", {});
+          if (state().exitOnReload) process.exit(0);
+        },
+      },
       history: {
         async compact(options) {
           record("compact", options);
@@ -534,6 +540,7 @@ test("recipient extension submits SDK work without idle gates and preserves phas
       dedupeKey: "non-idle-one-shot",
     });
     const nonIdle = await harness.receipt("completed", "non-idle-send");
+    assert.equal(nonIdle.result.messageAccepted, true);
     assert.equal(nonIdle.result.delivery, "steering");
     assert.equal(nonIdle.result.idleDelivery, false);
     await harness.setState({ delivery: "idle", idleCounter: 8 });
@@ -579,6 +586,7 @@ test("recipient extension submits SDK work without idle gates and preserves phas
       dedupeKey: "unconfirmed-one-shot",
     });
     const unconfirmed = await harness.receipt("completed", "unconfirmed-send");
+    assert.equal(unconfirmed.result.messageAccepted, true);
     assert.equal(unconfirmed.result.delivery, "unconfirmed");
     assert.equal(unconfirmed.result.idleDelivery, false);
     await harness.setState({ suppressDelivery: false, idleCounter: 11 });
@@ -781,6 +789,28 @@ test("new-session marker survives extension teardown before its receipt", async 
     assert.match(marker.promptSha256, /^[0-9a-f]{64}$/);
     await assert.rejects(
       readFile(join(harness.inbox, "completed", "rotate-without-receipt.json")),
+      { code: "ENOENT" },
+    );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("extension reload receipt is durable before the extension exits", async () => {
+  const harness = await createHarness({ exitOnReload: true });
+  try {
+    await harness.request("reload-extension", {
+      kind: "reload-extensions",
+    });
+    const receipt = await harness.receipt("completed", "reload-extension");
+    assert.equal(receipt.result.reloadRequested, true);
+    const result = await harness.exit;
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(
+      (await harness.calls()).some((call) => call.kind === "extensions.reload"),
+    );
+    await assert.rejects(
+      readFile(join(harness.inbox, "processing", "reload-extension.json")),
       { code: "ENOENT" },
     );
   } finally {

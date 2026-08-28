@@ -281,6 +281,10 @@ appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, "called\\n");
       { code: "ENOENT" },
     );
     await assert.rejects(
+      readFile(join(stateRoot, "notifying", "hotel@macbook-pro.lock"), "utf8"),
+      { code: "ENOENT" },
+    );
+    await assert.rejects(
       readFile(
         join(
           stateRoot,
@@ -364,7 +368,7 @@ console.log('{"status":"completed","result":{"delivery":"idle"}}');
     assert.equal(args[args.indexOf("--target-name") + 1], "hotel");
     assert.equal(
       args[args.indexOf("--dedupe-key") + 1],
-      `mailbox:hotel@surface-pro:${sent.envelope.id}`,
+      `mailbox:immediate-v2:hotel@surface-pro:${sent.envelope.id}`,
     );
     await readFile(
       join(
@@ -482,8 +486,11 @@ test("recipient-local watcher wakes a live session by its Copilot session name",
     assert.equal(request.target.targetName, "hotel");
     assert.equal(request.target.resolvedBy, "session-name");
     assert.equal(request.target.sessionId, "hotel-session");
-    assert.equal(request.mode, "enqueue");
-    assert.equal(request.dedupeKey, `mailbox:hotel:${sent.envelope.id}`);
+    assert.equal(request.mode, "immediate");
+    assert.equal(
+      request.dedupeKey,
+      `mailbox:immediate-v2:hotel:${sent.envelope.id}`,
+    );
     assert.match(request.prompt, /^check mailbox; skip if empty \[mb:/);
 
     const receiptPath = join(inboxRoot, "completed", name);
@@ -493,7 +500,11 @@ test("recipient-local watcher wakes a live session by its Copilot session name",
       receiptPath,
       `${JSON.stringify({
         status: "completed",
-        result: { delivery: "idle", idleDelivery: true },
+        result: {
+          messageId: "accepted-by-older-extension",
+          delivery: "unconfirmed",
+          idleDelivery: false,
+        },
       })}\n`,
     );
     await watching;
@@ -505,7 +516,7 @@ test("recipient-local watcher wakes a live session by its Copilot session name",
     );
     const diagnostics = await readFile(join(stateRoot, "logs", "mailbox.jsonl"), "utf8");
     assert.match(diagnostics, /"event":"watcher.started"/);
-    assert.match(diagnostics, /"event":"wakeup.delivered"/);
+    assert.match(diagnostics, /"event":"wakeup.accepted"/);
     assert.doesNotMatch(diagnostics, /wake through the local bridge/);
   } finally {
     if (previousInboxRoot === undefined) {
@@ -608,7 +619,7 @@ test("late-arriving older envelopes receive a new notification", async () => {
       mockRequest,
       `import { appendFileSync } from "node:fs";
 appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, JSON.stringify(process.argv.slice(2)) + "\\n");
-console.log('{"status":"completed","result":{"delivery":"idle"}}');
+console.log('{"status":"completed","result":{"delivery":"steering"}}');
 `,
     );
     const pending = join(mailboxRoot, "hotel", "pending");
@@ -647,6 +658,67 @@ console.log('{"status":"completed","result":{"delivery":"idle"}}');
   }
 });
 
+test("sender and watcher serialize requests by full mailbox address", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-notification-claim-"));
+  const previousCallLog = process.env.MOCK_MAILBOX_REQUEST_CALLS;
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const stateRoot = join(root, "state");
+    const callLog = join(root, "request-calls.jsonl");
+    const mockRequest = join(root, "mock-request.mjs");
+    process.env.MOCK_MAILBOX_REQUEST_CALLS = callLog;
+    await writeFile(
+      mockRequest,
+      `import { appendFileSync } from "node:fs";
+appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, "called\\n");
+await new Promise((resolve) => setTimeout(resolve, 200));
+console.log('{"status":"completed","result":{"messageAccepted":true,"delivery":"steering"}}');
+`,
+    );
+    const mailbox = createMailbox({
+      mailboxRoot,
+      stateRoot,
+      requestCli: mockRequest,
+      machineName: "surface-pro",
+    });
+    await mailbox.send({
+      recipient: "hotel@surface-pro",
+      sender: "whisky",
+      summary: "notification claim proof",
+      message: "one request only",
+      wake: false,
+    });
+
+    const results = await Promise.all([
+      mailbox.poke("hotel@surface-pro", { targetName: "hotel" }),
+      mailbox.poke("hotel@surface-pro", {
+        targetName: "hotel",
+        requireStableAttachments: true,
+      }),
+    ]);
+    assert.deepEqual(
+      results.map((result) => result.status).sort(),
+      ["delivered", "in-progress"],
+    );
+    assert.equal((await readFile(callLog, "utf8")).trim(), "called");
+    assert.equal(
+      (await mailbox.poke("hotel@surface-pro", { targetName: "hotel" })).status,
+      "already-poked",
+    );
+    await assert.rejects(
+      readFile(join(stateRoot, "notifying", "hotel@surface-pro.lock"), "utf8"),
+      { code: "ENOENT" },
+    );
+  } finally {
+    if (previousCallLog === undefined) {
+      delete process.env.MOCK_MAILBOX_REQUEST_CALLS;
+    } else {
+      process.env.MOCK_MAILBOX_REQUEST_CALLS = previousCallLog;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("watcher waits for synced attachments to exist and stabilize", async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-attachments-"));
   const previousCallLog = process.env.MOCK_MAILBOX_REQUEST_CALLS;
@@ -660,7 +732,7 @@ test("watcher waits for synced attachments to exist and stabilize", async () => 
       mockRequest,
       `import { appendFileSync } from "node:fs";
 appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, "called\\n");
-console.log('{"status":"completed","result":{"delivery":"idle"}}');
+console.log('{"status":"completed","result":{"messageAccepted":true,"delivery":"idle"}}');
 `,
     );
     const id = "20260827T100000Z-attachment";
@@ -693,6 +765,84 @@ console.log('{"status":"completed","result":{"delivery":"idle"}}');
     await assert.rejects(readFile(callLog, "utf8"), { code: "ENOENT" });
     await mailbox.watch("hotel", { once: true, intervalMs: 100 });
     assert.equal((await readFile(callLog, "utf8")).trim(), "called");
+  } finally {
+    if (previousCallLog === undefined) {
+      delete process.env.MOCK_MAILBOX_REQUEST_CALLS;
+    } else {
+      process.env.MOCK_MAILBOX_REQUEST_CALLS = previousCallLog;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("attachment stabilization does not delete another pending envelope's notification", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-notification-retention-"));
+  const previousCallLog = process.env.MOCK_MAILBOX_REQUEST_CALLS;
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const stateRoot = join(root, "state");
+    const callLog = join(root, "request-calls.jsonl");
+    const mockRequest = join(root, "mock-request.mjs");
+    process.env.MOCK_MAILBOX_REQUEST_CALLS = callLog;
+    await writeFile(
+      mockRequest,
+      `import { appendFileSync } from "node:fs";
+appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, "called\\n");
+console.log('{"status":"completed","result":{"messageAccepted":true,"delivery":"steering"}}');
+`,
+    );
+    const pending = join(mailboxRoot, "hotel", "pending");
+    const notified = join(stateRoot, "notified", "hotel");
+    await mkdir(pending, { recursive: true });
+    await mkdir(notified, { recursive: true });
+    const olderId = "20260827T100000Z-older";
+    const newerId = "20260827T110000Z-newer";
+    await writeFile(
+      join(pending, `${olderId}.json`),
+      `${JSON.stringify({
+        id: olderId,
+        from: { name: "whisky" },
+        to: { name: "hotel" },
+        summary: "ready",
+        message: "ready now",
+        attachments: [],
+        sent_at: "2026-08-27T10:00:00Z",
+      })}\n`,
+    );
+    await writeFile(
+      join(pending, `${newerId}.json`),
+      `${JSON.stringify({
+        id: newerId,
+        from: { name: "whisky" },
+        to: { name: "hotel" },
+        summary: "stabilizing",
+        message: "already notified",
+        attachments: ["proof.txt"],
+        sent_at: "2026-08-27T11:00:00Z",
+      })}\n`,
+    );
+    await mkdir(join(pending, newerId));
+    await writeFile(join(pending, newerId, "proof.txt"), "proof");
+    await writeFile(join(notified, `${newerId}.notified`), "already notified\n");
+    const mailbox = createMailbox({
+      mailboxRoot,
+      stateRoot,
+      requestCli: mockRequest,
+    });
+
+    assert.equal(
+      (await mailbox.poke("hotel", { requireStableAttachments: true })).status,
+      "delivered",
+    );
+    assert.equal(
+      (await mailbox.poke("hotel", { requireStableAttachments: true })).status,
+      "already-poked",
+    );
+    assert.equal((await readFile(callLog, "utf8")).trim(), "called");
+    assert.equal(
+      await readFile(join(notified, `${newerId}.notified`), "utf8"),
+      "already notified\n",
+    );
   } finally {
     if (previousCallLog === undefined) {
       delete process.env.MOCK_MAILBOX_REQUEST_CALLS;
