@@ -346,3 +346,81 @@ console.log('{"status":"completed","result":{"messageAccepted":true,"delivery":"
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("attachment stabilization does not delete another pending envelope's notification", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-notification-retention-"));
+  const previousCallLog = process.env.MOCK_MAILBOX_REQUEST_CALLS;
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const stateRoot = join(root, "state");
+    const callLog = join(root, "request-calls.jsonl");
+    const mockRequest = join(root, "mock-request.mjs");
+    process.env.MOCK_MAILBOX_REQUEST_CALLS = callLog;
+    await writeFile(
+      mockRequest,
+      `import { appendFileSync } from "node:fs";
+appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, "called\\n");
+console.log('{"status":"completed","result":{"messageAccepted":true,"delivery":"steering"}}');
+`,
+    );
+    const pending = join(mailboxRoot, "hotel", "pending");
+    const notified = join(stateRoot, "notified", "hotel");
+    await mkdir(pending, { recursive: true });
+    await mkdir(notified, { recursive: true });
+    const olderId = "20260827T100000Z-older";
+    const newerId = "20260827T110000Z-newer";
+    await writeFile(
+      join(pending, `${olderId}.json`),
+      `${JSON.stringify({
+        id: olderId,
+        from: { name: "whisky" },
+        to: { name: "hotel" },
+        summary: "ready",
+        message: "ready now",
+        attachments: [],
+        sent_at: "2026-08-27T10:00:00Z",
+      })}\n`,
+    );
+    await writeFile(
+      join(pending, `${newerId}.json`),
+      `${JSON.stringify({
+        id: newerId,
+        from: { name: "whisky" },
+        to: { name: "hotel" },
+        summary: "stabilizing",
+        message: "already notified",
+        attachments: ["proof.txt"],
+        sent_at: "2026-08-27T11:00:00Z",
+      })}\n`,
+    );
+    await mkdir(join(pending, newerId));
+    await writeFile(join(pending, newerId, "proof.txt"), "proof");
+    await writeFile(join(notified, `${newerId}.notified`), "already notified\n");
+    const mailbox = createMailbox({
+      mailboxRoot,
+      stateRoot,
+      requestCli: mockRequest,
+    });
+
+    assert.equal(
+      (await mailbox.poke("hotel", { requireStableAttachments: true })).status,
+      "delivered",
+    );
+    assert.equal(
+      (await mailbox.poke("hotel", { requireStableAttachments: true })).status,
+      "already-poked",
+    );
+    assert.equal((await readFile(callLog, "utf8")).trim(), "called");
+    assert.equal(
+      await readFile(join(notified, `${newerId}.notified`), "utf8"),
+      "already notified\n",
+    );
+  } finally {
+    if (previousCallLog === undefined) {
+      delete process.env.MOCK_MAILBOX_REQUEST_CALLS;
+    } else {
+      process.env.MOCK_MAILBOX_REQUEST_CALLS = previousCallLog;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});

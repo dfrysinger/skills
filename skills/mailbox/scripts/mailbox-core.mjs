@@ -235,6 +235,20 @@ export function createMailbox(options = {}) {
     return envelopes;
   }
 
+  async function pendingEnvelopeIds(name) {
+    const directory = mailboxDirectory(name, "pending");
+    try {
+      return new Set(
+        (await readdir(directory))
+          .filter((entry) => entry.endsWith(".json"))
+          .map((entry) => entry.slice(0, -5)),
+      );
+    } catch (error) {
+      if (error?.code === "ENOENT") return new Set();
+      throw error;
+    }
+  }
+
   async function send({
     recipient,
     sender = "unknown",
@@ -508,10 +522,11 @@ export function createMailbox(options = {}) {
     { wait = false, requireStableAttachments = false } = {},
   ) {
     validateName(name);
+    const allPendingIds = await pendingEnvelopeIds(name);
     const envelopes = await pendingEnvelopes(name, { requireStableAttachments });
     if (envelopes.length === 0) return { status: "empty" };
-    const pendingIds = new Set(envelopes.map(({ envelope }) => envelope.id));
-    const notified = await notifiedIds(name, pendingIds);
+    const readyIds = new Set(envelopes.map(({ envelope }) => envelope.id));
+    const notified = await notifiedIds(name, allPendingIds);
     const unnotified = envelopes.filter(({ envelope }) => !notified.has(envelope.id));
     if (unnotified.length === 0) {
       return { status: "already-poked", envelopeId: envelopes.at(-1).envelope.id };
@@ -552,7 +567,7 @@ export function createMailbox(options = {}) {
         /"messageId":"[^"]+"/.test(result.stdout) ||
         /"delivery":"(?:idle|queued|steering)"/.test(result.stdout);
       if (result.code === 0 && accepted) {
-        await markNotified(name, [...pendingIds]);
+        await markNotified(name, [...readyIds]);
         diagnostics.log("wakeup.accepted", {
           mailbox: name,
           envelopeId: newest.id,
