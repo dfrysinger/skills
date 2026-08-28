@@ -219,11 +219,12 @@ Set `COPILOT_AGENT_MACHINE` on each computer before sending qualified mail. Roll
 
 ## Current baton
 
-- **Phase:** merged-candidate successor physical campaign staged; waiting for the physical Mac launcher.
-- **Branch:** `dfrysinger/windows-mailbox-validation`.
-- **Critical path:** run the exact reviewed successor candidate on the physical Mac and Windows through qualified delivery in both directions, unused-target persistence, local ambiguity recovery, and controlled broadcast; refresh the two remaining live-proof receipts; then update and merge pull request #28.
-- **Current candidate evidence:** Current-main integration at `56cb1dd` passed exact Windows native unqualified and qualified delivery, OneDrive attachment/restart dedupe, held-file acknowledgement recovery, and diagnostics-content exclusion. Implementation dual review found that the legacy shell wrapper mislabeled remote qualified publication as verified and used the full address for terminal fallback lookup. Commit `ae955d3` fixes both behaviors; UTF-8 shell tests, mailbox Node tests, and a direct remote-status proof pass. Both Claude Opus and GPT/Terra verified the fix delta with no remaining material finding. The repository-wide Node run still has only the unrelated `self-compact` `spawn EFTYPE` failure previously reproduced on the base commit. The earlier physical `ca4ac3b` campaign remains historical evidence because current-main wakeup behavior changed.
-- **Open proof claims:** physical successor qualified routing, unused-target persistence, local ambiguity recovery, and two-computer broadcast on the final reviewed candidate.
+- **Phase:** complete. Pull request #28 merged as `4d25e35b99e0e6130fbb7ab7802648c39a0be9c5`.
+- **Final reviewed candidate:** `bc210c7592074f2b0c011a973af9bcb0938e07dd`, fingerprint `sha256:920545720915097935737baee10d0af60e79ad071c7f85ad705324bc941d4cea`.
+- **Production transport:** shared envelopes and attachments use the fixed OneDrive mailbox root (`/Users/dfrysinger/Library/CloudStorage/OneDrive-Microsoft/copilot-mailbox` on Mac and `C:\Users\dfrysinger\OneDrive - Microsoft\copilot-mailbox` on Windows). Campaign folders are evidence stores only; they are not mailbox roots.
+- **Physical evidence:** the exact final candidate passed qualified Windows-to-Mac delivery, qualified Mac-to-Windows delivery, unused-target persistence with zero local requests, local duplicate-session ambiguity followed by single delivery after recovery, and one controlled live broadcast delivered once on each computer before acknowledgement.
+- **Open proof claims:** none.
+- **Follow-up scope:** this completion update changes documentation only and cannot alter the already-proven runtime.
 - **Reframe status:** `CLEAR`; replacement design passed bounded Claude Opus and GPT review with no material finding.
 - **Implementation review:** the original round two closed ownership and watcher-lifecycle findings; `0262409` restored read-only remote counts. The post-main-merge review then closed the verified remote-reporting and qualified-fallback findings in `ae955d3`; both reviewer families report zero remaining material findings.
 
