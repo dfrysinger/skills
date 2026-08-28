@@ -217,12 +217,13 @@ Set `COPILOT_AGENT_MACHINE` on each computer before sending qualified mail. Roll
 
 ## Current baton
 
-- **Phase:** frozen-candidate cross-computer proof.
+- **Phase:** externally blocked on the physical Mac/Windows campaign.
 - **Branch:** `dfrysinger/windows-mailbox-validation`.
-- **Critical path:** review this replacement design; remove the superseded `to.machine` implementation; implement address validation, dual watchers, target mapping, aggregate recipient actions, and full-address local state; run deterministic Windows tests; rerun all affected live claims; dual-review implementation; final two-computer campaign; land.
-- **Current candidate evidence:** Windows exact-worktree proof observed both `hotel` and `hotel@surface-pro` watcher ownership, one qualified native `queued` turn mapped to local `hotel`, acknowledgement, unknown-qualified persistence, OneDrive-backed offline start and restart/resync dedupe, attachment stability gating, held-file rename recovery, and diagnostics exclusion. A controlled two-process Windows campaign observed one unqualified envelope once in each independent native session while acknowledgement was withheld. These runs are diagnostic until repeated on the final clean reviewed commit; the required physical Mac/Windows campaign remains open.
-- **Open proof claims:** `windows-extension-load`, `windows-local-delivery`, `qualified-machine-routing`, `broadcast-two-computer-delivery`, `onedrive-offline-dedupe`, `windows-attachment-gating`, `windows-file-lock-recovery`, and `diagnostics-content-exclusion`.
+- **Critical path:** run the same frozen branch on a physical Mac sharing the mailbox root with Windows; prove both qualified directions and controlled unqualified broadcast; then open and land the pull request.
+- **Current candidate evidence:** Code candidate `0262409` has eight validator-accepted receipts covering Windows extension ownership, local and qualified native delivery, foreign watcher refusal, malformed-machine fallback, independent watcher retry, unknown-qualified persistence, controlled two-runtime broadcast with acknowledgement withheld, OneDrive offline/restart dedupe, attachment stability gating, held-file rename recovery, and diagnostics exclusion. The focused mailbox/session-inbox suite passes with 30 tests and 2 Windows tmux-only skips. The repository-wide Node run has one unrelated `self-compact` `spawn EFTYPE` failure reproduced on the base commit.
+- **Open proof claims:** only the required physical Mac/Windows campaign. The second independent runtime used for current broadcast and Mac-labeled qualified evidence ran on Windows and is not represented as physical-Mac proof.
 - **Reframe status:** `CLEAR`; replacement design passed bounded Claude Opus and GPT review with no material finding.
+- **Implementation review:** round two closed all ownership and watcher-lifecycle findings. Both Claude slices identified a non-blocking remote-mailbox list visibility regression; `0262409` restored read-only remote counts without weakening recipient ownership.
 
 ## Definition of Done — Windows Addressed Mailbox
 
