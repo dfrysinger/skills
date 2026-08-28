@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
-import { createMailbox } from "./mailbox-core.mjs";
+import { createMailbox, parseMailboxAddress } from "./mailbox-core.mjs";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
+const execFileAsync = promisify(execFile);
+const mailboxCoreUrl = new URL("./mailbox-core.mjs", import.meta.url).href;
 const requestCli = join(
   scriptDirectory,
   "../../../extensions/session-inbox/request.mjs",
@@ -34,6 +38,18 @@ async function waitForRequest(inboxRoot) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error("timed out waiting for session-inbox request");
+}
+
+async function waitForFile(path) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      return await readFile(path, "utf8");
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timed out waiting for ${path}`);
 }
 
 test("portable mailbox publishes complete envelopes and acknowledges them", async () => {
@@ -110,6 +126,238 @@ test("wakeup failures never remove a published envelope", async () => {
   }
 });
 
+test("mailbox addresses preserve valid qualified names and reject malformed input", () => {
+  assert.deepEqual(parseMailboxAddress("hotel"), {
+    address: "hotel",
+    name: "hotel",
+  });
+  assert.deepEqual(parseMailboxAddress("hotel@surface-pro"), {
+    address: "hotel@surface-pro",
+    name: "hotel",
+    machine: "surface-pro",
+  });
+  for (const address of [
+    "",
+    "@surface-pro",
+    "hotel@",
+    "hotel@surface@pro",
+    "hotel @surface-pro",
+    "hotel@surface/pro",
+  ]) {
+    assert.throws(() => parseMailboxAddress(address));
+  }
+});
+
+test("qualified recipients use a separate mailbox and suppress remote local wakeup", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-qualified-"));
+  const previousCallLog = process.env.MOCK_MAILBOX_REQUEST_CALLS;
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const stateRoot = join(root, "state");
+    const callLog = join(root, "request-calls.jsonl");
+    const mockRequest = join(root, "mock-request.mjs");
+    process.env.MOCK_MAILBOX_REQUEST_CALLS = callLog;
+    await writeFile(
+      mockRequest,
+      `import { appendFileSync } from "node:fs";
+appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, "called\\n");
+`,
+    );
+    const senderMailbox = createMailbox({
+      mailboxRoot,
+      stateRoot,
+      requestCli: mockRequest,
+      machineName: "desktop",
+    });
+
+    const sent = await senderMailbox.send({
+      recipient: "hotel@surface-pro",
+      sender: "windows-proof",
+      summary: "qualified routing",
+      message: "deliver only to surface-pro",
+    });
+
+    assert.deepEqual(sent.envelope.to, { name: "hotel@surface-pro" });
+    assert.match(sent.envelopePath, /hotel@surface-pro[\\/]pending/);
+    assert.equal(sent.wakeup.status, "remote-pending");
+    await assert.rejects(readFile(callLog, "utf8"), { code: "ENOENT" });
+    assert.equal((await senderMailbox.check("hotel")).length, 0);
+    assert.equal((await senderMailbox.check("hotel@surface-pro")).length, 1);
+    assert.equal((await senderMailbox.checkLocal("hotel")).length, 0);
+
+    const recipientMailbox = createMailbox({
+      mailboxRoot,
+      stateRoot: join(root, "recipient-state"),
+      requestCli: mockRequest,
+      machineName: "surface-pro",
+    });
+    assert.equal(recipientMailbox.machineName, "surface-pro");
+    assert.deepEqual(recipientMailbox.localAddresses("hotel"), [
+      "hotel",
+      "hotel@surface-pro",
+    ]);
+    assert.equal((await recipientMailbox.checkLocal("hotel")).length, 1);
+    assert.equal(
+      (await recipientMailbox.readLocal("hotel", sent.envelope.id)).envelope.message,
+      "deliver only to surface-pro",
+    );
+  } finally {
+    if (previousCallLog === undefined) {
+      delete process.env.MOCK_MAILBOX_REQUEST_CALLS;
+    } else {
+      process.env.MOCK_MAILBOX_REQUEST_CALLS = previousCallLog;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("unqualified envelopes remain visible without machine configuration", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-legacy-"));
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const senderMailbox = createMailbox({
+      mailboxRoot,
+      stateRoot: join(root, "sender-state"),
+    });
+    const sent = await senderMailbox.send({
+      recipient: "hotel",
+      sender: "windows-proof",
+      summary: "legacy routing",
+      message: "legacy envelope",
+      wake: false,
+    });
+    const otherMachine = createMailbox({
+      mailboxRoot,
+      stateRoot: join(root, "recipient-state"),
+    });
+
+    assert.deepEqual(sent.envelope.to, { name: "hotel" });
+    assert.equal((await otherMachine.check("hotel")).length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("matching qualified sender targets the base local session and full-address marker", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-qualified-local-"));
+  const previousCallLog = process.env.MOCK_MAILBOX_REQUEST_CALLS;
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const stateRoot = join(root, "state");
+    const callLog = join(root, "request-calls.jsonl");
+    const mockRequest = join(root, "mock-request.mjs");
+    process.env.MOCK_MAILBOX_REQUEST_CALLS = callLog;
+    await writeFile(
+      mockRequest,
+      `import { appendFileSync } from "node:fs";
+appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, JSON.stringify(process.argv.slice(2)) + "\\n");
+console.log('{"status":"completed","result":{"delivery":"idle"}}');
+`,
+    );
+    const mailbox = createMailbox({
+      mailboxRoot,
+      stateRoot,
+      requestCli: mockRequest,
+      machineName: "surface-pro",
+    });
+
+    const sent = await mailbox.send({
+      recipient: "hotel@surface-pro",
+      sender: "windows-proof",
+      summary: "local qualified routing",
+      message: "deliver to local hotel",
+    });
+
+    assert.equal(sent.wakeup.status, "delivered");
+    const args = JSON.parse((await readFile(callLog, "utf8")).trim());
+    assert.equal(args[args.indexOf("--target-name") + 1], "hotel");
+    assert.equal(
+      args[args.indexOf("--dedupe-key") + 1],
+      `mailbox:hotel@surface-pro:${sent.envelope.id}`,
+    );
+    await readFile(
+      join(
+        stateRoot,
+        "notified",
+        "hotel@surface-pro",
+        `${sent.envelope.id}.notified`,
+      ),
+      "utf8",
+    );
+    await assert.rejects(
+      readFile(
+        join(stateRoot, "notified", "hotel", `${sent.envelope.id}.notified`),
+        "utf8",
+      ),
+      { code: "ENOENT" },
+    );
+  } finally {
+    if (previousCallLog === undefined) {
+      delete process.env.MOCK_MAILBOX_REQUEST_CALLS;
+    } else {
+      process.env.MOCK_MAILBOX_REQUEST_CALLS = previousCallLog;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("recipient-local actions aggregate both addresses and reject duplicate ids", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-local-actions-"));
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const mailbox = createMailbox({
+      mailboxRoot,
+      stateRoot: join(root, "state"),
+      machineName: "thinkpad",
+    });
+    const broadcast = await mailbox.send({
+      recipient: "hotel",
+      sender: "whisky",
+      summary: "broadcast",
+      message: "broadcast message",
+      wake: false,
+    });
+    const qualified = await mailbox.send({
+      recipient: "hotel@thinkpad",
+      sender: "whisky",
+      summary: "qualified",
+      message: "qualified message",
+      wake: false,
+    });
+
+    const checked = await mailbox.checkLocal("hotel");
+    assert.deepEqual(
+      new Set(checked.map(({ mailboxAddress }) => mailboxAddress)),
+      new Set(["hotel", "hotel@thinkpad"]),
+    );
+    assert.equal(
+      (await mailbox.readLocal("hotel", qualified.envelope.id)).mailboxAddress,
+      "hotel@thinkpad",
+    );
+    await mailbox.acknowledgeLocal("hotel", broadcast.envelope.id);
+    assert.equal((await mailbox.check("hotel")).length, 0);
+
+    const duplicateId = qualified.envelope.id;
+    const broadcastPending = join(mailboxRoot, "hotel", "pending");
+    await mkdir(broadcastPending, { recursive: true });
+    await writeFile(
+      join(broadcastPending, `${duplicateId}.json`),
+      `${JSON.stringify({
+        ...qualified.envelope,
+        to: { name: "hotel" },
+      })}\n`,
+    );
+    await assert.rejects(mailbox.readLocal("hotel", duplicateId), {
+      message: /ambiguous across hotel and hotel@thinkpad/,
+    });
+    await assert.rejects(mailbox.acknowledgeLocal("hotel", duplicateId), {
+      message: /ambiguous across hotel and hotel@thinkpad/,
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("recipient-local watcher wakes a live session by its Copilot session name", async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-watch-"));
   const previousInboxRoot = process.env.COPILOT_SESSION_INBOX_DIR;
@@ -174,6 +422,84 @@ test("recipient-local watcher wakes a live session by its Copilot session name",
     } else {
       process.env.COPILOT_SESSION_INBOX_DIR = previousInboxRoot;
     }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("qualified watcher uses an isolated full-address lock", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-qualified-lock-"));
+  try {
+    const stateRoot = join(root, "state");
+    const mailbox = createMailbox({
+      mailboxRoot: join(root, "mailbox"),
+      stateRoot,
+      machineName: "thinkpad",
+    });
+    const controller = new AbortController();
+    const watching = mailbox.watch("hotel@thinkpad", {
+      targetName: "hotel",
+      intervalMs: 1_000,
+      signal: controller.signal,
+    });
+    const lockPath = join(stateRoot, "watchers", "hotel@thinkpad.lock");
+    const owner = JSON.parse(await waitForFile(lockPath));
+    assert.equal(owner.address, "hotel@thinkpad");
+    await assert.rejects(
+      readFile(join(stateRoot, "watchers", "hotel.lock"), "utf8"),
+      { code: "ENOENT" },
+    );
+    controller.abort();
+    await watching;
+    await assert.rejects(readFile(lockPath, "utf8"), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("watcher locks are removed when the owner process exits normally", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-exit-lock-"));
+  try {
+    const stateRoot = join(root, "state");
+    const childScript = join(root, "watch-and-exit.mjs");
+    await writeFile(
+      childScript,
+      `import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { createMailbox } from ${JSON.stringify(mailboxCoreUrl)};
+
+const stateRoot = process.argv[2];
+const mailbox = createMailbox({
+  mailboxRoot: process.argv[3],
+  stateRoot,
+  machineName: "thinkpad",
+});
+void mailbox.watch("hotel@thinkpad", {
+  targetName: "hotel",
+  intervalMs: 1_000,
+});
+const lockPath = join(stateRoot, "watchers", "hotel@thinkpad.lock");
+for (let attempt = 0; attempt < 200; attempt += 1) {
+  try {
+    await readFile(lockPath, "utf8");
+    process.exit(0);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+process.exit(1);
+`,
+    );
+    await execFileAsync("node", [
+      childScript,
+      stateRoot,
+      join(root, "mailbox"),
+    ]);
+    await assert.rejects(
+      readFile(join(stateRoot, "watchers", "hotel@thinkpad.lock"), "utf8"),
+      { code: "ENOENT" },
+    );
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

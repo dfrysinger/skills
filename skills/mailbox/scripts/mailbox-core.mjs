@@ -11,6 +11,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -39,6 +40,34 @@ function validateName(name, label = "mailbox name") {
     throw new Error(`${label} must contain only letters, numbers, dot, underscore, and hyphen`);
   }
   return name;
+}
+
+export function parseMailboxAddress(address) {
+  if (typeof address !== "string") {
+    throw new Error("mailbox address must be a string");
+  }
+  const separator = address.indexOf("@");
+  if (separator === -1) {
+    const name = validateName(address, "mailbox address");
+    return { address: name, name };
+  }
+  if (
+    separator === 0 ||
+    separator === address.length - 1 ||
+    separator !== address.lastIndexOf("@")
+  ) {
+    throw new Error("mailbox address must be NAME or NAME@MACHINE");
+  }
+  const name = validateName(address.slice(0, separator), "mailbox agent");
+  const machine = validateName(address.slice(separator + 1), "mailbox machine");
+  return { address: `${name}@${machine}`, name, machine };
+}
+
+export function configuredMachineName(explicitMachine) {
+  const machine = explicitMachine ?? process.env.COPILOT_AGENT_MACHINE;
+  return machine
+    ? validateName(machine, explicitMachine ? "machine name" : "COPILOT_AGENT_MACHINE")
+    : undefined;
 }
 
 async function pathExists(path) {
@@ -135,6 +164,7 @@ export async function resolveOwnName(explicitName) {
 export function createMailbox(options = {}) {
   const mailboxRoot = options.mailboxRoot ?? defaultMailboxRoot();
   const stateRoot = options.stateRoot ?? defaultStateRoot();
+  const machineName = configuredMachineName(options.machineName);
   const requestCli =
     options.requestCli ??
     join(
@@ -147,11 +177,19 @@ export function createMailbox(options = {}) {
   });
   const attachmentObservations = new Map();
 
-  function mailboxDirectory(name, state) {
-    return join(mailboxRoot, validateName(name), state);
+  function mailboxDirectory(address, state) {
+    return join(mailboxRoot, parseMailboxAddress(address).address, state);
   }
 
-  async function attachmentsAreReady(name, envelope, requireStableAttachments) {
+  function localAddresses(name) {
+    const agentName = validateName(name, "agent name");
+    return [
+      agentName,
+      ...(machineName ? [`${agentName}@${machineName}`] : []),
+    ];
+  }
+
+  async function attachmentsAreReady(address, envelope, requireStableAttachments) {
     if (!Array.isArray(envelope.attachments)) return false;
     let ready = true;
     for (const attachment of envelope.attachments) {
@@ -163,7 +201,7 @@ export function createMailbox(options = {}) {
       ) {
         return false;
       }
-      const path = join(mailboxDirectory(name, "pending"), envelope.id, attachment);
+      const path = join(mailboxDirectory(address, "pending"), envelope.id, attachment);
       try {
         const metadata = await stat(path);
         if (!metadata.isFile()) return false;
@@ -183,10 +221,11 @@ export function createMailbox(options = {}) {
   }
 
   async function pendingEnvelopes(
-    name,
+    address,
     { requireStableAttachments = false } = {},
   ) {
-    const directory = mailboxDirectory(name, "pending");
+    const mailboxAddress = parseMailboxAddress(address).address;
+    const directory = mailboxDirectory(mailboxAddress, "pending");
     let names;
     try {
       names = await readdir(directory);
@@ -199,9 +238,12 @@ export function createMailbox(options = {}) {
       const path = join(directory, filename);
       try {
         const envelope = JSON.parse(await readFile(path, "utf8"));
-        if (envelope.id !== filename.slice(0, -5) || envelope.to?.name !== name) {
+        if (
+          envelope.id !== filename.slice(0, -5) ||
+          envelope.to?.name !== mailboxAddress
+        ) {
           diagnostics.log("envelope.invalid", {
-            mailbox: name,
+            mailbox: mailboxAddress,
             path,
             error: { message: "envelope identity does not match its path" },
           });
@@ -209,13 +251,13 @@ export function createMailbox(options = {}) {
         }
         if (
           !(await attachmentsAreReady(
-            name,
+            mailboxAddress,
             envelope,
             requireStableAttachments,
           ))
         ) {
           diagnostics.log("envelope.attachments_pending", {
-            mailbox: name,
+            mailbox: mailboxAddress,
             envelopeId: envelope.id,
             attachmentCount: Array.isArray(envelope.attachments)
               ? envelope.attachments.length
@@ -226,7 +268,7 @@ export function createMailbox(options = {}) {
         envelopes.push({ envelope, path });
       } catch (error) {
         diagnostics.log("envelope.unreadable", {
-          mailbox: name,
+          mailbox: mailboxAddress,
           path,
           error: errorDetails(error),
         });
@@ -244,13 +286,13 @@ export function createMailbox(options = {}) {
     wake = true,
     wait = false,
   }) {
-    validateName(recipient, "recipient");
+    const target = parseMailboxAddress(recipient);
     validateName(sender, "sender");
     if (!summary) throw new Error("summary is required");
     if (!message) throw new Error("message is required");
 
     const id = `${compactTimestamp()}${process.pid}-${randomBytes(6).toString("hex")}`;
-    const pending = mailboxDirectory(recipient, "pending");
+    const pending = mailboxDirectory(target.address, "pending");
     const envelopePath = join(pending, `${id}.json`);
     const attachmentDirectory = join(pending, id);
     const attachmentNames = [];
@@ -275,7 +317,7 @@ export function createMailbox(options = {}) {
       envelope = {
         id,
         from: { name: sender },
-        to: { name: recipient },
+        to: { name: target.address },
         summary,
         message,
         attachments: attachmentNames,
@@ -285,7 +327,8 @@ export function createMailbox(options = {}) {
       diagnostics.log("envelope.published", {
         envelopeId: id,
         sender,
-        recipient,
+        recipient: target.address,
+        recipientMachine: target.machine,
         attachmentCount: attachmentNames.length,
       });
     } catch (error) {
@@ -294,7 +337,8 @@ export function createMailbox(options = {}) {
       diagnostics.log("envelope.publish_failed", {
         envelopeId: id,
         sender,
-        recipient,
+        recipient: target.address,
+        recipientMachine: target.machine,
         error: errorDetails(error),
       });
       throw error;
@@ -302,48 +346,59 @@ export function createMailbox(options = {}) {
 
     let wakeup = { status: "skipped", detail: "wakeup disabled" };
     if (wake) {
-      try {
-        wakeup = await poke(recipient, { wait });
-      } catch (error) {
-        diagnostics.log("wakeup.failed", {
-          mailbox: recipient,
-          envelopeId: id,
-          error: errorDetails(error),
-        });
-        wakeup = { status: "unverified", detail: error.message };
+      if (target.machine && target.machine !== machineName) {
+        wakeup = {
+          status: "remote-pending",
+          detail: `waiting for mailbox watcher on ${target.machine}`,
+        };
+      } else {
+        try {
+          wakeup = await poke(target.address, {
+            targetName: target.name,
+            wait,
+          });
+        } catch (error) {
+          diagnostics.log("wakeup.failed", {
+            mailbox: target.address,
+            envelopeId: id,
+            error: errorDetails(error),
+          });
+          wakeup = { status: "unverified", detail: error.message };
+        }
       }
     }
     return { envelope, envelopePath, wakeup };
   }
 
-  async function check(name) {
-    return pendingEnvelopes(validateName(name));
+  async function check(address) {
+    return pendingEnvelopes(parseMailboxAddress(address).address);
   }
 
-  async function read(name, id) {
-    validateName(name);
+  async function read(address, id) {
+    const mailboxAddress = parseMailboxAddress(address).address;
     validateName(id, "envelope id");
-    const path = join(mailboxDirectory(name, "pending"), `${id}.json`);
+    const path = join(mailboxDirectory(mailboxAddress, "pending"), `${id}.json`);
     const envelope = JSON.parse(await readFile(path, "utf8"));
-    if (envelope.id !== id || envelope.to?.name !== name) {
+    if (envelope.id !== id || envelope.to?.name !== mailboxAddress) {
       throw new Error("envelope identity does not match the requested mailbox");
     }
     return {
       envelope,
-      attachmentDirectory: join(mailboxDirectory(name, "pending"), id),
+      attachmentDirectory: join(mailboxDirectory(mailboxAddress, "pending"), id),
+      mailboxAddress,
     };
   }
 
-  async function acknowledge(name, id) {
-    validateName(name);
+  async function acknowledge(address, id) {
+    const mailboxAddress = parseMailboxAddress(address).address;
     validateName(id, "envelope id");
-    const pending = mailboxDirectory(name, "pending");
-    const delivered = mailboxDirectory(name, "delivered");
+    const pending = mailboxDirectory(mailboxAddress, "pending");
+    const delivered = mailboxDirectory(mailboxAddress, "delivered");
     const envelopeSource = join(pending, `${id}.json`);
     const attachmentSource = join(pending, id);
     const envelopeDestination = join(delivered, `${id}.json`);
     const attachmentDestination = join(delivered, id);
-    await read(name, id);
+    await read(mailboxAddress, id);
     await mkdir(delivered, { recursive: true, mode: 0o700 });
 
     let movedAttachments = false;
@@ -360,15 +415,66 @@ export function createMailbox(options = {}) {
         } catch (rollbackError) {
           diagnostics.log("envelope.ack_rollback_failed", {
             envelopeId: id,
-            mailbox: name,
+            mailbox: mailboxAddress,
             error: errorDetails(rollbackError),
           });
         }
       }
       throw error;
     }
-    diagnostics.log("envelope.acknowledged", { envelopeId: id, mailbox: name });
+    diagnostics.log("envelope.acknowledged", {
+      envelopeId: id,
+      mailbox: mailboxAddress,
+    });
     return envelopeDestination;
+  }
+
+  async function checkLocal(name) {
+    const results = await Promise.all(
+      localAddresses(name).map(async (address) =>
+        (await check(address)).map((entry) => ({
+          ...entry,
+          mailboxAddress: address,
+        })),
+      ),
+    );
+    return results.flat().sort((left, right) =>
+      left.envelope.id.localeCompare(right.envelope.id),
+    );
+  }
+
+  async function findLocalEnvelope(name, id) {
+    validateName(id, "envelope id");
+    const matches = [];
+    for (const address of localAddresses(name)) {
+      try {
+        matches.push(await read(address, id));
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
+    if (matches.length === 0) {
+      const error = new Error(`envelope ${id} was not found for ${name}`);
+      error.code = "ENOENT";
+      throw error;
+    }
+    if (matches.length > 1) {
+      throw new Error(
+        `envelope ${id} is ambiguous across ${matches
+          .map(({ mailboxAddress }) => mailboxAddress)
+          .join(" and ")}`,
+      );
+    }
+    return matches[0];
+  }
+
+  async function readLocal(name, id) {
+    return findLocalEnvelope(validateName(name, "agent name"), id);
+  }
+
+  async function acknowledgeLocal(name, id) {
+    const match = await findLocalEnvelope(validateName(name, "agent name"), id);
+    return acknowledge(match.mailboxAddress, id);
   }
 
   async function list() {
@@ -383,7 +489,7 @@ export function createMailbox(options = {}) {
     for (const entry of mailboxes.filter((candidate) => candidate.isDirectory())) {
       let name;
       try {
-        name = validateName(entry.name);
+        name = parseMailboxAddress(entry.name).address;
       } catch {
         continue;
       }
@@ -404,24 +510,25 @@ export function createMailbox(options = {}) {
   }
 
   async function resumeHint(name) {
-    const envelopes = await pendingEnvelopes(validateName(name));
+    const envelopes = await checkLocal(validateName(name, "agent name"));
     if (envelopes.length === 0) return "";
-    return `You have ${envelopes.length} unread mailbox envelope(s) in ${join(
-      mailboxRoot,
-      name,
-      "pending",
-    )}. Run the mailbox check command before continuing other work.`;
+    return `You have ${envelopes.length} unread mailbox envelope(s) for ${name}. Run the mailbox check command before continuing other work.`;
   }
 
-  function legacyWatermarkPath(name) {
-    return join(stateRoot, "watermarks", `${validateName(name)}.txt`);
+  function legacyWatermarkPath(address) {
+    const parsed = parseMailboxAddress(address);
+    return parsed.machine
+      ? undefined
+      : join(stateRoot, "watermarks", `${parsed.address}.txt`);
   }
 
-  async function readLegacyWatermarks(name) {
+  async function readLegacyWatermarks(address) {
     const result = [];
-    for (const path of [legacyWatermarkPath(name)]) {
+    const path = legacyWatermarkPath(address);
+    if (!path) return result;
+    for (const watermarkPath of [path]) {
       try {
-        const value = (await readFile(path, "utf8")).trim();
+        const value = (await readFile(watermarkPath, "utf8")).trim();
         if (value) result.push(value);
       } catch (error) {
         if (error?.code !== "ENOENT") throw error;
@@ -430,12 +537,12 @@ export function createMailbox(options = {}) {
     return result;
   }
 
-  function notificationDirectory(name) {
-    return join(stateRoot, "notified", validateName(name));
+  function notificationDirectory(address) {
+    return join(stateRoot, "notified", parseMailboxAddress(address).address);
   }
 
-  async function notifiedIds(name, pendingIds) {
-    const directory = notificationDirectory(name);
+  async function notifiedIds(address, pendingIds) {
+    const directory = notificationDirectory(address);
     let names = [];
     try {
       names = await readdir(directory);
@@ -445,7 +552,7 @@ export function createMailbox(options = {}) {
     const result = new Set(names.filter((entry) => entry.endsWith(".notified")).map(
       (entry) => entry.slice(0, -".notified".length),
     ));
-    for (const legacy of await readLegacyWatermarks(name)) result.add(legacy);
+    for (const legacy of await readLegacyWatermarks(address)) result.add(legacy);
     for (const notified of result) {
       if (!pendingIds.has(notified)) {
         await rm(join(directory, `${notified}.notified`), { force: true });
@@ -454,8 +561,8 @@ export function createMailbox(options = {}) {
     return result;
   }
 
-  async function markNotified(name, ids) {
-    const directory = notificationDirectory(name);
+  async function markNotified(address, ids) {
+    const directory = notificationDirectory(address);
     await mkdir(directory, { recursive: true, mode: 0o700 });
     await Promise.all(
       ids.map((id) =>
@@ -465,14 +572,21 @@ export function createMailbox(options = {}) {
   }
 
   async function poke(
-    name,
-    { wait = false, requireStableAttachments = false } = {},
+    address,
+    {
+      targetName = parseMailboxAddress(address).name,
+      wait = false,
+      requireStableAttachments = false,
+    } = {},
   ) {
-    validateName(name);
-    const envelopes = await pendingEnvelopes(name, { requireStableAttachments });
+    const mailboxAddress = parseMailboxAddress(address).address;
+    validateName(targetName, "target name");
+    const envelopes = await pendingEnvelopes(mailboxAddress, {
+      requireStableAttachments,
+    });
     if (envelopes.length === 0) return { status: "empty" };
     const pendingIds = new Set(envelopes.map(({ envelope }) => envelope.id));
-    const notified = await notifiedIds(name, pendingIds);
+    const notified = await notifiedIds(mailboxAddress, pendingIds);
     const unnotified = envelopes.filter(({ envelope }) => !notified.has(envelope.id));
     if (unnotified.length === 0) {
       return { status: "already-poked", envelopeId: envelopes.at(-1).envelope.id };
@@ -496,13 +610,13 @@ export function createMailbox(options = {}) {
         [
           "send",
           "--target-name",
-          name,
+          targetName,
           "--prompt-file",
           promptPath,
           "--mode",
           "enqueue",
           "--dedupe-key",
-          `mailbox:${name}:${newest.id}`,
+          `mailbox:${mailboxAddress}:${newest.id}`,
           "--timeout",
           wait ? "35" : "15",
         ],
@@ -513,9 +627,10 @@ export function createMailbox(options = {}) {
         (result.stdout.includes('"delivery":"idle"') ||
           result.stdout.includes('"delivery":"queued"'))
       ) {
-        await markNotified(name, [...pendingIds]);
+        await markNotified(mailboxAddress, [...pendingIds]);
         diagnostics.log("wakeup.delivered", {
-          mailbox: name,
+          mailbox: mailboxAddress,
+          targetName,
           envelopeId: newest.id,
         });
         return { status: "delivered", envelopeId: newest.id };
@@ -524,7 +639,8 @@ export function createMailbox(options = {}) {
         result.code === 64 &&
         result.stderr.includes("no fresh session-inbox instance");
       diagnostics.log(targetUnavailable ? "wakeup.no_active_session" : "wakeup.unverified", {
-        mailbox: name,
+        mailbox: mailboxAddress,
+        targetName,
         envelopeId: newest.id,
         requestExitCode: result.code,
         requestSignal: result.signal,
@@ -540,9 +656,9 @@ export function createMailbox(options = {}) {
     }
   }
 
-  async function acquireWatcher(name) {
-    validateName(name);
-    const path = join(stateRoot, "watchers", `${name}.lock`);
+  async function acquireWatcher(address) {
+    const mailboxAddress = parseMailboxAddress(address).address;
+    const path = join(stateRoot, "watchers", `${mailboxAddress}.lock`);
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
@@ -550,12 +666,19 @@ export function createMailbox(options = {}) {
         await handle.writeFile(
           `${JSON.stringify({
             pid: process.pid,
-            name,
+            address: mailboxAddress,
             startedAt: new Date().toISOString(),
           })}\n`,
         );
         await handle.close();
-        return async () => rm(path, { force: true });
+        const removeLockOnExit = () => {
+          rmSync(path, { force: true });
+        };
+        process.once("exit", removeLockOnExit);
+        return async () => {
+          process.removeListener("exit", removeLockOnExit);
+          await rm(path, { force: true });
+        };
       } catch (error) {
         if (error?.code !== "EEXIST") throw error;
         let owner;
@@ -567,10 +690,14 @@ export function createMailbox(options = {}) {
         if (owner?.pid) {
           try {
             process.kill(owner.pid, 0);
-            throw new Error(`mailbox watcher for ${name} is already running as pid ${owner.pid}`);
+            throw new Error(
+              `mailbox watcher for ${mailboxAddress} is already running as pid ${owner.pid}`,
+            );
           } catch (ownerError) {
             if (ownerError?.code === "EPERM") {
-              throw new Error(`mailbox watcher for ${name} is already running as pid ${owner.pid}`);
+              throw new Error(
+                `mailbox watcher for ${mailboxAddress} is already running as pid ${owner.pid}`,
+              );
             }
             if (ownerError?.code !== "ESRCH") throw ownerError;
           }
@@ -578,23 +705,40 @@ export function createMailbox(options = {}) {
         await rm(path, { force: true });
       }
     }
-    throw new Error(`could not acquire mailbox watcher for ${name}`);
+    throw new Error(`could not acquire mailbox watcher for ${mailboxAddress}`);
   }
 
-  async function watch(name, { intervalMs = 2_000, once = false, signal } = {}) {
-    validateName(name);
+  async function watch(
+    address,
+    {
+      targetName = parseMailboxAddress(address).name,
+      intervalMs = 2_000,
+      once = false,
+      signal,
+    } = {},
+  ) {
+    const mailboxAddress = parseMailboxAddress(address).address;
+    validateName(targetName, "target name");
     if (!Number.isFinite(intervalMs) || intervalMs < 100) {
       throw new Error("watch interval must be at least 100 ms");
     }
-    const release = await acquireWatcher(name);
-    diagnostics.log("watcher.started", { mailbox: name, intervalMs });
+    const release = await acquireWatcher(mailboxAddress);
+    diagnostics.log("watcher.started", {
+      mailbox: mailboxAddress,
+      targetName,
+      intervalMs,
+    });
     try {
       do {
         try {
-          await poke(name, { requireStableAttachments: true });
+          await poke(mailboxAddress, {
+            targetName,
+            requireStableAttachments: true,
+          });
         } catch (error) {
           diagnostics.log("watcher.poll_failed", {
-            mailbox: name,
+            mailbox: mailboxAddress,
+            targetName,
             error: errorDetails(error),
           });
         }
@@ -613,18 +757,26 @@ export function createMailbox(options = {}) {
       } while (!signal?.aborted);
     } finally {
       await release();
-      diagnostics.log("watcher.stopped", { mailbox: name });
+      diagnostics.log("watcher.stopped", {
+        mailbox: mailboxAddress,
+        targetName,
+      });
     }
   }
 
   return {
     mailboxRoot,
+    machineName,
     stateRoot,
     acknowledge,
+    acknowledgeLocal,
     check,
+    checkLocal,
+    localAddresses,
     list,
     poke,
     read,
+    readLocal,
     resumeHint,
     send,
     watch,

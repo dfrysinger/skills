@@ -35,19 +35,28 @@ try {
 }
 
 const mailbox = createMailbox();
+diagnostics.setContext({ machineName: mailbox.machineName });
+diagnostics.log("watcher.machine_identity", {
+  machineName: mailbox.machineName,
+  configured: Boolean(mailbox.machineName),
+});
 let activeName;
 let activeController;
-let activeWatcher;
+let activeWatchers = [];
 let refreshing = false;
 let shuttingDown = false;
 let identityInterval;
 
-async function stopActiveWatcher() {
-  if (!activeWatcher) return;
-  activeController.abort();
-  await activeWatcher;
-  activeController = undefined;
-  activeWatcher = undefined;
+async function stopActiveWatchers() {
+  if (!activeController) return;
+  const controller = activeController;
+  const watchers = activeWatchers;
+  controller.abort();
+  await Promise.all(watchers.map(({ promise }) => promise));
+  if (activeController === controller) {
+    activeController = undefined;
+    activeWatchers = [];
+  }
 }
 
 async function refreshIdentity() {
@@ -75,9 +84,9 @@ async function refreshIdentity() {
       });
     }
     const nextName = tmuxSession ?? sessionName;
-    if (nextName === activeName && activeWatcher) return;
+    if (nextName === activeName && activeWatchers.length > 0) return;
 
-    await stopActiveWatcher();
+    await stopActiveWatchers();
     diagnostics.log("watcher.identity_changed", {
       sessionId: session.sessionId,
       previousName: activeName,
@@ -87,23 +96,42 @@ async function refreshIdentity() {
     activeName = nextName;
     if (!activeName) return;
 
-    activeController = new AbortController();
-    const watcher = mailbox
-      .watch(activeName, {
-        intervalMs,
-        signal: activeController.signal,
-      })
-      .catch((error) => {
-        diagnostics.log("watcher.failed", {
-          sessionId: session.sessionId,
-          agentName: activeName,
-          error: errorDetails(error),
-        });
-      });
-    activeWatcher = watcher;
-    void watcher.finally(() => {
-      if (activeWatcher === watcher) activeWatcher = undefined;
+    const controller = new AbortController();
+    const addresses = mailbox.localAddresses(activeName);
+    activeController = controller;
+    activeWatchers = addresses.map((address) => ({
+      address,
+      promise: mailbox
+        .watch(address, {
+          targetName: activeName,
+          intervalMs,
+          signal: controller.signal,
+        })
+        .catch((error) => {
+          diagnostics.log("watcher.failed", {
+            sessionId: session.sessionId,
+            agentName: activeName,
+            mailbox: address,
+            error: errorDetails(error),
+          });
+        }),
+    }));
+    diagnostics.log("watcher.addresses_started", {
+      sessionId: session.sessionId,
+      agentName: activeName,
+      mailboxes: addresses,
     });
+    const watchers = activeWatchers;
+    void Promise.race(watchers.map(({ promise }) => promise))
+      .then(() => {
+        if (activeWatchers === watchers && !controller.signal.aborted) {
+          controller.abort();
+        }
+        return Promise.all(watchers.map(({ promise }) => promise));
+      })
+      .then(() => {
+        if (activeWatchers === watchers) activeWatchers = [];
+      });
   } catch (error) {
     diagnostics.log("watcher.identity_failed", {
       sessionId: session.sessionId,
@@ -122,7 +150,7 @@ async function shutdown(signal) {
     sessionId: session.sessionId,
     signal,
   });
-  await stopActiveWatcher();
+  await stopActiveWatchers();
   process.exit(0);
 }
 
