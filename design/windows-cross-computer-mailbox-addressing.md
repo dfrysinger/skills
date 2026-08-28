@@ -219,13 +219,13 @@ Set `COPILOT_AGENT_MACHINE` on each computer before sending qualified mail. Roll
 
 ## Current baton
 
-- **Phase:** physical campaign complete; ready for pull request.
+- **Phase:** merged-candidate successor physical campaign staged; waiting for the physical Mac launcher.
 - **Branch:** `dfrysinger/windows-mailbox-validation`.
-- **Critical path:** open the pull request with the reviewed design, deterministic checks, validator-accepted Windows receipts, and physical Mac/Windows receipts; inspect review feedback; then land.
-- **Current candidate evidence:** Candidate `ca4ac3b` has eight validator-accepted Windows receipts plus physical receipts under the shared OneDrive proof root. A physical Mac and Windows computer sharing only `MAILBOX_ROOT` proved Windows-to-Mac `hotel@macbook-pro`, Mac-to-Windows `hotel@surface-pro`, an unused qualified target remaining pending, same-name local ambiguity failing closed and recovering, and one unqualified `hotel` envelope producing exactly one native turn per physical computer. Broadcast acknowledgement was withheld until the Mac published a durable barrier signal; Windows then acknowledged once and observed pending zero and delivered one. The focused mailbox/session-inbox suite passes with 30 tests and 2 Windows tmux-only skips. The repository-wide Node run has one unrelated `self-compact` `spawn EFTYPE` failure reproduced on the base commit.
-- **Open proof claims:** none.
+- **Critical path:** run the exact reviewed successor candidate on the physical Mac and Windows through qualified delivery in both directions, unused-target persistence, local ambiguity recovery, and controlled broadcast; refresh the two remaining live-proof receipts; then update and merge pull request #28.
+- **Current candidate evidence:** Current-main integration at `56cb1dd` passed exact Windows native unqualified and qualified delivery, OneDrive attachment/restart dedupe, held-file acknowledgement recovery, and diagnostics-content exclusion. Implementation dual review found that the legacy shell wrapper mislabeled remote qualified publication as verified and used the full address for terminal fallback lookup. Commit `ae955d3` fixes both behaviors; UTF-8 shell tests, mailbox Node tests, and a direct remote-status proof pass. Both Claude Opus and GPT/Terra verified the fix delta with no remaining material finding. The repository-wide Node run still has only the unrelated `self-compact` `spawn EFTYPE` failure previously reproduced on the base commit. The earlier physical `ca4ac3b` campaign remains historical evidence because current-main wakeup behavior changed.
+- **Open proof claims:** physical successor qualified routing, unused-target persistence, local ambiguity recovery, and two-computer broadcast on the final reviewed candidate.
 - **Reframe status:** `CLEAR`; replacement design passed bounded Claude Opus and GPT review with no material finding.
-- **Implementation review:** round two closed all ownership and watcher-lifecycle findings. Both Claude slices identified a non-blocking remote-mailbox list visibility regression; `0262409` restored read-only remote counts without weakening recipient ownership.
+- **Implementation review:** the original round two closed ownership and watcher-lifecycle findings; `0262409` restored read-only remote counts. The post-main-merge review then closed the verified remote-reporting and qualified-fallback findings in `ae955d3`; both reviewer families report zero remaining material findings.
 
 ## Definition of Done — Windows Addressed Mailbox
 
