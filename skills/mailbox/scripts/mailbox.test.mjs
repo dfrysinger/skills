@@ -237,6 +237,60 @@ console.log('{"status":"completed","result":{"delivery":"steering"}}');
   }
 });
 
+test("sender and watcher serialize notification requests for one mailbox", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-notification-claim-"));
+  const previousCallLog = process.env.MOCK_MAILBOX_REQUEST_CALLS;
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const stateRoot = join(root, "state");
+    const callLog = join(root, "request-calls.jsonl");
+    const mockRequest = join(root, "mock-request.mjs");
+    process.env.MOCK_MAILBOX_REQUEST_CALLS = callLog;
+    await writeFile(
+      mockRequest,
+      `import { appendFileSync } from "node:fs";
+appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, "called\\n");
+await new Promise((resolve) => setTimeout(resolve, 200));
+console.log('{"status":"completed","result":{"messageAccepted":true,"delivery":"steering"}}');
+`,
+    );
+    const mailbox = createMailbox({
+      mailboxRoot,
+      stateRoot,
+      requestCli: mockRequest,
+    });
+    await mailbox.send({
+      recipient: "hotel",
+      sender: "whisky",
+      summary: "notification claim proof",
+      message: "one request only",
+      wake: false,
+    });
+
+    const results = await Promise.all([
+      mailbox.poke("hotel"),
+      mailbox.poke("hotel", { requireStableAttachments: true }),
+    ]);
+    assert.deepEqual(
+      results.map((result) => result.status).sort(),
+      ["delivered", "in-progress"],
+    );
+    assert.equal((await readFile(callLog, "utf8")).trim(), "called");
+    assert.equal((await mailbox.poke("hotel")).status, "already-poked");
+    await assert.rejects(
+      readFile(join(stateRoot, "notifying", "hotel.lock"), "utf8"),
+      { code: "ENOENT" },
+    );
+  } finally {
+    if (previousCallLog === undefined) {
+      delete process.env.MOCK_MAILBOX_REQUEST_CALLS;
+    } else {
+      process.env.MOCK_MAILBOX_REQUEST_CALLS = previousCallLog;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("watcher waits for synced attachments to exist and stabilize", async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-attachments-"));
   const previousCallLog = process.env.MOCK_MAILBOX_REQUEST_CALLS;
