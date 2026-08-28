@@ -144,7 +144,10 @@ test("recipient-local watcher wakes a live session by its Copilot session name",
     assert.equal(request.target.resolvedBy, "session-name");
     assert.equal(request.target.sessionId, "hotel-session");
     assert.equal(request.mode, "immediate");
-    assert.equal(request.dedupeKey, `mailbox:hotel:${sent.envelope.id}`);
+    assert.equal(
+      request.dedupeKey,
+      `mailbox:immediate-v2:hotel:${sent.envelope.id}`,
+    );
     assert.match(request.prompt, /^check mailbox; skip if empty \[mb:/);
 
     const receiptPath = join(inboxRoot, "completed", name);
@@ -155,7 +158,7 @@ test("recipient-local watcher wakes a live session by its Copilot session name",
       `${JSON.stringify({
         status: "completed",
         result: {
-          messageAccepted: true,
+          messageId: "accepted-by-older-extension",
           delivery: "unconfirmed",
           idleDelivery: false,
         },
@@ -195,7 +198,7 @@ test("late-arriving older envelopes receive a new notification", async () => {
       mockRequest,
       `import { appendFileSync } from "node:fs";
 appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, JSON.stringify(process.argv.slice(2)) + "\\n");
-console.log('{"status":"completed","result":{"messageAccepted":true,"delivery":"idle"}}');
+console.log('{"status":"completed","result":{"delivery":"steering"}}');
 `,
     );
     const pending = join(mailboxRoot, "hotel", "pending");

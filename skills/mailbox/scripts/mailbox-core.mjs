@@ -502,13 +502,17 @@ export function createMailbox(options = {}) {
           "--mode",
           "immediate",
           "--dedupe-key",
-          `mailbox:${name}:${newest.id}`,
+          `mailbox:immediate-v2:${name}:${newest.id}`,
           "--timeout",
           wait ? "35" : "15",
         ],
         {},
       );
-      if (result.code === 0 && result.stdout.includes('"messageAccepted":true')) {
+      const accepted =
+        result.stdout.includes('"messageAccepted":true') ||
+        /"messageId":"[^"]+"/.test(result.stdout) ||
+        /"delivery":"(?:idle|queued|steering)"/.test(result.stdout);
+      if (result.code === 0 && accepted) {
         await markNotified(name, [...pendingIds]);
         diagnostics.log("wakeup.accepted", {
           mailbox: name,
