@@ -27,6 +27,7 @@ const RETRYABLE_FILE_ERRORS = new Set(["EACCES", "EBUSY", "EPERM"]);
 
 export const POKE_UNVERIFIED = 3;
 export const POKE_NO_ACTIVE_COPILOT = 4;
+export const POKE_REMOTE_PENDING = 5;
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));

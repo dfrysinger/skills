@@ -32,6 +32,7 @@ if [[ "$1" == */mailbox.mjs && "$2" == poke ]]; then
     0) printf 'poked: %s (SDK wakeup accepted)\n' "$recipient" ;;
     3) printf "UNVERIFIED: '%s' did not acknowledge the SDK wakeup; the mail remains queued.\n" "$recipient" >&2 ;;
     4) printf "UNAVAILABLE: no active Copilot session named '%s'.\n" "$recipient" >&2 ;;
+    5) printf 'poke: deferred to mailbox watcher on other-machine\n' ;;
   esac
   exit "${FAKE_MAILBOX_NODE_STATUS:-0}"
 fi
@@ -132,6 +133,23 @@ grep -Fq "did not acknowledge the SDK wakeup" "$ROOT/sdk-failure.out" ||
 [ ! -s "$FAKE_TMUX_CALLS" ] ||
   fail "failed Copilot SDK request fell back to tmux"
 
+FAKE_RECIPIENT=hotel
+FAKE_BACKEND=copilot
+FAKE_MAILBOX_NODE_STATUS=5
+export FAKE_RECIPIENT FAKE_BACKEND FAKE_MAILBOX_NODE_STATUS
+make_mail hotel@other-machine 20260827T000002Z-remoteproof
+if "$SCRIPT" hotel@other-machine >"$ROOT/remote-pending.out" 2>&1; then
+  fail "remote qualified poke was reported as locally delivered"
+else
+  remote_status=$?
+fi
+[ "$remote_status" -eq 5 ] ||
+  fail "remote qualified poke did not preserve deferred status"
+grep -Fq 'deferred to mailbox watcher on other-machine' "$ROOT/remote-pending.out" ||
+  fail "remote qualified poke did not report deferral"
+[ ! -s "$FAKE_TMUX_CALLS" ] ||
+  fail "remote qualified poke fell back to tmux"
+
 FAKE_RECIPIENT=claude-kilo
 FAKE_BACKEND=claude
 FAKE_MAILBOX_NODE_STATUS=4
@@ -158,6 +176,22 @@ tmux_call_count="$(wc -l <"$FAKE_TMUX_CALLS" | tr -d '[:space:]')"
 "$SCRIPT" claude-kilo
 [ "$(wc -l <"$FAKE_TMUX_CALLS" | tr -d '[:space:]')" = "$tmux_call_count" ] ||
   fail "watermark dedupe repeated a Claude wakeup"
+
+FAKE_RECIPIENT=hotel
+FAKE_BACKEND=claude
+FAKE_MAILBOX_NODE_STATUS=4
+export FAKE_RECIPIENT FAKE_BACKEND FAKE_MAILBOX_NODE_STATUS
+printf empty >"$FAKE_PANE_STATE"
+: >"$FAKE_TYPED_PROMPT"
+make_mail hotel@surface-pro 20260827T000003Z-qualifiedproof
+output="$("$SCRIPT" hotel@surface-pro)"
+grep -Fq 'poked: hotel@surface-pro (submission observed)' <<<"$output" ||
+  fail "qualified Claude fallback submission was not verified"
+grep -Fq -- '-l -- check mailbox; skip if empty [mb:qualifiedproof]' \
+  "$FAKE_TMUX_CALLS" || fail "qualified fallback did not type the mailbox prompt"
+[ "$(cat "$MAILBOX_STATE_ROOT/watermarks/hotel@surface-pro.txt")" = \
+  20260827T000003Z-qualifiedproof ] ||
+  fail "qualified fallback did not retain the full-address watermark"
 
 bash -n "$SCRIPT"
 echo "mailbox-poke tests: pass"

@@ -41,6 +41,9 @@ set -e
 if [[ "$NODE_STATUS" -eq 0 ]]; then
   [[ -n "$NODE_OUTPUT" ]] && printf '%s\n' "$NODE_OUTPUT"
   exit 0
+elif [[ "$NODE_STATUS" -eq 5 ]]; then
+  [[ -n "$NODE_OUTPUT" ]] && printf '%s\n' "$NODE_OUTPUT"
+  exit 5
 elif [[ "$NODE_STATUS" -ne 4 ]]; then
   [[ -n "$NODE_OUTPUT" ]] && printf '%s\n' "$NODE_OUTPUT" >&2
   exit 3
@@ -48,6 +51,7 @@ fi
 
 DIR="$MAILBOX_ROOT/$NAME/pending"
 WATERMARK_FILE="${MAILBOX_STATE_ROOT:-$HOME/.copilot/mailbox-state}/watermarks/$NAME.txt"
+TARGET_NAME="${NAME%%@*}"
 mkdir -p "$(dirname "$WATERMARK_FILE")"
 shopt -s nullglob
 ENVS=("$DIR"/*.json)
@@ -63,15 +67,15 @@ LAST_POKED=""
 
 PANE="$(
   tmux list-panes -a -F $'#{session_name}\t#{pane_id}\t#{window_active}\t#{pane_active}' 2>/dev/null |
-    awk -F $'\t' -v name="$NAME" '$1 == name && $3 == "1" && $4 == "1" { print $2 }'
+    awk -F $'\t' -v name="$TARGET_NAME" '$1 == name && $3 == "1" && $4 == "1" { print $2 }'
 )"
 if [[ -z "$PANE" || "$PANE" == *$'\n'* ]]; then
-  echo "UNVERIFIED: tmux session '$NAME' is not running; the mail is queued for pickup." >&2
+  echo "UNVERIFIED: tmux session '$TARGET_NAME' is not running; the mail is queued for pickup." >&2
   exit 4
 fi
 
-if [[ "$(tmux display-message -p -t "$PANE" '#{session_name}' 2>/dev/null || true)" != "$NAME" ]]; then
-  echo "UNVERIFIED: resolved pane does not belong to exact session '$NAME'; no keys were sent." >&2
+if [[ "$(tmux display-message -p -t "$PANE" '#{session_name}' 2>/dev/null || true)" != "$TARGET_NAME" ]]; then
+  echo "UNVERIFIED: resolved pane does not belong to exact session '$TARGET_NAME'; no keys were sent." >&2
   exit 3
 fi
 
@@ -97,7 +101,7 @@ if [[ "$BACKEND" == "copilot" ]]; then
   [[ "$WAIT" -eq 1 ]] && TIMEOUT=35
   REQUEST_OUTPUT=""
   if REQUEST_OUTPUT="$(node "$REQUEST_CLI" send \
-    --target-name "$NAME" \
+    --target-name "$TARGET_NAME" \
     --prompt-file "$PROMPT_FILE" \
     --mode immediate \
     --dedupe-key "mailbox:immediate-v2:$NAME:$NEWEST_ID" \

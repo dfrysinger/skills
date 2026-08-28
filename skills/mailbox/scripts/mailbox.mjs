@@ -4,6 +4,7 @@ import {
   createMailbox,
   parseMailboxAddress,
   POKE_NO_ACTIVE_COPILOT,
+  POKE_REMOTE_PENDING,
   POKE_UNVERIFIED,
   resolveOwnName,
 } from "./mailbox-core.mjs";
@@ -190,6 +191,7 @@ try {
       const address = parseMailboxAddress(positional[0]);
       if (address.machine && address.machine !== mailbox.machineName) {
         console.log(`poke: deferred to mailbox watcher on ${address.machine}`);
+        process.exitCode = POKE_REMOTE_PENDING;
         break;
       }
       const result = await mailbox.poke(positional[0], {

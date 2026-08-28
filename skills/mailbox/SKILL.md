@@ -93,7 +93,7 @@ Do NOT use mailbox for:
 
 Recipient name is the agent's live tmux name or Copilot `/rename` name (for
 example, `juliett` or `kilo`). Attachments are copied rather than symlinked.
-The script prints `wakeup: ... (verified | NOT verified | skipped)` so you know
+The script prints `wakeup: ... (verified | deferred | NOT verified | skipped)` so you know
 whether the live wakeup landed; either way the envelope is durable.
 
 The portable entry point, including on Windows, is:
@@ -181,7 +181,7 @@ will not notice until the user manually says "check mail".
 ## Verification
 
 - `mailbox-list.sh` — pending/delivered counts per mailbox + active tmux sessions.
-- `mailbox-send.sh` reports `wakeup: ... (verified|NOT verified|skipped)` — anything other than `verified` means rely on the resume-hook or human notification.
+- `mailbox-send.sh` reports `wakeup: ... (verified|deferred|NOT verified|skipped)` — `deferred` means a qualified remote envelope is durable but its machine watcher has not confirmed delivery; anything other than `verified` means rely on the resume-hook or human notification.
 - `git -C ~/.copilot/skills status` clean after sending or receiving (mailbox queue lives at `~/.copilot/mailbox/`, not tracked in the skills repo).
 
 ## Scripts
