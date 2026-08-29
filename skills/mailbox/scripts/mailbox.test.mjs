@@ -126,6 +126,56 @@ test("wakeup failures never remove a published envelope", async () => {
   }
 });
 
+test("request timeouts reuse the same mailbox delivery attempt", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-timeout-retry-"));
+  const previousCallLog = process.env.MOCK_MAILBOX_REQUEST_CALLS;
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const stateRoot = join(root, "state");
+    const callLog = join(root, "request-calls.jsonl");
+    const mockRequest = join(root, "mock-request.mjs");
+    process.env.MOCK_MAILBOX_REQUEST_CALLS = callLog;
+    await writeFile(
+      mockRequest,
+      `import { appendFileSync } from "node:fs";
+appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, JSON.stringify(process.argv.slice(2)) + "\\n");
+process.exit(2);
+`,
+    );
+    const mailbox = createMailbox({ mailboxRoot, stateRoot, requestCli: mockRequest });
+    const sent = await mailbox.send({
+      recipient: "hotel",
+      sender: "whisky",
+      summary: "timeout retry",
+      message: "reuse the in-flight attempt",
+      wake: false,
+    });
+
+    assert.equal((await mailbox.poke("hotel")).status, "unverified");
+    assert.equal((await mailbox.poke("hotel")).status, "unverified");
+    const calls = (await readFile(callLog, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const dedupeKeys = calls.map(
+      (args) => args[args.indexOf("--dedupe-key") + 1],
+    );
+    assert.equal(dedupeKeys.length, 2);
+    assert.equal(dedupeKeys[0], dedupeKeys[1]);
+    assert.match(
+      dedupeKeys[0],
+      new RegExp(`^mailbox:immediate-v3:hotel:${sent.envelope.id}:`),
+    );
+  } finally {
+    if (previousCallLog === undefined) {
+      delete process.env.MOCK_MAILBOX_REQUEST_CALLS;
+    } else {
+      process.env.MOCK_MAILBOX_REQUEST_CALLS = previousCallLog;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("mailbox addresses preserve valid qualified names and reject malformed input", () => {
   assert.deepEqual(parseMailboxAddress("hotel"), {
     address: "hotel",

@@ -143,8 +143,10 @@ will not notice until the user manually says "check mail".
   autopilot turn receives it as steering instead of leaving it stranded in the
   normal FIFO queue. The watcher marks the envelope notified only after an
   `idle` or `steering` event; a returned message ID or `unconfirmed` result is
-  not enough. Each retry uses an attempt-scoped `mailbox:immediate-v3` dedupe
-  key so an ambiguous prior attempt cannot permanently suppress later wakeups.
+  not enough. Each delivery attempt uses an attempt-scoped
+  `mailbox:immediate-v3` dedupe key. Caller timeouts reuse that key so a still
+  running recovery cannot race a duplicate send; a durable ambiguous receipt
+  rotates it so a later attempt is not permanently suppressed.
   The durable envelope remains pending until the recipient reads and
   acknowledges it. If the host temporarily places an immediate send in FIFO,
   session-inbox snapshots the queue before submission and promotes only the

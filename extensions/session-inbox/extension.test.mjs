@@ -222,6 +222,11 @@ export async function joinSession() {
         async sendNow(options) {
           record("queue.sendNow", options);
           const current = state();
+          if (current.sendNowDelayMs) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, current.sendNowDelayMs),
+            );
+          }
           if (!current.promoteQueued) return {steered: false};
           writeFileSync(
             process.env.MOCK_STATE,
@@ -1171,6 +1176,42 @@ test("a stalled queue snapshot cannot outlive the confirmation deadline", async 
     assert.ok(Date.now() - startedAt < 2_000);
     assert.equal(
       (await harness.calls()).filter((call) => call.kind === "send").length,
+      1,
+    );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("a delayed queue mutation settles before an ambiguous receipt permits retry", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    queuePromptOnSend: true,
+    promoteQueued: true,
+    sendNowDelayMs: 750,
+  });
+  try {
+    await harness.request("delayed-promotion-send", {
+      kind: "send",
+      prompt: "delayed promotion",
+      mode: "immediate",
+      dedupeKey: "delayed-promotion",
+    });
+    const receipt = await harness.receipt("failed", "delayed-promotion-send");
+    assert.equal(receipt.ambiguousSideEffect, true);
+
+    await harness.request("delayed-promotion-retry", {
+      kind: "send",
+      prompt: "delayed promotion",
+      mode: "immediate",
+      dedupeKey: "delayed-promotion",
+    });
+    const retry = await harness.receipt("failed", "delayed-promotion-retry");
+    assert.equal(retry.ambiguousSideEffect, true);
+    const calls = await harness.calls();
+    assert.equal(calls.filter((call) => call.kind === "send").length, 1);
+    assert.equal(
+      calls.filter((call) => call.kind === "queue.sendNow").length,
       1,
     );
   } finally {

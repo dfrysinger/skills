@@ -274,23 +274,17 @@ async function sendAndConfirm({ prompt, agentMode }) {
             messageId,
             queuedItemId: queuedMatches[0].id,
           });
-          const promoted = await withinDeadline(
-            session.rpc.queue.sendNow({
-              id: queuedMatches[0].id,
-            }),
-            confirmationDeadline,
-            "queued message promotion",
-          );
+          // A caller timeout may retry this request. Keep mutating recovery
+          // serialized under the same dedupe reservation until the RPC settles.
+          const promoted = await session.rpc.queue.sendNow({
+            id: queuedMatches[0].id,
+          });
           if (promoted.steered) {
             event = await waitForDelivery(["steering"]);
           } else {
-            const removed = await withinDeadline(
-              session.rpc.queue.removeAt({
-                id: queuedMatches[0].id,
-              }),
-              confirmationDeadline,
-              "queued message removal",
-            );
+            const removed = await session.rpc.queue.removeAt({
+              id: queuedMatches[0].id,
+            });
             if (removed.removed) {
               throw definitiveNoSideEffectError(
                 "immediate message could not enter the steering lane and was removed from FIFO",
