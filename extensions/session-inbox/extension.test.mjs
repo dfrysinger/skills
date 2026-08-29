@@ -192,14 +192,30 @@ export async function joinSession() {
         },
       },
       commands: {
+        async list() {
+          record("command.list", {});
+          return {
+            commands: state().supportsDirectNew
+              ? [{name: "new", kind: "builtin"}]
+              : [],
+          };
+        },
         async invoke(options) {
           record("command.invoke", options);
           const current = state();
           if (current.rejectCommandAfterRecord) {
             throw new Error("mock transport lost the accepted command response");
           }
+          if (options.name === "new" && current.rejectDirectNew) {
+            throw new Error(
+              "Request session.commands.invoke failed with message: Unknown slash command: /new",
+            );
+          }
           if (current.commandError) {
             return {kind: "text", text: current.commandError};
+          }
+          if (options.name === "new" && current.supportsDirectNew) {
+            return {kind: "completed"};
           }
           if (
             options.name === "autopilot" &&
@@ -224,7 +240,6 @@ export async function joinSession() {
               }) + "\\n",
             );
           }
-          if (current.exitOnEnqueue) process.exit(0);
           if (current.activeAutopilot) {
             return {kind: "text", text: "Autopilot objective updated."};
           }
@@ -234,15 +249,6 @@ export async function joinSession() {
             displayPrompt: \`Autopilot objective: \${options.input}\`,
             mode: "autopilot",
           };
-        },
-        async enqueue(options) {
-          record("command.enqueue", options);
-          const current = state();
-          if (current.rejectCommandAfterRecord) {
-            throw new Error("mock transport lost the accepted command response");
-          }
-          if (current.exitOnEnqueue) process.exit(0);
-          return {queued: true};
         },
       },
     },
@@ -463,8 +469,8 @@ test("recipient extension submits SDK work without idle gates and preserves phas
 
     await harness.request("busy-send", {
       kind: "send",
-      prompt: "queue during active work",
-      mode: "enqueue",
+      prompt: "steer during active work",
+      mode: "immediate",
     });
     assert.equal(
       (await harness.receipt("completed", "busy-send")).result.delivery,
@@ -474,13 +480,13 @@ test("recipient extension submits SDK work without idle gates and preserves phas
       (await harness.calls()).find(
         (call) =>
           call.kind === "send" &&
-          call.value.prompt === "queue during active work",
+          call.value.prompt === "steer during active work",
       ),
       {
         kind: "send",
         value: {
-          prompt: "queue during active work",
-          mode: "enqueue",
+          prompt: "steer during active work",
+          mode: "immediate",
         },
       },
     );
@@ -686,34 +692,34 @@ test("recipient extension submits SDK work without idle gates and preserves phas
       "compact-unconfirmed-continuation",
     );
     assert.equal(compactUnconfirmed.result.compacted, true);
-    assert.equal(compactUnconfirmed.result.continuationQueued, true);
+    assert.equal(compactUnconfirmed.result.continuationAccepted, true);
     assert.equal(typeof compactUnconfirmed.result.continuationMessageId, "string");
-    assert.equal(compactUnconfirmed.result.continuationDelivered, undefined);
+    assert.equal(compactUnconfirmed.result.continuationDelivery, "unconfirmed");
     assert.equal(compactUnconfirmed.result.continuationError, undefined);
 
     await harness.setState({
       suppressDelivery: false,
-      delivery: "queued",
+      delivery: "steering",
       processing: true,
       active: true,
       pending: 1,
       idleCounter: 15,
     });
     await new Promise((resolve) => setTimeout(resolve, 100));
-    await harness.request("compact-queued-continuation", {
+    await harness.request("compact-steering-continuation", {
       kind: "compact",
-      customInstructions: "queued continuation proof",
-      continuationPrompt: "resume through the native queue",
+      customInstructions: "steering continuation proof",
+      continuationPrompt: "resume through immediate delivery",
     });
-    const compactQueued = await harness.receipt(
+    const compactSteering = await harness.receipt(
       "completed",
-      "compact-queued-continuation",
+      "compact-steering-continuation",
     );
-    assert.equal(compactQueued.result.compacted, true);
-    assert.equal(compactQueued.result.continuationQueued, true);
-    assert.equal(typeof compactQueued.result.continuationMessageId, "string");
-    assert.equal(compactQueued.result.continuationDelivered, undefined);
-    assert.equal(compactQueued.result.continuationError, undefined);
+    assert.equal(compactSteering.result.compacted, true);
+    assert.equal(compactSteering.result.continuationAccepted, true);
+    assert.equal(typeof compactSteering.result.continuationMessageId, "string");
+    assert.equal(compactSteering.result.continuationDelivery, "steering");
+    assert.equal(compactSteering.result.continuationError, undefined);
 
     await harness.setState({
       delivery: "idle",
@@ -801,27 +807,152 @@ test("recipient extension submits SDK work without idle gates and preserves phas
   }
 });
 
-test("new-session marker survives extension teardown before its receipt", async () => {
-  const harness = await createHarness({ exitOnEnqueue: true });
+test("direct session rotation fails closed without a non-FIFO SDK API", async () => {
+  const harness = await createHarness();
   try {
-    await new Promise((resolve) => setTimeout(resolve, 2_200));
-    await harness.request("rotate-without-receipt", {
-      kind: "new-session",
+    await harness.request("rotate-unsupported", {
+      kind: "new-session-direct",
       prompt: "seed prompt",
     });
-
-    const result = await harness.exit;
-    assert.equal(result.code, 0, result.stderr);
-    const marker = await readJson(
-      join(harness.inbox, "commands", "rotate-without-receipt.json"),
+    const receipt = await harness.receipt("failed", "rotate-unsupported");
+    assert.equal(receipt.ambiguousSideEffect, undefined);
+    assert.match(receipt.error, /does not expose \/new through a non-FIFO SDK API/);
+    assert.equal(
+      (await harness.calls()).some(
+        (call) =>
+          call.kind === "command.invoke" || call.kind === "command.enqueue",
+      ),
+      false,
     );
-    assert.equal(marker.requestId, "rotate-without-receipt");
-    assert.equal(marker.sessionId, "test-session");
-    assert.match(marker.promptSha256, /^[0-9a-f]{64}$/);
     await assert.rejects(
-      readFile(join(harness.inbox, "completed", "rotate-without-receipt.json")),
+      readFile(join(harness.inbox, "processing", "rotate-unsupported.json")),
       { code: "ENOENT" },
     );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("direct session rotation uses command invocation when the CLI exposes it", async () => {
+  const harness = await createHarness({ supportsDirectNew: true });
+  try {
+    await harness.request("rotate-direct", {
+      kind: "new-session-direct",
+      prompt: "seed prompt",
+    });
+    const receipt = await harness.receipt("completed", "rotate-direct");
+    assert.deepEqual(receipt.result, {
+      commandInvoked: true,
+      mechanism: "commands.invoke",
+      resultKind: "completed",
+    });
+    assert.ok(
+      (await harness.calls()).some(
+        (call) =>
+          call.kind === "command.invoke" &&
+          call.value.name === "new" &&
+          call.value.input === "seed prompt",
+      ),
+    );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("direct session rotation treats an unknown /new rejection as definitive", async () => {
+  const harness = await createHarness({
+    supportsDirectNew: true,
+    rejectDirectNew: true,
+  });
+  try {
+    await harness.request("rotate-rejected", {
+      kind: "new-session-direct",
+      prompt: "seed prompt",
+    });
+    const receipt = await harness.receipt("failed", "rotate-rejected");
+    assert.equal(receipt.ambiguousSideEffect, undefined);
+    assert.match(receipt.error, /rejected \/new as a direct command/);
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("non-immediate sends fail definitively and leave their dedupe key retryable", async () => {
+  const harness = await createHarness();
+  try {
+    await harness.request("legacy-queued-send", {
+      kind: "send",
+      prompt: "legacy queued prompt",
+      mode: "enqueue",
+      dedupeKey: "legacy-send",
+    });
+    const rejected = await harness.receipt("failed", "legacy-queued-send");
+    assert.equal(rejected.ambiguousSideEffect, undefined);
+    assert.match(rejected.error, /must use immediate delivery/);
+    assert.equal(
+      (await harness.calls()).some(
+        (call) =>
+          call.kind === "send" &&
+          call.value.prompt === "legacy queued prompt",
+      ),
+      false,
+    );
+
+    await harness.setState({ idleCounter: 1 });
+    await harness.request("replacement-immediate-send", {
+      kind: "send",
+      prompt: "legacy queued prompt",
+      mode: "immediate",
+      dedupeKey: "legacy-send",
+    });
+    const replacement = await harness.receipt(
+      "completed",
+      "replacement-immediate-send",
+    );
+    assert.equal(replacement.result.delivery, "idle");
+    assert.equal(replacement.deduplicated, false);
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("an immediate send observed in the FIFO fails ambiguously", async () => {
+  const harness = await createHarness({ delivery: "queued" });
+  try {
+    await harness.request("queued-immediate-send", {
+      kind: "send",
+      prompt: "must not enter FIFO",
+      mode: "immediate",
+      dedupeKey: "queued-immediate",
+    });
+    const receipt = await harness.receipt("failed", "queued-immediate-send");
+    assert.equal(receipt.ambiguousSideEffect, true);
+    assert.match(receipt.error, /message entered the FIFO queue/);
+    assert.equal(receipt.result.delivery, "queued");
+    assert.equal(receipt.result.queuedDelivery, true);
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("a compact continuation observed in the FIFO fails ambiguously", async () => {
+  const harness = await createHarness({ delivery: "queued" });
+  try {
+    await harness.request("queued-compact-continuation", {
+      kind: "compact",
+      customInstructions: "queued continuation rejection",
+      continuationPrompt: "must not enter FIFO",
+      dedupeKey: "queued-compact",
+    });
+    const receipt = await harness.receipt(
+      "failed",
+      "queued-compact-continuation",
+    );
+    assert.equal(receipt.ambiguousSideEffect, true);
+    assert.match(receipt.error, /compact continuation entered the FIFO queue/);
+    assert.equal(receipt.result.compacted, true);
+    assert.equal(receipt.result.continuationAccepted, true);
+    assert.equal(receipt.result.continuationDelivery, "queued");
   } finally {
     await harness.stop();
   }
@@ -844,28 +975,6 @@ test("extension reload receipt is durable before the extension exits", async () 
       readFile(join(harness.inbox, "processing", "reload-extension.json")),
       { code: "ENOENT" },
     );
-  } finally {
-    await harness.stop();
-  }
-});
-
-test("new-session marker survives an ambiguous enqueue rejection", async () => {
-  const harness = await createHarness({ rejectCommandAfterRecord: true });
-  try {
-    await new Promise((resolve) => setTimeout(resolve, 2_200));
-    await harness.request("rotate-ambiguous", {
-      kind: "new-session",
-      prompt: "ambiguous seed",
-    });
-
-    const receipt = await harness.receipt("failed", "rotate-ambiguous");
-    assert.equal(receipt.ambiguousSideEffect, true);
-    const marker = await readJson(
-      join(harness.inbox, "commands", "rotate-ambiguous.json"),
-    );
-    assert.equal(marker.requestId, "rotate-ambiguous");
-    assert.equal(marker.sessionId, "test-session");
-    assert.match(marker.promptSha256, /^[0-9a-f]{64}$/);
   } finally {
     await harness.stop();
   }

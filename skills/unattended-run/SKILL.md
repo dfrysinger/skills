@@ -147,7 +147,7 @@ Keep: Replace the conversation with a standing brief pointing at <charter-path>,
 
 Drop: Planning history and tool output already captured by the charter.
 
-After compaction: Continue this charter at step 3, enqueue the objective as the last action of that turn, then end the turn so it fires; do not compact again.
+After compaction: Continue this charter at step 3, invoke the objective as the last action of that turn, then end the turn so it fires; do not compact again.
 ```
 
 Call `self_compact` with that one `brief` argument as the final action. The
@@ -215,9 +215,9 @@ objective live, pointed at that file, with a prompt that follows the charter's
 **Required process skills** protocol and requires the critical-path audit. A
 same-session compact is forbidden until this criterion passes.
 
-### 3. Hand off `/autopilot` through the native command queue
-After the charter exists and the `/every` reminder is live, enqueue the
-persisted objective into your own Copilot CLI session when all of these hold:
+### 3. Hand off `/autopilot` through native command invocation
+After the charter exists and the `/every` reminder is live, invoke the
+persisted objective in your own Copilot CLI session when all of these hold:
 
 - The user has not asked you to leave autopilot disabled.
 - The objective file is readable, self-contained, and fully resolved, with no

@@ -319,7 +319,7 @@ receipt_state="$(
       use strict;
       use warnings;
       my $valid = 0;
-      my $continuation = "unknown";
+      my $continuation = "missing";
       while (my $line = <STDIN>) {
         my $value = eval { decode_json($line) };
         next unless $value && ref($value) eq "HASH";
@@ -334,21 +334,17 @@ receipt_state="$(
         next unless $completed || $completed_side_effect;
         $valid = 1;
         if ($result && ref($result) eq "HASH" &&
-            exists $result->{continuationDelivered}) {
-          $continuation = $result->{continuationDelivered} ? "delivered" : "failed";
-        } elsif ($result && ref($result) eq "HASH" &&
-                 ($result->{continuationQueued} // 0)) {
-          $continuation = "queued";
+            exists $result->{continuationAccepted}) {
+          $continuation = $result->{continuationAccepted} ? "accepted" : "failed";
         }
       }
       print $valid ? "completed\t$continuation" : "invalid";
     '
 )"
 case "$receipt_state" in
-  completed$'\t'delivered) CONTINUATION_RECEIPT=delivered ;;
-  completed$'\t'queued) CONTINUATION_RECEIPT=queued ;;
+  completed$'\t'accepted) CONTINUATION_RECEIPT=accepted ;;
   completed$'\t'failed) CONTINUATION_RECEIPT=failed ;;
-  completed$'\t'unknown) CONTINUATION_RECEIPT=unknown ;;
+  completed$'\t'missing) CONTINUATION_RECEIPT=missing ;;
   *) CONTINUATION_RECEIPT=invalid ;;
 esac
 [ "$CONTINUATION_RECEIPT" != invalid ] ||
@@ -485,7 +481,7 @@ continuation_probe() {
           my $delivery = $data && ref($data) eq "HASH"
             ? ($data->{delivery} // "")
             : "";
-          if ($delivery ne "idle" && $delivery ne "queued") {
+          if ($delivery ne "idle" && $delivery ne "steering") {
             print "mismatch\n";
             exit;
           }

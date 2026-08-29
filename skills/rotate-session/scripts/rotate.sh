@@ -99,7 +99,7 @@ fi
 
   REQUEST_OUTPUT="$RECOVERY_FILE.request-output"
   request_status=0
-  node "$REQUEST_CLI" new-session \
+  node "$REQUEST_CLI" new-session-direct \
     --target-session "$OLD" \
     --prompt-file "$RECOVERY_FILE" \
     --timeout "$TIMEOUT_SECONDS" >"$REQUEST_OUTPUT" 2>&1 ||
@@ -112,27 +112,13 @@ fi
       next unless $value && ref($value) eq "HASH";
       if (($value->{status} // "") eq "completed" &&
           ($value->{sessionId} // "") eq $ENV{OLD} &&
-          ($value->{result}{commandQueued} // 0)) {
+          ($value->{result}{commandInvoked} // 0) &&
+          ($value->{result}{mechanism} // "") eq "commands.invoke" &&
+          ($value->{result}{resultKind} // "") eq "completed") {
         print(($value->{hostPid} // ""), "\t", ($value->{completedAt} // ""), "\n");
       }
     ' <"$REQUEST_OUTPUT"
   )
-  if ! [[ "$HOST_PID" =~ ^[0-9]+$ ]] || [ -z "$REQUEST_BOUNDARY" ]; then
-    REQUEST_ID="$(
-      sed -n 's#^request: .*/\([^/]*\)\.json$#\1#p' "$REQUEST_OUTPUT" |
-        tail -1
-    )"
-    MARKER="$HOME/.copilot/session-inbox/commands/$REQUEST_ID.json"
-    read -r HOST_PID REQUEST_BOUNDARY < <(
-      OLD="$OLD" /usr/bin/perl -MJSON::PP -0777 -e '
-        my $value = eval { decode_json(<STDIN>) };
-        if ($value && ref($value) eq "HASH" &&
-            ($value->{sessionId} // "") eq $ENV{OLD}) {
-          print(($value->{hostPid} // ""), "\t", ($value->{startedAt} // ""), "\n");
-        }
-      ' <"$MARKER" 2>/dev/null
-    )
-  fi
   [[ "$HOST_PID" =~ ^[0-9]+$ ]] && [ -n "$REQUEST_BOUNDARY" ] || {
     failure_status="$request_status"
     [ "$failure_status" -ne 0 ] || failure_status=1
@@ -175,17 +161,17 @@ fi
   for _ in $(seq 1 120); do
     if [ -r "$STATE/$NEW/events.jsonl" ] &&
       PROMPT="$PROMPT" /usr/bin/perl -MJSON::PP -ne '
-        our $matched;
+        our $checked;
         my $event = eval { decode_json($_) };
         next unless $event && ref($event) eq "HASH";
+        next if defined $event->{agentId};
         my $data = $event->{data};
         if (($event->{type} // "") eq "user.message" &&
-            $data && ref($data) eq "HASH" &&
-            ($data->{content} // "") eq $ENV{PROMPT}) {
-          $matched = 1;
-          last;
+            $data && ref($data) eq "HASH") {
+          $checked = 1;
+          exit(($data->{content} // "") eq $ENV{PROMPT} ? 0 : 1);
         }
-        END { exit($matched ? 0 : 1) }
+        END { exit 1 unless $checked }
       ' "$STATE/$NEW/events.jsonl"; then
       SEEDED=true
       break
