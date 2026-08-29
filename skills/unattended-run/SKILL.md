@@ -99,9 +99,19 @@ scheduled re-brief, the agent must:
 - rebuild the remaining dependency graph and mark the critical path;
 - assign every substantial independent ready scope to an available subagent;
 - when the user assigned independent agents, reconcile each agent's explicit
-  scope, workspace or branch, evidence owed, blockers, and integration boundary;
+  scope, workspace or branch, session or coordination channel, evidence owed,
+  blockers, and integration boundary;
+- read each assigned agent's explicit session result, task result, mailbox
+  response, or handoff before reporting its status, waiting on it, or assigning
+  successor work; never infer worker state from whether its worktree is dirty,
+  clean, changing, or unchanged;
+- consume a completed handoff before inspecting its worktree, close the prior
+  assignment, and treat any successor request as a new assignment;
 - give every file-writing delegate an isolated worktree or checkout and keep
   the coordinator's worktree free of concurrent writers;
+- freeze the completed commit or receipt and explicitly transfer worktree
+  ownership before any other writer enters it; overlapping writers stop the
+  lane until one named owner is restored;
 - keep the coordinator on integration, decisions, unblocking, and unowned
   critical-path work;
 - batch coherent fixes before expensive gates and avoid replaying unaffected
@@ -194,9 +204,11 @@ manage_schedule action=create interval=1h \
   the current work against it; execute any skill invocation or compaction action
   the charter says is due now rather than merely acknowledging it. Run
   /dfrysinger-skills:development-loop's critical-path audit: rebuild ready work
-  and dependencies, reconcile every delegated owner and blocker, assign every
-  independent ready scope that can run safely in parallel, batch work before
-  expensive gates, and advance another ready item during waits. Confirm the
+  and dependencies, reconcile every delegated owner and blocker from that
+  agent's session or coordination channel rather than its worktree, consume
+  completed handoffs, assign every independent ready scope that can run safely
+  in parallel, batch work before expensive gates, and advance another ready
+  item during waits. Confirm the
   workspace, push policy, objective, current phase, proof gates, and any open
   constraint revisit or reframe condition, and correct any drift before
   continuing. During active live proof, remain read-only and advance only work

@@ -50,8 +50,21 @@ resumption, at each phase boundary, and whenever the current action is waiting:
 3. When the user assigned independent agents, treat them as first-class owners.
    Record each agent's scope, workspace or branch, expected evidence, and
    integration boundary in the durable baton. Keep them supplied with
-   decisions and dependencies, monitor their durable results, unblock them
-   promptly, and consume frozen reviewed commits without waiting for `main`.
+   decisions and dependencies, monitor their session or coordination channel,
+   unblock them promptly, and consume completed handoffs and frozen reviewed
+   commits without waiting for `main`.
+   Keep **worker state** separate from **artifact state**. Before reporting an
+   assigned agent as active, waiting, blocked, failed, or complete, read that
+   agent's latest explicit session result, task result, mailbox response, or
+   handoff. A dirty, clean, changing, or unchanged worktree describes files; it
+   does not establish what the agent is doing. When an agent completes its
+   assignment, close that assignment and consume its handoff before inspecting
+   the worktree or issuing successor work.
+   A successor task is a new assignment, even when it goes to the same agent.
+   Freeze the prior commit or receipt and explicitly transfer worktree
+   ownership before the coordinator or another writer touches it. If two
+   writers appear in one delegated worktree, stop both integration assumptions
+   and restore one named owner before continuing.
 4. Keep the coordinating agent on integration, critical-path work, decisions,
    and blockers that no delegate can own. When one action is waiting, advance
    another ready item instead of polling or idling.
@@ -64,9 +77,11 @@ owner and one running candidate remain mandatory during live proof, and review,
 broad CI, or PR work stays closed until the affected live claims pass.
 
 The audit is complete when every ready item has an active owner or is being
-executed directly, no owner is waiting for information the coordinator already
-has, scopes do not overlap, and every intentionally serial item names the gate
-that makes it serial.
+executed directly, each delegated status comes from the owner rather than its
+worktree, completed handoffs have been consumed, no owner is waiting for
+information the coordinator already has, scopes and write ownership do not
+overlap, and every intentionally serial item names the gate that makes it
+serial.
 
 ### Durable proof admission
 
@@ -926,6 +941,11 @@ literal `findings: []`.
   value does not prove that a WebView, OS API, callback, protocol, or service
   changed the observed state. Probe the uncertain mechanism before building
   retry, timeout, ownership, or abstraction machinery around it.
+- **Worktree activity mistaken for agent activity.** File changes show artifact
+  state, not whether an assigned agent is active, idle, blocked, failed, or
+  complete. Read the agent's explicit result or handoff first, then inspect the
+  artifact it delivered. Never prolong a completed assignment because its
+  worktree is dirty or changing.
 - **Partial proof promoted to pass.** Reproducing the failure, reaching login,
   or proving one downstream result cannot open the review gate when another
   acceptance checkpoint is broken or unseen.
