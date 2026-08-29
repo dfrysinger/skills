@@ -177,8 +177,11 @@ COPILOT_AGENT_MACHINE="<stable-machine-label>"
   `idle` or `steering` event; a returned message ID or `unconfirmed` result is
   not enough. Each delivery attempt uses an attempt-scoped
   `mailbox:immediate-v3` dedupe key. Caller timeouts reuse that key so a still
-  running recovery cannot race a duplicate send; a durable ambiguous receipt
-  rotates it so a later attempt is not permanently suppressed.
+  running recovery cannot race a duplicate send. A durable ambiguous receipt
+  preserves that key and writes a local `.unverified` marker, so later watcher
+  polls do not generate duplicate native turns. A newer envelope remains
+  independently wakeable, and a later confirmed wake marks every ready pending
+  envelope notified.
   The durable envelope remains pending until the recipient reads and
   acknowledges it. If the host temporarily places an immediate send in FIFO,
   session-inbox snapshots the queue before submission and promotes only the
