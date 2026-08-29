@@ -24,9 +24,11 @@ to paste when that handoff is unavailable.
   reminder is live. The bundled detached helper calls the session-inbox request
   CLI with the bounded `autopilot` request, the target session ID or tmux
   session name, and `--prompt-file`.
-- The extension immediately executes the native `/autopilot` command through
-  `commands.execute()`, the same synchronous slash-command path used by the
-  interactive terminal. It does not add the objective to the local FIFO queue.
+- The extension invokes the native `/autopilot` command through
+  `commands.invoke()`, which persists the objective and returns the same
+  autopilot-mode agent prompt used by the interactive terminal. It submits
+  that returned prompt with immediate `session.send()`, so the starting turn
+  uses idle or steering delivery instead of the local FIFO queue.
   It then reads the resulting state with
   `workspaces.readAutopilotObjective()`. It accepts the handoff only when the
   native state contains the exact canonical objective with an active or

@@ -135,10 +135,18 @@ export async function joinSession() {
       if (current.rejectSendAfterRecord) {
         throw new Error("mock transport lost the accepted send response");
       }
-      if (!current.suppressDelivery) {
+      if (
+        !current.suppressDelivery &&
+        !(options.agentMode === "autopilot" && current.suppressAutopilotDelivery)
+      ) {
         queueMicrotask(() => emit("user.message", {
           type: "user.message",
-          data: {content: options.prompt, delivery: current.delivery},
+          data: {
+            content: options.prompt,
+            delivery: current.delivery,
+            agentMode: options.agentMode,
+            source: options.agentMode === "autopilot" ? "sdk" : undefined,
+          },
         }));
       }
       return "message-" + Date.now();
@@ -184,17 +192,17 @@ export async function joinSession() {
         },
       },
       commands: {
-        async execute(options) {
-          record("command.execute", options);
+        async invoke(options) {
+          record("command.invoke", options);
           const current = state();
           if (current.rejectCommandAfterRecord) {
             throw new Error("mock transport lost the accepted command response");
           }
           if (
-            options.commandName === "autopilot" &&
+            options.name === "autopilot" &&
             !current.suppressAutopilotObjective
           ) {
-            const objective = options.args;
+            const objective = options.input;
             writeFileSync(
               process.env.MOCK_STATE,
               JSON.stringify({
@@ -213,33 +221,16 @@ export async function joinSession() {
               }) + "\\n",
             );
           }
-          if (
-            options.commandName === "autopilot" &&
-            !current.suppressAutopilotDelivery
-          ) {
-            const objective = options.args;
-            const source = current.autopilotSource ?? "autopilot-objective";
-            queueMicrotask(() =>
-              emit("user.message", {
-                type: "user.message",
-                data: {
-                  content:
-                    source === "autopilot-objective"
-                      ? \`The user set this explicit autopilot objective with /autopilot:\\n\\n\${objective}\\n\\nWork autonomously.\`
-                      : "",
-                  transformedContent:
-                    source === "autopilot"
-                      ? \`Active autopilot objective:\\n\\n\${objective}\\n\\nContinue toward this objective.\`
-                      : undefined,
-                  source,
-                  agentMode: "autopilot",
-                  delivery: current.delivery,
-                },
-              }),
-            );
-          }
           if (current.exitOnEnqueue) process.exit(0);
-          return current.commandError ? {error: current.commandError} : {};
+          if (current.commandError) {
+            return {kind: "text", text: current.commandError};
+          }
+          return {
+            kind: "agent-prompt",
+            prompt: \`The user set this explicit autopilot objective with /autopilot:\\n\\n\${options.input}\\n\\nWork autonomously.\`,
+            displayPrompt: \`Autopilot objective: \${options.input}\`,
+            mode: "autopilot",
+          };
         },
         async enqueue(options) {
           record("command.enqueue", options);
@@ -413,14 +404,14 @@ test("recipient extension submits SDK work without idle gates and preserves phas
     assert.equal(autopilotReceipt.result.activation, "idle");
     assert.equal(autopilotReceipt.result.idleDelivery, true);
     const autopilotCalls = (await harness.calls()).filter((call) =>
-      ["command.execute", "autopilot-objective.read"].includes(call.kind),
+      ["command.invoke", "autopilot-objective.read"].includes(call.kind),
     );
     assert.deepEqual(autopilotCalls.slice(-2), [
       {
-        kind: "command.execute",
+        kind: "command.invoke",
         value: {
-          commandName: "autopilot",
-          args: "finish the durable objective\nand verify its result",
+          name: "autopilot",
+          input: "finish the durable objective\nand verify its result",
         },
       },
       { kind: "autopilot-objective.read", value: {} },
@@ -501,13 +492,13 @@ test("recipient extension submits SDK work without idle gates and preserves phas
     assert.equal(busyAutopilot.result.objectiveSet, true);
     assert.equal(busyAutopilot.result.delivery, "steering");
     assert.equal(busyAutopilot.result.queuedDelivery, false);
-    assert.equal(busyAutopilot.result.commandExecuted, true);
+    assert.equal(busyAutopilot.result.commandInvoked, true);
     assert.ok(
       (await harness.calls()).some(
         (call) =>
-          call.kind === "command.execute" &&
-          call.value.commandName === "autopilot" &&
-          call.value.args === "execute the objective during active work",
+          call.kind === "command.invoke" &&
+          call.value.name === "autopilot" &&
+          call.value.input === "execute the objective during active work",
       ),
     );
     await harness.setState({ delivery: "queued" });
@@ -774,7 +765,7 @@ test("recipient extension submits SDK work without idle gates and preserves phas
     assert.ok(diagnostics.some((entry) => entry.event === "sdk.send.unconfirmed"));
     assert.ok(
       diagnostics.some(
-        (entry) => entry.event === "sdk.autopilot_objective.executed",
+        (entry) => entry.event === "sdk.autopilot_objective.sent",
       ),
     );
     assert.equal(

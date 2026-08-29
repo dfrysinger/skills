@@ -223,7 +223,6 @@ async function executeAutopilotObjective(prompt) {
   const stopListening = session.on("user.message", (event) => {
     const messageText = `${event.data.content ?? ""}\n${event.data.transformedContent ?? ""}`;
     if (
-      ["autopilot-objective", "autopilot"].includes(event.data.source) &&
       event.data.agentMode === "autopilot" &&
       messageText.includes(prompt)
     ) {
@@ -237,13 +236,22 @@ async function executeAutopilotObjective(prompt) {
   const deadline = Date.now() + autopilotConfirmationTimeoutMs;
   let objective;
   try {
-    const result = await session.rpc.commands.execute({
-      commandName: "autopilot",
-      args: prompt,
+    const invocation = await session.rpc.commands.invoke({
+      name: "autopilot",
+      input: prompt,
     });
-    if (result.error) {
-      throw new Error(`autopilot command failed: ${result.error}`);
+    if (invocation.kind !== "agent-prompt" || invocation.mode !== "autopilot") {
+      throw new Error(
+        `autopilot command returned unsupported result ${invocation.kind}`,
+      );
     }
+    diagnostics.log("sdk.autopilot_objective.invoked");
+    const messageId = await session.send({
+      prompt: invocation.prompt,
+      mode: "immediate",
+      agentMode: invocation.mode,
+    });
+    diagnostics.log("sdk.autopilot_objective.sent", { messageId });
     diagnostics.log("sdk.autopilot_objective.executed");
 
     while (Date.now() < deadline) {
@@ -288,7 +296,7 @@ async function executeAutopilotObjective(prompt) {
           ...objective,
           delivery: activation.delivery,
         });
-        return { ...objective, ...activation };
+        return { ...objective, ...activation, messageId };
       }
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
@@ -313,7 +321,7 @@ async function execute(request) {
     case "autopilot": {
       const objective = await executeAutopilotObjective(request.prompt);
       return {
-        commandExecuted: true,
+        commandInvoked: true,
         objectiveSet: true,
         objectiveId: objective.objectiveId,
         objectiveStatus: objective.objectiveStatus,
