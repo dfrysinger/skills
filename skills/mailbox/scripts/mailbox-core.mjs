@@ -881,6 +881,10 @@ export function createMailbox(options = {}) {
     return join(notificationDirectory(address), `${envelopeId}.attempt`);
   }
 
+  function unverifiedNotificationPath(address, envelopeId) {
+    return join(notificationDirectory(address), `${envelopeId}.unverified`);
+  }
+
   async function notificationAttemptId(address, envelopeId) {
     const path = notificationAttemptPath(address, envelopeId);
     try {
@@ -895,15 +899,14 @@ export function createMailbox(options = {}) {
     return attemptId;
   }
 
-  async function rotateNotificationAttempt(address, envelopeId) {
-    const attemptId = `${Date.now()}-${randomBytes(4).toString("hex")}`;
+  async function markUnverified(address, envelopeId, attemptId) {
     await atomicWrite(
-      notificationAttemptPath(address, envelopeId),
+      unverifiedNotificationPath(address, envelopeId),
       `${attemptId}\n`,
     );
   }
 
-  async function notifiedIds(address, pendingIds) {
+  async function notificationState(address, pendingIds) {
     const directory = notificationDirectory(address);
     let names = [];
     try {
@@ -911,13 +914,23 @@ export function createMailbox(options = {}) {
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
-    const result = new Set(names.filter((entry) => entry.endsWith(".notified")).map(
+    const notified = new Set(names.filter((entry) => entry.endsWith(".notified")).map(
       (entry) => entry.slice(0, -".notified".length),
     ));
-    for (const legacy of await readLegacyWatermarks(address)) result.add(legacy);
-    for (const notified of result) {
-      if (!pendingIds.has(notified)) {
-        await rm(join(directory, `${notified}.notified`), { force: true });
+    const unverified = new Set(
+      names
+        .filter((entry) => entry.endsWith(".unverified"))
+        .map((entry) => entry.slice(0, -".unverified".length)),
+    );
+    for (const legacy of await readLegacyWatermarks(address)) notified.add(legacy);
+    for (const envelopeId of notified) {
+      if (!pendingIds.has(envelopeId)) {
+        await rm(join(directory, `${envelopeId}.notified`), { force: true });
+      }
+    }
+    for (const envelopeId of unverified) {
+      if (!pendingIds.has(envelopeId)) {
+        await rm(join(directory, `${envelopeId}.unverified`), { force: true });
       }
     }
     for (const name of names.filter((entry) => entry.endsWith(".attempt"))) {
@@ -926,7 +939,7 @@ export function createMailbox(options = {}) {
         await rm(join(directory, name), { force: true });
       }
     }
-    return result;
+    return { notified, unverified };
   }
 
   async function markNotified(address, ids) {
@@ -938,7 +951,10 @@ export function createMailbox(options = {}) {
       ),
     );
     await Promise.all(
-      ids.map((id) => rm(notificationAttemptPath(address, id), { force: true })),
+      ids.flatMap((id) => [
+        rm(notificationAttemptPath(address, id), { force: true }),
+        rm(unverifiedNotificationPath(address, id), { force: true }),
+      ]),
     );
   }
 
@@ -999,9 +1015,23 @@ export function createMailbox(options = {}) {
     });
     if (envelopes.length === 0) return { status: "empty" };
     const readyIds = new Set(envelopes.map(({ envelope }) => envelope.id));
-    const notified = await notifiedIds(mailboxAddress, allPendingIds);
-    const unnotified = envelopes.filter(({ envelope }) => !notified.has(envelope.id));
+    const notification = await notificationState(mailboxAddress, allPendingIds);
+    const unnotified = envelopes.filter(
+      ({ envelope }) =>
+        !notification.notified.has(envelope.id) &&
+        !notification.unverified.has(envelope.id),
+    );
     if (unnotified.length === 0) {
+      const ambiguous = envelopes.find(({ envelope }) =>
+        notification.unverified.has(envelope.id),
+      );
+      if (ambiguous) {
+        return {
+          status: "unverified",
+          envelopeId: ambiguous.envelope.id,
+          detail: "prior mailbox wakeup had an ambiguous side effect",
+        };
+      }
       return { status: "already-poked", envelopeId: envelopes.at(-1).envelope.id };
     }
     const newest = unnotified.at(-1).envelope;
@@ -1050,7 +1080,7 @@ export function createMailbox(options = {}) {
         /"ambiguousSideEffect":true/.test(`${result.stdout}\n${result.stderr}`) ||
         /"delivery":"unconfirmed"/.test(`${result.stdout}\n${result.stderr}`);
       if (explicitAmbiguity) {
-        await rotateNotificationAttempt(mailboxAddress, newest.id);
+        await markUnverified(mailboxAddress, newest.id, attemptId);
       }
       const targetUnavailable =
         result.code === 64 &&

@@ -25,8 +25,21 @@ Do NOT use mailbox for:
   identity. When no live tmux identity matches, Copilot falls back to the
   session's current `/rename` name. Only fresh session-inbox heartbeats are
   eligible, so abandoned historical sessions with the same name are ignored.
-  Outside tmux, set the current session name with `/rename <name>`. Portable
-  command-line tools also accept `--name` or `COPILOT_AGENT_NAME`.
+  On Windows, use `scripts/copilot-agent.ps1 new|resume <name>`. It
+  deterministically maps the
+  canonical lowercase `(COPILOT_AGENT_MACHINE, name)` pair to one exact
+  Copilot session UUID. `new` creates that UUID with the native name; `resume`
+  uses the exact UUID, so historical sessions with the same display name are
+  not ambiguous. Set `COPILOT_AGENT_MACHINE` explicitly before launch. Names
+  are lowercase mailbox-safe values up to 100 characters; machine labels use
+  the same lowercase characters up to 128. The wrapper follows `COPILOT_HOME`
+  and refuses identity or config-store flags in its extra arguments. The
+  interactive `/rename <name>` command changes an already running session but
+  does not migrate it into the deterministic launcher identity. Portable
+  mailbox commands also accept `--name` or `COPILOT_AGENT_NAME`. On non-Windows
+  hosts outside tmux, use Copilot's native `--name` for a new session or
+  `/rename <name>` for a running session; resume by exact session ID when
+  historical names are ambiguous.
 - **Cross-computer address = `name@machine`.** An unqualified name such as
   `hotel` means Hotel on this computer only. Address another computer
   explicitly with `hotel@surface-pro`. There is no implicit broadcast or
@@ -216,5 +229,6 @@ COPILOT_AGENT_MACHINE="<stable-machine-label>"
 - `scripts/mailbox-list.sh` — show all mailboxes + live tmux sessions.
 - `scripts/mailbox-resume-hook.sh [<name>]` — designed to be called by the user's `ca` script to inject a "you have mail" hint into the resume prompt; prints empty when there's no mail.
 - `scripts/mailbox-watch.sh [<name>]` — foreground portable poller; normally the packaged mailbox-watcher extension owns this automatically for Copilot.
+- `scripts/copilot-agent.ps1 new|resume <name> [copilot args...]` — start or resume a mailbox-safe named Copilot session on Windows through the native CLI options.
 - `scripts/mailbox.mjs` — cross-platform send/check/read/ack/list/resume-hint/poke/watch CLI.
 - `scripts/mailbox-core.mjs` — reusable Node implementation used by the CLI and watcher extension.

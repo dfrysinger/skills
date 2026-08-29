@@ -142,6 +142,13 @@ These skills form a small communication stack for long-lived, named agent sessio
 Two companion tools complete the workflow without pretending to be skills:
 
 - **[Agent Stack](https://github.com/dfrysinger/agent-stack)** hosts named agent sessions on macOS and provides the optional `request_help` MCP tool. A blocked agent can ask its user for help through one bounded iMessage and a temporary Screen Sharing link.
+- **Windows named sessions** use
+  `scripts/copilot-agent.ps1 new|resume <name>`. The launcher maps each
+  canonical lowercase `(COPILOT_AGENT_MACHINE, name)` pair to one deterministic
+  Copilot session UUID, creates it with native `--name`, and resumes it by
+  exact `--session-id`. Historical duplicate display names therefore do not
+  make resume ambiguous, and no second terminal host or session registry is
+  added.
 - **Agent Preflight** coordinates agents working in different checkouts of the same repository. It checks active path claims, missing landed changes, overlapping pull requests, and recently pushed branches before work starts. It remains a separate GitHub CLI extension because it manages repository-wide coordination rather than model behavior. Its public packaging is still being prepared.
 
 `handoff` records what another agent needs to know. `mailbox` delivers it. Agent Help reaches the user when no agent can proceed. Agent Preflight helps agents avoid starting conflicting work in the first place.
