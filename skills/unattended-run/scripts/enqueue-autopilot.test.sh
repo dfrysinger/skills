@@ -93,7 +93,7 @@ IFS=$'\t' read -r result _ _ output < <(
   run_case queued queued --target-session session-queued "keep working"
 )
 [[ "$result" -eq 1 ]]
-grep -Fq 'did not prove native objective establishment and idle/steering starting-message delivery' "$output"
+grep -Fq 'did not prove native objective establishment and idle/steering activation' "$output"
 
 IFS=$'\t' read -r result _ prompts _ < <(
   run_case immutable mutate-source --target-session session-immutable \
@@ -133,7 +133,7 @@ IFS=$'\t' read -r result _ _ output < <(
   run_case missing-objective missing-objective --target-session session-3b "keep working"
 )
 [[ "$result" -eq 1 ]]
-grep -Fq 'did not prove native objective establishment and idle/steering starting-message delivery' "$output"
+grep -Fq 'did not prove native objective establishment and idle/steering activation' "$output"
 
 for invalid in '/autopilot do it' '/goal do it' '/allow-all' 'contains <SLOT>'; do
   IFS=$'\t' read -r result _ _ _ < <(

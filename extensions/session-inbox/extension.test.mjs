@@ -198,6 +198,9 @@ export async function joinSession() {
           if (current.rejectCommandAfterRecord) {
             throw new Error("mock transport lost the accepted command response");
           }
+          if (current.commandError) {
+            return {kind: "text", text: current.commandError};
+          }
           if (
             options.name === "autopilot" &&
             !current.suppressAutopilotObjective
@@ -222,8 +225,8 @@ export async function joinSession() {
             );
           }
           if (current.exitOnEnqueue) process.exit(0);
-          if (current.commandError) {
-            return {kind: "text", text: current.commandError};
+          if (current.activeAutopilot) {
+            return {kind: "text", text: "Autopilot objective updated."};
           }
           return {
             kind: "agent-prompt",
@@ -386,7 +389,7 @@ test("recipient extension submits SDK work without idle gates and preserves phas
     const idleReceipt = await harness.receipt("completed", "idle-send");
     assert.equal(idleReceipt.result.delivery, "idle");
 
-    await harness.setState({ idleCounter: 1, autopilotSource: "autopilot" });
+    await harness.setState({ idleCounter: 1 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("autopilot-objective", {
       kind: "autopilot",
@@ -482,7 +485,10 @@ test("recipient extension submits SDK work without idle gates and preserves phas
       },
     );
 
-    await harness.setState({ delivery: "steering" });
+    await harness.setState({
+      delivery: "steering",
+      activeAutopilot: true,
+    });
     await harness.request("busy-autopilot", {
       kind: "autopilot",
       prompt: "execute the objective during active work",
@@ -493,6 +499,7 @@ test("recipient extension submits SDK work without idle gates and preserves phas
     assert.equal(busyAutopilot.result.delivery, "steering");
     assert.equal(busyAutopilot.result.queuedDelivery, false);
     assert.equal(busyAutopilot.result.commandInvoked, true);
+    assert.equal(busyAutopilot.result.objectiveUpdatedInPlace, true);
     assert.ok(
       (await harness.calls()).some(
         (call) =>
@@ -501,7 +508,18 @@ test("recipient extension submits SDK work without idle gates and preserves phas
           call.value.input === "execute the objective during active work",
       ),
     );
-    await harness.setState({ delivery: "queued" });
+    assert.equal(
+      (await harness.calls()).some(
+        (call) =>
+          call.kind === "send" &&
+          call.value.prompt.includes("execute the objective during active work"),
+      ),
+      false,
+    );
+    await harness.setState({
+      activeAutopilot: false,
+      delivery: "queued",
+    });
     await harness.request("queued-autopilot", {
       kind: "autopilot",
       prompt: "reject a queued objective activation",

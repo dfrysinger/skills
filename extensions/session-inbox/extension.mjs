@@ -235,23 +235,33 @@ async function executeAutopilotObjective(prompt) {
   });
   const deadline = Date.now() + autopilotConfirmationTimeoutMs;
   let objective;
+  let invocationKind;
+  let messageId;
   try {
     const invocation = await session.rpc.commands.invoke({
       name: "autopilot",
       input: prompt,
     });
-    if (invocation.kind !== "agent-prompt" || invocation.mode !== "autopilot") {
+    invocationKind = invocation.kind;
+    if (
+      invocation.kind !== "text" &&
+      (invocation.kind !== "agent-prompt" || invocation.mode !== "autopilot")
+    ) {
       throw new Error(
         `autopilot command returned unsupported result ${invocation.kind}`,
       );
     }
-    diagnostics.log("sdk.autopilot_objective.invoked");
-    const messageId = await session.send({
-      prompt: invocation.prompt,
-      mode: "immediate",
-      agentMode: invocation.mode,
+    diagnostics.log("sdk.autopilot_objective.invoked", {
+      resultKind: invocation.kind,
     });
-    diagnostics.log("sdk.autopilot_objective.sent", { messageId });
+    if (invocation.kind === "agent-prompt") {
+      messageId = await session.send({
+        prompt: invocation.prompt,
+        mode: "immediate",
+        agentMode: invocation.mode,
+      });
+      diagnostics.log("sdk.autopilot_objective.sent", { messageId });
+    }
     diagnostics.log("sdk.autopilot_objective.executed");
 
     while (Date.now() < deadline) {
@@ -274,6 +284,19 @@ async function executeAutopilotObjective(prompt) {
           }
         }
       }
+      if (objective && invocationKind === "text") {
+        diagnostics.log("sdk.autopilot_objective.confirmed", {
+          ...objective,
+          activation: "active-objective",
+        });
+        return {
+          ...objective,
+          delivery: "steering",
+          idleDelivery: false,
+          queuedDelivery: false,
+          objectiveUpdatedInPlace: true,
+        };
+      }
       if (objective && activation) {
         if (!activation.idleDelivery && activation.delivery !== "steering") {
           throw Object.assign(
@@ -284,7 +307,7 @@ async function executeAutopilotObjective(prompt) {
               result: {
                 ...objective,
                 ...activation,
-                commandExecuted: true,
+                commandInvoked: true,
                 objectiveSet: true,
                 activation: activation.delivery,
               },
@@ -305,7 +328,7 @@ async function executeAutopilotObjective(prompt) {
   }
   throw new Error(
     objective
-      ? "autopilot objective was established but its starting message was not confirmed"
+      ? "autopilot objective was established but its activation was not confirmed"
       : "autopilot command did not establish the requested objective",
   );
 }
@@ -329,6 +352,7 @@ async function execute(request) {
         idleDelivery: objective.idleDelivery,
         queuedDelivery: objective.queuedDelivery,
         activation: objective.delivery,
+        objectiveUpdatedInPlace: objective.objectiveUpdatedInPlace === true,
       };
     }
     case "compact": {

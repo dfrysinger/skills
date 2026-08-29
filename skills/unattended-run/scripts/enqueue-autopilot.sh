@@ -91,12 +91,12 @@ if node "$REQUEST_CLI" autopilot \
   --timeout "$TIMEOUT_SECONDS" >"$REQUEST_OUTPUT" 2>&1; then
   if grep -Fq '"objectiveSet":true' "$REQUEST_OUTPUT" &&
     grep -Eq '"delivery":"(idle|steering)"' "$REQUEST_OUTPUT"; then
-    finish "confirmed" "SDK executed the native autopilot objective and confirmed its native idle/steering starting turn"
+    finish "confirmed" "SDK invoked the native autopilot objective and confirmed idle/steering activation"
     echo "autopilot handoff confirmed; receipt: $RECEIPT"
     exit 0
   fi
-  finish "unconfirmed" "SDK receipt did not prove both native objective establishment and idle/steering starting-message delivery"
-  echo "enqueue-autopilot.sh: SDK receipt did not prove native objective establishment and idle/steering starting-message delivery; receipt: $RECEIPT" >&2
+  finish "unconfirmed" "SDK receipt did not prove both native objective establishment and idle/steering activation"
+  echo "enqueue-autopilot.sh: SDK receipt did not prove native objective establishment and idle/steering activation; receipt: $RECEIPT" >&2
   exit 1
 else
   status=$?
