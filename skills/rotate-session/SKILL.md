@@ -32,7 +32,7 @@ done
 
 ### 2. Carry the schedules over yourself
 
-`/new` starts a **new session**. The old one's `plan.md`, `checkpoints/`,
+Rotation starts a **new session**. The old one's `plan.md`, `checkpoints/`,
 `files/`, SQL tables, and transcript stay on disk and get read back in step 3,
 but **armed `/every` schedules do not carry over**. They stay bound to the old
 session, and the fresh session cannot re-arm what it cannot see.
@@ -43,9 +43,13 @@ it. Tell the user which ones you carried.
 
 ### 3. Rotate
 
-The bundled script targets the old session by ID through the session-inbox SDK
-extension. It does not require tmux or terminal rendering, and it never submits
-`/new` to the CLI FIFO.
+For the normal macOS Agent Stack path, the bundled script verifies the current
+tmux pane and exact old session lock, waits for the authorizing assistant turn
+to end, disables pane input for the final activity check and replacement, then
+starts a new Copilot process with a new UUID and the seed as its initial prompt.
+Input is immediately restored on the replacement process or on any failure.
+This is process replacement, not terminal typing: it does not use `send-keys`,
+paste buffers, or the CLI FIFO.
 
 Base the seed prompt on this, adding the schedules from step 2 and anything the
 user wants the fresh session to do first:
@@ -69,19 +73,16 @@ The template asks only for `todos`, so name any custom SQL tables that matter.
 The fresh session reads recorded state, not live state.
 
 Run the script rather than sending `/new` yourself. It snapshots the seed and
-opens the durable result log synchronously, then backgrounds one session-inbox
-request equivalent to:
+opens the durable result log synchronously. Under tmux it starts one short-lived
+detached verifier, which waits for the current turn boundary before calling
+`tmux respawn-pane` with a private launcher. The launcher starts the fresh
+session with an explicit UUID, preserves the pane's name, working directory,
+remote mode, and allow-all mode, and supplies the exact seed through
+`--interactive`.
 
-```text
-new-session-direct --target-session OLD --prompt-file SEED
-```
-
-The target extension first checks whether the running CLI exposes `/new` as a
-directly invokable built-in command. If it does, the extension invokes it once
-and accepts only a completed direct-command result. If it does not, rotation
-fails closed and preserves the private recovery snapshot. Current CLI releases
-may not expose this capability; do not fall back to the FIFO, terminal
-injection, or a second automatic attempt.
+Automated rotation is supported only from the current Copilot tmux pane.
+Outside tmux, the script fails before consuming or snapshotting the prompt.
+Never replace this with FIFO submission or terminal input injection.
 
 ```sh
 OLD='<old-session-id>'
@@ -110,21 +111,25 @@ rotation preserves only its private recovery snapshot and names that file in
 the log. If creating or writing the seed fails, stop; never inspect or reuse an
 existing seed file.
 
-Make this the **last action of the turn** and end the turn, because `/new`
-replaces the conversation you are running in. The script backgrounds itself, so
-it returns `rotation requested` immediately and writes the request path,
-extension receipt, and final result to the log afterwards.
+Make this the **last action of the turn** and end the turn, because the pane's
+current Copilot process will be replaced. The script returns
+`rotation requested` immediately and writes the replacement UUID and final
+result to the log afterwards.
 
-A completed `new-session-direct` receipt means the local CLI completed the
-direct `/new` invocation; it is not the final proof. The script then requires
-exactly one fresh replacement heartbeat from the same local CLI process, with
-an update after that receipt, and requires the exact seed to be the
-replacement's first root user message before removing the recovery snapshot.
-The fresh session must still read the result log during recovery. Unsupported,
-failed, ambiguous, or timed-out rotation preserves the private recovery
-snapshot. Do not issue another rotation until the first request's outcome is
-resolved. If direct `/new` is unavailable, report the preserved seed path so
-the user can decide whether to submit `/new` manually.
+The verifier requires the old turn to end without intervening user activity,
+then requires the exact seed to be the replacement session's first root user
+message before removing the recovery snapshot. The fresh session must still
+read the result log during recovery. Unsupported, failed, ambiguous, or
+timed-out rotation preserves the private recovery snapshot. Do not issue
+another rotation until the first request's outcome is resolved.
+
+At the replacement boundary, the verifier disables pane input and creates
+`rotation.barrier` in the retired session folder. The session-inbox extension
+rejects new work while that barrier exists, and the verifier cancels if an
+older request is still executing. A successful rotation leaves the barrier on
+the retired session so delayed mailbox or continuation requests cannot wake it
+later. If the user intentionally resumes the retired session for active work,
+remove that barrier first.
 
 **Complete when** the script has printed `rotation requested` and you have ended
 the turn without further tool calls. The fresh session confirms the outcome
@@ -136,6 +141,9 @@ should have completed, report the logged result rather than assuming rotation.
 - If the log reports an unsupported, failed, or timed-out request, the prompt
   is in the private recovery file it names. Resolve any ambiguous request
   receipt before deciding whether to submit it manually or retry anything.
+- The supported automated path requires tmux. It deliberately replaces the
+  pane process only after the authorizing turn ends; it never types into the
+  pane.
 - Reading `~/.copilot/session-state` sits outside most agent workspaces, so the
   fresh session may hit an "Allow directory access" prompt. Choosing "add these
   directories to the allowed list" makes it one-time.
