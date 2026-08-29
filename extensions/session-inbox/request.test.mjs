@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -65,7 +65,7 @@ async function diagnosticEntries(root) {
   return entries;
 }
 
-test("writes an explicit immediate send request and accepts its receipt", async () => {
+test("writes an immediate send request and accepts its receipt", async () => {
   const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
   try {
     const instancePath = join(root, "instances", "hotel-session.json");
@@ -204,7 +204,7 @@ test("writes an extension reload request", async () => {
   }
 });
 
-test("returns failure when the recipient writes a failed receipt", async () => {
+test("defaults sends to immediate delivery and returns recipient failures", async () => {
   const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
   try {
     const instancePath = join(root, "instances", "session-1-generation-1.json");
@@ -233,7 +233,7 @@ test("returns failure when the recipient writes a failed receipt", async () => {
       sessionId: "session-1",
       generation: "generation-1",
     });
-    assert.equal(request.mode, "enqueue");
+    assert.equal(request.mode, "immediate");
     const receiptPath = join(root, "failed", name);
     await mkdir(dirname(receiptPath), { recursive: true });
     await writeFile(
@@ -248,11 +248,51 @@ test("returns failure when the recipient writes a failed receipt", async () => {
   }
 });
 
+test("rejects queued send delivery before writing a request", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  try {
+    const instancePath = join(root, "instances", "session-1-generation-1.json");
+    await mkdir(dirname(instancePath), { recursive: true });
+    await writeFile(
+      instancePath,
+      `${JSON.stringify({
+        sessionId: "session-1",
+        generation: "generation-1",
+        updatedAt: new Date().toISOString(),
+      })}\n`,
+    );
+    const promptFile = join(root, "prompt.txt");
+    await writeFile(promptFile, "wake the recipient");
+    const result = await (
+      await runRequest(root, [
+        "send",
+        "--target-session",
+        "session-1",
+        "--prompt-file",
+        promptFile,
+        "--mode",
+        "enqueue",
+      ])
+    ).exit;
+    assert.equal(result.code, 64);
+    assert.match(result.stderr, /--mode must be immediate/);
+    await assert.rejects(readdir(join(root, "pending")), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("rejects ambiguous targets before writing a request", async () => {
   const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
   try {
     const result = await (
-      await runRequest(root, ["new-session", "--prompt-file", "unused", "--timeout", "0"])
+      await runRequest(root, [
+        "new-session-direct",
+        "--prompt-file",
+        "unused",
+        "--timeout",
+        "0",
+      ])
     ).exit;
     assert.equal(result.code, 64);
     assert.match(result.stderr, /provide exactly one target/);

@@ -8,8 +8,8 @@ rather than leaving a placeholder.
 
 ## Objective — OPTIONAL, persisted and handed to `/autopilot`
 
-`/autopilot` is not an agent tool. After arming the charter re-brief, enqueue
-the objective file into the current session through the SDK handoff as the final
+`/autopilot` is not an agent tool. After arming the charter re-brief, invoke
+the objective file in the current session through the SDK handoff as the final
 tool action when targeting is safe. The handoff invokes the native autopilot
 command and reads its state back to prove the exact objective was established.
 Otherwise print its contents and explain that the user must paste it to

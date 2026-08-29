@@ -51,4 +51,12 @@ if [ -n "$staged_scripts" ]; then
   }
 fi
 
+if [ -f "$root/scripts/check-no-enqueue.mjs" ]; then
+  node "$root/scripts/check-no-enqueue.mjs" || {
+    echo "" >&2
+    echo "pre-commit: INV-001 rejected queued Copilot delivery." >&2
+    exit 1
+  }
+fi
+
 exit 0

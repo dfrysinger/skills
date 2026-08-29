@@ -53,21 +53,6 @@ writeFileSync(
   join(state, "events.jsonl"),
   `${JSON.stringify({ type: "user.message", data: { content: prompt, delivery: "idle" } })}\n`,
 );
-if (process.env.MOCK_MODE === "receipt-lost") {
-  const commands = join(process.env.HOME, ".copilot", "session-inbox", "commands");
-  mkdirSync(commands, { recursive: true });
-  writeFileSync(
-    join(commands, "mock-request.json"),
-    `${JSON.stringify({
-      requestId: "mock-request",
-      sessionId: oldSession,
-      hostPid: 4242,
-      startedAt: completedAt,
-    })}\n`,
-  );
-  console.log("request: /tmp/mock-request.json");
-  process.exit(2);
-}
 console.log("request: /tmp/request.json");
 console.log("receipt: /tmp/completed.json");
 console.log(
@@ -76,7 +61,11 @@ console.log(
     sessionId: oldSession,
     hostPid: 4242,
     completedAt,
-    result: { commandQueued: true },
+    result: {
+      commandInvoked: true,
+      mechanism: "commands.invoke",
+      resultKind: "completed",
+    },
   }),
 );
 EOF
@@ -131,7 +120,7 @@ IFS=$'\t' read -r success_log success_args success_seeds _ < <(
 wait_for_result "$success_log"
 grep -Fq 'recovery snapshot:' "$success_log"
 grep -Fq 'RESULT: rotated to old-success-new, seeded' "$success_log"
-grep -Fq '["new-session","--target-session","old-success","--prompt-file"' "$success_args"
+grep -Fq '["new-session-direct","--target-session","old-success","--prompt-file"' "$success_args"
 grep -Fq '"--timeout","360"]' "$success_args"
 grep -Fq 'continue retired session old-success' "$success_seeds"
 ! find "$ROOT/tmp" -maxdepth 1 -name 'copilot-rotate-recovery-old-success.*' | grep -q .
@@ -148,16 +137,6 @@ recovery="$(sed -n 's/^recovery snapshot: \([^ ]*\).*/\1/p' "$failure_log" | tai
 grep -Fq 'continue retired session old-failure' "$recovery"
 grep -Fq 'continue retired session old-failure' "$failure_seeds"
 [ "$(stat -f '%Lp' "$recovery")" = 600 ]
-
-IFS=$'\t' read -r lost_receipt_log _ _ _ < <(
-  start_case old-receipt-lost receipt-lost receipt-lost \
-    'continue retired session old-receipt-lost'
-)
-wait_for_result "$lost_receipt_log"
-grep -Fq 'RESULT: rotated to old-receipt-lost-new, seeded' "$lost_receipt_log" || {
-  cat "$lost_receipt_log" >&2
-  exit 1
-}
 
 IFS=$'\t' read -r generic_log _ _ generic_input < <(
   start_case old-generic success generic 'continue retired session old-generic' no

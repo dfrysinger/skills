@@ -14,7 +14,6 @@ const completedDir = join(root, "completed");
 const failedDir = join(root, "failed");
 const instancesDir = join(root, "instances");
 const dedupeDir = join(root, "dedupe");
-const commandsDir = join(root, "commands");
 let pluginVersion;
 try {
   pluginVersion = JSON.parse(
@@ -98,7 +97,6 @@ await Promise.all(
     failedDir,
     instancesDir,
     dedupeDir,
-    commandsDir,
   ].map((dir) => mkdir(dir, { recursive: true, mode: 0o700 })),
 );
 diagnostics.log("extension.started", {
@@ -180,7 +178,7 @@ async function writeHeartbeat() {
   }
 }
 
-async function sendAndConfirm({ prompt, mode = "immediate", agentMode }) {
+async function sendAndConfirm({ prompt, agentMode }) {
   let resolveDelivered;
   const delivered = new Promise((resolve) => {
     resolveDelivered = resolve;
@@ -189,10 +187,10 @@ async function sendAndConfirm({ prompt, mode = "immediate", agentMode }) {
     if (event.data.content === prompt) resolveDelivered(event);
   });
   try {
-    diagnostics.log("sdk.send.started", { mode, agentMode });
+    diagnostics.log("sdk.send.started", { mode: "immediate", agentMode });
     const messageId = await session.send({
       prompt,
-      mode,
+      mode: "immediate",
       ...(agentMode ? { agentMode } : {}),
     });
     const event = await Promise.race([
@@ -335,12 +333,22 @@ async function executeAutopilotObjective(prompt) {
 
 async function execute(request) {
   switch (request.kind) {
-    case "send":
-      return sendAndConfirm({
+    case "send": {
+      if (request.mode !== "immediate") {
+        throw new Error("session inbox sends must use immediate delivery");
+      }
+      const delivery = await sendAndConfirm({
         prompt: request.prompt,
-        mode: request.mode,
         agentMode: request.agentMode,
       });
+      if (delivery.queuedDelivery) {
+        throw ambiguousSideEffectError(
+          "session inbox message entered the FIFO queue",
+          delivery,
+        );
+      }
+      return delivery;
+    }
     case "autopilot": {
       const objective = await executeAutopilotObjective(request.prompt);
       return {
@@ -365,26 +373,41 @@ async function execute(request) {
       if (!result.success) {
         throw new Error("session history compaction did not succeed");
       }
-      let continuationQueued;
+      let continuationAccepted;
       let continuationMessageId;
-      let continuationDelivered;
+      let continuationDelivery;
       let continuationError;
       if (request.continuationPrompt) {
         try {
           diagnostics.log("sdk.compact_continuation.started", {
-            mode: "enqueue",
+            mode: "immediate",
           });
-          continuationMessageId = await session.send({
+          const continuation = await sendAndConfirm({
             prompt: request.continuationPrompt,
-            mode: "enqueue",
           });
-          continuationQueued = true;
-          diagnostics.log("sdk.compact_continuation.queued", {
+          continuationAccepted = continuation.messageAccepted;
+          continuationMessageId = continuation.messageId;
+          continuationDelivery = continuation.delivery;
+          if (continuation.queuedDelivery) {
+            throw ambiguousSideEffectError(
+              "compact continuation entered the FIFO queue",
+              {
+                compacted: true,
+                tokensRemoved: result.tokensRemoved,
+                messagesRemoved: result.messagesRemoved,
+                continuationAccepted,
+                continuationMessageId,
+                continuationDelivery,
+              },
+            );
+          }
+          diagnostics.log("sdk.compact_continuation.accepted", {
             messageId: continuationMessageId,
+            delivery: continuationDelivery,
           });
         } catch (error) {
-          continuationQueued = false;
-          continuationDelivered = false;
+          if (error?.ambiguousSideEffect === true) throw error;
+          continuationAccepted = false;
           continuationError = error instanceof Error ? error.message : String(error);
         }
       }
@@ -392,29 +415,54 @@ async function execute(request) {
         compacted: true,
         tokensRemoved: result.tokensRemoved,
         messagesRemoved: result.messagesRemoved,
-        ...(continuationQueued === undefined ? {} : { continuationQueued }),
+        ...(continuationAccepted === undefined ? {} : { continuationAccepted }),
         ...(continuationMessageId === undefined ? {} : { continuationMessageId }),
-        ...(continuationDelivered === undefined ? {} : { continuationDelivered }),
+        ...(continuationDelivery === undefined ? {} : { continuationDelivery }),
         ...(continuationError ? { continuationError } : {}),
       };
     }
-    case "new-session": {
-      const markerPath = commandMarkerPath(request.id);
-      await writeJson(markerPath, {
-        requestId: request.id,
-        sessionId: session.sessionId,
-        hostPid: process.ppid,
-        startedAt: new Date().toISOString(),
-        promptSha256: createHash("sha256").update(request.prompt).digest("hex"),
-      });
-      const result = await session.rpc.commands.enqueue({
-        command: `/new ${request.prompt}`,
-      });
-      if (!result.queued) {
-        await rm(markerPath, { force: true });
-        throw new Error("the local session did not accept the /new command");
+    case "new-session-direct": {
+      const available = await session.rpc.commands.list();
+      const directNew = available.commands.some(
+        (command) => command.name === "new" && command.kind === "builtin",
+      );
+      if (!directNew) {
+        throw definitiveNoSideEffectError(
+          "direct session rotation is unavailable: Copilot CLI does not expose /new through a non-FIFO SDK API",
+        );
       }
-      return { commandQueued: true };
+      let invocation;
+      try {
+        invocation = await session.rpc.commands.invoke({
+          name: "new",
+          input: request.prompt,
+        });
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          /Unknown slash command: \/new/.test(error.message)
+        ) {
+          throw definitiveNoSideEffectError(
+            "direct session rotation is unavailable: Copilot CLI rejected /new as a direct command",
+          );
+        }
+        throw error;
+      }
+      if (invocation.kind !== "completed") {
+        throw ambiguousSideEffectError(
+          `direct /new returned unsupported result ${invocation.kind}`,
+          {
+            commandInvoked: true,
+            mechanism: "commands.invoke",
+            resultKind: invocation.kind,
+          },
+        );
+      }
+      return {
+        commandInvoked: true,
+        mechanism: "commands.invoke",
+        resultKind: invocation.kind,
+      };
     }
     case "reload-extensions":
       return { reloadRequested: true };
@@ -443,14 +491,16 @@ function dedupePath(key, sessionId = session.sessionId) {
   return join(dedupeDir, `${digest}.json`);
 }
 
-function commandMarkerPath(id) {
-  return join(commandsDir, `${id}.json`);
-}
-
 function ambiguousSideEffectError(message, result) {
   const error = new Error(message);
   error.ambiguousSideEffect = true;
   error.result = result;
+  return error;
+}
+
+function definitiveNoSideEffectError(message) {
+  const error = new Error(message);
+  error.definitiveNoSideEffect = true;
   return error;
 }
 
@@ -881,21 +931,10 @@ async function pump() {
           objectiveStatus: result?.objectiveStatus,
           activation: result?.activation,
           compacted: result?.compacted,
-          continuationQueued: result?.continuationQueued,
-          commandQueued: result?.commandQueued,
+          continuationAccepted: result?.continuationAccepted,
+          continuationDelivery: result?.continuationDelivery,
           reloadRequested: result?.reloadRequested,
         });
-        if (request.kind === "new-session") {
-          try {
-            await rm(commandMarkerPath(request.id), { force: true });
-          } catch (error) {
-            console.error(
-              `session-inbox could not remove completed command marker: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            );
-          }
-        }
         if (request.kind === "reload-extensions") {
           await rm(claimedPath, { force: true });
           await rm(claimedStagePath, { force: true });
@@ -906,8 +945,9 @@ async function pump() {
         }
       } catch (error) {
         const ambiguousSideEffect =
-          (sideEffectStarted && !operationCompleted) ||
-          error?.ambiguousSideEffect === true;
+          error?.definitiveNoSideEffect !== true &&
+          ((sideEffectStarted && !operationCompleted) ||
+            error?.ambiguousSideEffect === true);
         if (ambiguousSideEffect) {
           removeClaim = false;
           result =

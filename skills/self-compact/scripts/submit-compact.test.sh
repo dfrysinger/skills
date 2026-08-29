@@ -161,6 +161,8 @@ else
 fi
 if [ "${FAKE_REQUEST_MODE:-success}" != continuation-failed ]; then
   continuation_delivery=idle
+  [ "${FAKE_REQUEST_MODE:-success}" != steering-continuation ] ||
+    continuation_delivery=steering
   [ "${FAKE_REQUEST_MODE:-success}" != queued-continuation ] ||
     continuation_delivery=queued
   CONTENT="$continuation_text" DELIVERY="$continuation_delivery" \
@@ -173,12 +175,10 @@ if [ "${FAKE_REQUEST_MODE:-success}" != continuation-failed ]; then
   ' >> "$FAKE_EVENTS"
 fi
 
-continuation_delivered=true
+continuation_accepted=true
 [ "${FAKE_REQUEST_MODE:-success}" != continuation-failed ] ||
-  continuation_delivered=false
-continuation_result="\"continuationDelivered\":$continuation_delivered"
-[ "${FAKE_REQUEST_MODE:-success}" != queued-continuation ] ||
-  continuation_result='"continuationQueued":true'
+  continuation_accepted=false
+continuation_result="\"continuationAccepted\":$continuation_accepted"
 receipt_status=completed
 receipt_extra=""
 receipt_exit=0
@@ -367,17 +367,29 @@ grep -q '"status":"completed"' "$log" || fail "completed receipt was not logged"
 ! grep -Fq 'active baton' "$log" || fail "brief leaked into the verifier log"
 wait_for_absent "$FAKE_CASE/session/files/self-compact.lock"
 
-# Native queued delivery is also a verified continuation.
-setup_case queued-continuation
-export FAKE_REQUEST_MODE=queued-continuation
+# Immediate steering delivery is also a verified continuation.
+setup_case steering-continuation
+export FAKE_REQUEST_MODE=steering-continuation
 append_authorizing_events "$brief"
-output="$(run_submit)" || fail "queued continuation case did not arm"
+output="$(run_submit)" || fail "steering continuation case did not arm"
 lock_token="$(printf '%s\n' "$output" | sed -n 's/^self-compact handoff receipt: //p')"
 log="$(printf '%s\n' "$output" | sed -n 's/^watcher log: //p')"
 complete_authorizing_turn "self-compact handoff receipt: $lock_token"
 wait_for_log 'verified token-bound compaction checkpoint 2 and one SDK continuation' "$log"
 assert_count 1 '^1$' "$FAKE_REQUEST_COUNT"
 wait_for_absent "$FAKE_CASE/session/files/self-compact.lock"
+
+# A queued event proves the no-FIFO invariant was violated and retains the lock.
+setup_case queued-continuation
+export FAKE_REQUEST_MODE=queued-continuation
+append_authorizing_events "$brief"
+output="$(run_submit)" || fail "queued continuation rejection case did not arm"
+lock_token="$(printf '%s\n' "$output" | sed -n 's/^self-compact handoff receipt: //p')"
+log="$(printf '%s\n' "$output" | sed -n 's/^watcher log: //p')"
+complete_authorizing_turn "self-compact handoff receipt: $lock_token"
+wait_for_log 'other root activity won the continuation race' "$log"
+[ -d "$FAKE_CASE/session/files/self-compact.lock" ] ||
+  fail "queued continuation released the exclusion lock"
 
 # Ordinary assistant prose from an earlier completed turn does not block the
 # later empty-content self_compact authorization.

@@ -30,12 +30,12 @@ If the user names a recipient session ("send to juliett", "hand this to kilo", "
 ```
 
 For a Copilot recipient with the plugin extension loaded, mailbox requests an
-SDK user turn immediately through the CLI's native message queue. The CLI
-chooses the safe execution boundary; the extension does not reproduce the
-terminal idle gate. Claude and Codex retain the guarded terminal fallback. If
-no live wakeup is verified, the durable envelope waits for the recipient's
-next resume. Tell the user: "Handoff sent to <recipient> — they'll see it on
-their next turn."
+SDK user turn through immediate delivery. An active turn receives the nudge
+through its steering lane; an idle session starts it normally. The extension
+does not reproduce the terminal idle gate. Claude and Codex retain the guarded
+terminal fallback. If no live wakeup is verified, the durable envelope waits
+for the recipient's next resume. Tell the user: "Handoff sent to <recipient> —
+they'll see it on their next turn."
 
 If the user did NOT name a recipient, do not invoke mailbox; just write the doc and report the path so the user can hand it off manually or via `/mailbox` themselves.
 
@@ -145,12 +145,12 @@ fi
 ```
 
 Send the seed with that script rather than typing `/new` into a pane. The
-session-inbox extension immediately queues one local `/new` and never retries
-it; the CLI's FIFO command queue chooses when it executes. The script verifies
-a fresh session heartbeat from the same Copilot process and the exact seed in
-that session's event log. A durable request marker covers the case where `/new`
-tears down the old
-extension before it can finish its receipt. It writes the outcome to
+session-inbox extension invokes `/new` only when the running CLI exposes a
+direct non-FIFO command API, and never retries it. The script verifies a fresh
+session heartbeat from the same Copilot process and requires the exact seed to
+be the first root user message in that session. If direct `/new` is
+unavailable, it fails closed and preserves the seed rather than falling back to
+the FIFO or terminal injection. It writes the outcome to
 `/tmp/rotate-session-<old-id>.log`, so report what that log says rather than a
 handoff you did not observe. The unique `mktemp` input prevents concurrent
 rotations from reading each other's handoffs; the script snapshots it before

@@ -44,7 +44,8 @@ it. Tell the user which ones you carried.
 ### 3. Rotate
 
 The bundled script targets the old session by ID through the session-inbox SDK
-extension. It does not require tmux or terminal rendering.
+extension. It does not require tmux or terminal rendering, and it never submits
+`/new` to the CLI FIFO.
 
 Base the seed prompt on this, adding the schedules from step 2 and anything the
 user wants the fresh session to do first:
@@ -72,12 +73,15 @@ opens the durable result log synchronously, then backgrounds one session-inbox
 request equivalent to:
 
 ```text
-new-session --target-session OLD --prompt-file SEED
+new-session-direct --target-session OLD --prompt-file SEED
 ```
 
-The target extension places `/new` in the old session's native FIFO command
-queue immediately. The CLI chooses when it executes the command. The request
-is one-shot: the script never retries `/new` or resends the seed.
+The target extension first checks whether the running CLI exposes `/new` as a
+directly invokable built-in command. If it does, the extension invokes it once
+and accepts only a completed direct-command result. If it does not, rotation
+fails closed and preserves the private recovery snapshot. Current CLI releases
+may not expose this capability; do not fall back to the FIFO, terminal
+injection, or a second automatic attempt.
 
 ```sh
 OLD='<old-session-id>'
@@ -111,17 +115,16 @@ replaces the conversation you are running in. The script backgrounds itself, so
 it returns `rotation requested` immediately and writes the request path,
 extension receipt, and final result to the log afterwards.
 
-A completed `new-session` receipt means the local CLI accepted the queued
-`/new`; it is not the final proof. The script then requires exactly one fresh
-replacement heartbeat from the same local CLI process, with an update after
-that receipt, and verifies the exact seed in the replacement event log before
-removing the recovery snapshot. If `/new` tears down the old extension before
-it can write the receipt, a request-bound command marker supplies the same
-process lineage and boundary for verification. The fresh session must still
-read the result log during recovery. A failure or timeout with no verified
-replacement preserves the private recovery snapshot and warns that the request
-may still be queued. Do not issue another rotation until the first request's
-outcome is resolved.
+A completed `new-session-direct` receipt means the local CLI completed the
+direct `/new` invocation; it is not the final proof. The script then requires
+exactly one fresh replacement heartbeat from the same local CLI process, with
+an update after that receipt, and requires the exact seed to be the
+replacement's first root user message before removing the recovery snapshot.
+The fresh session must still read the result log during recovery. Unsupported,
+failed, ambiguous, or timed-out rotation preserves the private recovery
+snapshot. Do not issue another rotation until the first request's outcome is
+resolved. If direct `/new` is unavailable, report the preserved seed path so
+the user can decide whether to submit `/new` manually.
 
 **Complete when** the script has printed `rotation requested` and you have ended
 the turn without further tool calls. The fresh session confirms the outcome
@@ -130,9 +133,9 @@ should have completed, report the logged result rather than assuming rotation.
 
 ## Notes
 
-- If the log reports a failed or timed-out request, the prompt is in the private
-  recovery file it names. Resolve the existing request receipt before deciding
-  whether to paste or retry anything.
+- If the log reports an unsupported, failed, or timed-out request, the prompt
+  is in the private recovery file it names. Resolve any ambiguous request
+  receipt before deciding whether to submit it manually or retry anything.
 - Reading `~/.copilot/session-state` sits outside most agent workspaces, so the
   fresh session may hit an "Allow directory access" prompt. Choosing "add these
   directories to the allowed list" makes it one-time.

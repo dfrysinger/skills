@@ -25,7 +25,7 @@ function usage(message) {
     console.error(`session-inbox-request: ${message}`);
   }
   console.error(
-    "usage: request.mjs <send|autopilot|compact|new-session|reload-extensions> (--target-name NAME | --target-tmux NAME | --target-session ID) [options]",
+    "usage: request.mjs <send|autopilot|compact|new-session-direct|reload-extensions> (--target-name NAME | --target-tmux NAME | --target-session ID) [options]",
   );
   process.exit(64);
 }
@@ -37,7 +37,7 @@ function parseArgs(argv) {
       "send",
       "autopilot",
       "compact",
-      "new-session",
+      "new-session-direct",
       "reload-extensions",
     ].includes(kind)
   ) {
@@ -175,8 +175,8 @@ diagnostics.setContext({
 switch (options.kind) {
   case "send":
     request.prompt = await readRequiredFile(options["prompt-file"], "--prompt-file");
-    request.mode = options.mode ?? "enqueue";
-    if (!["enqueue", "immediate"].includes(request.mode)) usage("invalid --mode");
+    request.mode = options.mode ?? "immediate";
+    if (request.mode !== "immediate") usage("--mode must be immediate");
     if (options["agent-mode"]) {
       if (!["interactive", "plan", "autopilot", "shell"].includes(options["agent-mode"])) {
         usage("invalid --agent-mode");
@@ -202,7 +202,7 @@ switch (options.kind) {
       );
     }
     break;
-  case "new-session":
+  case "new-session-direct":
     request.prompt = await readRequiredFile(options["prompt-file"], "--prompt-file");
     break;
   case "reload-extensions":

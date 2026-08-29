@@ -1,0 +1,20 @@
+name: No queued Copilot delivery
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  no-enqueue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prove the guard rejects queue regressions
+        run: node scripts/check-no-enqueue.mjs --self-test
+      - name: Reject queued Copilot delivery
+        run: node scripts/check-no-enqueue.mjs

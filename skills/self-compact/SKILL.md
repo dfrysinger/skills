@@ -156,18 +156,18 @@ Checkpoint prose is not searched for a marker.
 
 ### Continuation
 
-The session-inbox extension submits this exact continuation through the CLI's
-native message queue:
+The session-inbox extension submits this exact continuation through immediate
+SDK delivery:
 
 ```text
 Compaction done; resume, do not compact.
 ```
 
-The session-inbox receipt proves that the native queue accepted the message; it
-does not wait for a short transport timeout to observe the later turn. The
-verifier then requires exactly one matching root `user.message` with native
-`idle` or `queued` delivery after the matching completion. It never types or
-retries the continuation.
+The session-inbox receipt proves that the SDK accepted the message; it does not
+depend on the CLI's FIFO queue. The verifier then requires exactly one matching
+root `user.message` with native `idle` or `steering` delivery after the matching
+completion. Queued delivery is rejected. It never types or retries the
+continuation.
 
 ## Failure handling
 

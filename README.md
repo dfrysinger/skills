@@ -39,16 +39,17 @@ The Copilot plugin also packages the recipient-local
 [`mailbox-watcher`](./extensions/mailbox-watcher/) extension. Session-inbox is a runtime
 dependency of `mailbox`, `unattended-run`, `self-compact`, `rotate-session`, and
 the corresponding `handoff` routes. The extension performs the final
-`session.send()`, native compaction, or local `/new` enqueue from inside the
-recipient session; filesystem requests and receipts provide durable
-machine-local IPC. Mailbox watcher polls a named recipient's durable mailbox
-and bridges synced envelopes into that local request queue. The mailbox root
-may live in OneDrive, but session-inbox heartbeats, locks, and receipts remain
-local. Sender-side delivery and the recipient watcher share a short local
-notification claim so they cannot both submit the same envelope during the
-pre-marker window. Notification cleanup retains markers for every pending
-envelope, including mail whose synced attachments are still stabilizing. A
-newly installed or updated extension becomes active when
+immediate `session.send()`, native compaction, or direct native command
+invocation from inside the recipient session; filesystem requests and receipts
+provide durable machine-local IPC. It never submits work to the CLI FIFO.
+Mailbox watcher polls a named recipient's durable mailbox and bridges synced
+envelopes into that local request queue. The mailbox root may live in OneDrive,
+but session-inbox heartbeats, locks, and receipts remain local. Sender-side
+delivery and the recipient watcher share a short local notification claim so
+they cannot both submit the same envelope during the pre-marker window.
+Notification cleanup retains markers for every pending envelope, including
+mail whose synced attachments are still stabilizing. A newly installed or
+updated extension becomes active when
 the recipient Copilot session starts or reloads its plugins. Run
 `node extensions/session-inbox/reload-all.mjs` to reload every fresh local
 Copilot session, or append session names to reload only those sessions. The
