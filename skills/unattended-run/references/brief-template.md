@@ -72,8 +72,8 @@ process after compaction without copying each skill's rules.
 > another ready item whenever the current one is waiting. For every delegated
 > agent, keep its scope,
 > workspaces or branches, session or coordination channels, owed evidence,
-> blockers, and integration boundaries in the ledger; preserve agents I
-> assigned as first-class external owners in the durable baton. Read the
+> blockers, and integration boundaries in the durable baton; mark agents I
+> assigned as first-class external owners there. Read the
 > delegated agent's
 > explicit result, mailbox response, or handoff before reporting its status or
 > assigning successor work; a dirty, clean, changing, or unchanged worktree is
