@@ -47,12 +47,13 @@ resumption, at each phase boundary, and whenever the current action is waiting:
    completes or fails. Every delegate that writes files gets an isolated
    worktree or checkout; read-only delegates may share a source tree. The
    coordinator's worktree is never a concurrent write target.
-3. When the user assigned independent agents, treat them as first-class owners.
-   Record each agent's scope, workspace or branch, expected evidence, and
-   integration boundary in the durable baton. Keep them supplied with
-   decisions and dependencies, monitor their session or coordination channel,
-   unblock them promptly, and consume completed handoffs and frozen reviewed
-   commits without waiting for `main`.
+3. Track every delegated agent as an owner, whether the user or coordinator
+   assigned it. Record its scope, workspace or branch, session or coordination
+   channel, expected evidence, and integration boundary. When the user assigned
+   the agent, preserve that record in the durable baton and treat it as a
+   first-class external owner. Keep each owner supplied with decisions and
+   dependencies, unblock it promptly, and consume completed handoffs and frozen
+   reviewed commits without waiting for `main`.
    Keep **worker state** separate from **artifact state**. Before reporting an
    assigned agent as active, waiting, blocked, failed, or complete, read that
    agent's latest explicit session result, task result, mailbox response, or
@@ -60,6 +61,11 @@ resumption, at each phase boundary, and whenever the current action is waiting:
    does not establish what the agent is doing. When an agent completes its
    assignment, close that assignment and consume its handoff before inspecting
    the worktree or issuing successor work.
+   Evidence that predates the current assignment cannot establish its status.
+   When no current explicit result exists, record the worker state as
+   `unknown`, request status once through its task or coordination channel, and
+   advance other ready work. Never substitute repository movement for the
+   missing response.
    A successor task is a new assignment, even when it goes to the same agent.
    Freeze the prior commit or receipt and explicitly transfer worktree
    ownership before the coordinator or another writer touches it. If two
@@ -944,8 +950,9 @@ literal `findings: []`.
 - **Worktree activity mistaken for agent activity.** File changes show artifact
   state, not whether an assigned agent is active, idle, blocked, failed, or
   complete. Read the agent's explicit result or handoff first, then inspect the
-  artifact it delivered. Never prolong a completed assignment because its
-  worktree is dirty or changing.
+  artifact it delivered. When no current result exists, report `unknown` and
+  request status rather than guessing. Never prolong a completed assignment
+  because its worktree is dirty or changing.
 - **Partial proof promoted to pass.** Reproducing the failure, reaching login,
   or proving one downstream result cannot open the review gate when another
   acceptance checkpoint is broken or unseen.
