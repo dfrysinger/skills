@@ -217,7 +217,7 @@ async function sendAndConfirm({ prompt, mode = "immediate", agentMode }) {
   }
 }
 
-async function enqueueAutopilotObjective(prompt) {
+async function executeAutopilotObjective(prompt) {
   diagnostics.log("sdk.autopilot_objective.started");
   let activation;
   const stopListening = session.on("user.message", (event) => {
@@ -237,13 +237,14 @@ async function enqueueAutopilotObjective(prompt) {
   const deadline = Date.now() + autopilotConfirmationTimeoutMs;
   let objective;
   try {
-    const result = await session.rpc.commands.enqueue({
-      command: `/autopilot ${prompt}`,
+    const result = await session.rpc.commands.execute({
+      commandName: "autopilot",
+      args: prompt,
     });
-    if (result.queued !== true) {
-      throw new Error("autopilot command was not accepted");
+    if (result.error) {
+      throw new Error(`autopilot command failed: ${result.error}`);
     }
-    diagnostics.log("sdk.autopilot_objective.queued");
+    diagnostics.log("sdk.autopilot_objective.executed");
 
     while (Date.now() < deadline) {
       if (!objective) {
@@ -266,7 +267,7 @@ async function enqueueAutopilotObjective(prompt) {
         }
       }
       if (objective && activation) {
-        if (!activation.idleDelivery && !activation.queuedDelivery) {
+        if (!activation.idleDelivery && activation.delivery !== "steering") {
           throw Object.assign(
             new Error(
               `autopilot objective started with ${activation.delivery ?? "unknown"} delivery`,
@@ -275,7 +276,7 @@ async function enqueueAutopilotObjective(prompt) {
               result: {
                 ...objective,
                 ...activation,
-                commandQueued: true,
+                commandExecuted: true,
                 objectiveSet: true,
                 activation: activation.delivery,
               },
@@ -310,9 +311,9 @@ async function execute(request) {
         agentMode: request.agentMode,
       });
     case "autopilot": {
-      const objective = await enqueueAutopilotObjective(request.prompt);
+      const objective = await executeAutopilotObjective(request.prompt);
       return {
-        commandQueued: true,
+        commandExecuted: true,
         objectiveSet: true,
         objectiveId: objective.objectiveId,
         objectiveStatus: objective.objectiveStatus,

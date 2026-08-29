@@ -92,8 +92,8 @@ grep -Fq '["autopilot","--target-tmux","whisky","--prompt-file"' "$args"
 IFS=$'\t' read -r result _ _ output < <(
   run_case queued queued --target-session session-queued "keep working"
 )
-[[ "$result" -eq 0 ]]
-grep -Fq 'autopilot handoff confirmed; receipt:' "$output"
+[[ "$result" -eq 1 ]]
+grep -Fq 'did not prove native objective establishment and idle/steering starting-message delivery' "$output"
 
 IFS=$'\t' read -r result _ prompts _ < <(
   run_case immutable mutate-source --target-session session-immutable \
@@ -126,14 +126,14 @@ grep -Fq 'recipient rejected request' "$receipt"
 IFS=$'\t' read -r result _ _ output < <(
   run_case steering steering --target-session session-3 "keep working"
 )
-[[ "$result" -eq 1 ]]
-grep -Fq 'did not prove native objective establishment and idle/queued starting-message delivery' "$output"
+[[ "$result" -eq 0 ]]
+grep -Fq 'autopilot handoff confirmed; receipt:' "$output"
 
 IFS=$'\t' read -r result _ _ output < <(
   run_case missing-objective missing-objective --target-session session-3b "keep working"
 )
 [[ "$result" -eq 1 ]]
-grep -Fq 'did not prove native objective establishment and idle/queued starting-message delivery' "$output"
+grep -Fq 'did not prove native objective establishment and idle/steering starting-message delivery' "$output"
 
 for invalid in '/autopilot do it' '/goal do it' '/allow-all' 'contains <SLOT>'; do
   IFS=$'\t' read -r result _ _ _ < <(

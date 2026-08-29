@@ -250,7 +250,7 @@ autopilot --target-session ID or --target-tmux NAME --prompt-file FILE
 
 It rejects empty, slash-prefixed, permission-changing, or unresolved objectives;
 caps the receipt wait at 360 seconds; requires the SDK receipt to prove both
-`objectiveSet: true` and `delivery: "idle"` or `"queued"`; preserves the request output and objective under
+`objectiveSet: true` and `delivery: "idle"` or `"steering"`; preserves the request output and objective under
 `~/.copilot/autopilot-enqueue/`; and notifies the user if delivery cannot be
 confirmed. The session-inbox extension also retains its JSON request receipt.
 

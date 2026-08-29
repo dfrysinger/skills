@@ -184,17 +184,17 @@ export async function joinSession() {
         },
       },
       commands: {
-        async enqueue(options) {
-          record("command", options);
+        async execute(options) {
+          record("command.execute", options);
           const current = state();
           if (current.rejectCommandAfterRecord) {
             throw new Error("mock transport lost the accepted command response");
           }
           if (
-            options.command.startsWith("/autopilot ") &&
+            options.commandName === "autopilot" &&
             !current.suppressAutopilotObjective
           ) {
-            const objective = options.command.slice("/autopilot ".length);
+            const objective = options.args;
             writeFileSync(
               process.env.MOCK_STATE,
               JSON.stringify({
@@ -214,10 +214,10 @@ export async function joinSession() {
             );
           }
           if (
-            options.command.startsWith("/autopilot ") &&
+            options.commandName === "autopilot" &&
             !current.suppressAutopilotDelivery
           ) {
-            const objective = options.command.slice("/autopilot ".length);
+            const objective = options.args;
             const source = current.autopilotSource ?? "autopilot-objective";
             queueMicrotask(() =>
               emit("user.message", {
@@ -237,6 +237,15 @@ export async function joinSession() {
                 },
               }),
             );
+          }
+          if (current.exitOnEnqueue) process.exit(0);
+          return current.commandError ? {error: current.commandError} : {};
+        },
+        async enqueue(options) {
+          record("command.enqueue", options);
+          const current = state();
+          if (current.rejectCommandAfterRecord) {
+            throw new Error("mock transport lost the accepted command response");
           }
           if (current.exitOnEnqueue) process.exit(0);
           return {queued: true};
@@ -404,14 +413,14 @@ test("recipient extension submits SDK work without idle gates and preserves phas
     assert.equal(autopilotReceipt.result.activation, "idle");
     assert.equal(autopilotReceipt.result.idleDelivery, true);
     const autopilotCalls = (await harness.calls()).filter((call) =>
-      ["command", "autopilot-objective.read"].includes(call.kind),
+      ["command.execute", "autopilot-objective.read"].includes(call.kind),
     );
     assert.deepEqual(autopilotCalls.slice(-2), [
       {
-        kind: "command",
+        kind: "command.execute",
         value: {
-          command:
-            "/autopilot finish the durable objective\nand verify its result",
+          commandName: "autopilot",
+          args: "finish the durable objective\nand verify its result",
         },
       },
       { kind: "autopilot-objective.read", value: {} },
@@ -482,24 +491,34 @@ test("recipient extension submits SDK work without idle gates and preserves phas
       },
     );
 
-    await harness.setState({ delivery: "queued" });
+    await harness.setState({ delivery: "steering" });
     await harness.request("busy-autopilot", {
       kind: "autopilot",
-      prompt: "queue the objective during active work",
+      prompt: "execute the objective during active work",
       dedupeKey: "busy-autopilot",
     });
     const busyAutopilot = await harness.receipt("completed", "busy-autopilot");
     assert.equal(busyAutopilot.result.objectiveSet, true);
-    assert.equal(busyAutopilot.result.delivery, "queued");
-    assert.equal(busyAutopilot.result.queuedDelivery, true);
+    assert.equal(busyAutopilot.result.delivery, "steering");
+    assert.equal(busyAutopilot.result.queuedDelivery, false);
+    assert.equal(busyAutopilot.result.commandExecuted, true);
     assert.ok(
       (await harness.calls()).some(
         (call) =>
-          call.kind === "command" &&
-          call.value.command ===
-            "/autopilot queue the objective during active work",
+          call.kind === "command.execute" &&
+          call.value.commandName === "autopilot" &&
+          call.value.args === "execute the objective during active work",
       ),
     );
+    await harness.setState({ delivery: "queued" });
+    await harness.request("queued-autopilot", {
+      kind: "autopilot",
+      prompt: "reject a queued objective activation",
+      dedupeKey: "queued-autopilot",
+    });
+    const queuedAutopilot = await harness.receipt("failed", "queued-autopilot");
+    assert.equal(queuedAutopilot.ambiguousSideEffect, true);
+    assert.match(queuedAutopilot.error, /started with queued delivery/);
     await harness.setState({
       processing: false,
       active: false,
@@ -700,7 +719,9 @@ test("recipient extension submits SDK work without idle gates and preserves phas
     const failedReceipt = await harness.receipt("failed", "compact-receipt-failure");
     assert.equal(failedReceipt.sideEffectCompleted, true);
     assert.equal(failedReceipt.result.compacted, true);
-    await harness.setState({ idleCounter: 17 });
+    await rm(join(harness.inbox, "dedupe"), { force: true });
+    await mkdir(join(harness.inbox, "dedupe"));
+    await harness.setState({ breakDedupeWrite: false, idleCounter: 17 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("compact-receipt-blocked-retry", {
       kind: "compact",
@@ -753,7 +774,7 @@ test("recipient extension submits SDK work without idle gates and preserves phas
     assert.ok(diagnostics.some((entry) => entry.event === "sdk.send.unconfirmed"));
     assert.ok(
       diagnostics.some(
-        (entry) => entry.event === "sdk.autopilot_objective.queued",
+        (entry) => entry.event === "sdk.autopilot_objective.executed",
       ),
     );
     assert.equal(
