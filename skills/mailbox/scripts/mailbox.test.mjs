@@ -212,11 +212,12 @@ test("explicit unqualified-only mode ignores malformed machine configuration", (
   }
 });
 
-test("qualified recipients use a separate mailbox and suppress remote local wakeup", async () => {
+test("qualified recipients publish immutable transport and import into a local mailbox", async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-qualified-"));
   const previousCallLog = process.env.MOCK_MAILBOX_REQUEST_CALLS;
   try {
-    const mailboxRoot = join(root, "mailbox");
+    const mailboxRoot = join(root, "sender-mailbox");
+    const remoteMailboxRoot = join(root, "remote-mailbox");
     const stateRoot = join(root, "state");
     const callLog = join(root, "request-calls.jsonl");
     const mockRequest = join(root, "mock-request.mjs");
@@ -229,6 +230,7 @@ appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, "called\\n");
     );
     const senderMailbox = createMailbox({
       mailboxRoot,
+      remoteMailboxRoot,
       stateRoot,
       requestCli: mockRequest,
       machineName: "desktop",
@@ -250,23 +252,44 @@ appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, "called\\n");
       JSON.parse(await readFile(sent.envelopePath, "utf8")).to.name,
       "hotel@surface-pro",
     );
+    assert.ok(
+      (await readdir(join(remoteMailboxRoot, "hotel@surface-pro", "pending"))).every(
+        (name) => !name.includes(".uploading-"),
+      ),
+    );
     assert.equal((await senderMailbox.checkLocal("hotel")).length, 0);
 
     const recipientMailbox = createMailbox({
-      mailboxRoot,
+      mailboxRoot: join(root, "recipient-mailbox"),
+      remoteMailboxRoot,
       stateRoot: join(root, "recipient-state"),
       requestCli: mockRequest,
       machineName: "surface-pro",
     });
     assert.equal(recipientMailbox.machineName, "surface-pro");
-    assert.deepEqual(recipientMailbox.localAddresses("hotel"), [
+    assert.deepEqual(recipientMailbox.localAddresses("hotel"), ["hotel"]);
+    assert.deepEqual(recipientMailbox.watchAddresses("hotel"), [
       "hotel",
       "hotel@surface-pro",
     ]);
+    assert.equal(await recipientMailbox.importRemote("hotel@surface-pro"), 1);
+    assert.equal(await recipientMailbox.importRemote("hotel@surface-pro"), 0);
     assert.equal((await recipientMailbox.checkLocal("hotel")).length, 1);
     assert.equal(
       (await recipientMailbox.readLocal("hotel", sent.envelope.id)).envelope.message,
       "deliver only to surface-pro",
+    );
+    const remoteBefore = await readFile(sent.envelopePath, "utf8");
+    await recipientMailbox.acknowledgeLocal("hotel", sent.envelope.id);
+    assert.equal(await readFile(sent.envelopePath, "utf8"), remoteBefore);
+    await readFile(
+      join(
+        remoteMailboxRoot,
+        "receipts",
+        "hotel@surface-pro",
+        `${sent.envelope.id}.json`,
+      ),
+      "utf8",
     );
   } finally {
     if (previousCallLog === undefined) {
@@ -278,11 +301,57 @@ appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, "called\\n");
   }
 });
 
+test("remote publication failures preserve a retryable local outbox", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-remote-retry-"));
+  try {
+    const remoteMailboxRoot = join(root, "remote-mailbox");
+    const stateRoot = join(root, "state");
+    await writeFile(remoteMailboxRoot, "temporarily unavailable");
+    const mailbox = createMailbox({
+      mailboxRoot: join(root, "local-mailbox"),
+      remoteMailboxRoot,
+      stateRoot,
+      machineName: "desktop",
+    });
+
+    const sent = await mailbox.send({
+      recipient: "hotel@surface-pro",
+      sender: "whisky",
+      summary: "retry remote publication",
+      message: "keep this locally until OneDrive recovers",
+      wake: false,
+    });
+
+    assert.match(sent.envelopePath, /remote-outbox[\\/]envelopes/);
+    assert.equal(
+      JSON.parse(await readFile(sent.envelopePath, "utf8")).message,
+      "keep this locally until OneDrive recovers",
+    );
+
+    await rm(remoteMailboxRoot);
+    await mkdir(remoteMailboxRoot);
+    await mailbox.flushRemoteOutbox();
+    await readFile(
+      join(
+        remoteMailboxRoot,
+        "hotel@surface-pro",
+        "pending",
+        `${sent.envelope.id}.json`,
+      ),
+      "utf8",
+    );
+    await assert.rejects(readFile(sent.envelopePath, "utf8"), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("foreign qualified recipient operations fail before scanning or marking", async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-foreign-address-"));
   const previousCallLog = process.env.MOCK_MAILBOX_REQUEST_CALLS;
   try {
     const mailboxRoot = join(root, "mailbox");
+    const remoteMailboxRoot = join(root, "remote-mailbox");
     const stateRoot = join(root, "state");
     const callLog = join(root, "request-calls.jsonl");
     const mockRequest = join(root, "mock-request.mjs");
@@ -295,6 +364,7 @@ appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, "called\\n");
     );
     const mailbox = createMailbox({
       mailboxRoot,
+      remoteMailboxRoot,
       stateRoot,
       requestCli: mockRequest,
       machineName: "thinkpad",
@@ -318,13 +388,9 @@ appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, "called\\n");
           once: true,
         }),
     ]) {
-      await assert.rejects(operation(), {
-        message: "mailbox hotel@macbook-pro belongs to machine macbook-pro",
-      });
+      await assert.rejects(operation());
     }
-    assert.deepEqual(await mailbox.list(), [
-      { name: "hotel@macbook-pro", pending: 1, delivered: 0 },
-    ]);
+    assert.deepEqual(await mailbox.list(), []);
     await assert.rejects(readFile(callLog, "utf8"), { code: "ENOENT" });
     await assert.rejects(
       readFile(join(stateRoot, "watchers", "hotel@macbook-pro.lock"), "utf8"),
@@ -383,11 +449,12 @@ test("unqualified envelopes remain visible without machine configuration", async
   }
 });
 
-test("matching qualified sender targets the base local session and full-address marker", async () => {
+test("matching qualified sender imports and targets the base local session", async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-qualified-local-"));
   const previousCallLog = process.env.MOCK_MAILBOX_REQUEST_CALLS;
   try {
     const mailboxRoot = join(root, "mailbox");
+    const remoteMailboxRoot = join(root, "remote-mailbox");
     const stateRoot = join(root, "state");
     const callLog = join(root, "request-calls.jsonl");
     const mockRequest = join(root, "mock-request.mjs");
@@ -401,6 +468,7 @@ console.log('{"status":"completed","result":{"delivery":"idle"}}');
     );
     const mailbox = createMailbox({
       mailboxRoot,
+      remoteMailboxRoot,
       stateRoot,
       requestCli: mockRequest,
       machineName: "surface-pro",
@@ -418,22 +486,25 @@ console.log('{"status":"completed","result":{"delivery":"idle"}}');
     assert.equal(args[args.indexOf("--target-name") + 1], "hotel");
     assert.match(
       args[args.indexOf("--dedupe-key") + 1],
-      new RegExp(
-        `^mailbox:immediate-v3:hotel@surface-pro:${sent.envelope.id}:`,
-      ),
+      new RegExp(`^mailbox:immediate-v3:hotel:${sent.envelope.id}:`),
     );
     await readFile(
       join(
         stateRoot,
         "notified",
-        "hotel@surface-pro",
+        "hotel",
         `${sent.envelope.id}.notified`,
       ),
       "utf8",
     );
     await assert.rejects(
       readFile(
-        join(stateRoot, "notified", "hotel", `${sent.envelope.id}.notified`),
+        join(
+          stateRoot,
+          "notified",
+          "hotel@surface-pro",
+          `${sent.envelope.id}.notified`,
+        ),
         "utf8",
       ),
       { code: "ENOENT" },
@@ -448,20 +519,22 @@ console.log('{"status":"completed","result":{"delivery":"idle"}}');
   }
 });
 
-test("recipient-local actions aggregate both addresses and reject duplicate ids", async () => {
+test("recipient-local actions use only the unqualified local mailbox", async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-local-actions-"));
   try {
     const mailboxRoot = join(root, "mailbox");
+    const remoteMailboxRoot = join(root, "remote-mailbox");
     const mailbox = createMailbox({
       mailboxRoot,
+      remoteMailboxRoot,
       stateRoot: join(root, "state"),
       machineName: "thinkpad",
     });
-    const broadcast = await mailbox.send({
+    const local = await mailbox.send({
       recipient: "hotel",
       sender: "whisky",
-      summary: "broadcast",
-      message: "broadcast message",
+      summary: "local",
+      message: "local message",
       wake: false,
     });
     const qualified = await mailbox.send({
@@ -471,35 +544,18 @@ test("recipient-local actions aggregate both addresses and reject duplicate ids"
       message: "qualified message",
       wake: false,
     });
+    await mailbox.importRemote("hotel@thinkpad");
+    await mailbox.importRemote("hotel@thinkpad");
 
     const checked = await mailbox.checkLocal("hotel");
-    assert.deepEqual(
-      new Set(checked.map(({ mailboxAddress }) => mailboxAddress)),
-      new Set(["hotel", "hotel@thinkpad"]),
-    );
+    assert.equal(checked.length, 2);
+    assert.deepEqual(new Set(checked.map(({ mailboxAddress }) => mailboxAddress)), new Set(["hotel"]));
     assert.equal(
       (await mailbox.readLocal("hotel", qualified.envelope.id)).mailboxAddress,
-      "hotel@thinkpad",
+      "hotel",
     );
-    await mailbox.acknowledgeLocal("hotel", broadcast.envelope.id);
-    assert.equal((await mailbox.check("hotel")).length, 0);
-
-    const duplicateId = qualified.envelope.id;
-    const broadcastPending = join(mailboxRoot, "hotel", "pending");
-    await mkdir(broadcastPending, { recursive: true });
-    await writeFile(
-      join(broadcastPending, `${duplicateId}.json`),
-      `${JSON.stringify({
-        ...qualified.envelope,
-        to: { name: "hotel" },
-      })}\n`,
-    );
-    await assert.rejects(mailbox.readLocal("hotel", duplicateId), {
-      message: /ambiguous across hotel and hotel@thinkpad/,
-    });
-    await assert.rejects(mailbox.acknowledgeLocal("hotel", duplicateId), {
-      message: /ambiguous across hotel and hotel@thinkpad/,
-    });
+    await mailbox.acknowledgeLocal("hotel", local.envelope.id);
+    assert.equal((await mailbox.check("hotel")).length, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -729,7 +785,7 @@ console.log('{"status":"completed","result":{"delivery":"steering"}}');
   }
 });
 
-test("sender and watcher serialize requests by full mailbox address", async () => {
+test("sender and watcher serialize requests by local mailbox address", async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-notification-claim-"));
   const previousCallLog = process.env.MOCK_MAILBOX_REQUEST_CALLS;
   try {
@@ -750,10 +806,9 @@ console.log('{"status":"completed","result":{"messageAccepted":true,"delivery":"
       mailboxRoot,
       stateRoot,
       requestCli: mockRequest,
-      machineName: "surface-pro",
     });
     await mailbox.send({
-      recipient: "hotel@surface-pro",
+      recipient: "hotel",
       sender: "whisky",
       summary: "notification claim proof",
       message: "one request only",
@@ -761,8 +816,8 @@ console.log('{"status":"completed","result":{"messageAccepted":true,"delivery":"
     });
 
     const results = await Promise.all([
-      mailbox.poke("hotel@surface-pro", { targetName: "hotel" }),
-      mailbox.poke("hotel@surface-pro", {
+      mailbox.poke("hotel", { targetName: "hotel" }),
+      mailbox.poke("hotel", {
         targetName: "hotel",
         requireStableAttachments: true,
       }),
@@ -773,11 +828,11 @@ console.log('{"status":"completed","result":{"messageAccepted":true,"delivery":"
     );
     assert.equal((await readFile(callLog, "utf8")).trim(), "called");
     assert.equal(
-      (await mailbox.poke("hotel@surface-pro", { targetName: "hotel" })).status,
+      (await mailbox.poke("hotel", { targetName: "hotel" })).status,
       "already-poked",
     );
     await assert.rejects(
-      readFile(join(stateRoot, "notifying", "hotel@surface-pro.lock"), "utf8"),
+      readFile(join(stateRoot, "notifying", "hotel.lock"), "utf8"),
       { code: "ENOENT" },
     );
   } finally {

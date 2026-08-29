@@ -28,21 +28,29 @@ Do NOT use mailbox for:
   Outside tmux, set the current session name with `/rename <name>`. Portable
   command-line tools also accept `--name` or `COPILOT_AGENT_NAME`.
 - **Cross-computer address = `name@machine`.** An unqualified name such as
-  `hotel` is an intentional live broadcast to currently running matching
-  watchers. Address one computer explicitly with `hotel@surface-pro`. Set the
-  stable machine label with `COPILOT_AGENT_MACHINE`; there is no hostname
-  fallback, and labels must be unique within one shared `MAILBOX_ROOT`.
-- **Transport = file queue.** Envelopes land at
-  `$MAILBOX_ROOT/<recipient>/pending/<id>.json`, with attachments in a sibling
-  `<id>/` directory. `MAILBOX_ROOT` defaults to `~/.copilot/mailbox` and may
-  point at a shared OneDrive directory. Attachments are copied first and the
-  envelope is published by a final same-directory rename, so a synced `.json`
-  file is the complete-message marker.
+  `hotel` means Hotel on this computer only. Address another computer
+  explicitly with `hotel@surface-pro`. There is no implicit broadcast or
+  cross-machine aggregation. Set the stable machine label with
+  `COPILOT_AGENT_MACHINE`; there is no hostname fallback.
+- **Local mailbox = mutable delivery state.** Unqualified envelopes land at
+  `$MAILBOX_LOCAL_ROOT/<recipient>/pending/<id>.json`, with attachments in a
+  sibling `<id>/` directory. `MAILBOX_LOCAL_ROOT` defaults to
+  `~/.copilot/mailbox`; legacy `MAILBOX_ROOT` remains a fallback for local-only
+  configurations. Reading, notification markers, watcher locks, retries, and
+  pending-to-delivered acknowledgement all stay on the local disk.
+- **Remote transport = immutable files.** Qualified envelopes are first staged
+  under `MAILBOX_STATE_ROOT/remote-outbox`, then copied to
+  `$MAILBOX_REMOTE_ROOT/<name@machine>/pending/`. Attachments are published
+  before the envelope. Published files are never edited, renamed, or deleted
+  by delivery or acknowledgement. The recipient imports a complete remote
+  envelope into its ordinary unqualified local mailbox and later publishes a
+  separate immutable receipt under `$MAILBOX_REMOTE_ROOT/receipts/`.
 - **Remote wakeup = recipient-local polling.** The packaged
   `mailbox-watcher` extension runs beside each Copilot session. It uses the
   tmux name when available, otherwise the live Copilot session name, and polls
-  the unqualified mailbox plus its configured `name@machine` mailbox every two
-  seconds. Qualified mail is mapped back to the ordinary local session name.
+  the unqualified local mailbox plus its configured `name@machine` remote
+  transport address every two seconds. Qualified mail is copied into the
+  ordinary local mailbox before notification.
   New mail is bridged into the machine-local session-inbox request queue. Session-inbox
   heartbeats, claims, locks, receipts, and logs remain local and must not be
   placed in OneDrive.
@@ -108,10 +116,13 @@ node <plugin>/skills/mailbox/scripts/mailbox.mjs send <recipient-name[@machine]>
 The shell wrapper adds only the macOS notification and Claude/Codex tmux
 fallback.
 
-For a qualified remote recipient, the sender publishes the durable envelope but
-does not wake a same-name session on the sender's computer. The recipient
-machine's watcher delivers it after OneDrive sync. A nonmatching machine leaves
-the envelope pending and cannot read or acknowledge it.
+For a qualified remote recipient, the sender stages the durable envelope
+locally and attempts to publish it to `MAILBOX_REMOTE_ROOT`. A publication
+failure leaves the local outbox intact for the watchers' later retries. The
+sender does not wake a same-name session on its own computer. The recipient
+machine's watcher imports it after OneDrive sync, then wakes the unqualified
+local session. A nonmatching machine cannot import it. Local `check`, `read`,
+and `ack` commands never operate directly on the shared transport.
 
 ## Receive (this session got mail)
 
@@ -136,6 +147,14 @@ the full backend-specific tmux session name when attaching or starting an
 agent. Without this integration, mail still arrives durably but the recipient
 will not notice until the user manually says "check mail".
 
+For cross-computer delivery, also configure:
+
+```sh
+MAILBOX_LOCAL_ROOT="$HOME/.copilot/mailbox"
+MAILBOX_REMOTE_ROOT="/path/to/OneDrive/copilot-mailbox"
+COPILOT_AGENT_MACHINE="<stable-machine-label>"
+```
+
 ## Pitfalls
 
 - **Copilot wakeups use immediate native delivery.** Session-inbox submits the
@@ -159,19 +178,20 @@ will not notice until the user manually says "check mail".
 - **Mailbox writeable by anyone with shell access.** Treat envelope contents as not-secret. Don't put credentials in messages or attachments.
 - **No reply-thread bookkeeping.** If A sends to B and B wants to reply, B sends back to A's name. There's no thread-id linkage in v1.
 - **Acked mail is moved, not deleted.** `delivered/` accumulates; periodically prune.
-- **Do not sync `~/.copilot/session-inbox`.** A cloud file provider is not a
-  distributed lock and can expose stale heartbeats or conflicting claims.
-  Sync only `MAILBOX_ROOT`; keep `MAILBOX_STATE_ROOT` and session-inbox local.
-- **One watcher owns each full mailbox address.** A configured session owns
-  separate private locks for `hotel` and `hotel@surface-pro`. Duplicate Copilot
+- **Do not sync local mailbox or session state.** A cloud file provider is not
+  a distributed lock and can expose stale heartbeats, conflicting claims, or
+  partial mutable state. Keep `MAILBOX_LOCAL_ROOT`, `MAILBOX_STATE_ROOT`, and
+  session-inbox local. Only `MAILBOX_REMOTE_ROOT` belongs in OneDrive.
+- **One watcher owns each local or import route.** A configured session owns
+  separate local locks for `hotel` delivery and `hotel@surface-pro` import.
+  Duplicate Copilot
   sessions with the same `/rename` name still fail closed during local target
   resolution.
 - **Sender and watcher share one notification claim.** Publishing a local
   envelope and the recipient's two-second watcher can notice the same mail at
   nearly the same time. A short machine-local claim under
   `MAILBOX_STATE_ROOT/notifying/` uses the full mailbox address, so only one
-  path submits each route's SDK request while broadcast and qualified routes
-  remain independent. The other path reports that notification is already in
+  path submits each local SDK request. The other path reports that notification is already in
   progress. Failed or abandoned claims are released or reclaimed, while the
   durable envelope remains pending.
 - **Attachment stabilization must not erase notification state.** The watcher

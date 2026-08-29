@@ -1,7 +1,11 @@
-Work from `C:\Users\dfrysinger\code\skills\design\windows-cross-computer-mailbox-addressing.md` in `C:\Users\dfrysinger\code\skills` on branch `dfrysinger/windows-mailbox-validation`.
+# Superseded validation objective
 
-Outcome: the shipped Node mailbox is proven on real Windows to preserve intentional unqualified live broadcast and deliver a qualified shared address such as `hotel@surface-pro` only to the configured machine's ordinary local `hotel` session, with only the smallest platform fixes required by observed failures.
+The original Windows validation objective assumed that an unqualified mailbox
+was a shared live broadcast and that acknowledgements mutated a OneDrive-backed
+queue. That architecture is no longer the product contract.
 
-Follow the plan in order and keep its Current baton accurate. Use the charter's required process skills and push policy. Do not build a PowerShell mailbox engine, add speculative watcher infrastructure, retune established polling loops, sync machine-local coordination state, scan historical sessions, discover hostnames automatically, put machine identity into session-inbox, build shared machine discovery or per-machine broadcast acknowledgement state, or redesign macOS and non-Copilot fallbacks.
-
-Finish only when every item in the "Definition of Done — Windows Addressed Mailbox" section is verifiably met. Do not substitute partial tests, code inspection, or a plausible implementation for the observable completion evidence named there.
+The current local-first architecture and acceptance criteria are authoritative
+in [`windows-cross-computer-mailbox-addressing.md`](./windows-cross-computer-mailbox-addressing.md).
+Unqualified mail is local-only. Qualified `name@machine` mail crosses computers
+through immutable transport files, is imported into the recipient's local
+mailbox, and is acknowledged locally.

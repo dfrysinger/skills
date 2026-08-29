@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # common helpers for mailbox scripts.
 set -euo pipefail
-MAILBOX_ROOT="${MAILBOX_ROOT:-$HOME/.copilot/mailbox}"
+MAILBOX_LOCAL_ROOT="${MAILBOX_LOCAL_ROOT:-${MAILBOX_ROOT:-$HOME/.copilot/mailbox}}"
 
 own_name() {
   # current tmux session name = agent name (per `ca` convention)
@@ -22,5 +22,5 @@ ts_id() {  # 20260604T152011Z-<short-uuid>
 }
 
 ensure_mailbox() {  # ensure_mailbox <name>
-  mkdir -p "$MAILBOX_ROOT/$1/pending" "$MAILBOX_ROOT/$1/delivered"
+  mkdir -p "$MAILBOX_LOCAL_ROOT/$1/pending" "$MAILBOX_LOCAL_ROOT/$1/delivered"
 }

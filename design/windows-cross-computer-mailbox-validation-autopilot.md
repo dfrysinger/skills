@@ -1,17 +1,11 @@
-Keep building against the plan at `C:\Users\dfrysinger\code\skills\design\windows-cross-computer-mailbox-addressing.md` in `C:\Users\dfrysinger\code\skills` on branch `dfrysinger/windows-mailbox-validation`. Follow the required process skills below.
+# Superseded autopilot brief
 
-If a reminder arrives while you are making a user-directed edit to the plan, design doc, brief, or charter, finish the current coherent edit and persist it to the authoritative file before reconciling against that file. Never replace an in-flight revision with the older persisted version.
+Do not resume the former broadcast-based Windows proof from this file. Its
+shared mutable mailbox assumptions have been replaced.
 
-Use rubber-duck to brainstorm solutions and align on paths forward whenever you get stuck. Keep the plan's Current baton accurate so future agents can pick it up. Use `/dfrysinger-skills:development-loop` critical-path audit at run start, every phase boundary, and every scheduled re-brief: rebuild ready work and dependencies, mark the critical path, assign every substantial independent ready scope to an available subagent when delegation is safe, and advance another ready item whenever the current one is waiting. Reconcile the read-only audit agent `7b3ab75b-0797-412d-a91e-1374b60b7205`, its Windows risk/coverage scope, its no-write ownership, its owed report, and its integration boundary in the plan baton. Give every future file-writing delegate an isolated worktree or checkout and never use the coordinator's worktree as a concurrent write target. Keep the coordinator focused on integration, decisions, unblocking, and unowned critical-path work. Batch coherent fixes before expensive builds, verifiers, or CI, and use proof impact mapping instead of replaying unaffected claims. Preserve actual serial gates, including one proof owner and one running candidate during live proof.
-
-Push reviewed and validated work to branch `dfrysinger/windows-mailbox-validation` and create or update its pull request when the governing workflow opens that gate. Do not merge, publish a plugin release, deploy, or mutate shared infrastructure without an explicit user instruction. Decide every reversible question yourself with rubber-duck rather than asking the user.
-
-Preserve the plan's constraint-provenance table, revisit conditions, intentional live-broadcast rule, full `name@machine` shared-address rule, configured `COPILOT_AGENT_MACHINE` identity, rollback path, fail-closed evidence, closed address-directory reframe record, and Reframe gate. The current reframe status is `CLEAR`, pending replacement design review; if a revisit condition fires, persist an `OPEN` record and return to `/dfrysinger-skills:design-doc` before adding another component. Inherited mechanisms and numeric limits do not become requirements merely because they survived compaction.
-
-Stay on this course until every item in the plan's "Definition of Done — Windows Addressed Mailbox" section is verifiably met.
-
-### Required process skills
-
-- **Governing:** `/dfrysinger-skills:development-loop` — owns phase order, durable proof, review, final validation, and landing.
-- **Execution:** `/dfrysinger-skills:mailbox` — owns the portable mailbox commands and recipient workflow when the implementation and live-proof phases reach them; `/dfrysinger-skills:dual-review` — owns the required design and implementation review rounds.
-- **Context:** `/dfrysinger-skills:self-compact` — at development-loop compaction points, or when context becomes noisy or repetitive, persist the complete baton and invoke and follow this skill as the final action. Do not compact merely because the hourly reminder fired or while active live proof is in progress.
+For any new validation run, use the architecture, failure model, and acceptance
+criteria in
+[`windows-cross-computer-mailbox-addressing.md`](./windows-cross-computer-mailbox-addressing.md).
+The proof must keep local mail and state off OneDrive, route only qualified
+addresses across computers, preserve immutable remote files, and verify local
+outbox retry after remote transport failure.

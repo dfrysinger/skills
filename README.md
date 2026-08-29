@@ -65,9 +65,11 @@ guarded terminal fallback.
 When one logical agent name is reused across computers, mailbox addresses use
 `name@machine` (for example, `hotel@surface-pro`) for one-computer delivery.
 Set the stable machine label explicitly with `COPILOT_AGENT_MACHINE`; there is
-no hostname fallback, and labels must be unique within the shared mailbox.
-The unqualified `hotel` address remains an intentional live broadcast to
-currently running matching watchers.
+no hostname fallback. Unqualified addresses such as `hotel` are local-only;
+there is no implicit broadcast. Mutable mail lives under
+`MAILBOX_LOCAL_ROOT` (default `~/.copilot/mailbox`). Qualified messages are
+staged locally and use `MAILBOX_REMOTE_ROOT` only for immutable cross-computer
+envelopes, attachments, and acknowledgement receipts.
 
 Session-inbox diagnostics are written as newline-delimited JSON under
 `~/.copilot/session-inbox/logs/`. Extension logs are named by session and

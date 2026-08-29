@@ -164,7 +164,7 @@ try {
     case "list": {
       const { positional } = parseOptions(args);
       if (positional.length !== 0) usage("list takes no arguments");
-      console.log(`=== mailboxes (${mailbox.mailboxRoot}) ===`);
+      console.log(`=== local mailboxes (${mailbox.mailboxRoot}) ===`);
       const mailboxes = await mailbox.list();
       if (mailboxes.length === 0) {
         console.log("  (none)");
@@ -233,7 +233,7 @@ try {
         process.on(signal, () => controller.abort());
       }
       console.log(
-        `watching ${mailbox.mailboxRoot}/${address}/pending for local session ${targetName} every ${intervalMs} ms`,
+        `watching ${mailbox.mailboxRootFor(address)}/${address}/pending for local session ${targetName} every ${intervalMs} ms`,
       );
       await mailbox.watch(address, {
         targetName,
