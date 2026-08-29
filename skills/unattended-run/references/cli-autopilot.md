@@ -24,13 +24,18 @@ to paste when that handoff is unavailable.
   reminder is live. The bundled detached helper calls the session-inbox request
   CLI with the bounded `autopilot` request, the target session ID or tmux
   session name, and `--prompt-file`.
-- The extension immediately submits the native `/autopilot` command through
-  `commands.enqueue()`, whose local FIFO queue chooses when the command runs.
+- The extension invokes the native `/autopilot` command through
+  `commands.invoke()`, which persists the objective. When the session is idle,
+  the command returns the same autopilot-mode agent prompt used by the
+  interactive terminal; the extension submits that prompt with immediate
+  `session.send()`. When autopilot is already working, the command updates the
+  active objective in place and the existing turn continues toward it.
+  Neither path uses the local FIFO queue.
   It then reads the resulting state with
   `workspaces.readAutopilotObjective()`. It accepts the handoff only when the
   native state contains the exact canonical objective with an active or
-  completed status and the matching native starting message reports idle or
-  queued delivery. The request removes trailing CRLF/LF record endings before enqueue
+  completed status and activation is confirmed as idle or steering. The request
+  removes trailing CRLF/LF record endings before execution
   because the native command parser removes them before persistence; all
   interior line breaks remain unchanged. The request CLI also derives the
   dedupe key from this canonical text and the resolved session ID, so equivalent
@@ -43,8 +48,8 @@ to paste when that handoff is unavailable.
   objective handoff until the first receipt is resolved.
 - On first use, the native command may show Copilot's autopilot permission
   dialog. The handoff remains unconfirmed until that dialog is resolved and the
-  native starting message actually begins; objective-file creation alone is
-  not reported as success.
+  native activation is confirmed; objective-file creation alone is not
+  reported as success for an idle session.
 - `/allow-all` remains user-controlled. Print it when needed; never
   include a permission escalation in the objective handoff.
 - Autopilot mode is sticky by default for the next prompt. This is expected and
@@ -54,7 +59,7 @@ to paste when that handoff is unavailable.
 - Escape / Ctrl+C cancels and stops autopilot from continuing.
 
 The SDK handoff establishes native objective state and selects autopilot mode
-directly; it does not type a slash command. Run it detached as the final action
-so the current turn can end and the queued command can run. The detached
+directly; it does not type a slash command or wait behind the FIFO. Run it
+detached as the final action so the current turn can end cleanly. The detached
 confirmation watcher does not delay submission. If the handoff is unavailable,
 print the objective and do not ask the user to restart the CLI.

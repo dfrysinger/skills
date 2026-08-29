@@ -1,6 +1,6 @@
 ---
 name: unattended-run
-description: Keep a long, unattended Copilot CLI run on course. Arm an `/every` charter re-brief that restores the run's operating rules after compaction, then hand off an optional autopilot objective through the session-inbox SDK extension and native command queue. Use when starting a long autopilot or `/goal` run against a plan doc, sharpening its objective, or preventing drift across context compactions.
+description: Keep a long, unattended Copilot CLI run on course. Arm an `/every` charter re-brief that restores the run's operating rules after compaction, then hand off an optional autopilot objective through the session-inbox SDK extension and native command invocation. Use when starting a long autopilot or `/goal` run against a plan doc, sharpening its objective, or preventing drift across context compactions.
 ---
 
 # unattended-run
@@ -15,20 +15,20 @@ For a long, unattended Copilot CLI run, two things keep the agent on course:
   deliverable of this skill.**
 - An **optional `/autopilot` objective** that drives the *what* until the agent
   determines the task is complete. A detached request asks the session-inbox
-  extension to place the native `/autopilot` command in the CLI's FIFO queue
-  immediately, then reads the native objective state back to prove the exact
-  objective was established. Fall back to printing it when that handoff is
-  unavailable.
+  extension to invoke the native `/autopilot` command directly, then reads the
+  native objective state back to prove the exact objective was established.
+  Fall back to printing it when that handoff is unavailable.
 
 ## Critical: use the session SDK, not terminal input
 
 The objective handoff is not a terminal slash-command injection. The bundled
 helper calls `extensions/session-inbox/request.mjs autopilot`. The target
-extension enqueues the bounded native `/autopilot` command through the SDK
-without waiting for idle. The CLI chooses when the FIFO command runs. The
-extension then reads the resulting native objective state back, confirms its
-canonical text exactly, confirms the native starting message arrived with idle
-or queued delivery, and writes a durable completed or failed receipt.
+extension invokes the bounded native `/autopilot` command through the SDK
+without waiting for idle. An idle session starts the returned native prompt
+through immediate SDK delivery; an active autopilot session updates its
+objective in place. The extension then reads the resulting native objective
+state back, confirms its canonical text exactly, confirms idle or steering
+activation, and writes a durable completed or failed receipt.
 The request removes only trailing line-ending bytes because the native command
 parser removes them before storing objective state; interior line structure is
 preserved. The request CLI derives deduplication from that canonical text and
@@ -42,9 +42,8 @@ the resolved session ID. This is expected and is **NOT a blocker**:
   define observable completion and let the CLI handle the transition.
 - Autopilot remaining selected after completion is expected and harmless. It
   affects only how the next prompt is handled; do not turn it off as cleanup.
-- The SDK request enters the native command queue immediately and normally runs
-  at the **next boundary chosen by the CLI**. Run the helper detached and end
-  the current turn; its 360-second maximum confirmation wait preserves the
+- The SDK request bypasses the native message FIFO. Run the helper detached and
+  end the current turn; its 360-second maximum confirmation wait preserves the
   handoff budget and prevents an unbounded watcher. To self-compact during a run,
   use `self-compact`, which queues the compact and arms a watcher that submits
   continuation only after the session's `summary_count` proves compaction
@@ -250,7 +249,7 @@ autopilot --target-session ID or --target-tmux NAME --prompt-file FILE
 
 It rejects empty, slash-prefixed, permission-changing, or unresolved objectives;
 caps the receipt wait at 360 seconds; requires the SDK receipt to prove both
-`objectiveSet: true` and `delivery: "idle"` or `"queued"`; preserves the request output and objective under
+`objectiveSet: true` and `delivery: "idle"` or `"steering"`; preserves the request output and objective under
 `~/.copilot/autopilot-enqueue/`; and notifies the user if delivery cannot be
 confirmed. The session-inbox extension also retains its JSON request receipt.
 
