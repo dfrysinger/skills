@@ -187,8 +187,8 @@ async function sendAndConfirm({ prompt, agentMode }) {
     resolveEvent?.();
     resolveEvent = undefined;
   });
-  const waitForDelivery = async (deliveries, timeoutMs) => {
-    const deadline = Date.now() + timeoutMs;
+  const confirmationDeadline = Date.now() + confirmationTimeoutMs;
+  const waitForDelivery = async (deliveries, deadline = confirmationDeadline) => {
     while (Date.now() < deadline) {
       const event = matchingEvents.find((candidate) =>
         deliveries.includes(candidate.data.delivery),
@@ -207,6 +207,16 @@ async function sendAndConfirm({ prompt, agentMode }) {
     return undefined;
   };
   try {
+    let preexistingQueueIds;
+    try {
+      const pending = await session.rpc.queue.pendingItems();
+      preexistingQueueIds = new Set(pending.items.map((item) => item.id));
+    } catch (error) {
+      diagnostics.log("sdk.send.queue_snapshot_failed", {
+        phase: "before-send",
+        error: errorDetails(error),
+      });
+    }
     diagnostics.log("sdk.send.started", { mode: "immediate", agentMode });
     const messageId = await session.send({
       prompt,
@@ -215,12 +225,18 @@ async function sendAndConfirm({ prompt, agentMode }) {
     });
     let event = await waitForDelivery(
       ["idle", "steering", "queued"],
-      confirmationTimeoutMs,
+      Math.min(
+        confirmationDeadline,
+        Date.now() + Math.min(2_000, confirmationTimeoutMs / 2),
+      ),
     );
     if (!event || event.data.delivery === "queued") {
       const pending = await session.rpc.queue.pendingItems();
       const queuedMatches = pending.items.filter(
-        (item) => item.kind === "message" && item.displayText === prompt,
+        (item) =>
+          item.kind === "message" &&
+          item.displayText === prompt &&
+          preexistingQueueIds?.has(item.id) === false,
       );
       if (queuedMatches.length === 1) {
         diagnostics.log("sdk.send.promoting_queued", {
@@ -231,7 +247,7 @@ async function sendAndConfirm({ prompt, agentMode }) {
           id: queuedMatches[0].id,
         });
         if (promoted.steered) {
-          event = await waitForDelivery(["steering"], confirmationTimeoutMs);
+          event = await waitForDelivery(["steering"]);
         } else {
           const removed = await session.rpc.queue.removeAt({
             id: queuedMatches[0].id,
@@ -242,11 +258,9 @@ async function sendAndConfirm({ prompt, agentMode }) {
             );
           }
         }
-      } else if (
-        queuedMatches.length === 0 &&
-        pending.steeringMessages?.includes(prompt)
-      ) {
-        event = await waitForDelivery(["steering"], confirmationTimeoutMs);
+      }
+      if (!event || event.data.delivery === "queued") {
+        event = (await waitForDelivery(["idle", "steering"])) ?? event;
       }
     }
     diagnostics.log(event ? "sdk.send.confirmed" : "sdk.send.unconfirmed", {

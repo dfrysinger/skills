@@ -675,6 +675,7 @@ export function createMailbox(options = {}) {
       mode: 0o600,
     });
     try {
+      const attemptId = `${Date.now()}-${randomBytes(4).toString("hex")}`;
       const result = await runNode(
         requestCli,
         [
@@ -686,9 +687,9 @@ export function createMailbox(options = {}) {
           "--mode",
           "immediate",
           "--dedupe-key",
-          `mailbox:immediate-v3:${mailboxAddress}:${newest.id}`,
+          `mailbox:immediate-v3:${mailboxAddress}:${newest.id}:${attemptId}`,
           "--timeout",
-          wait ? "35" : "15",
+          wait ? "35" : "20",
         ],
         {},
       );

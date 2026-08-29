@@ -97,21 +97,22 @@ if [[ "$BACKEND" == "copilot" ]]; then
   trap 'rm -f -- "$PROMPT_FILE"' EXIT
   chmod 600 "$PROMPT_FILE"
   printf '%s' "$PROMPT" >"$PROMPT_FILE"
-  TIMEOUT=15
+  ATTEMPT_ID="$(date -u +%Y%m%dT%H%M%S)-$$-${RANDOM:-0}"
+  TIMEOUT=20
   [[ "$WAIT" -eq 1 ]] && TIMEOUT=35
   REQUEST_OUTPUT=""
   if REQUEST_OUTPUT="$(node "$REQUEST_CLI" send \
     --target-name "$TARGET_NAME" \
     --prompt-file "$PROMPT_FILE" \
     --mode immediate \
-    --dedupe-key "mailbox:immediate-v3:$NAME:$NEWEST_ID" \
+    --dedupe-key "mailbox:immediate-v3:$NAME:$NEWEST_ID:$ATTEMPT_ID" \
     --timeout "$TIMEOUT" 2>&1)"; then
     if grep -Eq '"delivery":"(idle|steering)"' <<<"$REQUEST_OUTPUT"; then
       printf '%s\n' "$NEWEST_ID" >"$WATERMARK_FILE"
       echo "poked: $NAME (SDK wakeup accepted)"
       exit 0
     fi
-    echo "UNVERIFIED: '$NAME' did not confirm that the SDK accepted the wakeup; the envelope remains pending and durable dedupe prevents duplicate delivery." >&2
+    echo "UNVERIFIED: '$NAME' did not confirm that the SDK delivered the wakeup; the envelope remains pending for a later attempt." >&2
     exit 3
   fi
   echo "UNVERIFIED: '$NAME' did not acknowledge the SDK wakeup; the envelope and request remain queued." >&2

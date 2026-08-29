@@ -141,19 +141,16 @@ will not notice until the user manually says "check mail".
 - **Copilot wakeups use immediate native delivery.** Session-inbox submits the
   user message with SDK delivery mode `immediate`, so an active long-running or
   autopilot turn receives it as steering instead of leaving it stranded in the
-  normal FIFO queue. Once `session.send()` returns a message ID, the watcher
-  records the envelope as notified and does not retry it every polling cycle.
+  normal FIFO queue. The watcher marks the envelope notified only after an
+  `idle` or `steering` event; a returned message ID or `unconfirmed` result is
+  not enough. Each retry uses an attempt-scoped `mailbox:immediate-v3` dedupe
+  key so an ambiguous prior attempt cannot permanently suppress later wakeups.
   The durable envelope remains pending until the recipient reads and
-  acknowledges it. The immediate-delivery dedupe namespace is distinct from
-  the retired queued-delivery namespace so pending envelopes created before
-  0.108.9 receive one replacement nudge instead of replaying a cached
-  `unconfirmed` result. During migration, a returned message ID or an `idle`,
-  `queued`, or `steering` event from an older recipient extension also proves
-  that replacement was accepted. Current senders use the
-  `mailbox:immediate-v3` namespace and mark an envelope notified only after an
-  `idle` or `steering` event. If the host temporarily places an immediate send
-  in FIFO, session-inbox promotes that exact message into the steering lane;
-  an unsteerable item is removed rather than left queued.
+  acknowledges it. If the host temporarily places an immediate send in FIFO,
+  session-inbox snapshots the queue before submission and promotes only the
+  single exact matching item that appeared afterward. An owned but unsteerable
+  item is removed rather than left queued; ambiguous ownership leaves every
+  queued item untouched.
 - **Claude and Codex wakeups remain fail-closed and best-effort.** Their poke
   requires a ready pane and verifies a transcript entry; otherwise rely on the
   osascript notification and resume hook.

@@ -366,9 +366,11 @@ console.log('{"status":"completed","result":{"delivery":"idle"}}');
     assert.equal(sent.wakeup.status, "delivered");
     const args = JSON.parse((await readFile(callLog, "utf8")).trim());
     assert.equal(args[args.indexOf("--target-name") + 1], "hotel");
-    assert.equal(
+    assert.match(
       args[args.indexOf("--dedupe-key") + 1],
-      `mailbox:immediate-v3:hotel@surface-pro:${sent.envelope.id}`,
+      new RegExp(
+        `^mailbox:immediate-v3:hotel@surface-pro:${sent.envelope.id}:`,
+      ),
     );
     await readFile(
       join(
@@ -487,9 +489,9 @@ test("recipient-local watcher does not mark an unconfirmed wakeup as delivered",
     assert.equal(request.target.resolvedBy, "session-name");
     assert.equal(request.target.sessionId, "hotel-session");
     assert.equal(request.mode, "immediate");
-    assert.equal(
+    assert.match(
       request.dedupeKey,
-      `mailbox:immediate-v3:hotel:${sent.envelope.id}`,
+      new RegExp(`^mailbox:immediate-v3:hotel:${sent.envelope.id}:`),
     );
     assert.match(request.prompt, /^check mailbox; skip if empty \[mb:/);
 
@@ -509,7 +511,26 @@ test("recipient-local watcher does not mark an unconfirmed wakeup as delivered",
     );
     await watching;
 
-    assert.equal((await mailbox.poke("hotel")).status, "unverified");
+    const retrying = mailbox.poke("hotel");
+    const { name: retryName, request: retryRequest } =
+      await waitForRequest(inboxRoot);
+    assert.notEqual(retryRequest.dedupeKey, request.dedupeKey);
+    assert.match(
+      retryRequest.dedupeKey,
+      new RegExp(`^mailbox:immediate-v3:hotel:${sent.envelope.id}:`),
+    );
+    const retryReceiptPath = join(inboxRoot, "failed", retryName);
+    await rm(join(inboxRoot, "pending", retryName));
+    await mkdir(dirname(retryReceiptPath), { recursive: true });
+    await writeFile(
+      retryReceiptPath,
+      `${JSON.stringify({
+        status: "failed",
+        ambiguousSideEffect: true,
+        error: "delivery was not confirmed",
+      })}\n`,
+    );
+    assert.equal((await retrying).status, "unverified");
     await assert.rejects(
       readFile(join(stateRoot, "watchers", "hotel.lock"), "utf8"),
       { code: "ENOENT" },
