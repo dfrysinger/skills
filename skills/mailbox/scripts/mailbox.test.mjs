@@ -126,6 +126,56 @@ test("wakeup failures never remove a published envelope", async () => {
   }
 });
 
+test("request timeouts reuse the same mailbox delivery attempt", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-timeout-retry-"));
+  const previousCallLog = process.env.MOCK_MAILBOX_REQUEST_CALLS;
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const stateRoot = join(root, "state");
+    const callLog = join(root, "request-calls.jsonl");
+    const mockRequest = join(root, "mock-request.mjs");
+    process.env.MOCK_MAILBOX_REQUEST_CALLS = callLog;
+    await writeFile(
+      mockRequest,
+      `import { appendFileSync } from "node:fs";
+appendFileSync(process.env.MOCK_MAILBOX_REQUEST_CALLS, JSON.stringify(process.argv.slice(2)) + "\\n");
+process.exit(2);
+`,
+    );
+    const mailbox = createMailbox({ mailboxRoot, stateRoot, requestCli: mockRequest });
+    const sent = await mailbox.send({
+      recipient: "hotel",
+      sender: "whisky",
+      summary: "timeout retry",
+      message: "reuse the in-flight attempt",
+      wake: false,
+    });
+
+    assert.equal((await mailbox.poke("hotel")).status, "unverified");
+    assert.equal((await mailbox.poke("hotel")).status, "unverified");
+    const calls = (await readFile(callLog, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const dedupeKeys = calls.map(
+      (args) => args[args.indexOf("--dedupe-key") + 1],
+    );
+    assert.equal(dedupeKeys.length, 2);
+    assert.equal(dedupeKeys[0], dedupeKeys[1]);
+    assert.match(
+      dedupeKeys[0],
+      new RegExp(`^mailbox:immediate-v3:hotel:${sent.envelope.id}:`),
+    );
+  } finally {
+    if (previousCallLog === undefined) {
+      delete process.env.MOCK_MAILBOX_REQUEST_CALLS;
+    } else {
+      process.env.MOCK_MAILBOX_REQUEST_CALLS = previousCallLog;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("mailbox addresses preserve valid qualified names and reject malformed input", () => {
   assert.deepEqual(parseMailboxAddress("hotel"), {
     address: "hotel",
@@ -366,9 +416,11 @@ console.log('{"status":"completed","result":{"delivery":"idle"}}');
     assert.equal(sent.wakeup.status, "delivered");
     const args = JSON.parse((await readFile(callLog, "utf8")).trim());
     assert.equal(args[args.indexOf("--target-name") + 1], "hotel");
-    assert.equal(
+    assert.match(
       args[args.indexOf("--dedupe-key") + 1],
-      `mailbox:immediate-v2:hotel@surface-pro:${sent.envelope.id}`,
+      new RegExp(
+        `^mailbox:immediate-v3:hotel@surface-pro:${sent.envelope.id}:`,
+      ),
     );
     await readFile(
       join(
@@ -453,7 +505,7 @@ test("recipient-local actions aggregate both addresses and reject duplicate ids"
   }
 });
 
-test("recipient-local watcher wakes a live session by its Copilot session name", async () => {
+test("recipient-local watcher does not mark an unconfirmed wakeup as delivered", async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-watch-"));
   const previousInboxRoot = process.env.COPILOT_SESSION_INBOX_DIR;
   try {
@@ -487,9 +539,9 @@ test("recipient-local watcher wakes a live session by its Copilot session name",
     assert.equal(request.target.resolvedBy, "session-name");
     assert.equal(request.target.sessionId, "hotel-session");
     assert.equal(request.mode, "immediate");
-    assert.equal(
+    assert.match(
       request.dedupeKey,
-      `mailbox:immediate-v2:hotel:${sent.envelope.id}`,
+      new RegExp(`^mailbox:immediate-v3:hotel:${sent.envelope.id}:`),
     );
     assert.match(request.prompt, /^check mailbox; skip if empty \[mb:/);
 
@@ -509,14 +561,33 @@ test("recipient-local watcher wakes a live session by its Copilot session name",
     );
     await watching;
 
-    assert.equal((await mailbox.poke("hotel")).status, "already-poked");
+    const retrying = mailbox.poke("hotel");
+    const { name: retryName, request: retryRequest } =
+      await waitForRequest(inboxRoot);
+    assert.notEqual(retryRequest.dedupeKey, request.dedupeKey);
+    assert.match(
+      retryRequest.dedupeKey,
+      new RegExp(`^mailbox:immediate-v3:hotel:${sent.envelope.id}:`),
+    );
+    const retryReceiptPath = join(inboxRoot, "failed", retryName);
+    await rm(join(inboxRoot, "pending", retryName));
+    await mkdir(dirname(retryReceiptPath), { recursive: true });
+    await writeFile(
+      retryReceiptPath,
+      `${JSON.stringify({
+        status: "failed",
+        ambiguousSideEffect: true,
+        error: "delivery was not confirmed",
+      })}\n`,
+    );
+    assert.equal((await retrying).status, "unverified");
     await assert.rejects(
       readFile(join(stateRoot, "watchers", "hotel.lock"), "utf8"),
       { code: "ENOENT" },
     );
     const diagnostics = await readFile(join(stateRoot, "logs", "mailbox.jsonl"), "utf8");
     assert.match(diagnostics, /"event":"watcher.started"/);
-    assert.match(diagnostics, /"event":"wakeup.accepted"/);
+    assert.match(diagnostics, /"event":"wakeup.unverified"/);
     assert.doesNotMatch(diagnostics, /wake through the local bridge/);
   } finally {
     if (previousInboxRoot === undefined) {

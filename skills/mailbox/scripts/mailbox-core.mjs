@@ -569,6 +569,32 @@ export function createMailbox(options = {}) {
     return join(stateRoot, "notified", parseMailboxAddress(address).address);
   }
 
+  function notificationAttemptPath(address, envelopeId) {
+    return join(notificationDirectory(address), `${envelopeId}.attempt`);
+  }
+
+  async function notificationAttemptId(address, envelopeId) {
+    const path = notificationAttemptPath(address, envelopeId);
+    try {
+      const existing = (await readFile(path, "utf8")).trim();
+      if (existing) return existing;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    const attemptId = `${Date.now()}-${randomBytes(4).toString("hex")}`;
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    await atomicWrite(path, `${attemptId}\n`);
+    return attemptId;
+  }
+
+  async function rotateNotificationAttempt(address, envelopeId) {
+    const attemptId = `${Date.now()}-${randomBytes(4).toString("hex")}`;
+    await atomicWrite(
+      notificationAttemptPath(address, envelopeId),
+      `${attemptId}\n`,
+    );
+  }
+
   async function notifiedIds(address, pendingIds) {
     const directory = notificationDirectory(address);
     let names = [];
@@ -586,6 +612,12 @@ export function createMailbox(options = {}) {
         await rm(join(directory, `${notified}.notified`), { force: true });
       }
     }
+    for (const name of names.filter((entry) => entry.endsWith(".attempt"))) {
+      const envelopeId = name.slice(0, -".attempt".length);
+      if (!pendingIds.has(envelopeId)) {
+        await rm(join(directory, name), { force: true });
+      }
+    }
     return result;
   }
 
@@ -596,6 +628,9 @@ export function createMailbox(options = {}) {
       ids.map((id) =>
         atomicWrite(join(directory, `${id}.notified`), `${new Date().toISOString()}\n`),
       ),
+    );
+    await Promise.all(
+      ids.map((id) => rm(notificationAttemptPath(address, id), { force: true })),
     );
   }
 
@@ -675,6 +710,7 @@ export function createMailbox(options = {}) {
       mode: 0o600,
     });
     try {
+      const attemptId = await notificationAttemptId(mailboxAddress, newest.id);
       const result = await runNode(
         requestCli,
         [
@@ -686,16 +722,13 @@ export function createMailbox(options = {}) {
           "--mode",
           "immediate",
           "--dedupe-key",
-          `mailbox:immediate-v2:${mailboxAddress}:${newest.id}`,
+          `mailbox:immediate-v3:${mailboxAddress}:${newest.id}:${attemptId}`,
           "--timeout",
-          wait ? "35" : "15",
+          wait ? "35" : "20",
         ],
         {},
       );
-      const accepted =
-        result.stdout.includes('"messageAccepted":true') ||
-        /"messageId":"[^"]+"/.test(result.stdout) ||
-        /"delivery":"(?:idle|queued|steering)"/.test(result.stdout);
+      const accepted = /"delivery":"(?:idle|steering)"/.test(result.stdout);
       if (result.code === 0 && accepted) {
         await markNotified(mailboxAddress, [...readyIds]);
         diagnostics.log("wakeup.accepted", {
@@ -704,6 +737,12 @@ export function createMailbox(options = {}) {
           envelopeId: newest.id,
         });
         return { status: "delivered", envelopeId: newest.id };
+      }
+      const explicitAmbiguity =
+        /"ambiguousSideEffect":true/.test(`${result.stdout}\n${result.stderr}`) ||
+        /"delivery":"unconfirmed"/.test(`${result.stdout}\n${result.stderr}`);
+      if (explicitAmbiguity) {
+        await rotateNotificationAttempt(mailboxAddress, newest.id);
       }
       const targetUnavailable =
         result.code === 64 &&

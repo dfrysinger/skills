@@ -135,6 +135,18 @@ export async function joinSession() {
       if (current.rejectSendAfterRecord) {
         throw new Error("mock transport lost the accepted send response");
       }
+      if (current.queuePromptOnSend) {
+        writeFileSync(
+          process.env.MOCK_STATE,
+          JSON.stringify({
+            ...current,
+            queuedPrompt: options.prompt,
+            extraQueuedPrompt: current.additionalQueuePromptOnSend
+              ? options.prompt
+              : current.extraQueuedPrompt,
+          }) + "\\n",
+        );
+      }
       if (
         !current.suppressDelivery &&
         !(options.agentMode === "autopilot" && current.suppressAutopilotDelivery)
@@ -165,7 +177,79 @@ export async function joinSession() {
       },
       queue: {
         async pendingItems() {
-          return {items: Array.from({length: state().pending}, (_, index) => ({index}))};
+          const current = state();
+          if (current.pendingItemsNeverResolves) {
+            return new Promise(() => {});
+          }
+          return {
+            items: [
+              ...(current.preexistingQueuedPrompt
+                ? [{
+                    id: "preexisting-message",
+                    kind: "message",
+                    displayText: current.preexistingQueuedPrompt,
+                    agentMode: "interactive",
+                  }]
+                : []),
+              ...(current.queuedPrompt
+                ? [{
+                  id: "queued-message",
+                  kind: "message",
+                  displayText: current.queuedPrompt,
+                  agentMode: "interactive",
+                }]
+                : []),
+              ...(current.extraQueuedPrompt
+                ? [{
+                    id: "extra-queued-message",
+                    kind: "message",
+                    displayText: current.extraQueuedPrompt,
+                    agentMode: "interactive",
+                  }]
+                : []),
+              ...Array.from({length: current.pending}, (_, index) => ({
+                  id: "pending-" + index,
+                  kind: "message",
+                  displayText: "pending " + index,
+                  agentMode: "interactive",
+                })),
+            ],
+            steeringMessages: current.steeringPrompt
+              ? [current.steeringPrompt]
+              : [],
+          };
+        },
+        async sendNow(options) {
+          record("queue.sendNow", options);
+          const current = state();
+          if (current.sendNowDelayMs) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, current.sendNowDelayMs),
+            );
+          }
+          if (!current.promoteQueued) return {steered: false};
+          writeFileSync(
+            process.env.MOCK_STATE,
+            JSON.stringify({...current, queuedPrompt: undefined}) + "\\n",
+          );
+          queueMicrotask(() => emit("user.message", {
+            type: "user.message",
+            data: {
+              content: current.queuedPrompt,
+              delivery: "steering",
+            },
+          }));
+          return {steered: true};
+        },
+        async removeAt(options) {
+          record("queue.removeAt", options);
+          const current = state();
+          if (!current.removeQueued) return {removed: false};
+          writeFileSync(
+            process.env.MOCK_STATE,
+            JSON.stringify({...current, queuedPrompt: undefined}) + "\\n",
+          );
+          return {removed: true};
         },
       },
       extensions: {
@@ -620,10 +704,10 @@ test("recipient extension submits SDK work without idle gates and preserves phas
       mode: "immediate",
       dedupeKey: "unconfirmed-one-shot",
     });
-    const unconfirmed = await harness.receipt("completed", "unconfirmed-send");
+    const unconfirmed = await harness.receipt("failed", "unconfirmed-send");
+    assert.equal(unconfirmed.ambiguousSideEffect, true);
     assert.equal(unconfirmed.result.messageAccepted, true);
     assert.equal(unconfirmed.result.delivery, "unconfirmed");
-    assert.equal(unconfirmed.result.idleDelivery, false);
     await harness.setState({ suppressDelivery: false, idleCounter: 11 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("unconfirmed-retry", {
@@ -632,12 +716,9 @@ test("recipient extension submits SDK work without idle gates and preserves phas
       mode: "immediate",
       dedupeKey: "unconfirmed-one-shot",
     });
-    const unconfirmedRetry = await harness.receipt(
-      "completed",
-      "unconfirmed-retry",
-    );
-    assert.equal(unconfirmedRetry.deduplicated, true);
-    assert.equal(unconfirmedRetry.result.delivery, "unconfirmed");
+    const unconfirmedRetry = await harness.receipt("failed", "unconfirmed-retry");
+    assert.equal(unconfirmedRetry.ambiguousSideEffect, true);
+    assert.match(unconfirmedRetry.error, /prior request side effect is ambiguous/);
     assert.equal(
       (await harness.calls()).filter(
         (call) => call.kind === "send" && call.value.prompt === "accepted without event",
@@ -688,14 +769,14 @@ test("recipient extension submits SDK work without idle gates and preserves phas
       continuationPrompt: "queue without waiting for its later event",
     });
     const compactUnconfirmed = await harness.receipt(
-      "completed",
+      "failed",
       "compact-unconfirmed-continuation",
     );
+    assert.equal(compactUnconfirmed.ambiguousSideEffect, true);
     assert.equal(compactUnconfirmed.result.compacted, true);
     assert.equal(compactUnconfirmed.result.continuationAccepted, true);
     assert.equal(typeof compactUnconfirmed.result.continuationMessageId, "string");
     assert.equal(compactUnconfirmed.result.continuationDelivery, "unconfirmed");
-    assert.equal(compactUnconfirmed.result.continuationError, undefined);
 
     await harness.setState({
       suppressDelivery: false,
@@ -930,6 +1011,209 @@ test("an immediate send observed in the FIFO fails ambiguously", async () => {
     assert.match(receipt.error, /message entered the FIFO queue/);
     assert.equal(receipt.result.delivery, "queued");
     assert.equal(receipt.result.queuedDelivery, true);
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("an immediate send placed in FIFO is promoted to steering", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    queuePromptOnSend: true,
+    promoteQueued: true,
+  });
+  try {
+    await harness.request("promote-queued-send", {
+      kind: "send",
+      prompt: "promote me",
+      mode: "immediate",
+      dedupeKey: "promote-queued",
+    });
+    const receipt = await harness.receipt("completed", "promote-queued-send");
+    assert.equal(receipt.result.delivery, "steering");
+    assert.equal(receipt.result.queuedDelivery, false);
+    assert.ok(
+      (await harness.calls()).some(
+        (call) =>
+          call.kind === "queue.sendNow" &&
+          call.value.id === "queued-message",
+      ),
+    );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("an unsteerable queued send is removed definitively", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    queuePromptOnSend: true,
+    removeQueued: true,
+  });
+  try {
+    await harness.request("remove-queued-send", {
+      kind: "send",
+      prompt: "remove me",
+      mode: "immediate",
+      dedupeKey: "remove-queued",
+    });
+    const receipt = await harness.receipt("failed", "remove-queued-send");
+    assert.equal(receipt.ambiguousSideEffect, undefined);
+    assert.match(receipt.error, /removed from FIFO/);
+    assert.ok(
+      (await harness.calls()).some(
+        (call) =>
+          call.kind === "queue.removeAt" &&
+          call.value.id === "queued-message",
+      ),
+    );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("queue recovery never touches a preexisting identical message", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    preexistingQueuedPrompt: "same prompt",
+  });
+  try {
+    await harness.request("preexisting-identical-send", {
+      kind: "send",
+      prompt: "same prompt",
+      mode: "immediate",
+      dedupeKey: "preexisting-identical",
+    });
+    const receipt = await harness.receipt("failed", "preexisting-identical-send");
+    assert.equal(receipt.ambiguousSideEffect, true);
+    assert.match(receipt.error, /delivery was not confirmed/);
+    assert.equal(
+      (await harness.calls()).some(
+        (call) =>
+          call.kind === "queue.sendNow" || call.kind === "queue.removeAt",
+      ),
+      false,
+    );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("queue recovery promotes only the newly appeared identical message", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    preexistingQueuedPrompt: "same prompt",
+    queuePromptOnSend: true,
+    promoteQueued: true,
+  });
+  try {
+    await harness.request("new-identical-send", {
+      kind: "send",
+      prompt: "same prompt",
+      mode: "immediate",
+      dedupeKey: "new-identical",
+    });
+    const receipt = await harness.receipt("completed", "new-identical-send");
+    assert.equal(receipt.result.delivery, "steering");
+    const queueCalls = (await harness.calls()).filter(
+      (call) =>
+        call.kind === "queue.sendNow" || call.kind === "queue.removeAt",
+    );
+    assert.deepEqual(
+      queueCalls.map((call) => [call.kind, call.value.id]),
+      [["queue.sendNow", "queued-message"]],
+    );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("multiple newly appeared identical messages remain ambiguous", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    queuePromptOnSend: true,
+    additionalQueuePromptOnSend: true,
+    promoteQueued: true,
+  });
+  try {
+    await harness.request("multiple-identical-send", {
+      kind: "send",
+      prompt: "duplicate prompt",
+      mode: "immediate",
+      dedupeKey: "multiple-identical",
+    });
+    const receipt = await harness.receipt("failed", "multiple-identical-send");
+    assert.equal(receipt.ambiguousSideEffect, true);
+    assert.match(receipt.error, /delivery was not confirmed/);
+    assert.equal(
+      (await harness.calls()).some(
+        (call) =>
+          call.kind === "queue.sendNow" || call.kind === "queue.removeAt",
+      ),
+      false,
+    );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("a stalled queue snapshot cannot outlive the confirmation deadline", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    pendingItemsNeverResolves: true,
+  });
+  try {
+    const startedAt = Date.now();
+    await harness.request("stalled-queue-snapshot-send", {
+      kind: "send",
+      prompt: "bounded queue snapshot",
+      mode: "immediate",
+      dedupeKey: "stalled-queue-snapshot",
+    });
+    const receipt = await harness.receipt("failed", "stalled-queue-snapshot-send");
+    assert.equal(receipt.ambiguousSideEffect, true);
+    assert.match(receipt.error, /confirmation deadline/);
+    assert.ok(Date.now() - startedAt < 2_000);
+    assert.equal(
+      (await harness.calls()).filter((call) => call.kind === "send").length,
+      1,
+    );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("a delayed queue mutation settles before an ambiguous receipt permits retry", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    queuePromptOnSend: true,
+    promoteQueued: true,
+    sendNowDelayMs: 750,
+  });
+  try {
+    await harness.request("delayed-promotion-send", {
+      kind: "send",
+      prompt: "delayed promotion",
+      mode: "immediate",
+      dedupeKey: "delayed-promotion",
+    });
+    const receipt = await harness.receipt("failed", "delayed-promotion-send");
+    assert.equal(receipt.ambiguousSideEffect, true);
+
+    await harness.request("delayed-promotion-retry", {
+      kind: "send",
+      prompt: "delayed promotion",
+      mode: "immediate",
+      dedupeKey: "delayed-promotion",
+    });
+    const retry = await harness.receipt("failed", "delayed-promotion-retry");
+    assert.equal(retry.ambiguousSideEffect, true);
+    const calls = await harness.calls();
+    assert.equal(calls.filter((call) => call.kind === "send").length, 1);
+    assert.equal(
+      calls.filter((call) => call.kind === "queue.sendNow").length,
+      1,
+    );
   } finally {
     await harness.stop();
   }

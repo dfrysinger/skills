@@ -179,36 +179,159 @@ async function writeHeartbeat() {
 }
 
 async function sendAndConfirm({ prompt, agentMode }) {
-  let resolveDelivered;
-  const delivered = new Promise((resolve) => {
-    resolveDelivered = resolve;
-  });
+  const matchingEvents = [];
+  let resolveEvent;
   const unsubscribe = session.on("user.message", (event) => {
-    if (event.data.content === prompt) resolveDelivered(event);
+    if (event.data.content !== prompt) return;
+    matchingEvents.push(event);
+    resolveEvent?.();
+    resolveEvent = undefined;
   });
+  const confirmationDeadline = Date.now() + confirmationTimeoutMs;
+  const beforeSendSnapshotDeadline = Math.min(
+    confirmationDeadline,
+    Date.now() + Math.min(2_000, confirmationTimeoutMs / 2),
+  );
+  const withinDeadline = async (operation, deadline, label) => {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw new Error(`${label} timed out`);
+    let timer;
+    try {
+      return await Promise.race([
+        operation,
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`${label} timed out`)),
+            remainingMs,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const waitForDelivery = async (deliveries, deadline = confirmationDeadline) => {
+    while (Date.now() < deadline) {
+      const event = matchingEvents.find((candidate) =>
+        deliveries.includes(candidate.data.delivery),
+      );
+      if (event) return event;
+      await Promise.race([
+        new Promise((resolve) => {
+          resolveEvent = resolve;
+        }),
+        new Promise((resolve) =>
+          setTimeout(resolve, Math.max(0, deadline - Date.now())),
+        ),
+      ]);
+      resolveEvent = undefined;
+    }
+    return undefined;
+  };
   try {
+    let preexistingQueueIds;
+    try {
+      const pending = await withinDeadline(
+        session.rpc.queue.pendingItems(),
+        beforeSendSnapshotDeadline,
+        "pre-send queue snapshot",
+      );
+      preexistingQueueIds = new Set(pending.items.map((item) => item.id));
+    } catch (error) {
+      diagnostics.log("sdk.send.queue_snapshot_failed", {
+        phase: "before-send",
+        error: errorDetails(error),
+      });
+    }
     diagnostics.log("sdk.send.started", { mode: "immediate", agentMode });
     const messageId = await session.send({
       prompt,
       mode: "immediate",
       ...(agentMode ? { agentMode } : {}),
     });
-    const event = await Promise.race([
-      delivered,
-      new Promise((resolve) =>
-        setTimeout(() => resolve(undefined), confirmationTimeoutMs),
+    let event = await waitForDelivery(
+      ["idle", "steering", "queued"],
+      Math.min(
+        confirmationDeadline,
+        Date.now() + Math.min(2_000, confirmationTimeoutMs / 2),
       ),
-    ]);
+    );
+    if (!event || event.data.delivery === "queued") {
+      try {
+        const pending = await withinDeadline(
+          session.rpc.queue.pendingItems(),
+          confirmationDeadline,
+          "post-send queue inspection",
+        );
+        const queuedMatches = pending.items.filter(
+          (item) =>
+            item.kind === "message" &&
+            item.displayText === prompt &&
+            preexistingQueueIds?.has(item.id) === false,
+        );
+        if (queuedMatches.length === 1) {
+          diagnostics.log("sdk.send.promoting_queued", {
+            messageId,
+            queuedItemId: queuedMatches[0].id,
+          });
+          // A caller timeout may retry this request. Keep mutating recovery
+          // serialized under the same dedupe reservation until the RPC settles.
+          const promoted = await session.rpc.queue.sendNow({
+            id: queuedMatches[0].id,
+          });
+          if (promoted.steered) {
+            event = await waitForDelivery(["steering"]);
+          } else {
+            const removed = await session.rpc.queue.removeAt({
+              id: queuedMatches[0].id,
+            });
+            if (removed.removed) {
+              throw definitiveNoSideEffectError(
+                "immediate message could not enter the steering lane and was removed from FIFO",
+              );
+            }
+          }
+        }
+      } catch (error) {
+        if (error.definitiveNoSideEffect || error.ambiguousSideEffect) throw error;
+        throw ambiguousSideEffectError(
+          "session inbox queue recovery did not complete before confirmation deadline",
+          {
+            messageId,
+            messageAccepted: true,
+            delivery: event?.data.delivery ?? "unconfirmed",
+            idleDelivery: false,
+            queuedDelivery: event?.data.delivery === "queued",
+            cause: error.message,
+          },
+        );
+      }
+      if (!event || event.data.delivery === "queued") {
+        event = (await waitForDelivery(["idle", "steering"])) ?? event;
+      }
+    }
     diagnostics.log(event ? "sdk.send.confirmed" : "sdk.send.unconfirmed", {
       messageId,
       delivery: event?.data.delivery,
     });
+    if (!event) {
+      throw ambiguousSideEffectError(
+        "session inbox message delivery was not confirmed",
+        {
+          messageId,
+          messageAccepted: true,
+          delivery: "unconfirmed",
+          idleDelivery: false,
+          queuedDelivery: false,
+        },
+      );
+    }
     return {
       messageId,
       messageAccepted: true,
-      delivery: event?.data.delivery ?? "unconfirmed",
-      idleDelivery: event?.data.delivery === "idle",
-      queuedDelivery: event?.data.delivery === "queued",
+      delivery: event.data.delivery,
+      idleDelivery: event.data.delivery === "idle",
+      queuedDelivery: event.data.delivery === "queued",
     };
   } finally {
     unsubscribe();
@@ -408,7 +531,17 @@ async function execute(request) {
             delivery: continuationDelivery,
           });
         } catch (error) {
-          if (error?.ambiguousSideEffect === true) throw error;
+          if (error?.ambiguousSideEffect === true) {
+            if (error.result?.compacted === true) throw error;
+            throw ambiguousSideEffectError(error.message, {
+              compacted: true,
+              tokensRemoved: result.tokensRemoved,
+              messagesRemoved: result.messagesRemoved,
+              continuationAccepted: error.result?.messageAccepted,
+              continuationMessageId: error.result?.messageId,
+              continuationDelivery: error.result?.delivery,
+            });
+          }
           continuationAccepted = false;
           continuationError = error instanceof Error ? error.message : String(error);
         }
