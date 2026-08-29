@@ -561,7 +561,7 @@ test("recipient-local actions use only the unqualified local mailbox", async () 
   }
 });
 
-test("recipient-local watcher does not mark an unconfirmed wakeup as delivered", async () => {
+test("recipient-local watcher terminates an ambiguous wakeup without duplicate requests", async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-watch-"));
   const previousInboxRoot = process.env.COPILOT_SESSION_INBOX_DIR;
   try {
@@ -617,26 +617,67 @@ test("recipient-local watcher does not mark an unconfirmed wakeup as delivered",
     );
     await watching;
 
+    const attemptPath = join(
+      stateRoot,
+      "notified",
+      "hotel",
+      `${sent.envelope.id}.attempt`,
+    );
+    const attemptId = (await readFile(attemptPath, "utf8")).trim();
+    assert.equal(request.dedupeKey.endsWith(`:${attemptId}`), true);
+    assert.equal(
+      (await readFile(
+        join(stateRoot, "notified", "hotel", `${sent.envelope.id}.unverified`),
+        "utf8",
+      )).trim(),
+      attemptId,
+    );
+    assert.equal((await mailbox.poke("hotel")).status, "unverified");
+    assert.deepEqual(
+      (await readdir(join(inboxRoot, "pending"))).filter((entry) =>
+        entry.endsWith(".json"),
+      ),
+      [],
+    );
+
+    const later = await mailbox.send({
+      recipient: "hotel",
+      sender: "whisky",
+      summary: "later watcher proof",
+      message: "wake both pending envelopes",
+      wake: false,
+    });
     const retrying = mailbox.poke("hotel");
-    const { name: retryName, request: retryRequest } =
-      await waitForRequest(inboxRoot);
-    assert.notEqual(retryRequest.dedupeKey, request.dedupeKey);
+    const { name: retryName, request: retryRequest } = await waitForRequest(inboxRoot);
     assert.match(
       retryRequest.dedupeKey,
-      new RegExp(`^mailbox:immediate-v3:hotel:${sent.envelope.id}:`),
+      new RegExp(`^mailbox:immediate-v3:hotel:${later.envelope.id}:`),
     );
-    const retryReceiptPath = join(inboxRoot, "failed", retryName);
+    const retryReceiptPath = join(inboxRoot, "completed", retryName);
     await rm(join(inboxRoot, "pending", retryName));
     await mkdir(dirname(retryReceiptPath), { recursive: true });
     await writeFile(
       retryReceiptPath,
       `${JSON.stringify({
-        status: "failed",
-        ambiguousSideEffect: true,
-        error: "delivery was not confirmed",
+        status: "completed",
+        result: {
+          messageId: "later-confirmed",
+          delivery: "steering",
+          idleDelivery: false,
+        },
       })}\n`,
     );
-    assert.equal((await retrying).status, "unverified");
+    assert.equal((await retrying).status, "delivered");
+    for (const id of [sent.envelope.id, later.envelope.id]) {
+      assert.match(
+        await readFile(join(stateRoot, "notified", "hotel", `${id}.notified`), "utf8"),
+        /^\d{4}-\d{2}-\d{2}T/,
+      );
+      await assert.rejects(
+        readFile(join(stateRoot, "notified", "hotel", `${id}.unverified`), "utf8"),
+        { code: "ENOENT" },
+      );
+    }
     await assert.rejects(
       readFile(join(stateRoot, "watchers", "hotel.lock"), "utf8"),
       { code: "ENOENT" },
