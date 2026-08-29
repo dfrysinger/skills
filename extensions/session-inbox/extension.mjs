@@ -335,7 +335,9 @@ async function execute(request) {
   switch (request.kind) {
     case "send": {
       if (request.mode !== "immediate") {
-        throw new Error("session inbox sends must use immediate delivery");
+        throw definitiveNoSideEffectError(
+          "session inbox sends must use immediate delivery",
+        );
       }
       const delivery = await sendAndConfirm({
         prompt: request.prompt,

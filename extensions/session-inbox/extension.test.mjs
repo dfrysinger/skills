@@ -877,6 +877,87 @@ test("direct session rotation treats an unknown /new rejection as definitive", a
   }
 });
 
+test("non-immediate sends fail definitively and leave their dedupe key retryable", async () => {
+  const harness = await createHarness();
+  try {
+    await harness.request("legacy-queued-send", {
+      kind: "send",
+      prompt: "legacy queued prompt",
+      mode: "enqueue",
+      dedupeKey: "legacy-send",
+    });
+    const rejected = await harness.receipt("failed", "legacy-queued-send");
+    assert.equal(rejected.ambiguousSideEffect, undefined);
+    assert.match(rejected.error, /must use immediate delivery/);
+    assert.equal(
+      (await harness.calls()).some(
+        (call) =>
+          call.kind === "send" &&
+          call.value.prompt === "legacy queued prompt",
+      ),
+      false,
+    );
+
+    await harness.setState({ idleCounter: 1 });
+    await harness.request("replacement-immediate-send", {
+      kind: "send",
+      prompt: "legacy queued prompt",
+      mode: "immediate",
+      dedupeKey: "legacy-send",
+    });
+    const replacement = await harness.receipt(
+      "completed",
+      "replacement-immediate-send",
+    );
+    assert.equal(replacement.result.delivery, "idle");
+    assert.equal(replacement.deduplicated, false);
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("an immediate send observed in the FIFO fails ambiguously", async () => {
+  const harness = await createHarness({ delivery: "queued" });
+  try {
+    await harness.request("queued-immediate-send", {
+      kind: "send",
+      prompt: "must not enter FIFO",
+      mode: "immediate",
+      dedupeKey: "queued-immediate",
+    });
+    const receipt = await harness.receipt("failed", "queued-immediate-send");
+    assert.equal(receipt.ambiguousSideEffect, true);
+    assert.match(receipt.error, /message entered the FIFO queue/);
+    assert.equal(receipt.result.delivery, "queued");
+    assert.equal(receipt.result.queuedDelivery, true);
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("a compact continuation observed in the FIFO fails ambiguously", async () => {
+  const harness = await createHarness({ delivery: "queued" });
+  try {
+    await harness.request("queued-compact-continuation", {
+      kind: "compact",
+      customInstructions: "queued continuation rejection",
+      continuationPrompt: "must not enter FIFO",
+      dedupeKey: "queued-compact",
+    });
+    const receipt = await harness.receipt(
+      "failed",
+      "queued-compact-continuation",
+    );
+    assert.equal(receipt.ambiguousSideEffect, true);
+    assert.match(receipt.error, /compact continuation entered the FIFO queue/);
+    assert.equal(receipt.result.compacted, true);
+    assert.equal(receipt.result.continuationAccepted, true);
+    assert.equal(receipt.result.continuationDelivery, "queued");
+  } finally {
+    await harness.stop();
+  }
+});
+
 test("extension reload receipt is durable before the extension exits", async () => {
   const harness = await createHarness({ exitOnReload: true });
   try {
