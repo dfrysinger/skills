@@ -188,6 +188,28 @@ async function sendAndConfirm({ prompt, agentMode }) {
     resolveEvent = undefined;
   });
   const confirmationDeadline = Date.now() + confirmationTimeoutMs;
+  const beforeSendSnapshotDeadline = Math.min(
+    confirmationDeadline,
+    Date.now() + Math.min(2_000, confirmationTimeoutMs / 2),
+  );
+  const withinDeadline = async (operation, deadline, label) => {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw new Error(`${label} timed out`);
+    let timer;
+    try {
+      return await Promise.race([
+        operation,
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`${label} timed out`)),
+            remainingMs,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   const waitForDelivery = async (deliveries, deadline = confirmationDeadline) => {
     while (Date.now() < deadline) {
       const event = matchingEvents.find((candidate) =>
@@ -209,7 +231,11 @@ async function sendAndConfirm({ prompt, agentMode }) {
   try {
     let preexistingQueueIds;
     try {
-      const pending = await session.rpc.queue.pendingItems();
+      const pending = await withinDeadline(
+        session.rpc.queue.pendingItems(),
+        beforeSendSnapshotDeadline,
+        "pre-send queue snapshot",
+      );
       preexistingQueueIds = new Set(pending.items.map((item) => item.id));
     } catch (error) {
       diagnostics.log("sdk.send.queue_snapshot_failed", {
@@ -231,33 +257,60 @@ async function sendAndConfirm({ prompt, agentMode }) {
       ),
     );
     if (!event || event.data.delivery === "queued") {
-      const pending = await session.rpc.queue.pendingItems();
-      const queuedMatches = pending.items.filter(
-        (item) =>
-          item.kind === "message" &&
-          item.displayText === prompt &&
-          preexistingQueueIds?.has(item.id) === false,
-      );
-      if (queuedMatches.length === 1) {
-        diagnostics.log("sdk.send.promoting_queued", {
-          messageId,
-          queuedItemId: queuedMatches[0].id,
-        });
-        const promoted = await session.rpc.queue.sendNow({
-          id: queuedMatches[0].id,
-        });
-        if (promoted.steered) {
-          event = await waitForDelivery(["steering"]);
-        } else {
-          const removed = await session.rpc.queue.removeAt({
-            id: queuedMatches[0].id,
+      try {
+        const pending = await withinDeadline(
+          session.rpc.queue.pendingItems(),
+          confirmationDeadline,
+          "post-send queue inspection",
+        );
+        const queuedMatches = pending.items.filter(
+          (item) =>
+            item.kind === "message" &&
+            item.displayText === prompt &&
+            preexistingQueueIds?.has(item.id) === false,
+        );
+        if (queuedMatches.length === 1) {
+          diagnostics.log("sdk.send.promoting_queued", {
+            messageId,
+            queuedItemId: queuedMatches[0].id,
           });
-          if (removed.removed) {
-            throw definitiveNoSideEffectError(
-              "immediate message could not enter the steering lane and was removed from FIFO",
+          const promoted = await withinDeadline(
+            session.rpc.queue.sendNow({
+              id: queuedMatches[0].id,
+            }),
+            confirmationDeadline,
+            "queued message promotion",
+          );
+          if (promoted.steered) {
+            event = await waitForDelivery(["steering"]);
+          } else {
+            const removed = await withinDeadline(
+              session.rpc.queue.removeAt({
+                id: queuedMatches[0].id,
+              }),
+              confirmationDeadline,
+              "queued message removal",
             );
+            if (removed.removed) {
+              throw definitiveNoSideEffectError(
+                "immediate message could not enter the steering lane and was removed from FIFO",
+              );
+            }
           }
         }
+      } catch (error) {
+        if (error.definitiveNoSideEffect || error.ambiguousSideEffect) throw error;
+        throw ambiguousSideEffectError(
+          "session inbox queue recovery did not complete before confirmation deadline",
+          {
+            messageId,
+            messageAccepted: true,
+            delivery: event?.data.delivery ?? "unconfirmed",
+            idleDelivery: false,
+            queuedDelivery: event?.data.delivery === "queued",
+            cause: error.message,
+          },
+        );
       }
       if (!event || event.data.delivery === "queued") {
         event = (await waitForDelivery(["idle", "steering"])) ?? event;

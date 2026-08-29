@@ -178,6 +178,9 @@ export async function joinSession() {
       queue: {
         async pendingItems() {
           const current = state();
+          if (current.pendingItemsNeverResolves) {
+            return new Promise(() => {});
+          }
           return {
             items: [
               ...(current.preexistingQueuedPrompt
@@ -1143,6 +1146,32 @@ test("multiple newly appeared identical messages remain ambiguous", async () => 
           call.kind === "queue.sendNow" || call.kind === "queue.removeAt",
       ),
       false,
+    );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("a stalled queue snapshot cannot outlive the confirmation deadline", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    pendingItemsNeverResolves: true,
+  });
+  try {
+    const startedAt = Date.now();
+    await harness.request("stalled-queue-snapshot-send", {
+      kind: "send",
+      prompt: "bounded queue snapshot",
+      mode: "immediate",
+      dedupeKey: "stalled-queue-snapshot",
+    });
+    const receipt = await harness.receipt("failed", "stalled-queue-snapshot-send");
+    assert.equal(receipt.ambiguousSideEffect, true);
+    assert.match(receipt.error, /confirmation deadline/);
+    assert.ok(Date.now() - startedAt < 2_000);
+    assert.equal(
+      (await harness.calls()).filter((call) => call.kind === "send").length,
+      1,
     );
   } finally {
     await harness.stop();

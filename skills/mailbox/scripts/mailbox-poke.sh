@@ -13,9 +13,9 @@
 # load delay.
 #
 # Modes:
-#   (default) — wait up to 15s for a Copilot SDK receipt, or require a ready
+#   (default) — wait up to 20s for a Copilot SDK receipt, or require a ready
 #               Claude/Codex input now.
-#   --wait    — extend the Copilot receipt wait to 30s, or poll Claude/Codex
+#   --wait    — extend the Copilot receipt wait to 35s, or poll Claude/Codex
 #               readiness for up to 30s after a fresh launch.
 #
 # Designed to be backgrounded by the user's `ca` launcher:
