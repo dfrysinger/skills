@@ -257,7 +257,7 @@ export async function joinSession() {
       MOCK_STATE: statePath,
       MOCK_CALLS: callsPath,
       MOCK_DEDUPE_DIR: join(inbox, "dedupe"),
-      COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS: "100",
+      COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS: "500",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -520,6 +520,7 @@ test("recipient extension submits SDK work without idle gates and preserves phas
       activeAutopilot: false,
       delivery: "queued",
     });
+    await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("queued-autopilot", {
       kind: "autopilot",
       prompt: "reject a queued objective activation",
