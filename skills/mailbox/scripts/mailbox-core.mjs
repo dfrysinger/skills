@@ -11,7 +11,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { rmSync } from "node:fs";
+import { constants as fsConstants, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -76,7 +76,7 @@ async function pathExists(path) {
     await stat(path);
     return true;
   } catch (error) {
-    if (error?.code === "ENOENT") return false;
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return false;
     throw error;
   }
 }
@@ -134,7 +134,15 @@ function compactTimestamp(date = new Date()) {
 }
 
 export function defaultMailboxRoot() {
-  return process.env.MAILBOX_ROOT ?? join(homedir(), ".copilot", "mailbox");
+  return (
+    process.env.MAILBOX_LOCAL_ROOT ??
+    process.env.MAILBOX_ROOT ??
+    join(homedir(), ".copilot", "mailbox")
+  );
+}
+
+export function defaultRemoteMailboxRoot() {
+  return process.env.MAILBOX_REMOTE_ROOT;
 }
 
 export function defaultStateRoot() {
@@ -164,6 +172,10 @@ export async function resolveOwnName(explicitName) {
 
 export function createMailbox(options = {}) {
   const mailboxRoot = options.mailboxRoot ?? defaultMailboxRoot();
+  const remoteMailboxRoot =
+    options.remoteMailboxRoot === null
+      ? undefined
+      : options.remoteMailboxRoot ?? defaultRemoteMailboxRoot();
   const stateRoot = options.stateRoot ?? defaultStateRoot();
   const machineName =
     options.machineName === null
@@ -181,19 +193,50 @@ export function createMailbox(options = {}) {
   });
   const attachmentObservations = new Map();
 
+  function mailboxRootFor(address) {
+    const parsed = parseMailboxAddress(address);
+    if (!parsed.machine) return mailboxRoot;
+    if (!remoteMailboxRoot) {
+      throw new Error(
+        "MAILBOX_REMOTE_ROOT is required for cross-computer mailbox addresses",
+      );
+    }
+    return remoteMailboxRoot;
+  }
+
   function mailboxDirectory(address, state) {
-    return join(mailboxRoot, parseMailboxAddress(address).address, state);
+    return join(
+      mailboxRootFor(address),
+      parseMailboxAddress(address).address,
+      state,
+    );
   }
 
   function localAddresses(name) {
+    return [validateName(name, "agent name")];
+  }
+
+  function watchAddresses(name) {
     const agentName = validateName(name, "agent name");
     return [
       agentName,
-      ...(machineName ? [`${agentName}@${machineName}`] : []),
+      ...(machineName && remoteMailboxRoot
+        ? [`${agentName}@${machineName}`]
+        : []),
     ];
   }
 
   function requireLocalAddress(address) {
+    const parsed = parseMailboxAddress(address);
+    if (parsed.machine) {
+      throw new Error(
+        `mailbox ${parsed.address} is remote transport; local mailbox operations use ${parsed.name}`,
+      );
+    }
+    return parsed;
+  }
+
+  function requireWatchAddress(address) {
     const parsed = parseMailboxAddress(address);
     if (parsed.machine && parsed.machine !== machineName) {
       throw new Error(
@@ -305,6 +348,210 @@ export function createMailbox(options = {}) {
     }
   }
 
+  function remoteOutboxDirectory(kind, address) {
+    return join(
+      stateRoot,
+      "remote-outbox",
+      kind,
+      parseMailboxAddress(address).address,
+    );
+  }
+
+  function importedMarkerPath(address, id) {
+    return join(
+      stateRoot,
+      "remote-imported",
+      parseMailboxAddress(address).address,
+      `${id}.imported`,
+    );
+  }
+
+  async function copyImmutable(source, destination) {
+    await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+    async function destinationMatches() {
+      if (!(await pathExists(destination))) return false;
+      const [sourceBytes, destinationBytes] = await Promise.all([
+        readFile(source),
+        readFile(destination),
+      ]);
+      if (!sourceBytes.equals(destinationBytes)) {
+        throw new Error(`immutable transport collision at ${destination}`);
+      }
+      return true;
+    }
+
+    if (await destinationMatches()) return;
+
+    const temporary = `${destination}.uploading-${process.pid}-${randomBytes(6).toString("hex")}`;
+    try {
+      await copyFile(source, temporary, fsConstants.COPYFILE_EXCL);
+      if (await destinationMatches()) return;
+      try {
+        await rename(temporary, destination);
+      } catch (error) {
+        if (error?.code !== "EEXIST" || !(await destinationMatches())) {
+          throw error;
+        }
+      }
+    } finally {
+      await rm(temporary, { force: true });
+    }
+  }
+
+  async function stageRemoteEnvelope(address, envelope, sourceFiles) {
+    const directory = remoteOutboxDirectory("envelopes", address);
+    const attachmentDirectory = join(directory, envelope.id);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    if (sourceFiles.length > 0) {
+      await mkdir(attachmentDirectory, { recursive: true, mode: 0o700 });
+    }
+    for (const { source, name } of sourceFiles) {
+      await copyFile(source, join(attachmentDirectory, name));
+    }
+    const envelopePath = join(directory, `${envelope.id}.json`);
+    await atomicWrite(envelopePath, `${JSON.stringify(envelope, null, 2)}\n`);
+    return envelopePath;
+  }
+
+  async function publishStagedRemoteEnvelope(address, id) {
+    const outbox = remoteOutboxDirectory("envelopes", address);
+    const sourceEnvelope = join(outbox, `${id}.json`);
+    const envelope = JSON.parse(await readFile(sourceEnvelope, "utf8"));
+    const remotePending = mailboxDirectory(address, "pending");
+    for (const attachment of envelope.attachments) {
+      await copyImmutable(
+        join(outbox, id, attachment),
+        join(remotePending, id, attachment),
+      );
+    }
+    await copyImmutable(sourceEnvelope, join(remotePending, `${id}.json`));
+    await rm(sourceEnvelope, { force: true });
+    await rm(join(outbox, id), { recursive: true, force: true });
+  }
+
+  async function flushRemoteOutbox() {
+    if (!remoteMailboxRoot) return;
+    const envelopeRoot = join(stateRoot, "remote-outbox", "envelopes");
+    let addresses = [];
+    try {
+      addresses = await readdir(envelopeRoot, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    for (const entry of addresses.filter((candidate) => candidate.isDirectory())) {
+      const address = parseMailboxAddress(entry.name);
+      if (!address.machine) continue;
+      let names = [];
+      try {
+        names = await readdir(join(envelopeRoot, entry.name));
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      for (const name of names.filter((candidate) => candidate.endsWith(".json"))) {
+        const id = name.slice(0, -5);
+        try {
+          await publishStagedRemoteEnvelope(entry.name, id);
+          diagnostics.log("remote.envelope_published", {
+            mailbox: entry.name,
+            envelopeId: id,
+          });
+        } catch (error) {
+          diagnostics.log("remote.envelope_publish_failed", {
+            mailbox: entry.name,
+            envelopeId: id,
+            error: errorDetails(error),
+          });
+        }
+      }
+    }
+
+    const receiptRoot = join(stateRoot, "remote-outbox", "receipts");
+    try {
+      addresses = await readdir(receiptRoot, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      addresses = [];
+    }
+    for (const entry of addresses.filter((candidate) => candidate.isDirectory())) {
+      let names = [];
+      try {
+        names = await readdir(join(receiptRoot, entry.name));
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      for (const name of names.filter((candidate) => candidate.endsWith(".json"))) {
+        const source = join(receiptRoot, entry.name, name);
+        try {
+          await copyImmutable(
+            source,
+            join(remoteMailboxRoot, "receipts", entry.name, name),
+          );
+          await rm(source, { force: true });
+          diagnostics.log("remote.receipt_published", {
+            mailbox: entry.name,
+            envelopeId: name.slice(0, -5),
+          });
+        } catch (error) {
+          diagnostics.log("remote.receipt_publish_failed", {
+            mailbox: entry.name,
+            envelopeId: name.slice(0, -5),
+            error: errorDetails(error),
+          });
+        }
+      }
+    }
+  }
+
+  async function importRemote(address) {
+    const parsed = requireWatchAddress(address);
+    if (!parsed.machine) return 0;
+    const envelopes = await pendingEnvelopes(parsed.address, {
+      requireStableAttachments: true,
+    });
+    let imported = 0;
+    for (const { envelope, path } of envelopes) {
+      const markerPath = importedMarkerPath(parsed.address, envelope.id);
+      if (await pathExists(markerPath)) continue;
+      const localPending = mailboxDirectory(parsed.name, "pending");
+      const localEnvelopePath = join(localPending, `${envelope.id}.json`);
+      const localDeliveredPath = join(
+        mailboxDirectory(parsed.name, "delivered"),
+        `${envelope.id}.json`,
+      );
+      if (
+        !(await pathExists(localEnvelopePath)) &&
+        !(await pathExists(localDeliveredPath))
+      ) {
+        const localAttachmentDirectory = join(localPending, envelope.id);
+        for (const attachment of envelope.attachments) {
+          await copyImmutable(
+            join(dirname(path), envelope.id, attachment),
+            join(localAttachmentDirectory, attachment),
+          );
+        }
+        await atomicWrite(
+          localEnvelopePath,
+          `${JSON.stringify({
+            ...envelope,
+            to: { name: parsed.name },
+            transport: {
+              kind: "remote",
+              address: parsed.address,
+            },
+          }, null, 2)}\n`,
+        );
+      }
+      await atomicWrite(markerPath, `${new Date().toISOString()}\n`);
+      diagnostics.log("remote.envelope_imported", {
+        mailbox: parsed.address,
+        localMailbox: parsed.name,
+        envelopeId: envelope.id,
+      });
+      imported += 1;
+    }
+    return imported;
+  }
+
   async function send({
     recipient,
     sender = "unknown",
@@ -321,13 +568,22 @@ export function createMailbox(options = {}) {
 
     const id = `${compactTimestamp()}${process.pid}-${randomBytes(6).toString("hex")}`;
     const pending = mailboxDirectory(target.address, "pending");
-    const envelopePath = join(pending, `${id}.json`);
+    const publishedEnvelopePath = join(pending, `${id}.json`);
+    let envelopePath = publishedEnvelopePath;
     const attachmentDirectory = join(pending, id);
     const attachmentNames = [];
     let envelope;
-    await mkdir(pending, { recursive: true, mode: 0o700 });
+    await mkdir(
+      target.machine
+        ? remoteOutboxDirectory("envelopes", target.address)
+        : pending,
+      { recursive: true, mode: 0o700 },
+    );
     try {
-      if (files.length > 0) await mkdir(attachmentDirectory, { mode: 0o700 });
+      if (!target.machine && files.length > 0) {
+        await mkdir(attachmentDirectory, { mode: 0o700 });
+      }
+      const sourceFiles = [];
       for (const source of files) {
         let destinationName = basename(source);
         if (!destinationName) throw new Error(`attachment has no filename: ${source}`);
@@ -339,7 +595,10 @@ export function createMailbox(options = {}) {
           while (attachmentNames.includes(`${stem}-${suffix}${extension}`)) suffix += 1;
           destinationName = `${stem}-${suffix}${extension}`;
         }
-        await copyFile(source, join(attachmentDirectory, destinationName));
+        if (!target.machine) {
+          await copyFile(source, join(attachmentDirectory, destinationName));
+        }
+        sourceFiles.push({ source, name: destinationName });
         attachmentNames.push(destinationName);
       }
       envelope = {
@@ -351,7 +610,22 @@ export function createMailbox(options = {}) {
         attachments: attachmentNames,
         sent_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
       };
-      await atomicWrite(envelopePath, `${JSON.stringify(envelope, null, 2)}\n`);
+      if (target.machine) {
+        envelopePath = await stageRemoteEnvelope(
+          target.address,
+          envelope,
+          sourceFiles,
+        );
+        await flushRemoteOutbox();
+        if (await pathExists(publishedEnvelopePath)) {
+          envelopePath = publishedEnvelopePath;
+        }
+      } else {
+        await atomicWrite(
+          publishedEnvelopePath,
+          `${JSON.stringify(envelope, null, 2)}\n`,
+        );
+      }
       diagnostics.log("envelope.published", {
         envelopeId: id,
         sender,
@@ -360,8 +634,10 @@ export function createMailbox(options = {}) {
         attachmentCount: attachmentNames.length,
       });
     } catch (error) {
-      await rm(envelopePath, { force: true });
-      await rm(attachmentDirectory, { recursive: true, force: true });
+      if (!target.machine) {
+        await rm(envelopePath, { force: true });
+        await rm(attachmentDirectory, { recursive: true, force: true });
+      }
       diagnostics.log("envelope.publish_failed", {
         envelopeId: id,
         sender,
@@ -381,7 +657,11 @@ export function createMailbox(options = {}) {
         };
       } else {
         try {
-          wakeup = await poke(target.address, {
+          if (target.machine) {
+            await importRemote(target.address);
+            await importRemote(target.address);
+          }
+          wakeup = await poke(target.name, {
             targetName: target.name,
             wait,
           });
@@ -395,7 +675,11 @@ export function createMailbox(options = {}) {
         }
       }
     }
-    return { envelope, envelopePath, wakeup };
+    return {
+      envelope,
+      envelopePath,
+      wakeup,
+    };
   }
 
   async function check(address) {
@@ -426,7 +710,7 @@ export function createMailbox(options = {}) {
     const attachmentSource = join(pending, id);
     const envelopeDestination = join(delivered, `${id}.json`);
     const attachmentDestination = join(delivered, id);
-    await read(mailboxAddress, id);
+    const { envelope } = await read(mailboxAddress, id);
     await mkdir(delivered, { recursive: true, mode: 0o700 });
 
     let movedAttachments = false;
@@ -454,6 +738,30 @@ export function createMailbox(options = {}) {
       envelopeId: id,
       mailbox: mailboxAddress,
     });
+    if (envelope.transport?.kind === "remote") {
+      try {
+        const receiptPath = join(
+          remoteOutboxDirectory("receipts", envelope.transport.address),
+          `${id}.json`,
+        );
+        await atomicWrite(
+          receiptPath,
+          `${JSON.stringify({
+            envelopeId: id,
+            mailbox: envelope.transport.address,
+            acknowledgedBy: mailboxAddress,
+            acknowledgedAt: new Date().toISOString(),
+          }, null, 2)}\n`,
+        );
+        await flushRemoteOutbox();
+      } catch (error) {
+        diagnostics.log("remote.receipt_queue_failed", {
+          mailbox: envelope.transport.address,
+          envelopeId: id,
+          error: errorDetails(error),
+        });
+      }
+    }
     return envelopeDestination;
   }
 
@@ -852,7 +1160,8 @@ export function createMailbox(options = {}) {
       signal,
     } = {},
   ) {
-    const mailboxAddress = requireLocalAddress(address).address;
+    const parsedAddress = requireWatchAddress(address);
+    const mailboxAddress = parsedAddress.address;
     validateName(targetName, "target name");
     if (!Number.isFinite(intervalMs) || intervalMs < 100) {
       throw new Error("watch interval must be at least 100 ms");
@@ -866,10 +1175,21 @@ export function createMailbox(options = {}) {
     try {
       do {
         try {
-          await poke(mailboxAddress, {
-            targetName,
-            requireStableAttachments: true,
-          });
+          await flushRemoteOutbox();
+          if (parsedAddress.machine) {
+            const imported = await importRemote(mailboxAddress);
+            if (imported > 0) {
+              await poke(parsedAddress.name, {
+                targetName,
+                requireStableAttachments: true,
+              });
+            }
+          } else {
+            await poke(mailboxAddress, {
+              targetName,
+              requireStableAttachments: true,
+            });
+          }
         } catch (error) {
           diagnostics.log("watcher.poll_failed", {
             mailbox: mailboxAddress,
@@ -902,12 +1222,17 @@ export function createMailbox(options = {}) {
   return {
     mailboxRoot,
     machineName,
+    remoteMailboxRoot,
     stateRoot,
     acknowledge,
     acknowledgeLocal,
     check,
     checkLocal,
+    flushRemoteOutbox,
     localAddresses,
+    mailboxRootFor,
+    watchAddresses,
+    importRemote,
     list,
     poke,
     read,

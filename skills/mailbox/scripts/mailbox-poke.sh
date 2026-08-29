@@ -49,7 +49,7 @@ elif [[ "$NODE_STATUS" -ne 4 ]]; then
   exit 3
 fi
 
-DIR="$MAILBOX_ROOT/$NAME/pending"
+DIR="$MAILBOX_LOCAL_ROOT/$NAME/pending"
 STATE_ROOT="${MAILBOX_STATE_ROOT:-$HOME/.copilot/mailbox-state}"
 WATERMARK_FILE="$STATE_ROOT/watermarks/$NAME.txt"
 TARGET_NAME="${NAME%%@*}"

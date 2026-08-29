@@ -129,7 +129,7 @@ async function refreshIdentity() {
     }
     if (!activeName) return;
 
-    const addresses = mailbox.localAddresses(activeName);
+    const addresses = mailbox.watchAddresses(activeName);
     const started = [];
     for (const address of addresses) {
       if (activeWatchers.has(address)) continue;
