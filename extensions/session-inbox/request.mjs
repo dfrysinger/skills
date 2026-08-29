@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 
+import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { createDiagnosticLogger, errorDetails } from "./diagnostics.mjs";
 
 const root = process.env.COPILOT_SESSION_INBOX_DIR ?? join(homedir(), ".copilot", "session-inbox");
+const sessionStateRoot =
+  process.env.COPILOT_SESSION_STATE_ROOT ??
+  join(homedir(), ".copilot", "session-state");
 const diagnostics = createDiagnosticLogger(
   root,
   `requests-${new Date().toISOString().slice(0, 10)}.jsonl`,
@@ -25,7 +29,7 @@ function usage(message) {
     console.error(`session-inbox-request: ${message}`);
   }
   console.error(
-    "usage: request.mjs <send|autopilot|compact|new-session-direct|reload-extensions> (--target-name NAME | --target-tmux NAME | --target-session ID) [options]",
+    "usage: request.mjs <send|autopilot|compact|reload-extensions> (--target-name NAME | --target-tmux NAME | --target-session ID) [options]",
   );
   process.exit(64);
 }
@@ -37,7 +41,6 @@ function parseArgs(argv) {
       "send",
       "autopilot",
       "compact",
-      "new-session-direct",
       "reload-extensions",
     ].includes(kind)
   ) {
@@ -202,9 +205,6 @@ switch (options.kind) {
       );
     }
     break;
-  case "new-session-direct":
-    request.prompt = await readRequiredFile(options["prompt-file"], "--prompt-file");
-    break;
   case "reload-extensions":
     break;
 }
@@ -222,7 +222,53 @@ const temporaryPath = join(pendingDir, `.${id}.tmp`);
 const pendingPath = join(pendingDir, `${id}.json`);
 await mkdir(pendingDir, { recursive: true, mode: 0o700 });
 await writeFile(temporaryPath, `${JSON.stringify(request, null, 2)}\n`, { mode: 0o600 });
-await rename(temporaryPath, pendingPath);
+const sessionDir = join(sessionStateRoot, target.sessionId);
+await mkdir(sessionDir, { recursive: true, mode: 0o700 });
+const rotationBarrier = join(sessionDir, "rotation.barrier");
+if (process.platform === "darwin") {
+  const deliveryLock = join(sessionDir, "delivery.lock");
+  const status = await new Promise((resolve, reject) => {
+    const child = spawn(
+      "/usr/bin/lockf",
+      [
+        "-k",
+        "-t",
+        "10",
+        deliveryLock,
+        "/bin/sh",
+        "-c",
+        'if [ -e "$1" ]; then exit 73; fi; /bin/mv "$2" "$3"',
+        "publish-session-inbox-request",
+        rotationBarrier,
+        temporaryPath,
+        pendingPath,
+      ],
+      { stdio: "ignore" },
+    );
+    child.on("error", reject);
+    child.on("exit", (code, signal) => {
+      if (signal) reject(new Error(`request publication lock exited on ${signal}`));
+      else resolve(code);
+    });
+  });
+  if (status === 73) {
+    await rm(temporaryPath, { force: true });
+    usage("session rotation is blocking new inbox work");
+  }
+  if (status !== 0) {
+    await rm(temporaryPath, { force: true });
+    throw new Error(`request publication lock failed with exit ${status}`);
+  }
+} else {
+  try {
+    await readFile(rotationBarrier);
+    await rm(temporaryPath, { force: true });
+    usage("session rotation is blocking new inbox work");
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  await rename(temporaryPath, pendingPath);
+}
 diagnostics.log("request.published", {
   requestPath: pendingPath,
   hasDedupeKey: Boolean(request.dedupeKey),

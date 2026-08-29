@@ -144,13 +144,13 @@ fi
   "$OLD" "$SEED" --consume-prompt
 ```
 
-Send the seed with that script rather than typing `/new` into a pane. The
-session-inbox extension invokes `/new` only when the running CLI exposes a
-direct non-FIFO command API, and never retries it. The script verifies a fresh
-session heartbeat from the same Copilot process and requires the exact seed to
-be the first root user message in that session. If direct `/new` is
-unavailable, it fails closed and preserves the seed rather than falling back to
-the FIFO or terminal injection. It writes the outcome to
+Send the seed with that script rather than typing `/new` into a pane. In the
+normal macOS Agent Stack path, the script verifies the exact old session and
+tmux pane, waits for the authorizing turn to end, and replaces the pane process
+with a new named UUID whose initial prompt is the exact seed. It uses neither
+terminal input injection nor the CLI FIFO. Automated rotation is supported
+only from that tmux environment; outside tmux it fails before consuming or
+snapshotting the seed. It writes the outcome to
 `/tmp/rotate-session-<old-id>.log`, so report what that log says rather than a
 handoff you did not observe. The unique `mktemp` input prevents concurrent
 rotations from reading each other's handoffs; the script snapshots it before
@@ -163,10 +163,10 @@ file.
 
 A session accumulates a full event log on disk that the CLI reloads whenever the
 session is resumed, so one resumed daily for weeks grows into the gigabytes and
-slows the app. Neither a soft reset nor `/new` reclaims that — both keep writing
-to a session-state folder. When a named agent has been resumed for more than a
-few days, recommend that the user retire the session and start a genuinely fresh
-one rather than resuming.
+slows the app. A soft reset does not reclaim that; rotation starts a genuinely
+fresh UUID while keeping the old session folder as durable evidence. When a
+named agent has been resumed for more than a few days, recommend rotation
+rather than another resume.
 
 Retiring loses no recorded state: the old session stays on disk, and the fresh
 one can read it back with the same recipe as the `/new` seed prompt above.
