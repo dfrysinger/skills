@@ -179,13 +179,33 @@ async function writeHeartbeat() {
 }
 
 async function sendAndConfirm({ prompt, agentMode }) {
-  let resolveDelivered;
-  const delivered = new Promise((resolve) => {
-    resolveDelivered = resolve;
-  });
+  const matchingEvents = [];
+  let resolveEvent;
   const unsubscribe = session.on("user.message", (event) => {
-    if (event.data.content === prompt) resolveDelivered(event);
+    if (event.data.content !== prompt) return;
+    matchingEvents.push(event);
+    resolveEvent?.();
+    resolveEvent = undefined;
   });
+  const waitForDelivery = async (deliveries, timeoutMs) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const event = matchingEvents.find((candidate) =>
+        deliveries.includes(candidate.data.delivery),
+      );
+      if (event) return event;
+      await Promise.race([
+        new Promise((resolve) => {
+          resolveEvent = resolve;
+        }),
+        new Promise((resolve) =>
+          setTimeout(resolve, Math.max(0, deadline - Date.now())),
+        ),
+      ]);
+      resolveEvent = undefined;
+    }
+    return undefined;
+  };
   try {
     diagnostics.log("sdk.send.started", { mode: "immediate", agentMode });
     const messageId = await session.send({
@@ -193,22 +213,64 @@ async function sendAndConfirm({ prompt, agentMode }) {
       mode: "immediate",
       ...(agentMode ? { agentMode } : {}),
     });
-    const event = await Promise.race([
-      delivered,
-      new Promise((resolve) =>
-        setTimeout(() => resolve(undefined), confirmationTimeoutMs),
-      ),
-    ]);
+    let event = await waitForDelivery(
+      ["idle", "steering", "queued"],
+      confirmationTimeoutMs,
+    );
+    if (!event || event.data.delivery === "queued") {
+      const pending = await session.rpc.queue.pendingItems();
+      const queuedMatches = pending.items.filter(
+        (item) => item.kind === "message" && item.displayText === prompt,
+      );
+      if (queuedMatches.length === 1) {
+        diagnostics.log("sdk.send.promoting_queued", {
+          messageId,
+          queuedItemId: queuedMatches[0].id,
+        });
+        const promoted = await session.rpc.queue.sendNow({
+          id: queuedMatches[0].id,
+        });
+        if (promoted.steered) {
+          event = await waitForDelivery(["steering"], confirmationTimeoutMs);
+        } else {
+          const removed = await session.rpc.queue.removeAt({
+            id: queuedMatches[0].id,
+          });
+          if (removed.removed) {
+            throw definitiveNoSideEffectError(
+              "immediate message could not enter the steering lane and was removed from FIFO",
+            );
+          }
+        }
+      } else if (
+        queuedMatches.length === 0 &&
+        pending.steeringMessages?.includes(prompt)
+      ) {
+        event = await waitForDelivery(["steering"], confirmationTimeoutMs);
+      }
+    }
     diagnostics.log(event ? "sdk.send.confirmed" : "sdk.send.unconfirmed", {
       messageId,
       delivery: event?.data.delivery,
     });
+    if (!event) {
+      throw ambiguousSideEffectError(
+        "session inbox message delivery was not confirmed",
+        {
+          messageId,
+          messageAccepted: true,
+          delivery: "unconfirmed",
+          idleDelivery: false,
+          queuedDelivery: false,
+        },
+      );
+    }
     return {
       messageId,
       messageAccepted: true,
-      delivery: event?.data.delivery ?? "unconfirmed",
-      idleDelivery: event?.data.delivery === "idle",
-      queuedDelivery: event?.data.delivery === "queued",
+      delivery: event.data.delivery,
+      idleDelivery: event.data.delivery === "idle",
+      queuedDelivery: event.data.delivery === "queued",
     };
   } finally {
     unsubscribe();
@@ -408,7 +470,17 @@ async function execute(request) {
             delivery: continuationDelivery,
           });
         } catch (error) {
-          if (error?.ambiguousSideEffect === true) throw error;
+          if (error?.ambiguousSideEffect === true) {
+            if (error.result?.compacted === true) throw error;
+            throw ambiguousSideEffectError(error.message, {
+              compacted: true,
+              tokensRemoved: result.tokensRemoved,
+              messagesRemoved: result.messagesRemoved,
+              continuationAccepted: error.result?.messageAccepted,
+              continuationMessageId: error.result?.messageId,
+              continuationDelivery: error.result?.delivery,
+            });
+          }
           continuationAccepted = false;
           continuationError = error instanceof Error ? error.message : String(error);
         }

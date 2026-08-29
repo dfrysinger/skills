@@ -686,16 +686,13 @@ export function createMailbox(options = {}) {
           "--mode",
           "immediate",
           "--dedupe-key",
-          `mailbox:immediate-v2:${mailboxAddress}:${newest.id}`,
+          `mailbox:immediate-v3:${mailboxAddress}:${newest.id}`,
           "--timeout",
           wait ? "35" : "15",
         ],
         {},
       );
-      const accepted =
-        result.stdout.includes('"messageAccepted":true') ||
-        /"messageId":"[^"]+"/.test(result.stdout) ||
-        /"delivery":"(?:idle|queued|steering)"/.test(result.stdout);
+      const accepted = /"delivery":"(?:idle|steering)"/.test(result.stdout);
       if (result.code === 0 && accepted) {
         await markNotified(mailboxAddress, [...readyIds]);
         diagnostics.log("wakeup.accepted", {

@@ -368,7 +368,7 @@ console.log('{"status":"completed","result":{"delivery":"idle"}}');
     assert.equal(args[args.indexOf("--target-name") + 1], "hotel");
     assert.equal(
       args[args.indexOf("--dedupe-key") + 1],
-      `mailbox:immediate-v2:hotel@surface-pro:${sent.envelope.id}`,
+      `mailbox:immediate-v3:hotel@surface-pro:${sent.envelope.id}`,
     );
     await readFile(
       join(
@@ -453,7 +453,7 @@ test("recipient-local actions aggregate both addresses and reject duplicate ids"
   }
 });
 
-test("recipient-local watcher wakes a live session by its Copilot session name", async () => {
+test("recipient-local watcher does not mark an unconfirmed wakeup as delivered", async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-watch-"));
   const previousInboxRoot = process.env.COPILOT_SESSION_INBOX_DIR;
   try {
@@ -489,7 +489,7 @@ test("recipient-local watcher wakes a live session by its Copilot session name",
     assert.equal(request.mode, "immediate");
     assert.equal(
       request.dedupeKey,
-      `mailbox:immediate-v2:hotel:${sent.envelope.id}`,
+      `mailbox:immediate-v3:hotel:${sent.envelope.id}`,
     );
     assert.match(request.prompt, /^check mailbox; skip if empty \[mb:/);
 
@@ -509,14 +509,14 @@ test("recipient-local watcher wakes a live session by its Copilot session name",
     );
     await watching;
 
-    assert.equal((await mailbox.poke("hotel")).status, "already-poked");
+    assert.equal((await mailbox.poke("hotel")).status, "unverified");
     await assert.rejects(
       readFile(join(stateRoot, "watchers", "hotel.lock"), "utf8"),
       { code: "ENOENT" },
     );
     const diagnostics = await readFile(join(stateRoot, "logs", "mailbox.jsonl"), "utf8");
     assert.match(diagnostics, /"event":"watcher.started"/);
-    assert.match(diagnostics, /"event":"wakeup.accepted"/);
+    assert.match(diagnostics, /"event":"wakeup.unverified"/);
     assert.doesNotMatch(diagnostics, /wake through the local bridge/);
   } finally {
     if (previousInboxRoot === undefined) {

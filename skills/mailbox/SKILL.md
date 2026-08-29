@@ -149,7 +149,11 @@ will not notice until the user manually says "check mail".
   0.108.9 receive one replacement nudge instead of replaying a cached
   `unconfirmed` result. During migration, a returned message ID or an `idle`,
   `queued`, or `steering` event from an older recipient extension also proves
-  that replacement was accepted.
+  that replacement was accepted. Current senders use the
+  `mailbox:immediate-v3` namespace and mark an envelope notified only after an
+  `idle` or `steering` event. If the host temporarily places an immediate send
+  in FIFO, session-inbox promotes that exact message into the steering lane;
+  an unsteerable item is removed rather than left queued.
 - **Claude and Codex wakeups remain fail-closed and best-effort.** Their poke
   requires a ready pane and verifies a transcript entry; otherwise rely on the
   osascript notification and resume hook.

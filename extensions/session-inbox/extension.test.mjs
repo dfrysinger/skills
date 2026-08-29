@@ -165,7 +165,52 @@ export async function joinSession() {
       },
       queue: {
         async pendingItems() {
-          return {items: Array.from({length: state().pending}, (_, index) => ({index}))};
+          const current = state();
+          return {
+            items: current.queuedPrompt
+              ? [{
+                  id: "queued-message",
+                  kind: "message",
+                  displayText: current.queuedPrompt,
+                  agentMode: "interactive",
+                }]
+              : Array.from({length: current.pending}, (_, index) => ({
+                  id: "pending-" + index,
+                  kind: "message",
+                  displayText: "pending " + index,
+                  agentMode: "interactive",
+                })),
+            steeringMessages: current.steeringPrompt
+              ? [current.steeringPrompt]
+              : [],
+          };
+        },
+        async sendNow(options) {
+          record("queue.sendNow", options);
+          const current = state();
+          if (!current.promoteQueued) return {steered: false};
+          writeFileSync(
+            process.env.MOCK_STATE,
+            JSON.stringify({...current, queuedPrompt: undefined}) + "\\n",
+          );
+          queueMicrotask(() => emit("user.message", {
+            type: "user.message",
+            data: {
+              content: current.queuedPrompt,
+              delivery: "steering",
+            },
+          }));
+          return {steered: true};
+        },
+        async removeAt(options) {
+          record("queue.removeAt", options);
+          const current = state();
+          if (!current.removeQueued) return {removed: false};
+          writeFileSync(
+            process.env.MOCK_STATE,
+            JSON.stringify({...current, queuedPrompt: undefined}) + "\\n",
+          );
+          return {removed: true};
         },
       },
       extensions: {
@@ -620,10 +665,10 @@ test("recipient extension submits SDK work without idle gates and preserves phas
       mode: "immediate",
       dedupeKey: "unconfirmed-one-shot",
     });
-    const unconfirmed = await harness.receipt("completed", "unconfirmed-send");
+    const unconfirmed = await harness.receipt("failed", "unconfirmed-send");
+    assert.equal(unconfirmed.ambiguousSideEffect, true);
     assert.equal(unconfirmed.result.messageAccepted, true);
     assert.equal(unconfirmed.result.delivery, "unconfirmed");
-    assert.equal(unconfirmed.result.idleDelivery, false);
     await harness.setState({ suppressDelivery: false, idleCounter: 11 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("unconfirmed-retry", {
@@ -632,12 +677,9 @@ test("recipient extension submits SDK work without idle gates and preserves phas
       mode: "immediate",
       dedupeKey: "unconfirmed-one-shot",
     });
-    const unconfirmedRetry = await harness.receipt(
-      "completed",
-      "unconfirmed-retry",
-    );
-    assert.equal(unconfirmedRetry.deduplicated, true);
-    assert.equal(unconfirmedRetry.result.delivery, "unconfirmed");
+    const unconfirmedRetry = await harness.receipt("failed", "unconfirmed-retry");
+    assert.equal(unconfirmedRetry.ambiguousSideEffect, true);
+    assert.match(unconfirmedRetry.error, /prior request side effect is ambiguous/);
     assert.equal(
       (await harness.calls()).filter(
         (call) => call.kind === "send" && call.value.prompt === "accepted without event",
@@ -688,14 +730,14 @@ test("recipient extension submits SDK work without idle gates and preserves phas
       continuationPrompt: "queue without waiting for its later event",
     });
     const compactUnconfirmed = await harness.receipt(
-      "completed",
+      "failed",
       "compact-unconfirmed-continuation",
     );
+    assert.equal(compactUnconfirmed.ambiguousSideEffect, true);
     assert.equal(compactUnconfirmed.result.compacted, true);
     assert.equal(compactUnconfirmed.result.continuationAccepted, true);
     assert.equal(typeof compactUnconfirmed.result.continuationMessageId, "string");
     assert.equal(compactUnconfirmed.result.continuationDelivery, "unconfirmed");
-    assert.equal(compactUnconfirmed.result.continuationError, undefined);
 
     await harness.setState({
       suppressDelivery: false,
@@ -930,6 +972,62 @@ test("an immediate send observed in the FIFO fails ambiguously", async () => {
     assert.match(receipt.error, /message entered the FIFO queue/);
     assert.equal(receipt.result.delivery, "queued");
     assert.equal(receipt.result.queuedDelivery, true);
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("an immediate send placed in FIFO is promoted to steering", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    queuedPrompt: "promote me",
+    promoteQueued: true,
+  });
+  try {
+    await harness.request("promote-queued-send", {
+      kind: "send",
+      prompt: "promote me",
+      mode: "immediate",
+      dedupeKey: "promote-queued",
+    });
+    const receipt = await harness.receipt("completed", "promote-queued-send");
+    assert.equal(receipt.result.delivery, "steering");
+    assert.equal(receipt.result.queuedDelivery, false);
+    assert.ok(
+      (await harness.calls()).some(
+        (call) =>
+          call.kind === "queue.sendNow" &&
+          call.value.id === "queued-message",
+      ),
+    );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("an unsteerable queued send is removed definitively", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    queuedPrompt: "remove me",
+    removeQueued: true,
+  });
+  try {
+    await harness.request("remove-queued-send", {
+      kind: "send",
+      prompt: "remove me",
+      mode: "immediate",
+      dedupeKey: "remove-queued",
+    });
+    const receipt = await harness.receipt("failed", "remove-queued-send");
+    assert.equal(receipt.ambiguousSideEffect, undefined);
+    assert.match(receipt.error, /removed from FIFO/);
+    assert.ok(
+      (await harness.calls()).some(
+        (call) =>
+          call.kind === "queue.removeAt" &&
+          call.value.id === "queued-message",
+      ),
+    );
   } finally {
     await harness.stop();
   }
