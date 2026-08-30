@@ -174,6 +174,18 @@ MAILBOX_REMOTE_ROOT="/path/to/OneDrive/copilot-mailbox"
 COPILOT_AGENT_MACHINE="<stable-machine-label>"
 ```
 
+Persist the machine route once so direct Copilot restarts do not depend on
+inheriting those shell exports:
+
+```sh
+node <plugin>/skills/mailbox/scripts/mailbox.mjs configure \
+  --machine "<stable-machine-label>" \
+  --remote-root "/path/to/OneDrive/copilot-mailbox"
+```
+
+The command writes `~/.copilot/mailbox-config.json`. Environment variables
+still override the persisted machine and remote root for an explicit process.
+
 ## Pitfalls
 
 - **Copilot wakeups use immediate native delivery.** Session-inbox submits the
