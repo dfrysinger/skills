@@ -77,6 +77,14 @@ resumption, at each phase boundary, and whenever the current action is waiting:
 5. Batch causally related fixes into one coherent candidate before expensive
    builds, verifiers, or CI. Use the change-to-claim impact map to rerun only
    the proof reached by that candidate.
+6. For systemic or critical work, read the durable constraint-challenge record.
+   Reconcile its active-time clock now. Run the challenge-only mode defined in
+   [`dual-review`'s constraint-challenge lens](../dual-review/references/constraint-challenge-lens.md)
+   immediately when its design or charter changed, a scope-expansion trigger
+   fired, or the clock reached 480 active implementation minutes. Supply the
+   relevant user statements as exact quotes with their available context,
+   including statements made since the prior accepted challenge. If the clock
+   is absent or inconsistent after resumption, treat it as due.
 
 Parallelism stops at an actual dependency or exclusive boundary. One proof
 owner and one running candidate remain mandatory during live proof, and review,
@@ -326,6 +334,28 @@ when a recorded revisit condition fires, or when implementation would add a
 new subsystem mainly to preserve an inherited limit or mechanism. Repeated
 movement of a failure to the next internal boundary without user-visible
 progress is evidence that the gate has fired.
+
+Also run the challenge-only mode defined in
+[`dual-review`'s constraint-challenge lens](../dual-review/references/constraint-challenge-lens.md)
+before adding a
+service, protocol, store, broker, compiler, fork, native binary, repository,
+language, or platform lane; when adapters or proof machinery mainly preserve
+inherited behavior; after a design, charter, Definition-of-Done, trust-boundary,
+or constraint change; and after eight active implementation hours. The
+challenger reconstructs effective rules from the actual task, component, test,
+and proof graph, so a premise need not be written down to fire this gate.
+Prioritize its three highest-leverage assumptions rather than auditing every
+default.
+
+The durable challenge clock records accumulated active minutes, the current
+active interval start, and any pause timestamp and reason. Reconcile it at task
+start, phase boundaries, resumptions, and active/blocked transitions. Reset it
+only after an accepted challenge. A missing or inconsistent clock makes the
+challenge due; do not infer elapsed work from the wall clock alone.
+The challenge packet also carries the relevant user statements verbatim with
+their context. Preserve newly received user statements in the durable baton
+until a challenger has classified them; never replace them with an agent
+summary.
 
 Persist the blocked outcome, the implicated constraint and provenance, the
 invariant that would fail if it changed, and the simpler alternative. Further
@@ -935,7 +965,11 @@ literal `findings: []`.
 - **All comments treated as blockers.** Explicitly separate must-fix,
   verification-needed, follow-up, and dropped findings.
 - **Third full reviewer.** Use a cheap finding verifier only for disputed
-  blockers.
+  blockers. The systemic-design constraint challenger is a focused premise
+  check, not another pass over the implementation diff.
+- **Waiting for documented drift.** Repeated implementation and proof choices
+  can create an effective requirement without changing the charter. Reverse
+  trace substantial work at the independent challenge triggers.
 - **Ensemble review as the default.** Buying the heavy roster for a bounded
   change spends real credits to rediscover what one reviewer already covers,
   and a long judged findings list invites exactly the adjacent-issue expansion
@@ -985,8 +1019,10 @@ The change is complete when:
 7. post-review validation covers the actual review fixes;
 8. the landed diff remains coherent and scoped; and
 9. the critical-path audit ran at each required trigger, and no remaining
-   ready scope is unowned, overlapping, or serial without a named gate; and
-10. every PR that adds a new user-facing visual journey contains its validated
+   ready scope is unowned, overlapping, or serial without a named gate;
+10. systemic or critical work has a current accepted constraint-challenge
+    record, with no event trigger or eight-active-hour review overdue; and
+11. every PR that adds a new user-facing visual journey contains its validated
     candidate-bound walkthrough movie, while fixes retain their required
     screenshot evidence.
 

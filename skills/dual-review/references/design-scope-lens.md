@@ -1,8 +1,11 @@
 # Design architecture and scope lens
 
 Use this lens only when the review subject is a design document or work order.
-It supplements the normal evidence, causality, reachability, and round rules;
-it does not create another reviewer or another round.
+It supplements the normal evidence, causality, reachability, and round rules.
+The independent constraint challenge in
+[`constraint-challenge-lens.md`](./constraint-challenge-lens.md) runs first;
+this lens then checks whether the resulting minimum-design comparison and
+verdict are reflected honestly in the work order.
 
 Set `design_scope_lens.applicable` and `design_scope_lens.applied` to `true` in
 the review output. The short summary names the architecture and scope areas
@@ -17,24 +20,36 @@ acceptable by precise schemas and exhaustive tests.
 
 Reviewers answer:
 
-1. Does every component serve a supported caller and observable acceptance
+1. For a systemic or critical design, did a fresh-context challenger
+   independently trace the product goal and security rules, derive a minimum
+   design before seeing this architecture, and persist an accepted verdict?
+   Did it receive exact user quotes, distinguish top-level direction from
+   tactical approval, define the end user's job to be done, and surface any
+   contradictory top-level goals rather than choosing one silently?
+2. Does every component serve a supported caller and observable acceptance
    criterion today?
-2. Which constraints come from user outcomes, policy, platform behavior,
+3. Which constraints come from user outcomes, policy, platform behavior,
    measured capacity, or compatibility, and which are inherited implementation
    defaults?
-3. Does every hard numeric limit have measured evidence or a named policy
+4. Does every hard numeric limit have measured evidence or a named policy
    owner?
-4. Does an existing owner, helper, protocol, or proven predecessor satisfy the
+5. Does an existing owner, helper, protocol, or proven predecessor satisfy the
    objective with fewer trusted components?
-5. Can any proposed service, store, protocol, state machine, or persistence
+6. Can any proposed service, store, protocol, state machine, or persistence
    layer be removed without violating a hard invariant?
-6. Does the design preserve an earlier mechanism as though it were the user
+7. Does the design preserve an earlier mechanism as though it were the user
    outcome?
-7. Are security, isolation, credential, durability, and enforcement claims
+8. Are security, isolation, credential, durability, and enforcement claims
    tied to a real owner and observable refusal?
-8. Are constraint revisit conditions and the reframe gate strong enough to
+9. Are the three most load-bearing assumptions ranked by scope and risk
+   leverage, and does each have independent evidence rather than an author
+   label?
+10. Did the challenger reverse-trace substantial components, tests, and proof
+   obligations to a verified need, including effective rules that never
+   appeared as a design sentence?
+11. Are constraint revisit conditions and the reframe gate strong enough to
    stop implementation when the design's assumptions cease to hold?
-9. Could an implementer who never saw the conversation identify the current
+12. Could an implementer who never saw the conversation identify the current
    integration points and distinguish binding decisions from historical
    context?
 
@@ -49,6 +64,13 @@ completion path and proves one of:
 - the design requires a hypothetical caller to justify present complexity;
 - the stated security or durability posture lacks the enforcement or transport
   it claims;
+- for a systemic or critical design, the independent challenge is missing,
+  stale, or accepted a load-bearing premise without tracing its user need or
+  security boundary;
+- the design treats an interpreted or tactical user approval as a durable
+  top-level requirement, or silently resolves contradictory top-level goals;
+- substantial implementation or proof machinery has no reverse trace to a
+  verified need, threat, obligation, or current compatibility promise;
 - the work order cannot be executed without missing conversation context.
 
 Optional simplification, aesthetic preference, and alternative architecture are

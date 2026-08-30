@@ -96,7 +96,23 @@ process after compaction without copying each skill's rules.
 > me. For systemic or critical work, preserve the plan's decision hierarchy,
 > constraint provenance, revisit conditions, and any active reframe record in
 > the current baton; inherited mechanisms do not become requirements merely
-> because they survived compaction. `<COORDINATION>`. `<GRANTS>`. Stay on this
+> because they survived compaction. Also preserve the last accepted
+> independent constraint-challenge record, its accumulated active minutes,
+> current active interval start or pause timestamp and reason, its next due
+> point, any event trigger, and every relevant user statement received since
+> the prior accepted challenge as an exact quote with enough surrounding
+> context to classify it. Never replace those words with an agent summary.
+> Reconcile the clock at task start, phase
+> boundaries, scheduled re-briefs, resumptions, and active/blocked transitions.
+> Run `/dfrysinger-skills:dual-review`'s challenge-only mode immediately
+> after a design, charter, Definition-of-Done, trust-boundary, constraint, or
+> scope-expansion change, before adding a new subsystem, service, protocol,
+> store, broker, compiler, fork, native binary, repository, language, or
+> platform lane, when adapters or proof machinery mainly preserve inherited
+> behavior, or when the clock reaches 480 active implementation minutes. If the
+> clock is absent or inconsistent after resumption, treat the challenge as due.
+> `<COORDINATION>`.
+> `<GRANTS>`. Stay on this
 > course until the objective's
 > Definition of Done (the "`<DOD_REF>`" section) is met.
 >
@@ -154,7 +170,11 @@ Charter slots:
 
 For a systemic or critical run, the filled charter additionally names where
 the governing plan records its constraint provenance and reframe gate, and the
-current baton states whether any revisit condition is open.
+current baton states whether any revisit condition is open. It also records the
+last accepted independent constraint challenge, active implementation time
+since that review as accumulated minutes plus active/pause timestamps, its next
+due point, any event trigger, and relevant user statements since the prior
+challenge as exact contextual quotes.
 
 ## Worked example
 
