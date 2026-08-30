@@ -8,7 +8,7 @@ import {
   currentSessionName,
   currentTmuxSession,
 } from "../session-inbox/session-identity.mjs";
-import { createMailbox } from "../../skills/mailbox/scripts/mailbox-core.mjs";
+import { createConfiguredMailbox } from "../../skills/mailbox/scripts/mailbox-core.mjs";
 
 const stateRoot =
   process.env.MAILBOX_STATE_ROOT ?? join(homedir(), ".copilot", "mailbox-state");
@@ -36,14 +36,12 @@ try {
 
 let mailbox;
 try {
-  mailbox = createMailbox();
+  mailbox = createConfiguredMailbox();
 } catch (error) {
-  if (!process.env.COPILOT_AGENT_MACHINE) throw error;
-  diagnostics.log("watcher.machine_identity_invalid", {
-    configuredValue: process.env.COPILOT_AGENT_MACHINE,
+  diagnostics.log("watcher.configuration_invalid", {
     error: errorDetails(error),
   });
-  mailbox = createMailbox({ machineName: null });
+  throw error;
 }
 diagnostics.setContext({ machineName: mailbox.machineName });
 diagnostics.log("watcher.machine_identity", {

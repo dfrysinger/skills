@@ -1,18 +1,19 @@
 #!/usr/bin/env node
 
 import {
-  createMailbox,
+  createConfiguredMailbox,
   parseMailboxAddress,
   POKE_NO_ACTIVE_COPILOT,
   POKE_REMOTE_PENDING,
   POKE_UNVERIFIED,
   resolveOwnName,
+  writeMailboxConfiguration,
 } from "./mailbox-core.mjs";
 
 function usage(message) {
   if (message) console.error(`mailbox: ${message}`);
   console.error(
-    "usage: mailbox.mjs <send|check|read|ack|list|resume-hint|poke|watch> [options]",
+    "usage: mailbox.mjs <configure|send|check|read|ack|list|resume-hint|poke|watch> [options]",
   );
   process.exit(2);
 }
@@ -73,9 +74,23 @@ function printEnvelope(envelope, attachmentDirectory) {
 
 const [command, ...args] = process.argv.slice(2);
 if (!command) usage();
-const mailbox = createMailbox();
 
 try {
+  if (command === "configure") {
+    const { positional, options } = parseOptions(args);
+    if (positional.length !== 0) usage("configure accepts no positional arguments");
+    if (!options.machine || !options["remote-root"]) {
+      usage("configure requires --machine and --remote-root");
+    }
+    const configuration = await writeMailboxConfiguration({
+      machineName: options.machine,
+      remoteMailboxRoot: options["remote-root"],
+      configPath: options["config-path"],
+    });
+    console.log(`configured mailbox routing: ${configuration.configPath}`);
+    process.exitCode = 0;
+  } else {
+    const mailbox = createConfiguredMailbox();
   switch (command) {
     case "send": {
       const { positional, options } = parseOptions(
@@ -245,6 +260,7 @@ try {
     }
     default:
       usage(`unknown command: ${command}`);
+  }
   }
 } catch (error) {
   console.error(`mailbox: ${error instanceof Error ? error.message : String(error)}`);

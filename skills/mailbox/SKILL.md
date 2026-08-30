@@ -174,6 +174,18 @@ MAILBOX_REMOTE_ROOT="/path/to/OneDrive/copilot-mailbox"
 COPILOT_AGENT_MACHINE="<stable-machine-label>"
 ```
 
+Persist the machine route once so direct Copilot restarts do not depend on
+inheriting those shell exports:
+
+```sh
+node <plugin>/skills/mailbox/scripts/mailbox.mjs configure \
+  --machine "<stable-machine-label>" \
+  --remote-root "/path/to/OneDrive/copilot-mailbox"
+```
+
+The command writes `~/.copilot/mailbox-config.json`. Environment variables
+still override the persisted machine and remote root for an explicit process.
+
 ## Pitfalls
 
 - **Copilot wakeups use immediate native delivery.** Session-inbox submits the
@@ -193,7 +205,12 @@ COPILOT_AGENT_MACHINE="<stable-machine-label>"
   session-inbox snapshots the queue before submission and promotes only the
   single exact matching item that appeared afterward. An owned but unsteerable
   item is removed rather than left queued; ambiguous ownership leaves every
-  queued item untouched.
+  queued item untouched. On macOS, only a receipt that explicitly proves the
+  item was removed with no side effect may retry through the same guarded tmux
+  input verification used for other terminal agents. This fallback never runs
+  for an ambiguous send, a rotation barrier, or a missing/unrecognized pane,
+  and it still requires the exact prompt to appear in the transcript before
+  marking the envelope notified.
 - **Claude and Codex wakeups remain fail-closed and best-effort.** Their poke
   requires a ready pane and verifies a transcript entry; otherwise rely on the
   osascript notification and resume hook.

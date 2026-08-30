@@ -26,6 +26,9 @@ chmod +x "$FAKE_BIN/ps"
 cat >"$FAKE_BIN/node" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FAKE_NODE_CALLS"
+if [[ "$1" == "-e" ]]; then
+  exit "${FAKE_IDENTITY_VALID:-0}"
+fi
 if [[ "$1" == */mailbox.mjs && "$2" == poke ]]; then
   recipient="$3"
   case "${FAKE_MAILBOX_NODE_STATUS:-0}" in
@@ -60,13 +63,13 @@ case "$1" in
     prompt="$(cat "$FAKE_TYPED_PROMPT" 2>/dev/null || true)"
     case "$state" in
       typed)
-        printf '❯ %s\n────────────────\nCtx: 10%%\n' "$prompt"
+        printf 'Session: 1 AIC used\n❯ %s\n────────────────\nCtx: 10%%\n' "$prompt"
         ;;
       submitted)
-        printf '● %s\n❯ \n────────────────\nCtx: 10%%\n' "$prompt"
+        printf 'Session: 1 AIC used\n● %s\n❯ \n────────────────\nCtx: 10%%\n' "$prompt"
         ;;
       *)
-        printf '❯ \n────────────────\nCtx: 10%%\n'
+        printf 'Session: 1 AIC used\n❯ \n────────────────\nCtx: 10%%\n'
         ;;
     esac
     ;;
@@ -132,6 +135,49 @@ grep -Fq "did not acknowledge the SDK wakeup" "$ROOT/sdk-failure.out" ||
   fail "failed Copilot SDK request was not surfaced"
 [ ! -s "$FAKE_TMUX_CALLS" ] ||
   fail "failed Copilot SDK request fell back to tmux"
+
+FAKE_RECIPIENT=india
+FAKE_BACKEND=copilot
+FAKE_MAILBOX_NODE_STATUS=4
+export FAKE_RECIPIENT FAKE_BACKEND FAKE_MAILBOX_NODE_STATUS
+make_mail india 20260827T000001Z-noheartbeat
+if "$SCRIPT" india >"$ROOT/no-heartbeat.out" 2>&1; then
+  fail "missing Copilot heartbeat was reported as delivered"
+fi
+[ ! -s "$FAKE_TMUX_CALLS" ] ||
+  fail "missing Copilot heartbeat bypassed the definitive receipt gate"
+
+FAKE_RECIPIENT=lima
+FAKE_BACKEND=copilot
+export FAKE_RECIPIENT FAKE_BACKEND
+printf empty >"$FAKE_PANE_STATE"
+: >"$FAKE_TYPED_PROMPT"
+FAKE_IDENTITY_VALID=0
+export FAKE_IDENTITY_VALID
+output="$("$SCRIPT" lima --terminal-only \
+  --expected-session-id lima-session \
+  --expected-generation lima-generation \
+  --expected-host-pid 101)"
+grep -Fq 'poked: lima (submission observed)' <<<"$output" ||
+  fail "eligible Copilot terminal fallback was not verified"
+grep -Fq -- '-l -- check mailbox; skip if empty [mb:sdkfail]' \
+  "$FAKE_TMUX_CALLS" || fail "Copilot terminal fallback did not type the mailbox prompt"
+: >"$FAKE_TMUX_CALLS"
+
+FAKE_IDENTITY_VALID=1
+export FAKE_IDENTITY_VALID
+printf empty >"$FAKE_PANE_STATE"
+make_mail lima 20260827T000002Z-staleidentity
+if "$SCRIPT" lima --terminal-only \
+  --expected-session-id old-session \
+  --expected-generation old-generation \
+  --expected-host-pid 101 >"$ROOT/stale-identity.out" 2>&1; then
+  fail "stale Copilot fallback identity was reported as delivered"
+fi
+[ ! -s "$FAKE_TMUX_CALLS" ] ||
+  fail "stale Copilot fallback identity sent tmux keys"
+FAKE_IDENTITY_VALID=0
+export FAKE_IDENTITY_VALID
 
 FAKE_RECIPIENT=hotel
 FAKE_BACKEND=copilot

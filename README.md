@@ -70,7 +70,10 @@ no hostname fallback. Unqualified addresses such as `hotel` are local-only;
 there is no implicit broadcast. Mutable mail lives under
 `MAILBOX_LOCAL_ROOT` (default `~/.copilot/mailbox`). Qualified messages are
 staged locally and use `MAILBOX_REMOTE_ROOT` only for immutable cross-computer
-envelopes, attachments, and acknowledgement receipts.
+envelopes, attachments, and acknowledgement receipts. Run
+`node skills/mailbox/scripts/mailbox.mjs configure --machine <name>
+--remote-root <path>` once to persist the machine route across direct Copilot
+restarts that do not inherit shell exports.
 
 Session-inbox diagnostics are written as newline-delimited JSON under
 `~/.copilot/session-inbox/logs/`. Extension logs are named by session and

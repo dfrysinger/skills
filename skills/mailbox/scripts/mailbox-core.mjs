@@ -11,9 +11,22 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { constants as fsConstants, rmSync } from "node:fs";
+import {
+  constants as fsConstants,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
@@ -28,6 +41,20 @@ const RETRYABLE_FILE_ERRORS = new Set(["EACCES", "EBUSY", "EPERM"]);
 export const POKE_UNVERIFIED = 3;
 export const POKE_NO_ACTIVE_COPILOT = 4;
 export const POKE_REMOTE_PENDING = 5;
+
+const MAILBOX_CONFIG_SCHEMA_VERSION = 1;
+const MAILBOX_CONFIG_KEYS = new Set([
+  "schemaVersion",
+  "machineName",
+  "remoteMailboxRoot",
+]);
+
+export class MailboxConfigurationError extends Error {
+  constructor(message, options) {
+    super(message, options);
+    this.name = "MailboxConfigurationError";
+  }
+}
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -129,6 +156,18 @@ async function runNode(script, args, env) {
   });
 }
 
+function receiptFromOutput(output) {
+  for (const line of output.trim().split("\n").reverse()) {
+    if (!line.startsWith("{")) continue;
+    try {
+      return JSON.parse(line);
+    } catch {
+      // Continue past non-receipt diagnostic output.
+    }
+  }
+  return undefined;
+}
+
 function compactTimestamp(date = new Date()) {
   return date.toISOString().replaceAll(/[-:.]/g, "").replace("Z", "Z-");
 }
@@ -147,6 +186,131 @@ export function defaultRemoteMailboxRoot() {
 
 export function defaultStateRoot() {
   return process.env.MAILBOX_STATE_ROOT ?? join(homedir(), ".copilot", "mailbox-state");
+}
+
+export function defaultMailboxConfigPath() {
+  return process.env.MAILBOX_CONFIG_PATH ?? join(homedir(), ".copilot", "mailbox-config.json");
+}
+
+function validateAbsolutePath(path, label) {
+  if (typeof path !== "string" || !path || !isAbsolute(path)) {
+    throw new MailboxConfigurationError(`${label} must be an absolute path`);
+  }
+  return path;
+}
+
+function normalizedPath(path) {
+  const normalized = resolve(path);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function pathContains(parent, child) {
+  const path = relative(normalizedPath(parent), normalizedPath(child));
+  return (
+    path === "" ||
+    (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path))
+  );
+}
+
+function validateDisjointRoots(mailboxRoot, stateRoot, remoteMailboxRoot) {
+  if (!remoteMailboxRoot) return;
+  for (const [label, localRoot] of [
+    ["MAILBOX_LOCAL_ROOT", mailboxRoot],
+    ["MAILBOX_STATE_ROOT", stateRoot],
+  ]) {
+    if (
+      pathContains(localRoot, remoteMailboxRoot) ||
+      pathContains(remoteMailboxRoot, localRoot)
+    ) {
+      throw new MailboxConfigurationError(
+        `MAILBOX_REMOTE_ROOT must be path-disjoint from ${label}`,
+      );
+    }
+  }
+}
+
+export function readMailboxConfiguration(
+  configPath = defaultMailboxConfigPath(),
+) {
+  const explicitPath = process.env.MAILBOX_CONFIG_PATH !== undefined;
+  let metadata;
+  try {
+    metadata = statSync(configPath);
+  } catch (error) {
+    if (error?.code === "ENOENT" && !explicitPath) return undefined;
+    throw new MailboxConfigurationError(
+      `cannot read mailbox configuration at ${configPath}`,
+      { cause: error },
+    );
+  }
+  if (!metadata.isFile()) {
+    throw new MailboxConfigurationError(
+      `mailbox configuration is not a regular file: ${configPath}`,
+    );
+  }
+
+  let configuration;
+  try {
+    configuration = JSON.parse(readFileSync(configPath, "utf8"));
+  } catch (error) {
+    throw new MailboxConfigurationError(
+      `invalid mailbox configuration JSON at ${configPath}`,
+      { cause: error },
+    );
+  }
+  if (
+    !configuration ||
+    typeof configuration !== "object" ||
+    Array.isArray(configuration)
+  ) {
+    throw new MailboxConfigurationError(
+      `mailbox configuration must be a JSON object: ${configPath}`,
+    );
+  }
+  for (const key of Object.keys(configuration)) {
+    if (!MAILBOX_CONFIG_KEYS.has(key)) {
+      throw new MailboxConfigurationError(
+        `unknown mailbox configuration field: ${key}`,
+      );
+    }
+  }
+  if (configuration.schemaVersion !== MAILBOX_CONFIG_SCHEMA_VERSION) {
+    throw new MailboxConfigurationError(
+      `unsupported mailbox configuration schemaVersion: ${configuration.schemaVersion}`,
+    );
+  }
+
+  let machineName;
+  try {
+    machineName = validateName(
+      configuration.machineName,
+      "mailbox configuration machineName",
+    );
+  } catch (error) {
+    throw new MailboxConfigurationError(error.message, { cause: error });
+  }
+  const remoteMailboxRoot = validateAbsolutePath(
+    configuration.remoteMailboxRoot,
+    "mailbox configuration remoteMailboxRoot",
+  );
+  return { machineName, remoteMailboxRoot, configPath };
+}
+
+export async function writeMailboxConfiguration({
+  machineName,
+  remoteMailboxRoot,
+  configPath = defaultMailboxConfigPath(),
+}) {
+  const configuration = {
+    schemaVersion: MAILBOX_CONFIG_SCHEMA_VERSION,
+    machineName: validateName(machineName, "machine name"),
+    remoteMailboxRoot: validateAbsolutePath(
+      remoteMailboxRoot,
+      "remote mailbox root",
+    ),
+  };
+  await atomicWrite(configPath, `${JSON.stringify(configuration, null, 2)}\n`);
+  return { ...configuration, configPath };
 }
 
 export async function resolveOwnName(explicitName) {
@@ -187,6 +351,13 @@ export function createMailbox(options = {}) {
       dirname(fileURLToPath(import.meta.url)),
       "../../../extensions/session-inbox/request.mjs",
     );
+  const terminalPokeCli =
+    options.terminalPokeCli === null
+      ? undefined
+      : options.terminalPokeCli ??
+        (process.platform === "darwin"
+          ? join(dirname(fileURLToPath(import.meta.url)), "mailbox-poke.sh")
+          : undefined);
   const diagnostics = createDiagnosticLogger(stateRoot, "mailbox.jsonl", {
     component: "mailbox",
     pid: process.pid,
@@ -1032,6 +1203,7 @@ export function createMailbox(options = {}) {
           detail: "prior mailbox wakeup had an ambiguous side effect",
         };
       }
+
       return { status: "already-poked", envelopeId: envelopes.at(-1).envelope.id };
     }
     const newest = unnotified.at(-1).envelope;
@@ -1066,7 +1238,8 @@ export function createMailbox(options = {}) {
         ],
         {},
       );
-      const accepted = /"delivery":"(?:idle|steering)"/.test(result.stdout);
+      const receipt = receiptFromOutput(result.stdout);
+      const accepted = ["idle", "steering"].includes(receipt?.result?.delivery);
       if (result.code === 0 && accepted) {
         await markNotified(mailboxAddress, [...readyIds]);
         diagnostics.log("wakeup.accepted", {
@@ -1075,6 +1248,58 @@ export function createMailbox(options = {}) {
           envelopeId: newest.id,
         });
         return { status: "delivered", envelopeId: newest.id };
+      }
+      const terminalFallbackEligible =
+        receipt?.terminalFallbackEligible === true &&
+        receipt.tmuxSession === targetName &&
+        typeof receipt.sessionId === "string" &&
+        typeof receipt.generation === "string" &&
+        Number.isInteger(receipt.hostPid);
+      if (terminalFallbackEligible && terminalPokeCli) {
+        try {
+          const fallback = await execFileAsync(
+            terminalPokeCli,
+            [
+              targetName,
+              "--terminal-only",
+              "--expected-session-id",
+              receipt.sessionId,
+              "--expected-generation",
+              receipt.generation,
+              "--expected-host-pid",
+              String(receipt.hostPid),
+            ],
+            {
+              env: {
+                ...process.env,
+                MAILBOX_LOCAL_ROOT: mailboxRoot,
+                MAILBOX_STATE_ROOT: stateRoot,
+              },
+              timeout: wait ? 35_000 : 20_000,
+            },
+          );
+          if (fallback.stdout.includes("submission observed")) {
+            await markNotified(mailboxAddress, [...readyIds]);
+            diagnostics.log("wakeup.accepted", {
+              mailbox: mailboxAddress,
+              targetName,
+              envelopeId: newest.id,
+              delivery: "terminal-fallback",
+            });
+            return {
+              status: "delivered",
+              envelopeId: newest.id,
+              delivery: "terminal-fallback",
+            };
+          }
+        } catch (error) {
+          diagnostics.log("wakeup.terminal_fallback_failed", {
+            mailbox: mailboxAddress,
+            targetName,
+            envelopeId: newest.id,
+            error: errorDetails(error),
+          });
+        }
       }
       const explicitAmbiguity =
         /"ambiguousSideEffect":true/.test(`${result.stdout}\n${result.stderr}`) ||
@@ -1271,4 +1496,40 @@ export function createMailbox(options = {}) {
     send,
     watch,
   };
+}
+
+export function createConfiguredMailbox(options = {}) {
+  const configuration = readMailboxConfiguration(
+    options.configPath ?? defaultMailboxConfigPath(),
+  );
+  const mailboxRoot =
+    options.mailboxRoot ??
+    process.env.MAILBOX_LOCAL_ROOT ??
+    process.env.MAILBOX_ROOT ??
+    join(homedir(), ".copilot", "mailbox");
+  const stateRoot =
+    options.stateRoot ??
+    process.env.MAILBOX_STATE_ROOT ??
+    join(homedir(), ".copilot", "mailbox-state");
+  const remoteMailboxRoot =
+    options.remoteMailboxRoot === null
+      ? undefined
+      : options.remoteMailboxRoot ??
+        process.env.MAILBOX_REMOTE_ROOT ??
+        configuration?.remoteMailboxRoot;
+  const machineName =
+    options.machineName === null
+      ? undefined
+      : options.machineName ??
+        process.env.COPILOT_AGENT_MACHINE ??
+        configuration?.machineName;
+
+  validateDisjointRoots(mailboxRoot, stateRoot, remoteMailboxRoot);
+  return createMailbox({
+    ...options,
+    mailboxRoot,
+    stateRoot,
+    remoteMailboxRoot: remoteMailboxRoot ?? null,
+    machineName: machineName ?? null,
+  });
 }

@@ -6,6 +6,39 @@ Deliver messages between named agent sessions on one computer or across
 computers without putting mutable mailbox state, locks, or acknowledgements in
 a cloud-synced directory.
 
+## Non-goals
+
+- Do not infer a machine label from a hostname, operating-system account, or
+  cloud-provider metadata.
+- Do not move local mailbox, watcher, session-inbox, or acknowledgement state
+  into OneDrive.
+- Do not add broadcast, recipient discovery, reply threads, or a distributed
+  lock service.
+- Do not require every Copilot process restart to inherit shell environment
+  variables after the machine has been configured once.
+
+## Lane
+
+**Systemic.** Machine identity and the remote transport root determine which
+cross-computer route a watcher owns. Their persistent configuration is shared
+by the portable CLI and watcher extension across process restarts.
+
+## Constraint provenance and reframe gate
+
+| Constraint | Provenance | Protects | Revisit condition |
+| --- | --- | --- | --- |
+| Machine identity is explicit and stable. | User-selected mailbox address contract. | Prevents one computer from importing another computer's route. | Revisit only if a repository-independent machine identity authority exists. |
+| Mutable delivery state remains local. | Prior OneDrive lock and corruption experience plus the local-first product contract. | Prevents cloud-file conflicts from corrupting claims, acknowledgements, and retries. | Revisit only if the remote transport is replaced by a transactional service. |
+| Process environment overrides persisted configuration. | Existing launch-time configuration and test isolation behavior. | Allows explicit per-process testing and emergency overrides without editing durable state. | Revisit if configuration gains profiles or a supported runtime settings API. |
+| Persistent routing configuration is machine-local and independent of a Copilot session profile. | Machine qualification belongs to the physical computer, while session identity remains the agent name and exact Copilot session ID. | A direct restart resolves the same machine route even when its shell environment differs from the setup shell. | Revisit if one physical computer must participate under multiple mailbox machine identities. |
+| Invalid persistent configuration fails closed. | Routing integrity requirement. | Prevents malformed or partial config from silently degrading a cross-computer watcher to local-only delivery. | Revisit only if the UI can surface and repair invalid configuration before watcher startup. |
+
+**Reframe status: CLEAR.** The observed failure was a direct Copilot resume
+whose process did not inherit the shell exports used during initial setup. A
+small local configuration file reused by the existing mailbox state owner
+survives that boundary without adding a daemon, remote registry, or mutable
+cloud state.
+
 ## Product contract
 
 An unqualified address is local:
@@ -110,6 +143,51 @@ Acknowledgement does not modify the original remote envelope or attachments.
 - Renaming a session stops both old loops before starting the new local and
   qualified routes.
 
+## Configuration authority
+
+The mailbox reads optional persistent configuration from
+`~/.copilot/mailbox-config.json`. `MAILBOX_CONFIG_PATH` may select a different
+local file. The file is versioned and contains only the physical machine's
+cross-computer routing configuration:
+
+```json
+{
+  "schemaVersion": 1,
+  "machineName": "surface-pro",
+  "remoteMailboxRoot": "C:\\Users\\me\\OneDrive\\copilot-mailbox"
+}
+```
+
+`machineName` and `remoteMailboxRoot` are both required. Local mailbox and state
+roots retain their existing environment/default resolution and are deliberately
+not persisted here, so this file cannot redirect mutable state into OneDrive.
+Explicit constructor options override environment variables; environment
+variables override the persistent file; the persistent file overrides the
+local-only default. A present file with an unsupported schema, unknown field,
+malformed value, relative remote root, or incomplete pair is an error rather
+than a local-only fallback. An explicitly set `MAILBOX_CONFIG_PATH` that is
+missing, unreadable, or not a regular file is also an error; only absence of the
+default path means the machine is intentionally local-only.
+
+After environment/file precedence is resolved, the remote transport root must
+be path-disjoint from the resolved local mailbox and state roots: none may be
+equal to, contain, or be contained by another. Comparison follows the host
+platform's path and case semantics. A collision is an invalid configuration and
+is rejected before any directory, watcher route, or state file is created.
+
+`mailbox.mjs configure` writes the file atomically with user-only permissions.
+It prints the absolute path written. The file stays local and is never copied
+into `MAILBOX_REMOTE_ROOT`.
+
+The portable CLI and watcher extension call the same mailbox-core configuration
+resolver. Configuration parse and validation failures have a distinct error
+type. The watcher records `watcher.configuration_invalid` in the existing
+default or environment-selected local state root, then its extension bootstrap
+process exits non-zero without starting either local or qualified routes. The
+hosting Copilot session remains running. It does not reuse the prior
+machine-error fallback that silently reconstructed a local-only watcher. A
+standalone `mailbox.mjs watch` process likewise exits non-zero.
+
 ## Failure behavior
 
 - Missing `MAILBOX_REMOTE_ROOT` rejects a qualified send before publication.
@@ -148,7 +226,14 @@ COPILOT_AGENT_MACHINE="surface-pro"
 ```
 
 `MAILBOX_REMOTE_ROOT` and `COPILOT_AGENT_MACHINE` are optional when only local
-delivery is needed.
+delivery is needed. They may be supplied on every launch as before, or persisted
+once:
+
+```sh
+node skills/mailbox/scripts/mailbox.mjs configure \
+  --machine surface-pro \
+  --remote-root "/path/to/OneDrive/copilot-mailbox"
+```
 
 ## Acceptance criteria
 
@@ -167,6 +252,52 @@ delivery is needed.
    qualified route.
 8. Existing session-inbox immediate-delivery, retry, ownership, and privacy
    tests continue to pass.
+9. After one persistent configuration write, a Copilot process started without
+   mailbox environment variables watches both the local and qualified routes.
+10. Environment variables override persistent configuration for an explicitly
+    configured process.
+11. Invalid or partial persistent configuration stops qualified watcher startup
+    with a diagnostic instead of silently watching only the local route.
+
+## Check contract
+
+- A mailbox-core test writes a valid versioned config, clears mailbox
+  environment variables, and asserts that the resulting watcher addresses
+  include the qualified route. Failure proves process restart lost durable
+  routing authority.
+- A precedence test supplies conflicting file and environment values and
+  asserts that the environment wins. Failure proves the documented emergency
+  override no longer works.
+- Schema tests reject unknown fields, unsupported versions, malformed names,
+  relative roots, an incomplete machine/root pair, and an explicitly selected
+  missing config path. They also reject equality and ancestor/descendant
+  overlap between the resolved remote, local mailbox, and local state roots
+  using the host platform's path semantics. Failure proves invalid routing or
+  mutable-state placement can silently enter the watcher.
+- A CLI test runs `configure`, verifies the exact persisted values and
+  user-only file mode, then starts a fresh process without mailbox environment
+  variables and observes the qualified route.
+- A watcher-bootstrap test supplies invalid persistent configuration alongside
+  otherwise valid environment values and asserts one
+  `watcher.configuration_invalid` diagnostic, no `watcher.addresses_started`,
+  and non-zero watcher-extension bootstrap exit while the Copilot host remains
+  alive. Failure proves the old swallow-and-degrade path remains or the
+  refusal's blast radius is too broad.
+- The existing attached-envelope watcher test remains the import contract: the
+  first stable observation waits, the second imports exactly once, and local
+  acknowledgement leaves the remote bytes unchanged.
+
+## Definition of Done: persistent cross-computer mailbox configuration
+
+- The portable CLI and watcher extension use the same versioned local
+  configuration authority.
+- Direct Copilot restart without inherited mailbox exports retains the
+  configured qualified watcher route.
+- Invalid configuration fails closed with actionable diagnostics.
+- Existing environment-only setups and local-only mailboxes remain compatible.
+- A real qualified envelope with attachments imports, wakes, and is
+  acknowledged after restarting the recipient without mailbox environment
+  variables.
 
 ## Deliberate limits
 

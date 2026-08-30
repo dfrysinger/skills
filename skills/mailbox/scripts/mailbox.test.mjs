@@ -1,13 +1,26 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
-import { createMailbox, parseMailboxAddress } from "./mailbox-core.mjs";
+import {
+  createConfiguredMailbox,
+  createMailbox,
+  MailboxConfigurationError,
+  parseMailboxAddress,
+} from "./mailbox-core.mjs";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
@@ -126,6 +139,117 @@ test("wakeup failures never remove a published envelope", async () => {
   }
 });
 
+test("definitive steering rejection may use guarded terminal fallback", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-terminal-fallback-"));
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const stateRoot = join(root, "state");
+    const mockRequest = join(root, "mock-request.mjs");
+    const mockTerminalPoke = join(root, "mock-terminal-poke.sh");
+    await writeFile(
+      mockRequest,
+      `console.log(JSON.stringify({
+  status: "failed",
+  terminalFallbackEligible: true,
+  tmuxSession: "hotel",
+  sessionId: "hotel-session",
+  generation: "hotel-generation",
+  hostPid: 101,
+  error: "immediate message could not enter the steering lane and was removed from FIFO"
+}));
+process.exit(1);
+`,
+    );
+    await writeFile(
+      mockTerminalPoke,
+      `#!/usr/bin/env bash
+printf 'poked: %s (submission observed)\\n' "$1"
+`,
+      { mode: 0o700 },
+    );
+    const mailbox = createMailbox({
+      mailboxRoot,
+      stateRoot,
+      requestCli: mockRequest,
+      terminalPokeCli: mockTerminalPoke,
+    });
+    const sent = await mailbox.send({
+      recipient: "hotel",
+      sender: "whisky",
+      summary: "terminal fallback",
+      message: "deliver without FIFO",
+      wake: false,
+    });
+
+    const result = await mailbox.poke("hotel");
+    assert.equal(result.status, "delivered");
+    assert.equal(result.delivery, "terminal-fallback");
+    assert.match(
+      await readFile(
+        join(stateRoot, "notified", "hotel", `${sent.envelope.id}.notified`),
+        "utf8",
+      ),
+      /^\d{4}-\d{2}-\d{2}T.*Z\n$/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("terminal fallback requires the SDK target's matching tmux identity", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-terminal-identity-"));
+  const previousCallLog = process.env.MOCK_MAILBOX_TERMINAL_CALLS;
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const stateRoot = join(root, "state");
+    const callLog = join(root, "terminal-calls.txt");
+    const mockRequest = join(root, "mock-request.mjs");
+    const mockTerminalPoke = join(root, "mock-terminal-poke.sh");
+    process.env.MOCK_MAILBOX_TERMINAL_CALLS = callLog;
+    await writeFile(
+      mockRequest,
+      `console.log(JSON.stringify({
+  status: "failed",
+  terminalFallbackEligible: true,
+  error: "immediate message could not enter the steering lane and was removed from FIFO"
+}));
+process.exit(1);
+`,
+    );
+    await writeFile(
+      mockTerminalPoke,
+      `#!/usr/bin/env bash
+printf 'called\\n' >>"$MOCK_MAILBOX_TERMINAL_CALLS"
+printf 'poked: %s (submission observed)\\n' "$1"
+`,
+      { mode: 0o700 },
+    );
+    const mailbox = createMailbox({
+      mailboxRoot,
+      stateRoot,
+      requestCli: mockRequest,
+      terminalPokeCli: mockTerminalPoke,
+    });
+    await mailbox.send({
+      recipient: "hotel",
+      sender: "whisky",
+      summary: "session-name-only target",
+      message: "do not guess a tmux pane",
+      wake: false,
+    });
+
+    assert.equal((await mailbox.poke("hotel")).status, "unverified");
+    await assert.rejects(readFile(callLog, "utf8"), { code: "ENOENT" });
+  } finally {
+    if (previousCallLog === undefined) {
+      delete process.env.MOCK_MAILBOX_TERMINAL_CALLS;
+    } else {
+      process.env.MOCK_MAILBOX_TERMINAL_CALLS = previousCallLog;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("request timeouts reuse the same mailbox delivery attempt", async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-timeout-retry-"));
   const previousCallLog = process.env.MOCK_MAILBOX_REQUEST_CALLS;
@@ -209,6 +333,167 @@ test("explicit unqualified-only mode ignores malformed machine configuration", (
   } finally {
     if (previousMachine === undefined) delete process.env.COPILOT_AGENT_MACHINE;
     else process.env.COPILOT_AGENT_MACHINE = previousMachine;
+  }
+});
+
+test("persistent configuration survives a process without mailbox environment", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-config-"));
+  const configPath = join(root, "mailbox-config.json");
+  const remoteMailboxRoot = join(root, "remote");
+  await writeFile(
+    configPath,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      machineName: "macbook-pro",
+      remoteMailboxRoot,
+    })}\n`,
+  );
+
+  const mailbox = createConfiguredMailbox({
+    configPath,
+    mailboxRoot: join(root, "local"),
+    stateRoot: join(root, "state"),
+  });
+  assert.deepEqual(mailbox.watchAddresses("oscar"), [
+    "oscar",
+    "oscar@macbook-pro",
+  ]);
+  assert.equal(mailbox.remoteMailboxRoot, remoteMailboxRoot);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("mailbox environment overrides persistent routing configuration", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-config-env-"));
+  const configPath = join(root, "mailbox-config.json");
+  const previousMachine = process.env.COPILOT_AGENT_MACHINE;
+  const previousRemote = process.env.MAILBOX_REMOTE_ROOT;
+  try {
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        machineName: "configured-machine",
+        remoteMailboxRoot: join(root, "configured-remote"),
+      })}\n`,
+    );
+    process.env.COPILOT_AGENT_MACHINE = "environment-machine";
+    process.env.MAILBOX_REMOTE_ROOT = join(root, "environment-remote");
+    const mailbox = createConfiguredMailbox({
+      configPath,
+      mailboxRoot: join(root, "local"),
+      stateRoot: join(root, "state"),
+    });
+    assert.equal(mailbox.machineName, "environment-machine");
+    assert.equal(mailbox.remoteMailboxRoot, join(root, "environment-remote"));
+  } finally {
+    if (previousMachine === undefined) delete process.env.COPILOT_AGENT_MACHINE;
+    else process.env.COPILOT_AGENT_MACHINE = previousMachine;
+    if (previousRemote === undefined) delete process.env.MAILBOX_REMOTE_ROOT;
+    else process.env.MAILBOX_REMOTE_ROOT = previousRemote;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("invalid persistent configuration fails closed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-config-invalid-"));
+  try {
+    const cases = [
+      {},
+      { schemaVersion: 2, machineName: "mac", remoteMailboxRoot: join(root, "r") },
+      { schemaVersion: 1, machineName: "bad machine", remoteMailboxRoot: join(root, "r") },
+      { schemaVersion: 1, machineName: "mac", remoteMailboxRoot: "relative" },
+      {
+        schemaVersion: 1,
+        machineName: "mac",
+        remoteMailboxRoot: join(root, "r"),
+        unknown: true,
+      },
+    ];
+    for (const [index, configuration] of cases.entries()) {
+      const configPath = join(root, `invalid-${index}.json`);
+      await writeFile(configPath, JSON.stringify(configuration));
+      assert.throws(
+        () =>
+          createConfiguredMailbox({
+            configPath,
+            mailboxRoot: join(root, "local"),
+            stateRoot: join(root, "state"),
+          }),
+        MailboxConfigurationError,
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an explicit missing configuration path fails closed", () => {
+  const previousConfigPath = process.env.MAILBOX_CONFIG_PATH;
+  try {
+    process.env.MAILBOX_CONFIG_PATH = join(
+      tmpdir(),
+      `missing-mailbox-config-${process.pid}.json`,
+    );
+    assert.throws(() => createConfiguredMailbox(), MailboxConfigurationError);
+  } finally {
+    if (previousConfigPath === undefined) delete process.env.MAILBOX_CONFIG_PATH;
+    else process.env.MAILBOX_CONFIG_PATH = previousConfigPath;
+  }
+});
+
+test("remote transport is path-disjoint from mutable mailbox roots", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-config-overlap-"));
+  const configPath = join(root, "mailbox-config.json");
+  try {
+    for (const [mailboxRoot, stateRoot, remoteMailboxRoot] of [
+      [join(root, "same"), join(root, "state"), join(root, "same")],
+      [join(root, "local"), join(root, "state"), join(root, "local", "remote")],
+      [join(root, "remote", "local"), join(root, "state"), join(root, "remote")],
+      [join(root, "local"), join(root, "remote", "state"), join(root, "remote")],
+    ]) {
+      await writeFile(
+        configPath,
+        JSON.stringify({
+          schemaVersion: 1,
+          machineName: "mac",
+          remoteMailboxRoot,
+        }),
+      );
+      assert.throws(() =>
+        createConfiguredMailbox({ configPath, mailboxRoot, stateRoot }),
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("configure writes durable user-only routing configuration", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-config-cli-"));
+  const configPath = join(root, "mailbox-config.json");
+  const remoteMailboxRoot = join(root, "remote");
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [
+      join(scriptDirectory, "mailbox.mjs"),
+      "configure",
+      "--machine",
+      "surface-pro",
+      "--remote-root",
+      remoteMailboxRoot,
+      "--config-path",
+      configPath,
+    ]);
+    assert.match(stdout, new RegExp(configPath.replaceAll("\\", "\\\\")));
+    assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")), {
+      schemaVersion: 1,
+      machineName: "surface-pro",
+      remoteMailboxRoot,
+    });
+    if (process.platform !== "win32") {
+      assert.equal((await stat(configPath)).mode & 0o077, 0);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 
