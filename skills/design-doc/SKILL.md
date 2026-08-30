@@ -65,6 +65,25 @@ Critical wins when both apply. A critical document additionally carries an
 explicit rollback path and states what evidence proves the boundary fails
 closed.
 
+### Classify the caller before proposing new machinery
+
+Before this section's classification licenses a planner, broker, compiler
+mode, mock or preview proposal, continuation/resume protocol, or a parallel
+approval pipeline, classify the caller and who already owns the operation. A
+safety mechanism built to validate untrusted or model-generated output does
+not automatically become the right architecture for a trusted, deterministic
+product operation just because it is available and its shape looks reusable.
+
+If trusted deterministic code already owns validation, authenticated
+authority, user confirmation, the side effect, and result presentation for
+this operation, prefer extending that existing boundary with least privilege
+over introducing a new one next to it. Keep the untrusted-output safety
+mechanism on the untrusted path it was built for. A calculation or algorithm
+proven inside that mechanism can still be worth reusing — but as a pure or
+build-time function called from the trusted boundary, not by keeping the
+whole runtime service, executable, or protocol around as the new home for a
+trusted call.
+
 Work that turns out to be bounded — localized, reusing established architecture,
 touching none of the boundaries above — does not need this document. Say so and
 send it to `development-loop`, even when the document was what you were asked
@@ -274,6 +293,11 @@ invoked if an instruction to continue already exists.
 - **Literal charter compliance.** A work order can remain internally
   consistent after its assumptions stop serving the user outcome. That is when
   its reframe gate should fire.
+- **Promoting an untrusted-output safety mechanism into trusted architecture.**
+  A planner, broker, mock proposal, or approval pipeline built to validate
+  untrusted or model-generated output is not a template for a trusted,
+  deterministic operation that already has an owner. Classify the caller
+  before reusing the shape.
 - **Unobservable acceptance criteria.** "Handles errors gracefully" cannot pass
   or fail. Each criterion names a checkable state.
 - **Check contract as a test list.** Naming tests without stating what each
