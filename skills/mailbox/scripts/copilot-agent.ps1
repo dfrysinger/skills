@@ -7,16 +7,22 @@ function Stop-Launcher {
     exit 2
 }
 
-if ($args.Count -lt 2) {
-    Stop-Launcher "Usage: copilot-agent.ps1 <new|resume> <name> [copilot arguments]"
+if ($args.Count -lt 1) {
+    Stop-Launcher "Usage: copilot-agent.ps1 [new|resume|open] <name> [copilot arguments]"
 }
 
-$Mode = [string]$args[0]
-$Name = [string]$args[1]
-$CopilotArguments = [string[]]@($args | Select-Object -Skip 2)
-
-if ($Mode -notin @("new", "resume")) {
-    Stop-Launcher "Mode must be 'new' or 'resume'."
+$firstArgument = [string]$args[0]
+$secondArgumentStartsOption = $args.Count -ge 2 -and [string]$args[1] -match "^-"
+if ($args.Count -ge 2 -and
+    -not $secondArgumentStartsOption -and
+    $firstArgument -in @("new", "resume", "open")) {
+    $Mode = $firstArgument
+    $Name = [string]$args[1]
+    $CopilotArguments = [string[]]@($args | Select-Object -Skip 2)
+} else {
+    $Mode = "open"
+    $Name = $firstArgument
+    $CopilotArguments = [string[]]@($args | Select-Object -Skip 1)
 }
 
 if ($Name -cnotmatch "\A[a-z0-9][a-z0-9._-]{0,99}\z") {
@@ -78,8 +84,30 @@ if ($Mode -eq "resume" -and -not $workspaceExists) {
     Stop-Launcher "Agent '$Name' does not exist for machine '$machine'; use 'new'."
 }
 
+$effectiveMode = $Mode
+if ($Mode -eq "open") {
+    $effectiveMode = if ($workspaceExists) { "resume" } else { "new" }
+
+    if ($CopilotArguments -notcontains "--allow-all-tools") {
+        $CopilotArguments = @("--allow-all-tools") + $CopilotArguments
+    }
+
+    $hasInitialPrompt = $false
+    foreach ($argument in $CopilotArguments) {
+        if ($argument -match "^(?:-i|-p|--interactive(?:=|$)|--prompt(?:=|$))") {
+            $hasInitialPrompt = $true
+            break
+        }
+    }
+    if (-not $hasInitialPrompt) {
+        $readyMarker = "READY_$($Name.ToUpperInvariant())"
+        $initialPrompt = "Initialize as $Name@$machine, then remain available for mailbox messages. Reply with exactly $readyMarker."
+        $CopilotArguments += @("-i", $initialPrompt)
+    }
+}
+
 $identityArguments = @("--session-id=$sessionId")
-if ($Mode -eq "new") {
+if ($effectiveMode -eq "new") {
     $identityArguments += "--name=$Name"
 }
 

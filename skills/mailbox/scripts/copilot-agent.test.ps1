@@ -47,6 +47,7 @@ $captureScript = Join-Path $root "capture.mjs"
 $fakeCopilot = Join-Path $root "copilot.cmd"
 $copilotHome = Join-Path $root "copilot-home"
 $scriptPath = Join-Path $PSScriptRoot "copilot-agent.ps1"
+$commandPath = Join-Path $PSScriptRoot "copilot-agent.cmd"
 $pwsh = Join-Path $PSHOME "pwsh.exe"
 $windowsPowerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 $originalPath = $env:PATH
@@ -54,6 +55,7 @@ $originalCapture = $env:FAKE_COPILOT_CAPTURE
 $originalExit = $env:FAKE_COPILOT_EXIT
 $originalMachine = $env:COPILOT_AGENT_MACHINE
 $originalCopilotHome = $env:COPILOT_HOME
+$originalLauncher = $env:COPILOT_AGENT_LAUNCHER
 $defaultWorkspaceRoot = $null
 
 $hotelId = "ab7c0c56-f5b8-5e16-9d9e-49808182c874"
@@ -94,7 +96,7 @@ node "%~dp0capture.mjs" %*
         -Label "new mode deterministic arguments"
 
     if (Test-Path -LiteralPath $windowsPowerShell) {
-        Remove-Item $capturePath -Force
+        Remove-Item $capturePath -Force -ErrorAction SilentlyContinue
         & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $scriptPath `
             new hotel -p "wait for mailbox" --model "gpt 5"
         if ($LASTEXITCODE -ne 0) {
@@ -124,11 +126,94 @@ node "%~dp0capture.mjs" %*
         -Expected @("--session-id=$hotelId", "--no-remote") `
         -Label "resume mode exact-ID arguments"
 
+    Remove-Item $capturePath -Force
+    & $pwsh -NoProfile -ExecutionPolicy Bypass -File $scriptPath hotel --model auto
+    if ($LASTEXITCODE -ne 0) {
+        throw "shorthand resume exited with $LASTEXITCODE"
+    }
+    Assert-Equal `
+        -Actual (Get-Content $capturePath -Raw | ConvertFrom-Json) `
+        -Expected @(
+            "--session-id=$hotelId",
+            "--allow-all-tools",
+            "--model",
+            "auto",
+            "-i",
+            "Initialize as hotel@surface-pro, then remain available for mailbox messages. Reply with exactly READY_HOTEL."
+        ) `
+        -Label "shorthand resume defaults"
+
     Assert-NoChild "duplicate new" @("new", "hotel")
 
     Remove-Item (Split-Path (Split-Path (Join-Path $copilotHome "session-state\$hotelId\workspace.yaml"))) `
         -Recurse -Force
     Assert-NoChild "missing resume" @("resume", "hotel")
+
+    Remove-Item $capturePath -Force -ErrorAction SilentlyContinue
+    & $pwsh -NoProfile -ExecutionPolicy Bypass -File $scriptPath open hotel `
+        --allow-all-tools -i "Start assigned work"
+    if ($LASTEXITCODE -ne 0) {
+        throw "open new mode exited with $LASTEXITCODE"
+    }
+    Assert-Equal `
+        -Actual (Get-Content $capturePath -Raw | ConvertFrom-Json) `
+        -Expected @(
+            "--session-id=$hotelId",
+            "--name=hotel",
+            "--allow-all-tools",
+            "-i",
+            "Start assigned work"
+        ) `
+        -Label "open new explicit prompt"
+
+    foreach ($modeName in @("new", "resume", "open")) {
+        Remove-Item $capturePath -Force -ErrorAction SilentlyContinue
+        & $pwsh -NoProfile -ExecutionPolicy Bypass -File $scriptPath $modeName
+        if ($LASTEXITCODE -ne 0) {
+            throw "single-argument agent '$modeName' exited with $LASTEXITCODE"
+        }
+        $modeNameArguments = Get-Content $capturePath -Raw | ConvertFrom-Json
+        if ($modeNameArguments[1] -ne "--name=$modeName" -or
+            $modeNameArguments[2] -ne "--allow-all-tools" -or
+            $modeNameArguments[3] -ne "-i") {
+            throw "single-argument agent '$modeName' was parsed as a mode"
+        }
+
+        Remove-Item $capturePath -Force
+        & $pwsh -NoProfile -ExecutionPolicy Bypass -File $scriptPath $modeName --model auto
+        if ($LASTEXITCODE -ne 0) {
+            throw "keyword-named agent '$modeName' with options exited with $LASTEXITCODE"
+        }
+        Assert-Equal `
+            -Actual (Get-Content $capturePath -Raw | ConvertFrom-Json) `
+            -Expected @(
+                $modeNameArguments[0],
+                "--name=$modeName",
+                "--allow-all-tools",
+                "--model",
+                "auto",
+                "-i",
+                "Initialize as $modeName@surface-pro, then remain available for mailbox messages. Reply with exactly READY_$($modeName.ToUpperInvariant())."
+            ) `
+            -Label "keyword-named agent '$modeName' option forwarding"
+    }
+
+    Remove-Item $capturePath -Force
+    & $pwsh -NoProfile -ExecutionPolicy Bypass -File $scriptPath open -p "Start assigned work"
+    if ($LASTEXITCODE -ne 0) {
+        throw "keyword-named agent prompt override exited with $LASTEXITCODE"
+    }
+    $keywordPromptArguments = Get-Content $capturePath -Raw | ConvertFrom-Json
+    Assert-Equal `
+        -Actual $keywordPromptArguments `
+        -Expected @(
+            $keywordPromptArguments[0],
+            "--name=open",
+            "--allow-all-tools",
+            "-p",
+            "Start assigned work"
+        ) `
+        -Label "keyword-named agent prompt override"
 
     $longName = "a" * 100
     & $pwsh -NoProfile -ExecutionPolicy Bypass -File $scriptPath new $longName
@@ -185,6 +270,39 @@ node "%~dp0capture.mjs" %*
     if (Test-Path -LiteralPath $literalMarker) {
         throw "extra arguments were evaluated as a command"
     }
+
+    $shimCapture = Join-Path $root "shim-capture.json"
+    $shimLauncher = Join-Path $root "shim-launcher.ps1"
+    Set-Content -LiteralPath $shimLauncher -Encoding utf8 -Value @'
+[IO.File]::WriteAllText(
+    $env:FAKE_COPILOT_CAPTURE,
+    (ConvertTo-Json ([string[]]$args) -Compress)
+)
+exit 0
+'@
+    $env:COPILOT_AGENT_LAUNCHER = $shimLauncher
+    $env:FAKE_COPILOT_CAPTURE = $shimCapture
+    & $commandPath india --model "gpt 5"
+    if ($LASTEXITCODE -ne 0) {
+        throw "command shim exited with $LASTEXITCODE"
+    }
+    Assert-Equal `
+        -Actual (Get-Content $shimCapture -Raw | ConvertFrom-Json) `
+        -Expected @("india", "--model", "gpt 5") `
+        -Label "command shim argument pass-through"
+
+    Remove-Item $shimCapture -Force
+    $env:PATH = Join-Path $env:SystemRoot "System32"
+    & $commandPath juliett --model "gpt 5"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Windows PowerShell fallback exited with $LASTEXITCODE"
+    }
+    Assert-Equal `
+        -Actual (Get-Content $shimCapture -Raw | ConvertFrom-Json) `
+        -Expected @("juliett", "--model", "gpt 5") `
+        -Label "command shim Windows PowerShell fallback"
+    $env:PATH = "$root;$originalPath"
+    $env:FAKE_COPILOT_CAPTURE = $capturePath
 
     $defaultName = "copilot-agent-test-$PID"
     Remove-Item $capturePath -Force
@@ -267,6 +385,7 @@ node "%~dp0capture.mjs" %*
     $env:FAKE_COPILOT_EXIT = $originalExit
     $env:COPILOT_AGENT_MACHINE = $originalMachine
     $env:COPILOT_HOME = $originalCopilotHome
+    $env:COPILOT_AGENT_LAUNCHER = $originalLauncher
     if ($defaultWorkspaceRoot) {
         Remove-Item $defaultWorkspaceRoot -Recurse -Force -ErrorAction SilentlyContinue
     }

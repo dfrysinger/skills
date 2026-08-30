@@ -25,7 +25,13 @@ Do NOT use mailbox for:
   identity. When no live tmux identity matches, Copilot falls back to the
   session's current `/rename` name. Only fresh session-inbox heartbeats are
   eligible, so abandoned historical sessions with the same name are ignored.
-  On Windows, use `scripts/copilot-agent.ps1 new|resume <name>`. It
+  On Windows, use `copilot-agent <name>` after placing
+  `scripts/copilot-agent.cmd` on `PATH`, or call
+  `scripts/copilot-agent.ps1 <name>` directly. The shorthand automatically
+  creates or resumes the deterministic session, enables `--allow-all-tools`,
+  and runs one interactive initialization turn so the mailbox watcher is
+  active. Explicit `new|resume|open <name>` modes remain available. The
+  launcher
   deterministically maps the
   canonical lowercase `(COPILOT_AGENT_MACHINE, name)` pair to one exact
   Copilot session UUID. `new` creates that UUID with the native name; `resume`
@@ -232,6 +238,7 @@ COPILOT_AGENT_MACHINE="<stable-machine-label>"
 - `scripts/mailbox-list.sh` — show all mailboxes + live tmux sessions.
 - `scripts/mailbox-resume-hook.sh [<name>]` — designed to be called by the user's `ca` script to inject a "you have mail" hint into the resume prompt; prints empty when there's no mail.
 - `scripts/mailbox-watch.sh [<name>]` — foreground portable poller; normally the packaged mailbox-watcher extension owns this automatically for Copilot.
-- `scripts/copilot-agent.ps1 new|resume <name> [copilot args...]` — start or resume a mailbox-safe named Copilot session on Windows through the native CLI options.
+- `scripts/copilot-agent.ps1 [new|resume|open] <name> [copilot args...]` — deterministic Windows launcher; shorthand `<name>` auto-creates/resumes with allow-all and initializes the mailbox listener.
+- `scripts/copilot-agent.cmd <name> [copilot args...]` — PATH-friendly Windows command shim for the installed launcher.
 - `scripts/mailbox.mjs` — cross-platform send/check/read/ack/list/resume-hint/poke/watch CLI.
 - `scripts/mailbox-core.mjs` — reusable Node implementation used by the CLI and watcher extension.

@@ -142,8 +142,12 @@ These skills form a small communication stack for long-lived, named agent sessio
 Two companion tools complete the workflow without pretending to be skills:
 
 - **[Agent Stack](https://github.com/dfrysinger/agent-stack)** hosts named agent sessions on macOS and provides the optional `request_help` MCP tool. A blocked agent can ask its user for help through one bounded iMessage and a temporary Screen Sharing link.
-- **Windows named sessions** use
-  `scripts/copilot-agent.ps1 new|resume <name>`. The launcher maps each
+- **Windows named sessions** use `copilot-agent <name>` after placing
+  `scripts/copilot-agent.cmd` on `PATH`, or
+  `scripts/copilot-agent.ps1 <name>` directly. The shorthand automatically
+  creates or resumes the exact session, enables `--allow-all-tools`, and runs
+  one initialization turn so its mailbox watcher is active. Explicit
+  `new|resume|open <name>` modes remain available. The launcher maps each
   canonical lowercase `(COPILOT_AGENT_MACHINE, name)` pair to one deterministic
   Copilot session UUID, creates it with native `--name`, and resumes it by
   exact `--session-id`. Historical duplicate display names therefore do not
