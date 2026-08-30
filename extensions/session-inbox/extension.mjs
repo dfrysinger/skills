@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { spawn } from "node:child_process";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -14,6 +15,9 @@ const completedDir = join(root, "completed");
 const failedDir = join(root, "failed");
 const instancesDir = join(root, "instances");
 const dedupeDir = join(root, "dedupe");
+const sessionStateRoot =
+  process.env.COPILOT_SESSION_STATE_ROOT ??
+  join(homedir(), ".copilot", "session-state");
 let pluginVersion;
 try {
   pluginVersion = JSON.parse(
@@ -31,6 +35,15 @@ const confirmationTimeoutMs =
   configuredConfirmationTimeoutMs > 0
     ? configuredConfirmationTimeoutMs
     : 10_000;
+const configuredCompactStabilizationMs = Number.parseInt(
+  process.env.COPILOT_SESSION_INBOX_COMPACT_STABILIZATION_MS ?? "1000",
+  10,
+);
+const compactStabilizationMs =
+  Number.isFinite(configuredCompactStabilizationMs) &&
+  configuredCompactStabilizationMs >= 0
+    ? configuredCompactStabilizationMs
+    : 1_000;
 const configuredAutopilotConfirmationTimeoutMs = Number.parseInt(
   process.env.COPILOT_SESSION_INBOX_AUTOPILOT_CONFIRM_TIMEOUT_MS ??
     process.env.COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS ??
@@ -60,6 +73,11 @@ try {
 }
 let tmuxSession;
 let sessionName;
+const activeSessionStateDir = join(sessionStateRoot, session.sessionId);
+const rotationBarrier =
+  process.env.COPILOT_SESSION_INBOX_ROTATION_BARRIER ??
+  join(activeSessionStateDir, "rotation.barrier");
+const deliveryLock = join(activeSessionStateDir, "delivery.lock");
 let heartbeatRefreshing = false;
 let initialTmuxSessionError;
 let initialSessionNameError;
@@ -97,6 +115,7 @@ await Promise.all(
     failedDir,
     instancesDir,
     dedupeDir,
+    activeSessionStateDir,
   ].map((dir) => mkdir(dir, { recursive: true, mode: 0o700 })),
 );
 diagnostics.log("extension.started", {
@@ -123,6 +142,69 @@ function matchesTarget(request) {
     target.sessionId === session.sessionId &&
     (!target.generation || target.generation === generation)
   );
+}
+
+async function lockedMove(from, to, { rejectBarrier = false } = {}) {
+  if (process.platform !== "darwin") {
+    if (rejectBarrier) {
+      try {
+        await readFile(rotationBarrier);
+        return "blocked";
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
+    try {
+      await rename(from, to);
+      return "moved";
+    } catch {
+      return "missing";
+    }
+  }
+  const status = await new Promise((resolve, reject) => {
+    const command = rejectBarrier
+      ? 'if [ -e "$1" ]; then exit 73; fi; /bin/mv "$2" "$3"'
+      : '/bin/mv "$1" "$2"';
+    const args = rejectBarrier
+      ? [rotationBarrier, from, to]
+      : [from, to];
+    const child = spawn(
+      "/usr/bin/lockf",
+      [
+        "-k",
+        "-t",
+        "10",
+        deliveryLock,
+        "/bin/sh",
+        "-c",
+        command,
+        "session-inbox-locked-move",
+        ...args,
+      ],
+      { stdio: "ignore" },
+    );
+    child.on("error", reject);
+    child.on("exit", (code, signal) => {
+      if (signal) reject(new Error(`request claim lock exited on ${signal}`));
+      else resolve(code);
+    });
+  });
+  if (status === 0) return "moved";
+  if (status === 73) return "blocked";
+  return "missing";
+}
+
+async function assertRotationNotActive() {
+  try {
+    await readFile(rotationBarrier);
+    const error = definitiveNoSideEffectError(
+      "session rotation is blocking new inbox work",
+    );
+    error.rotationBlocked = true;
+    throw error;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
 }
 
 async function writeJson(path, value) {
@@ -338,6 +420,72 @@ async function sendAndConfirm({ prompt, agentMode }) {
   }
 }
 
+async function compactAndWaitForCompletion(options) {
+  let completionObserved = false;
+  let completionError;
+  let resolveLifecycle;
+  const stopCompletion = session.on("session.compaction_complete", (event) => {
+    if (
+      (event.data.customInstructions ?? undefined) !==
+      (options.customInstructions ?? undefined)
+    ) {
+      return;
+    }
+    if (event.data.success !== true) {
+      completionError = new Error(
+        "session history compaction completion reported failure",
+      );
+      resolveLifecycle?.();
+      resolveLifecycle = undefined;
+      return;
+    }
+    completionObserved = true;
+    resolveLifecycle?.();
+    resolveLifecycle = undefined;
+  });
+  try {
+    const result = await session.rpc.history.compact(options);
+    if (!result.success) {
+      throw new Error("session history compaction did not succeed");
+    }
+    const deadline = Date.now() + confirmationTimeoutMs;
+    while (!completionObserved) {
+      if (completionError) throw completionError;
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        throw new Error(
+          "session history compaction timed out waiting for completion",
+        );
+      }
+      let timer;
+      await Promise.race([
+        new Promise((resolve) => {
+          resolveLifecycle = resolve;
+        }),
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new Error(
+                  "session history compaction timed out waiting for completion",
+                ),
+              ),
+            remainingMs,
+          );
+        }),
+      ]).finally(() => {
+        clearTimeout(timer);
+        resolveLifecycle = undefined;
+      });
+    }
+    if (completionError) throw completionError;
+    await new Promise((resolve) => setTimeout(resolve, compactStabilizationMs));
+    return result;
+  } finally {
+    stopCompletion();
+  }
+}
+
 async function executeAutopilotObjective(prompt) {
   diagnostics.log("sdk.autopilot_objective.started");
   let activation;
@@ -489,15 +637,12 @@ async function execute(request) {
       };
     }
     case "compact": {
-      const result = await session.rpc.history.compact({
+      const result = await compactAndWaitForCompletion({
         ...(request.customInstructions
           ? { customInstructions: request.customInstructions }
           : {}),
         trigger: "manual",
       });
-      if (!result.success) {
-        throw new Error("session history compaction did not succeed");
-      }
       let continuationAccepted;
       let continuationMessageId;
       let continuationDelivery;
@@ -556,49 +701,6 @@ async function execute(request) {
         ...(continuationError ? { continuationError } : {}),
       };
     }
-    case "new-session-direct": {
-      const available = await session.rpc.commands.list();
-      const directNew = available.commands.some(
-        (command) => command.name === "new" && command.kind === "builtin",
-      );
-      if (!directNew) {
-        throw definitiveNoSideEffectError(
-          "direct session rotation is unavailable: Copilot CLI does not expose /new through a non-FIFO SDK API",
-        );
-      }
-      let invocation;
-      try {
-        invocation = await session.rpc.commands.invoke({
-          name: "new",
-          input: request.prompt,
-        });
-      } catch (error) {
-        if (
-          error instanceof Error &&
-          /Unknown slash command: \/new/.test(error.message)
-        ) {
-          throw definitiveNoSideEffectError(
-            "direct session rotation is unavailable: Copilot CLI rejected /new as a direct command",
-          );
-        }
-        throw error;
-      }
-      if (invocation.kind !== "completed") {
-        throw ambiguousSideEffectError(
-          `direct /new returned unsupported result ${invocation.kind}`,
-          {
-            commandInvoked: true,
-            mechanism: "commands.invoke",
-            resultKind: invocation.kind,
-          },
-        );
-      }
-      return {
-        commandInvoked: true,
-        mechanism: "commands.invoke",
-        resultKind: invocation.kind,
-      };
-    }
     case "reload-extensions":
       return { reloadRequested: true };
     default:
@@ -624,6 +726,30 @@ function requestFingerprint(request) {
 function dedupePath(key, sessionId = session.sessionId) {
   const digest = createHash("sha256").update(`${sessionId}\0${key}`).digest("hex");
   return join(dedupeDir, `${digest}.json`);
+}
+
+async function currentAutopilotDedupeResult(request, result) {
+  if (request.kind !== "autopilot") return result;
+
+  const saved = await session.rpc.workspaces.readAutopilotObjective();
+  if (!saved.content) return undefined;
+
+  try {
+    const current = JSON.parse(saved.content)?.current;
+    if (
+      current?.objective !== request.prompt ||
+      !["active", "completed"].includes(current.status)
+    ) {
+      return undefined;
+    }
+    return {
+      ...result,
+      objectiveId: current.id,
+      objectiveStatus: current.status,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function ambiguousSideEffectError(message, result) {
@@ -729,11 +855,10 @@ async function recoverStalePendingRequests() {
     }
 
     const processingPath = join(processingDir, name);
-    try {
-      await rename(pendingPath, processingPath);
-    } catch {
-      continue;
-    }
+    const claim = await lockedMove(pendingPath, processingPath, {
+      rejectBarrier: true,
+    });
+    if (claim !== "moved") continue;
     diagnostics.log("recovery.pending_claimed", {
       requestId: request.id,
       kind: request.kind,
@@ -817,7 +942,13 @@ async function recoverStaleClaims() {
             updatedAt: new Date().toISOString(),
           });
           await rm(processingStagePath, { force: true });
-          await rename(processingPath, join(pendingDir, name));
+          const requeue = await lockedMove(
+            processingPath,
+            join(pendingDir, name),
+          );
+          if (requeue !== "moved") {
+            throw new Error("stale claim could not be returned to pending");
+          }
           diagnostics.log("recovery.requeued", {
             requestId: request.id,
             kind: request.kind,
@@ -945,11 +1076,10 @@ async function pump() {
 
       const claimedPath = join(processingDir, name);
       const claimedStagePath = stagePath(processingDir, name);
-      try {
-        await rename(pendingPath, claimedPath);
-      } catch {
-        continue;
-      }
+      const claim = await lockedMove(pendingPath, claimedPath, {
+        rejectBarrier: true,
+      });
+      if (claim !== "moved") continue;
       diagnostics.log("request.claimed", {
         requestId: request.id,
         kind: request.kind,
@@ -996,13 +1126,20 @@ async function pump() {
                 record.result,
               );
             }
-            result = record.result;
-            deduplicated = true;
-            diagnostics.log("request.deduplicated", {
-              requestId: request.id,
-              kind: request.kind,
-              delivery: result?.delivery,
-            });
+            result = await currentAutopilotDedupeResult(request, record.result);
+            if (result) {
+              deduplicated = true;
+              diagnostics.log("request.deduplicated", {
+                requestId: request.id,
+                kind: request.kind,
+                delivery: result?.delivery,
+              });
+            } else {
+              diagnostics.log("request.dedupe_stale", {
+                requestId: request.id,
+                kind: request.kind,
+              });
+            }
           } catch (error) {
             if (error?.code !== "ENOENT") throw error;
           }
@@ -1015,6 +1152,7 @@ async function pump() {
             }
             throw new Error("dedupe key has an unfinished prior request");
           }
+          await assertRotationNotActive();
           await writeJson(claimedStagePath, {
             ownerGeneration: generation,
             stage: "executing",
@@ -1079,6 +1217,21 @@ async function pump() {
           diagnostics.log("extensions.reload_returned", { requestId: request.id });
         }
       } catch (error) {
+        if (error?.rotationBlocked === true && !sideEffectStarted) {
+          removeClaim = false;
+          const requeue = await lockedMove(claimedPath, pendingPath);
+          if (requeue !== "moved") {
+            throw new Error(
+              "rotation-blocked request could not be returned to pending",
+            );
+          }
+          await rm(claimedStagePath, { force: true });
+          diagnostics.log("request.requeued_for_rotation", {
+            requestId: request.id,
+            kind: request.kind,
+          });
+          break;
+        }
         const ambiguousSideEffect =
           error?.definitiveNoSideEffect !== true &&
           ((sideEffectStarted && !operationCompleted) ||

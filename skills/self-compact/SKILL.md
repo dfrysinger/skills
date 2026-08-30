@@ -163,6 +163,14 @@ SDK delivery:
 Compaction done; resume, do not compact.
 ```
 
+The extension subscribes before requesting compaction and requires the matching
+successful `session.compaction_complete` event. A manual compaction can finish
+while the session is already idle, so the CLI does not guarantee a later
+`session.idle` transition. After a short state-settling interval, the extension
+uses immediate delivery and verifies the result. If the continuation still
+enters FIFO and cannot be promoted to steering, it removes the queued item and
+fails the run instead of leaving delayed work behind.
+
 The session-inbox receipt proves that the SDK accepted the message; it does not
 depend on the CLI's FIFO queue. The verifier then requires exactly one matching
 root `user.message` with native `idle` or `steering` delivery after the matching
@@ -171,6 +179,12 @@ continuation.
 
 ## Failure handling
 
+- The fixed continuation belongs only to a compaction initiated through this
+  skill's `self_compact` tool. Native threshold compactions have no bound
+  continuation file and will not emit `Compaction done; resume, do not
+  compact.` Check for token-bearing `customInstructions` and a matching
+  `self-compact-*.log` before diagnosing a missing continuation as this skill's
+  failure.
 - Missing or malformed tool brief: correct the structure and call
   `self_compact` once more as the final action.
 - Existing or ambiguous session lock: inspect the exact lock and log paths

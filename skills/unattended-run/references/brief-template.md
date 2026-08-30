@@ -69,13 +69,24 @@ process after compaction without copying each skill's rules.
 > phase boundary, and every scheduled re-brief: rebuild ready work and
 > dependencies, mark the critical path, assign every substantial independent
 > ready scope to an available subagent when delegation is safe, and advance
-> another ready item whenever the current one is waiting. If I assigned
-> independent agents, treat them as first-class owners: keep their scopes,
-> workspaces or branches, owed evidence, blockers, and integration boundaries
-> in the baton; unblock them promptly and consume their frozen reviewed commits
-> without duplicating their work. Give every file-writing delegate an isolated
-> worktree or checkout and never use the coordinator's worktree as a concurrent
-> write target. Keep the
+> another ready item whenever the current one is waiting. For every delegated
+> agent, keep its scope,
+> workspaces or branches, session or coordination channels, owed evidence,
+> blockers, and integration boundaries in the durable baton; mark agents I
+> assigned as first-class external owners there. Read the
+> delegated agent's
+> explicit result, mailbox response, or handoff before reporting its status or
+> assigning successor work; a dirty, clean, changing, or unchanged worktree is
+> artifact state, not worker state. If no current result exists, record the
+> worker state as unknown, request status once through its task or coordination
+> channel, and advance other ready work. Consume completed handoffs promptly,
+> close the prior assignment, and treat successor work as a new assignment. Give
+> every file-writing delegate an isolated worktree or checkout and never use
+> the coordinator's worktree as a concurrent write target. Freeze the completed
+> commit or receipt and explicitly transfer worktree ownership before another
+> writer enters it. If overlapping writers appear, stop that lane, make no
+> integration assumption from the mixed worktree, and restore one named owner
+> before continuing. Keep the
 > coordinator focused on integration, decisions, unblocking, and unowned
 > critical-path work. Batch coherent fixes before expensive builds, verifiers,
 > or CI, and use proof impact mapping instead of replaying unaffected claims.
@@ -122,9 +133,13 @@ Charter slots:
   approval-gated production actions such as deployment, merge-queue mutation,
   infrastructure changes, or writes to shared resources.
 - **`<COORDINATION>`** — when peers share the effort:
-  name every user-assigned agent, its owned scope, workspace or branch, expected
-  receipt or frozen handoff, and the durable surface used to monitor and
-  unblock it. Give every file-writing agent an isolated worktree or checkout.
+  name every user-assigned agent, its owned scope, workspace or branch, session
+  or coordination channel, expected receipt or frozen handoff, and the durable
+  surface used to monitor and unblock it. Require worker status to come from
+  that agent's explicit result or handoff, never from repository movement. Give
+  every file-writing agent an isolated worktree or checkout, and record who may
+  write it now plus the evidence required to transfer ownership. If overlapping
+  writers appear, stop that lane and restore one named owner before continuing.
   Include: `Do not wait for an agent to push to main; consume its reviewed
   frozen commit from its owned branch or worktree as soon as its dependencies
   and integration boundary are ready.` Omit only when no independent agents

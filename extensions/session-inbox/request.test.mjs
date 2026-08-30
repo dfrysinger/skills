@@ -31,7 +31,11 @@ async function waitForRequest(root) {
 
 async function runRequest(root, args) {
   const child = spawn(process.execPath, [requestCli, ...args], {
-    env: { ...process.env, COPILOT_SESSION_INBOX_DIR: root },
+    env: {
+      ...process.env,
+      COPILOT_SESSION_INBOX_DIR: root,
+      COPILOT_SESSION_STATE_ROOT: join(root, "session-state"),
+    },
   });
   let stdout = "";
   let stderr = "";
@@ -287,7 +291,7 @@ test("rejects ambiguous targets before writing a request", async () => {
   try {
     const result = await (
       await runRequest(root, [
-        "new-session-direct",
+        "send",
         "--prompt-file",
         "unused",
         "--timeout",
@@ -296,6 +300,50 @@ test("rejects ambiguous targets before writing a request", async () => {
     ).exit;
     assert.equal(result.code, 64);
     assert.match(result.stderr, /provide exactly one target/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects publication while the target session is rotating", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  try {
+    const sessionId = "rotating-session";
+    const instancesDir = join(root, "instances");
+    const sessionDir = join(root, "session-state", sessionId);
+    await mkdir(instancesDir, { recursive: true });
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      join(instancesDir, "rotating-session.json"),
+      `${JSON.stringify({
+        sessionId,
+        generation: "rotating-generation",
+        updatedAt: new Date().toISOString(),
+      })}\n`,
+    );
+    await writeFile(join(sessionDir, "rotation.barrier"), "rotating\n");
+    const promptFile = join(root, "prompt.txt");
+    await writeFile(promptFile, "must not be published");
+
+    const result = await (
+      await runRequest(root, [
+        "send",
+        "--target-session",
+        sessionId,
+        "--prompt-file",
+        promptFile,
+        "--timeout",
+        "0",
+      ])
+    ).exit;
+    assert.equal(result.code, 64);
+    assert.match(result.stderr, /session rotation is blocking new inbox work/);
+    assert.deepEqual(
+      (await readdir(join(root, "pending"))).filter((name) =>
+        name.endsWith(".json"),
+      ),
+      [],
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

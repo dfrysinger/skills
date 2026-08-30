@@ -37,11 +37,12 @@ The plugin is registered as `dfrysinger-skills`. Installing from this GitHub rep
 The Copilot plugin also packages the recipient-local
 [`session-inbox`](./extensions/session-inbox/) SDK extension and a portable
 [`mailbox-watcher`](./extensions/mailbox-watcher/) extension. Session-inbox is a runtime
-dependency of `mailbox`, `unattended-run`, `self-compact`, `rotate-session`, and
-the corresponding `handoff` routes. The extension performs the final
-immediate `session.send()`, native compaction, or direct native command
-invocation from inside the recipient session; filesystem requests and receipts
-provide durable machine-local IPC. It never submits work to the CLI FIFO.
+dependency of `mailbox`, `unattended-run`, and `self-compact`. The extension
+performs the final immediate `session.send()` or native compaction from inside
+the recipient session; filesystem requests and receipts provide durable
+machine-local IPC. macOS rotation separately replaces the verified tmux pane
+process after the authorizing turn ends. Neither mechanism submits work to the
+CLI FIFO.
 Mailbox watcher polls a named recipient's durable mailbox and bridges synced
 envelopes into that local request queue. The mailbox root may live in OneDrive,
 but session-inbox heartbeats, locks, and receipts remain local. Sender-side

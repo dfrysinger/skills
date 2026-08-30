@@ -266,6 +266,37 @@ export async function joinSession() {
             rmSync(process.env.MOCK_DEDUPE_DIR, {recursive: true, force: true});
             writeFileSync(process.env.MOCK_DEDUPE_DIR, "block dedupe directory");
           }
+          if (current.idleBeforeCompactCompletion) {
+            queueMicrotask(() =>
+              emit("session.idle", {type: "session.idle", data: {}}),
+            );
+          }
+          setTimeout(
+            () =>
+              emit("session.compaction_complete", {
+                type: "session.compaction_complete",
+                data: {
+                  success: current.compactEventSuccess ?? true,
+                  customInstructions: options.customInstructions,
+                },
+              }),
+            current.compactCompletionDelayMs ?? 10,
+          );
+          if (!current.suppressCompactIdle) {
+            setTimeout(() => {
+              const latest = state();
+              writeFileSync(
+                process.env.MOCK_STATE,
+                JSON.stringify({
+                  ...latest,
+                  idleCounter: latest.idleCounter + 1,
+                  ...(latest.deliveryAfterCompactIdle
+                    ? {delivery: latest.deliveryAfterCompactIdle}
+                    : {}),
+                }) + "\\n",
+              );
+            }, current.compactIdleDelayMs ?? 20);
+          }
           return {success: true, tokensRemoved: 11, messagesRemoved: 3};
         },
       },
@@ -276,30 +307,11 @@ export async function joinSession() {
         },
       },
       commands: {
-        async list() {
-          record("command.list", {});
-          return {
-            commands: state().supportsDirectNew
-              ? [{name: "new", kind: "builtin"}]
-              : [],
-          };
-        },
         async invoke(options) {
           record("command.invoke", options);
           const current = state();
           if (current.rejectCommandAfterRecord) {
             throw new Error("mock transport lost the accepted command response");
-          }
-          if (options.name === "new" && current.rejectDirectNew) {
-            throw new Error(
-              "Request session.commands.invoke failed with message: Unknown slash command: /new",
-            );
-          }
-          if (current.commandError) {
-            return {kind: "text", text: current.commandError};
-          }
-          if (options.name === "new" && current.supportsDirectNew) {
-            return {kind: "completed"};
           }
           if (
             options.name === "autopilot" &&
@@ -347,7 +359,9 @@ export async function joinSession() {
       MOCK_STATE: statePath,
       MOCK_CALLS: callsPath,
       MOCK_DEDUPE_DIR: join(inbox, "dedupe"),
+      COPILOT_SESSION_STATE_ROOT: join(root, "session-state"),
       COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS: "500",
+      COPILOT_SESSION_INBOX_COMPACT_STABILIZATION_MS: "75",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -465,7 +479,7 @@ test("extension startup failures are persisted before session join", async () =>
   }
 });
 
-test("recipient extension submits SDK work without idle gates and preserves phase state", async () => {
+test("recipient extension submits SDK work and preserves phase state", async () => {
   const harness = await createHarness();
   try {
     assert.equal(harness.heartbeat.sessionName, "hotel");
@@ -605,6 +619,58 @@ test("recipient extension submits SDK work without idle gates and preserves phas
           call.value.prompt.includes("execute the objective during active work"),
       ),
       false,
+    );
+    await harness.request("busy-autopilot-duplicate", {
+      kind: "autopilot",
+      prompt: "execute the objective during active work",
+      dedupeKey: "busy-autopilot",
+    });
+    assert.equal(
+      (await harness.receipt("completed", "busy-autopilot-duplicate")).deduplicated,
+      true,
+    );
+    assert.equal(
+      (await harness.calls()).filter(
+        (call) =>
+          call.kind === "command.invoke" &&
+          call.value.name === "autopilot" &&
+          call.value.input === "execute the objective during active work",
+      ).length,
+      1,
+    );
+    await harness.setState({
+      activeAutopilot: false,
+      delivery: "idle",
+      autopilotObjective: JSON.stringify({
+        version: 1,
+        nextId: 2,
+        current: {
+          id: 1,
+          objective: "execute the objective during active work",
+          status: "paused",
+          pauseReason: "resumed_session",
+        },
+      }),
+    });
+    await harness.request("busy-autopilot-resumed", {
+      kind: "autopilot",
+      prompt: "execute the objective during active work",
+      dedupeKey: "busy-autopilot",
+    });
+    const resumedAutopilot = await harness.receipt(
+      "completed",
+      "busy-autopilot-resumed",
+    );
+    assert.equal(resumedAutopilot.deduplicated, false);
+    assert.equal(resumedAutopilot.result.objectiveStatus, "active");
+    assert.equal(
+      (await harness.calls()).filter(
+        (call) =>
+          call.kind === "command.invoke" &&
+          call.value.name === "autopilot" &&
+          call.value.input === "execute the objective during active work",
+      ).length,
+      2,
     );
     await harness.setState({
       activeAutopilot: false,
@@ -803,9 +869,37 @@ test("recipient extension submits SDK work without idle gates and preserves phas
     assert.equal(compactSteering.result.continuationError, undefined);
 
     await harness.setState({
+      suppressDelivery: false,
+      delivery: "queued",
+      deliveryAfterCompactIdle: "idle",
+      compactIdleDelayMs: 50,
+      idleBeforeCompactCompletion: true,
+      processing: true,
+      active: true,
+      pending: 1,
+      idleCounter: 16,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await harness.request("compact-waits-for-idle", {
+      kind: "compact",
+      customInstructions: "post-compact idle proof",
+      continuationPrompt: "resume only after compact is idle",
+    });
+    const compactAfterIdle = await harness.receipt(
+      "completed",
+      "compact-waits-for-idle",
+    );
+    assert.equal(compactAfterIdle.result.compacted, true);
+    assert.equal(compactAfterIdle.result.continuationAccepted, true);
+    assert.equal(compactAfterIdle.result.continuationDelivery, "idle");
+
+    await harness.setState({
       delivery: "idle",
       breakDedupeWrite: true,
-      idleCounter: 16,
+      deliveryAfterCompactIdle: undefined,
+      compactIdleDelayMs: undefined,
+      idleBeforeCompactCompletion: undefined,
+      idleCounter: 17,
     });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("compact-receipt-failure", {
@@ -888,76 +982,6 @@ test("recipient extension submits SDK work without idle gates and preserves phas
   }
 });
 
-test("direct session rotation fails closed without a non-FIFO SDK API", async () => {
-  const harness = await createHarness();
-  try {
-    await harness.request("rotate-unsupported", {
-      kind: "new-session-direct",
-      prompt: "seed prompt",
-    });
-    const receipt = await harness.receipt("failed", "rotate-unsupported");
-    assert.equal(receipt.ambiguousSideEffect, undefined);
-    assert.match(receipt.error, /does not expose \/new through a non-FIFO SDK API/);
-    assert.equal(
-      (await harness.calls()).some(
-        (call) =>
-          call.kind === "command.invoke" || call.kind === "command.enqueue",
-      ),
-      false,
-    );
-    await assert.rejects(
-      readFile(join(harness.inbox, "processing", "rotate-unsupported.json")),
-      { code: "ENOENT" },
-    );
-  } finally {
-    await harness.stop();
-  }
-});
-
-test("direct session rotation uses command invocation when the CLI exposes it", async () => {
-  const harness = await createHarness({ supportsDirectNew: true });
-  try {
-    await harness.request("rotate-direct", {
-      kind: "new-session-direct",
-      prompt: "seed prompt",
-    });
-    const receipt = await harness.receipt("completed", "rotate-direct");
-    assert.deepEqual(receipt.result, {
-      commandInvoked: true,
-      mechanism: "commands.invoke",
-      resultKind: "completed",
-    });
-    assert.ok(
-      (await harness.calls()).some(
-        (call) =>
-          call.kind === "command.invoke" &&
-          call.value.name === "new" &&
-          call.value.input === "seed prompt",
-      ),
-    );
-  } finally {
-    await harness.stop();
-  }
-});
-
-test("direct session rotation treats an unknown /new rejection as definitive", async () => {
-  const harness = await createHarness({
-    supportsDirectNew: true,
-    rejectDirectNew: true,
-  });
-  try {
-    await harness.request("rotate-rejected", {
-      kind: "new-session-direct",
-      prompt: "seed prompt",
-    });
-    const receipt = await harness.receipt("failed", "rotate-rejected");
-    assert.equal(receipt.ambiguousSideEffect, undefined);
-    assert.match(receipt.error, /rejected \/new as a direct command/);
-  } finally {
-    await harness.stop();
-  }
-});
-
 test("non-immediate sends fail definitively and leave their dedupe key retryable", async () => {
   const harness = await createHarness();
   try {
@@ -967,6 +991,7 @@ test("non-immediate sends fail definitively and leave their dedupe key retryable
       mode: "enqueue",
       dedupeKey: "legacy-send",
     });
+
     const rejected = await harness.receipt("failed", "legacy-queued-send");
     assert.equal(rejected.ambiguousSideEffect, undefined);
     assert.match(rejected.error, /must use immediate delivery/);
@@ -992,6 +1017,40 @@ test("non-immediate sends fail definitively and leave their dedupe key retryable
     );
     assert.equal(replacement.result.delivery, "idle");
     assert.equal(replacement.deduplicated, false);
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("a rotation barrier leaves prepublished inbox work pending", async () => {
+  const harness = await createHarness();
+  try {
+    const sessionDir = join(
+      harness.root,
+      "session-state",
+      harness.heartbeat.sessionId,
+    );
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(join(sessionDir, "rotation.barrier"), "rotating\n");
+    await harness.request("rotation-barrier-send", {
+      kind: "send",
+      mode: "immediate",
+      prompt: "must not be sent",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(
+      JSON.parse(
+        await readFile(
+          join(harness.inbox, "pending", "rotation-barrier-send.json"),
+          "utf8",
+        ),
+      ).id,
+      "rotation-barrier-send",
+    );
+    assert.equal(
+      (await harness.calls()).some((call) => call.kind === "send"),
+      false,
+    );
   } finally {
     await harness.stop();
   }
@@ -1237,6 +1296,35 @@ test("a compact continuation observed in the FIFO fails ambiguously", async () =
     assert.equal(receipt.result.compacted, true);
     assert.equal(receipt.result.continuationAccepted, true);
     assert.equal(receipt.result.continuationDelivery, "queued");
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("a failed compaction completion never releases its continuation", async () => {
+  const harness = await createHarness({
+    compactEventSuccess: false,
+    delivery: "idle",
+  });
+  try {
+    await harness.request("failed-compact-completion", {
+      kind: "compact",
+      customInstructions: "failed completion proof",
+      continuationPrompt: "must not be sent",
+      dedupeKey: "failed-compact-completion",
+    });
+    const receipt = await harness.receipt("failed", "failed-compact-completion");
+    assert.match(
+      receipt.error,
+      /session history compaction completion reported failure/,
+    );
+    assert.equal(
+      (await harness.calls()).some(
+        (call) =>
+          call.kind === "send" && call.value.prompt === "must not be sent",
+      ),
+      false,
+    );
   } finally {
     await harness.stop();
   }
