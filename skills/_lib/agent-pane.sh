@@ -89,6 +89,24 @@ ap_pane_is_backend() {
   [ "$actual" = "$2" ]
 }
 
+ap_pane_contains_pid() {
+  local pane="$1" expected_pid="$2" pane_pid
+  [[ "$expected_pid" =~ ^[0-9]+$ ]] || return 1
+  pane_pid="$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || true)"
+  [[ "$pane_pid" =~ ^[0-9]+$ ]] || return 1
+  ps -ax -o pid=,ppid= | awk -v expected="$expected_pid" -v root="$pane_pid" '
+    { parent[$1] = $2 }
+    END {
+      current = expected
+      for (depth = 0; depth <= 64; depth++) {
+        if (current == root) exit 0
+        if (!(current in parent) || seen[current]++) exit 1
+        current = parent[current]
+      }
+      exit 1
+    }'
+}
+
 ap_capture() {
   local pane="$1" backend="$2"
   if [ "$backend" = codex ] || [ "$backend" = claude ]; then

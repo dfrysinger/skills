@@ -205,7 +205,12 @@ still override the persisted machine and remote root for an explicit process.
   session-inbox snapshots the queue before submission and promotes only the
   single exact matching item that appeared afterward. An owned but unsteerable
   item is removed rather than left queued; ambiguous ownership leaves every
-  queued item untouched.
+  queued item untouched. On macOS, only a receipt that explicitly proves the
+  item was removed with no side effect may retry through the same guarded tmux
+  input verification used for other terminal agents. This fallback never runs
+  for an ambiguous send, a rotation barrier, or a missing/unrecognized pane,
+  and it still requires the exact prompt to appear in the transcript before
+  marking the envelope notified.
 - **Claude and Codex wakeups remain fail-closed and best-effort.** Their poke
   requires a ready pane and verifies a transcript entry; otherwise rely on the
   osascript notification and resume hook.

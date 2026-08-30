@@ -368,9 +368,11 @@ async function sendAndConfirm({ prompt, agentMode }) {
               id: queuedMatches[0].id,
             });
             if (removed.removed) {
-              throw definitiveNoSideEffectError(
+              const error = definitiveNoSideEffectError(
                 "immediate message could not enter the steering lane and was removed from FIFO",
               );
+              error.terminalFallbackEligible = true;
+              throw error;
             }
           }
         }
@@ -1260,6 +1262,9 @@ async function pump() {
           ...receiptBase,
           status: "failed",
           ...(ambiguousSideEffect ? { ambiguousSideEffect: true } : {}),
+          ...(error?.terminalFallbackEligible === true
+            ? { terminalFallbackEligible: true }
+            : {}),
           ...(operationCompleted ? { sideEffectCompleted: true, result } : {}),
           ...(!operationCompleted && ambiguousSideEffect ? { result } : {}),
           error: error instanceof Error ? error.message : String(error),

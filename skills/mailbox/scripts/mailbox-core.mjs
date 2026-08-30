@@ -156,6 +156,18 @@ async function runNode(script, args, env) {
   });
 }
 
+function receiptFromOutput(output) {
+  for (const line of output.trim().split("\n").reverse()) {
+    if (!line.startsWith("{")) continue;
+    try {
+      return JSON.parse(line);
+    } catch {
+      // Continue past non-receipt diagnostic output.
+    }
+  }
+  return undefined;
+}
+
 function compactTimestamp(date = new Date()) {
   return date.toISOString().replaceAll(/[-:.]/g, "").replace("Z", "Z-");
 }
@@ -339,6 +351,13 @@ export function createMailbox(options = {}) {
       dirname(fileURLToPath(import.meta.url)),
       "../../../extensions/session-inbox/request.mjs",
     );
+  const terminalPokeCli =
+    options.terminalPokeCli === null
+      ? undefined
+      : options.terminalPokeCli ??
+        (process.platform === "darwin"
+          ? join(dirname(fileURLToPath(import.meta.url)), "mailbox-poke.sh")
+          : undefined);
   const diagnostics = createDiagnosticLogger(stateRoot, "mailbox.jsonl", {
     component: "mailbox",
     pid: process.pid,
@@ -1219,7 +1238,8 @@ export function createMailbox(options = {}) {
         ],
         {},
       );
-      const accepted = /"delivery":"(?:idle|steering)"/.test(result.stdout);
+      const receipt = receiptFromOutput(result.stdout);
+      const accepted = ["idle", "steering"].includes(receipt?.result?.delivery);
       if (result.code === 0 && accepted) {
         await markNotified(mailboxAddress, [...readyIds]);
         diagnostics.log("wakeup.accepted", {
@@ -1228,6 +1248,58 @@ export function createMailbox(options = {}) {
           envelopeId: newest.id,
         });
         return { status: "delivered", envelopeId: newest.id };
+      }
+      const terminalFallbackEligible =
+        receipt?.terminalFallbackEligible === true &&
+        receipt.tmuxSession === targetName &&
+        typeof receipt.sessionId === "string" &&
+        typeof receipt.generation === "string" &&
+        Number.isInteger(receipt.hostPid);
+      if (terminalFallbackEligible && terminalPokeCli) {
+        try {
+          const fallback = await execFileAsync(
+            terminalPokeCli,
+            [
+              targetName,
+              "--terminal-only",
+              "--expected-session-id",
+              receipt.sessionId,
+              "--expected-generation",
+              receipt.generation,
+              "--expected-host-pid",
+              String(receipt.hostPid),
+            ],
+            {
+              env: {
+                ...process.env,
+                MAILBOX_LOCAL_ROOT: mailboxRoot,
+                MAILBOX_STATE_ROOT: stateRoot,
+              },
+              timeout: wait ? 35_000 : 20_000,
+            },
+          );
+          if (fallback.stdout.includes("submission observed")) {
+            await markNotified(mailboxAddress, [...readyIds]);
+            diagnostics.log("wakeup.accepted", {
+              mailbox: mailboxAddress,
+              targetName,
+              envelopeId: newest.id,
+              delivery: "terminal-fallback",
+            });
+            return {
+              status: "delivered",
+              envelopeId: newest.id,
+              delivery: "terminal-fallback",
+            };
+          }
+        } catch (error) {
+          diagnostics.log("wakeup.terminal_fallback_failed", {
+            mailbox: mailboxAddress,
+            targetName,
+            envelopeId: newest.id,
+            error: errorDetails(error),
+          });
+        }
       }
       const explicitAmbiguity =
         /"ambiguousSideEffect":true/.test(`${result.stdout}\n${result.stderr}`) ||

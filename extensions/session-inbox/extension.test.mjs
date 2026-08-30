@@ -1118,6 +1118,7 @@ test("an unsteerable queued send is removed definitively", async () => {
     });
     const receipt = await harness.receipt("failed", "remove-queued-send");
     assert.equal(receipt.ambiguousSideEffect, undefined);
+    assert.equal(receipt.terminalFallbackEligible, true);
     assert.match(receipt.error, /removed from FIFO/);
     assert.ok(
       (await harness.calls()).some(

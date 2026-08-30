@@ -139,6 +139,117 @@ test("wakeup failures never remove a published envelope", async () => {
   }
 });
 
+test("definitive steering rejection may use guarded terminal fallback", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-terminal-fallback-"));
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const stateRoot = join(root, "state");
+    const mockRequest = join(root, "mock-request.mjs");
+    const mockTerminalPoke = join(root, "mock-terminal-poke.sh");
+    await writeFile(
+      mockRequest,
+      `console.log(JSON.stringify({
+  status: "failed",
+  terminalFallbackEligible: true,
+  tmuxSession: "hotel",
+  sessionId: "hotel-session",
+  generation: "hotel-generation",
+  hostPid: 101,
+  error: "immediate message could not enter the steering lane and was removed from FIFO"
+}));
+process.exit(1);
+`,
+    );
+    await writeFile(
+      mockTerminalPoke,
+      `#!/usr/bin/env bash
+printf 'poked: %s (submission observed)\\n' "$1"
+`,
+      { mode: 0o700 },
+    );
+    const mailbox = createMailbox({
+      mailboxRoot,
+      stateRoot,
+      requestCli: mockRequest,
+      terminalPokeCli: mockTerminalPoke,
+    });
+    const sent = await mailbox.send({
+      recipient: "hotel",
+      sender: "whisky",
+      summary: "terminal fallback",
+      message: "deliver without FIFO",
+      wake: false,
+    });
+
+    const result = await mailbox.poke("hotel");
+    assert.equal(result.status, "delivered");
+    assert.equal(result.delivery, "terminal-fallback");
+    assert.match(
+      await readFile(
+        join(stateRoot, "notified", "hotel", `${sent.envelope.id}.notified`),
+        "utf8",
+      ),
+      /^\d{4}-\d{2}-\d{2}T.*Z\n$/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("terminal fallback requires the SDK target's matching tmux identity", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-terminal-identity-"));
+  const previousCallLog = process.env.MOCK_MAILBOX_TERMINAL_CALLS;
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const stateRoot = join(root, "state");
+    const callLog = join(root, "terminal-calls.txt");
+    const mockRequest = join(root, "mock-request.mjs");
+    const mockTerminalPoke = join(root, "mock-terminal-poke.sh");
+    process.env.MOCK_MAILBOX_TERMINAL_CALLS = callLog;
+    await writeFile(
+      mockRequest,
+      `console.log(JSON.stringify({
+  status: "failed",
+  terminalFallbackEligible: true,
+  error: "immediate message could not enter the steering lane and was removed from FIFO"
+}));
+process.exit(1);
+`,
+    );
+    await writeFile(
+      mockTerminalPoke,
+      `#!/usr/bin/env bash
+printf 'called\\n' >>"$MOCK_MAILBOX_TERMINAL_CALLS"
+printf 'poked: %s (submission observed)\\n' "$1"
+`,
+      { mode: 0o700 },
+    );
+    const mailbox = createMailbox({
+      mailboxRoot,
+      stateRoot,
+      requestCli: mockRequest,
+      terminalPokeCli: mockTerminalPoke,
+    });
+    await mailbox.send({
+      recipient: "hotel",
+      sender: "whisky",
+      summary: "session-name-only target",
+      message: "do not guess a tmux pane",
+      wake: false,
+    });
+
+    assert.equal((await mailbox.poke("hotel")).status, "unverified");
+    await assert.rejects(readFile(callLog, "utf8"), { code: "ENOENT" });
+  } finally {
+    if (previousCallLog === undefined) {
+      delete process.env.MOCK_MAILBOX_TERMINAL_CALLS;
+    } else {
+      process.env.MOCK_MAILBOX_TERMINAL_CALLS = previousCallLog;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("request timeouts reuse the same mailbox delivery attempt", async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-timeout-retry-"));
   const previousCallLog = process.env.MOCK_MAILBOX_REQUEST_CALLS;
