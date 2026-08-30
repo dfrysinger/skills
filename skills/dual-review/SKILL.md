@@ -1,6 +1,6 @@
 ---
 name: dual-review
-description: Bound dual review by evidence, scope, material risk, and a fixed round budget. Runs latest Claude Opus and latest non-mini/non-codex GPT in parallel, with finding-level verification only for disputed blockers. Use when a non-trivial diff needs review before landing, or a systemic or critical design and its guards need pre-implementation review.
+description: Bound dual review by evidence, scope, material risk, and a fixed round budget, and run its single-agent challenge-only mode when a systemic or critical plan needs an independent constraint check. Runs latest Claude Opus and latest non-mini/non-codex GPT in parallel for normal review, with finding-level verification only for disputed blockers. Use when a non-trivial diff needs review before landing, a systemic or critical design and its guards need pre-implementation review, or a governing workflow says a constraint challenge is due.
 ---
 
 # dual-review
@@ -23,6 +23,13 @@ This protocol follows four review principles:
 
 Use for a non-trivial diff involving multiple files, behavior changes, error
 paths, shared state, persistence, concurrency, security, or domain logic.
+
+Use the standalone challenge-only mode in
+[`references/constraint-challenge-lens.md`](./references/constraint-challenge-lens.md)
+when `design-doc`, `development-loop`, or `unattended-run` says a systemic or
+critical plan needs an independent constraint challenge. That mode launches
+one fresh read-only challenger and does not run the normal two-family review.
+Its own record and verdict are its completion contract.
 
 Do not use for typo-only, formatting-only, generated-only, dependency-only, or
 other trivial changes already covered by a deterministic check. Use a security
@@ -103,6 +110,28 @@ behaviors, split it into reviewable slices before dispatch where practical.
 When the subject is a design document or work order, load and give both
 reviewers
 [`references/design-scope-lens.md`](./references/design-scope-lens.md).
+For a systemic or critical design, first ensure there is one current focused
+independent challenge from
+[`references/constraint-challenge-lens.md`](./references/constraint-challenge-lens.md).
+Use a fresh read-only agent context that did not author the design. First give
+it the user's relevant exact words and only the verified product, policy,
+platform, compatibility, and observed-failure evidence so it derives a minimum
+design without anchoring on the proposal. It classifies top-level needs,
+scoped product choices, tactical approvals, and ambiguous statements; it
+starts from the end user's job to be done and escalates contradictions among
+top-level goals. Then give the same challenger the work order and current work
+graph for comparison. Run its challenge-only mode rather than the normal
+two-family review. If the packet already contains a current accepted record
+bound to this exact work-order revision and work graph, reuse it instead of
+running the challenger twice. Persist the record and include it in both
+reviewers' evidence packet.
+
+This is not a third full-diff reviewer. It examines only product-goal and
+security provenance, effective written or unwritten constraints, the three
+most load-bearing assumptions, and the gap from the minimum design. A
+`NARROW`, `REFRAME`, `ESCALATE`, or security-relevant `UNKNOWN` verdict blocks
+normal design review until its required action is reflected in the work order.
+
 Architecture and scope are reviewed before implementation detail. The lens is
 the single source of truth for supported-caller, inherited-constraint,
 duplication, simplification, enforcement, and reframe questions; do not copy
@@ -421,7 +450,7 @@ follow-ups`.
 
 ## Verification
 
-The protocol is complete when:
+The normal dual-review protocol is complete when:
 
 1. both model families completed the required round;
 2. every kept finding has verified evidence and diff causality;
@@ -429,4 +458,12 @@ The protocol is complete when:
 4. any verifier was finding-scoped and introduced no new issue;
 5. the review and autonomous closure budgets were respected.
 6. for a design review, both reviewers applied the architecture and scope lens
-   and their output records `design_scope_lens.applied: true`.
+   and their output records `design_scope_lens.applied: true`; and
+7. for a systemic or critical design, a fresh-context constraint challenge
+   produced an accepted current verdict and is included in the review packet.
+
+The standalone challenge-only mode is complete when the challenger stays
+within its own budget, persists the record required by
+`constraint-challenge-lens.md`, and returns one of that lens's five verdicts.
+It does not require either normal reviewer family or a dual-review finding
+round.

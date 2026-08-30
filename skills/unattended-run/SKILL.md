@@ -122,6 +122,14 @@ scheduled re-brief, the agent must:
   proof; and
 - advance other ready work during waits without violating one-owner live-proof
   or other exclusive gates.
+- for systemic or critical work, check the durable independent
+  constraint-challenge record and reconcile its durable active-time clock;
+  invoke the challenge-only mode defined in
+  [`dual-review`'s constraint-challenge lens](../dual-review/references/constraint-challenge-lens.md)
+  when an event trigger fires or the clock reaches 480 active implementation
+  minutes, supply relevant user statements as exact quotes with their
+  available context, and treat the challenge as due after resumption when the
+  clock is absent or inconsistent.
 
 The charter names any user-assigned agent roster and its durable coordination
 surface. "Use subagents liberally" alone is not a sufficient delegation
@@ -134,8 +142,12 @@ first — with `design-doc` for systemic or critical work, or at
 
 For systemic or critical work, the charter also points to the plan's decision
 hierarchy, constraint-provenance record, and reframe gate. Its current baton
-names any open revisit condition or active reframe record. A mechanism inherited
-through compaction remains a mechanism, not a binding requirement.
+names any open revisit condition or active reframe record. It also records the
+last accepted independent constraint challenge, active implementation time
+since that review as accumulated minutes plus active/pause timestamps, its next
+due point, any event trigger, and all relevant user statements received since
+that challenge as exact quotes with enough context to classify them. A mechanism
+inherited through compaction remains a mechanism, not a binding requirement.
 
 Persist the objective body in its own file, without the `/autopilot` prefix,
 because the detached helper sends the whole file. Persist the charter
@@ -216,7 +228,16 @@ manage_schedule action=create interval=1h \
   Confirm the
   workspace, push policy, objective, current phase, proof gates, and any open
   constraint revisit or reframe condition, and correct any drift before
-  continuing. During active live proof, remain read-only and advance only work
+  continuing. For systemic or critical work, inspect the persisted
+  constraint-challenge record, reconcile its accumulated minutes and
+  active/pause timestamps, collect relevant user statements as exact quotes
+  rather than agent interpretations, and run the challenge-only mode from
+  dual-review's constraint-challenge lens now
+  if a design, charter, Definition-of-Done, trust-boundary, constraint, or
+  scope-expansion trigger fired, if the clock reached 480 active implementation
+  minutes, or if the clock is absent or inconsistent after resumption. Do not merely
+  acknowledge a due challenge. During active live proof, remain read-only and
+  advance only work
   that cannot mutate the candidate, its worktree, its fixture, or its running
   process. Stop this schedule once the charter's referenced
   Definition of Done is verifiably met."
@@ -229,7 +250,9 @@ own off-switch, so it disengages on arrival rather than nagging forever.
 **Complete when** the charter file names its governing, execution, and context
 skills, and `manage_schedule action=list` shows exactly one reminder for this
 objective live, pointed at that file, with a prompt that follows the charter's
-**Required process skills** protocol and requires the critical-path audit. A
+**Required process skills** protocol, requires the critical-path audit, and
+enforces any due independent constraint challenge with its exact-quote input.
+A
 same-session compact is forbidden until this criterion passes.
 
 ### 3. Hand off `/autopilot` through native command invocation

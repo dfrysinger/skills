@@ -74,6 +74,27 @@ Every hard numeric limit needs measured demand, platform evidence, or a named
 policy owner. Prior configuration and earlier implementation are provenance,
 not proof that the limit must remain.
 
+Do not accept the author's provenance table as self-proving. Before normal
+design review, `dual-review` ensures exactly one current independent constraint
+challenge exists: a
+fresh-context reviewer first derives the minimum design from the user's exact
+words plus direct policy, platform, compatibility, and observed-failure
+evidence without seeing the proposal, then compares that baseline with the
+work order. It distinguishes top-level user needs and product direction from
+scoped choices, tactical approvals, and ambiguous acknowledgements. It starts
+from the end user's job to be done, may make a clearly labeled product
+inference from the broader purpose, and escalates contradictions among
+top-level goals with the conflicting quotes intact. The challenger independently
+traces security rules to protected assets, untrusted actors, reachable harmful
+capabilities, actual enforcement points, and narrower equivalent controls.
+
+Rank the three most load-bearing assumptions by the components, repositories,
+platforms, trust boundaries, proof, and lasting maintenance they create.
+Reverse-trace every substantial mechanism and proof obligation to a verified
+need, threat, external obligation, or current compatibility promise. This
+catches effective constraints created by implementation and acceptance
+machinery even when no sentence states the rule.
+
 Define the design's **reframe gate**. Implementation returns here before adding
 another component when a recorded revisit condition fires, a new subsystem
 mainly preserves an implementation default, repeated fixes merely move failure
@@ -179,12 +200,25 @@ receive:
   repository conventions that directly constrain the design;
 - the constraint-provenance record, including every inherited default that
   materially shaped the design.
+- the persisted independent constraint-challenge record, including its
+  minimum design, three highest-leverage assumptions, reverse-trace gaps, and
+  verdict;
+- the user's relevant statements as exact quotes rather than an author's
+  interpretation, together with their top-level, scoped, tactical, or
+  ambiguous classification and the end user's job to be done.
 
 The design document is the subject under review; the other artifacts are
 evidence and rubric. Keep unrelated discovery, rejected alternatives, and
 historical discussion out of the packet.
 
-**Complete when** `dual-review`'s verification criteria are met.
+`dual-review` owns running or reusing that challenge before the normal
+two-family review. `NARROW` requires the work order to remove or reduce the
+unsupported machinery and rerun the comparison. `REFRAME` returns to section
+3. `ESCALATE` requires a decision from the conflicting authority. A
+security-relevant `UNKNOWN` fails closed until evidence resolves it.
+
+**Complete when** the independent challenge has an accepted current verdict
+and `dual-review`'s verification criteria are met.
 
 ## 7. Stop
 
@@ -211,6 +245,17 @@ invoked if an instruction to continue already exists.
   critical one.
 - **Inherited mechanism as requirement.** A prior limit, service, or protocol
   is evidence about history, not proof that the new design must preserve it.
+- **Self-certified provenance.** Writing "product decision" or "security
+  requirement" beside an assumption does not prove its source or scope.
+- **Every user statement treated as constitutional.** Top-level needs and
+  product direction anchor the work. Tactical suggestions, quick approvals,
+  and ambiguous acknowledgements remain challengeable, especially when the
+  user did not inspect the implementation consequences.
+- **Paraphrased authority.** Give the challenger the user's exact words. An
+  agent's cleaner interpretation can erase uncertainty or broaden scope.
+- **Written-only drift detection.** Architecture, tests, adapters, and proof
+  obligations can enforce an unwritten rule. Reverse-trace the actual work,
+  not only the requirement sentences.
 - **Literal charter compliance.** A work order can remain internally
   consistent after its assumptions stop serving the user outcome. That is when
   its reframe gate should fire.
@@ -237,4 +282,7 @@ The document is done when:
 7. every acceptance criterion has a check that would fail if violated;
 8. it carries a Definition of Done under a unique heading;
 9. the bounded `dual-review` process met its verification criteria;
-10. someone who was not in the conversation could build from it.
+10. a fresh-context constraint challenger independently verified the product
+    and security premises, reverse-traced the actual machinery, and accepted
+    the current minimum-design comparison; and
+11. someone who was not in the conversation could build from it.
