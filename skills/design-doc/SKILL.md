@@ -232,10 +232,6 @@ The design document is the subject under review; the other artifacts are
 evidence and rubric. Keep unrelated discovery, rejected alternatives, and
 historical discussion out of the packet.
 
-`design-doc` owns the back-to-back challenge immediately before the normal
-two-family review. `dual-review` verifies that the resulting current record is
-present and reflected honestly in the work order.
-
 **Complete when** the independent challenge is current, its gate permits this
 design review, and `dual-review`'s verification criteria are met.
 
