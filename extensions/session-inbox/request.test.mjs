@@ -29,12 +29,13 @@ async function waitForRequest(root) {
   throw new Error("request was not written");
 }
 
-async function runRequest(root, args) {
+async function runRequest(root, args, extraEnv = {}) {
   const child = spawn(process.execPath, [requestCli, ...args], {
     env: {
       ...process.env,
       COPILOT_SESSION_INBOX_DIR: root,
       COPILOT_SESSION_STATE_ROOT: join(root, "session-state"),
+      ...extraEnv,
     },
   });
   let stdout = "";
@@ -348,6 +349,69 @@ test("rejects publication while the target session is rotating", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test(
+  "does not publish when rotation starts between the barrier check and rename",
+  { skip: process.platform === "darwin" },
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+    try {
+      const sessionId = "rotation-race-session";
+      const instancesDir = join(root, "instances");
+      const sessionDir = join(root, "session-state", sessionId);
+      const gate = join(root, "publish-gate");
+      await mkdir(instancesDir, { recursive: true });
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(
+        join(instancesDir, "rotation-race-session.json"),
+        `${JSON.stringify({
+          sessionId,
+          generation: "rotation-race-generation",
+          updatedAt: new Date().toISOString(),
+        })}\n`,
+      );
+      const promptFile = join(root, "prompt.txt");
+      await writeFile(promptFile, "must not cross the rotation barrier");
+
+      const run = await runRequest(
+        root,
+        [
+          "send",
+          "--target-session",
+          sessionId,
+          "--prompt-file",
+          promptFile,
+          "--timeout",
+          "0",
+        ],
+        { SESSION_INBOX_TEST_PUBLISH_GATE: gate },
+      );
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        try {
+          await readFile(`${gate}.ready`);
+          break;
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      await writeFile(join(sessionDir, "rotation.barrier"), "rotating\n");
+      await writeFile(`${gate}.release`, "release\n");
+
+      const result = await run.exit;
+      assert.equal(result.code, 64);
+      assert.match(result.stderr, /session rotation is blocking new inbox work/);
+      assert.deepEqual(
+        (await readdir(join(root, "pending"))).filter((name) =>
+          name.endsWith(".json"),
+        ),
+        [],
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 test("rejects an invalid timeout before writing a request", async () => {
   const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));

@@ -11,8 +11,9 @@ const submitter =
   process.env.SELF_COMPACT_SUBMITTER ??
   join(
     extensionDirectory,
-    "../../skills/self-compact/scripts/submit-compact.sh",
+    "../../skills/self-compact/scripts/submit-compact.mjs",
   );
+const nodeBin = process.env.SELF_COMPACT_NODE_BIN ?? "node";
 
 function validBrief(value) {
   return (
@@ -52,8 +53,8 @@ const selfCompactTool = {
     }
     try {
       const { stdout } = await execFileAsync(
-        submitter,
-        ["--tool-call-id", invocation.toolCallId],
+        nodeBin,
+        [submitter, "--tool-call-id", invocation.toolCallId],
         {
           env: {
             ...process.env,

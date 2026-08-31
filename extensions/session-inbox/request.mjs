@@ -64,6 +64,23 @@ async function readRequiredFile(path, label) {
   return text;
 }
 
+async function waitForTestPublishGate() {
+  const gate = process.env.SESSION_INBOX_TEST_PUBLISH_GATE;
+  if (!gate) return;
+  await writeFile(`${gate}.ready`, "ready\n");
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      await readFile(`${gate}.release`);
+      return;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("timed out waiting for test publication gate");
+}
+
 const options = parseArgs(process.argv.slice(2));
 const targetCount = [
   options["target-name"],
@@ -267,7 +284,23 @@ if (process.platform === "darwin") {
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
+  await waitForTestPublishGate();
   await rename(temporaryPath, pendingPath);
+  try {
+    await readFile(rotationBarrier);
+    try {
+      await rename(pendingPath, temporaryPath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      throw new Error(
+        "session rotation started while the published request was claimed; outcome is ambiguous",
+      );
+    }
+    await rm(temporaryPath, { force: true });
+    usage("session rotation is blocking new inbox work");
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
 }
 diagnostics.log("request.published", {
   requestPath: pendingPath,

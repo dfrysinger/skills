@@ -227,7 +227,32 @@ export async function joinSession() {
               setTimeout(resolve, current.sendNowDelayMs),
             );
           }
-          if (!current.promoteQueued) return {steered: false};
+          if (!current.promoteQueued) {
+            if (current.drainQueuedAfterSendNowMs !== undefined) {
+              setTimeout(() => {
+                const latest = state();
+                writeFileSync(
+                  process.env.MOCK_STATE,
+                  JSON.stringify({
+                    ...latest,
+                    ...(latest.retainQueuedOnDrain
+                      ? {}
+                      : {queuedPrompt: undefined}),
+                  }) + "\\n",
+                );
+                if (!latest.suppressDrainDelivery) {
+                  emit("user.message", {
+                    type: "user.message",
+                    data: {
+                      content: current.queuedPrompt,
+                      delivery: "idle",
+                    },
+                  });
+                }
+              }, current.drainQueuedAfterSendNowMs);
+            }
+            return {steered: false};
+          }
           writeFileSync(
             process.env.MOCK_STATE,
             JSON.stringify({...current, queuedPrompt: undefined}) + "\\n",
@@ -244,11 +269,27 @@ export async function joinSession() {
         async removeAt(options) {
           record("queue.removeAt", options);
           const current = state();
+          if (current.removeQueuedError) {
+            throw new Error("mock queue removal failed");
+          }
           if (!current.removeQueued) return {removed: false};
           writeFileSync(
             process.env.MOCK_STATE,
             JSON.stringify({...current, queuedPrompt: undefined}) + "\\n",
           );
+          if (current.lateDeliveryAfterRemoveMs !== undefined) {
+            setTimeout(
+              () =>
+                emit("user.message", {
+                  type: "user.message",
+                  data: {
+                    content: current.queuedPrompt,
+                    delivery: "idle",
+                  },
+                }),
+              current.lateDeliveryAfterRemoveMs,
+            );
+          }
           return {removed: true};
         },
       },
@@ -361,7 +402,6 @@ export async function joinSession() {
       MOCK_DEDUPE_DIR: join(inbox, "dedupe"),
       COPILOT_SESSION_STATE_ROOT: join(root, "session-state"),
       COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS: "500",
-      COPILOT_SESSION_INBOX_COMPACT_STABILIZATION_MS: "75",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -870,9 +910,9 @@ test("recipient extension submits SDK work and preserves phase state", async () 
 
     await harness.setState({
       suppressDelivery: false,
-      delivery: "queued",
-      deliveryAfterCompactIdle: "idle",
-      compactIdleDelayMs: 50,
+      delivery: "idle",
+      deliveryAfterCompactIdle: undefined,
+      compactIdleDelayMs: undefined,
       idleBeforeCompactCompletion: true,
       processing: true,
       active: true,
@@ -883,7 +923,7 @@ test("recipient extension submits SDK work and preserves phase state", async () 
     await harness.request("compact-waits-for-idle", {
       kind: "compact",
       customInstructions: "post-compact idle proof",
-      continuationPrompt: "resume only after compact is idle",
+      continuationPrompt: "resume immediately after compact completion",
     });
     const compactAfterIdle = await harness.receipt(
       "completed",
@@ -1297,6 +1337,195 @@ test("a compact continuation observed in the FIFO fails ambiguously", async () =
     assert.equal(receipt.result.compacted, true);
     assert.equal(receipt.result.continuationAccepted, true);
     assert.equal(receipt.result.continuationDelivery, "queued");
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("a compact continuation may drain naturally into an idle turn", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    queuePromptOnSend: true,
+    drainQueuedAfterSendNowMs: 20,
+  });
+  try {
+    await harness.request("natural-drain-compact", {
+      kind: "compact",
+      customInstructions: "natural drain proof",
+      continuationPrompt: "nonce-bearing natural drain",
+      dedupeKey: "natural-drain-compact",
+    });
+    const receipt = await harness.receipt("completed", "natural-drain-compact");
+    assert.equal(receipt.result.continuationAccepted, true);
+    assert.equal(receipt.result.continuationDelivery, "idle");
+    const queueCalls = await harness.calls();
+    assert.equal(
+      queueCalls.some((call) => call.kind === "queue.sendNow"),
+      true,
+    );
+    assert.equal(
+      queueCalls.some((call) => call.kind === "queue.removeAt"),
+      false,
+    );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("natural idle delivery remains valid through the confirmation deadline", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    queuePromptOnSend: true,
+    drainQueuedAfterSendNowMs: 180,
+  });
+  try {
+    await harness.request("late-natural-drain-compact", {
+      kind: "compact",
+      customInstructions: "late natural drain proof",
+      continuationPrompt: "nonce-bearing late natural drain",
+      dedupeKey: "late-natural-drain-compact",
+    });
+    const receipt = await harness.receipt(
+      "completed",
+      "late-natural-drain-compact",
+    );
+    assert.equal(receipt.result.continuationAccepted, true);
+    assert.equal(receipt.result.continuationDelivery, "idle");
+    assert.equal(
+      (await harness.calls()).some((call) => call.kind === "queue.removeAt"),
+      false,
+    );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("a continuation event while its exact queue item remains is ambiguous", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    queuePromptOnSend: true,
+    drainQueuedAfterSendNowMs: 20,
+    retainQueuedOnDrain: true,
+    removeQueued: true,
+  });
+  try {
+    await harness.request("event-item-remains", {
+      kind: "compact",
+      customInstructions: "event item remains proof",
+      continuationPrompt: "nonce-bearing retained item",
+      dedupeKey: "event-item-remains",
+    });
+    const receipt = await harness.receipt("failed", "event-item-remains");
+    assert.equal(receipt.ambiguousSideEffect, true);
+    assert.match(receipt.error, /removal raced with delivery/);
+    assert.equal(receipt.result.continuationDelivery, "idle");
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("a still-pending continuation is removed only after the delivery deadline", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    queuePromptOnSend: true,
+    removeQueued: true,
+  });
+  try {
+    await harness.request("remove-still-pending", {
+      kind: "compact",
+      customInstructions: "remove still pending proof",
+      continuationPrompt: "nonce-bearing still pending",
+      dedupeKey: "remove-still-pending",
+    });
+    const receipt = await harness.receipt("completed", "remove-still-pending");
+    assert.equal(receipt.result.compacted, true);
+    assert.equal(receipt.result.continuationAccepted, false);
+    assert.match(receipt.result.continuationError, /did not drain/);
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("failed continuation queue removal is ambiguous", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    queuePromptOnSend: true,
+  });
+  try {
+    await harness.request("remove-false-compact", {
+      kind: "compact",
+      customInstructions: "remove false proof",
+      continuationPrompt: "nonce-bearing remove false",
+      dedupeKey: "remove-false-compact",
+    });
+    const receipt = await harness.receipt("failed", "remove-false-compact");
+    assert.equal(receipt.ambiguousSideEffect, true);
+    assert.match(receipt.error, /removal raced with delivery/);
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("continuation queue removal errors are ambiguous", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    queuePromptOnSend: true,
+    removeQueuedError: true,
+  });
+  try {
+    await harness.request("remove-error-compact", {
+      kind: "compact",
+      customInstructions: "remove error proof",
+      continuationPrompt: "nonce-bearing remove error",
+      dedupeKey: "remove-error-compact",
+    });
+    const receipt = await harness.receipt("failed", "remove-error-compact");
+    assert.equal(receipt.ambiguousSideEffect, true);
+    assert.match(receipt.error, /queue recovery did not complete/);
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("a continuation queue item disappearing without an event is ambiguous", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    queuePromptOnSend: true,
+    drainQueuedAfterSendNowMs: 20,
+    suppressDrainDelivery: true,
+  });
+  try {
+    await harness.request("disappear-without-event", {
+      kind: "compact",
+      customInstructions: "disappear without event proof",
+      continuationPrompt: "nonce-bearing disappeared item",
+      dedupeKey: "disappear-without-event",
+    });
+    const receipt = await harness.receipt("failed", "disappear-without-event");
+    assert.equal(receipt.ambiguousSideEffect, true);
+    assert.match(receipt.error, /disappeared without a confirmed delivery/);
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("a delivery event arriving after queue removal is ambiguous", async () => {
+  const harness = await createHarness({
+    suppressDelivery: true,
+    queuePromptOnSend: true,
+    removeQueued: true,
+    lateDeliveryAfterRemoveMs: 10,
+  });
+  try {
+    await harness.request("late-after-removal", {
+      kind: "compact",
+      customInstructions: "late after removal proof",
+      continuationPrompt: "nonce-bearing late event",
+      dedupeKey: "late-after-removal",
+    });
+    const receipt = await harness.receipt("failed", "late-after-removal");
+    assert.equal(receipt.ambiguousSideEffect, true);
+    assert.match(receipt.error, /removal raced with delivery/);
   } finally {
     await harness.stop();
   }
