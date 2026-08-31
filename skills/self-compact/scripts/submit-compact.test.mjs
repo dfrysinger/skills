@@ -17,6 +17,7 @@ import {
   readEventTail,
   readTextOrNull,
   readTrimmedOrNull,
+  resolveFreshGenerations,
   runPaths,
 } from "./resume-after-compact.mjs";
 import { inspectLockForReclaim, runTokenFrom, scanCandidate } from "./submit-compact.mjs";
@@ -31,6 +32,7 @@ const brief =
   "Keep: active baton\n\nDrop: resolved detail\n\nAfter compaction: continue the task; do not compact again.";
 const continuationText = "Compaction done; resume, do not compact.";
 const runToken = "0123abcd";
+const targetGeneration = "gen-alpha";
 
 const fakeRequestSource = `import {
   appendFileSync,
@@ -74,8 +76,7 @@ if (mode === "hang") {
 } else if (mode === "failed") {
   console.log("request: fake");
   console.log(JSON.stringify({ id: "fake", status: "failed", sessionId: target, error: "forced failure" }));
-  process.exit(1);
-} else if (mode === "timeout") {
+  process.exit(1);} else if (mode === "timeout") {
   console.error("request: fake");
   process.exit(2);
 } else if (mode === "preflight") {
@@ -141,6 +142,7 @@ if (mode === "hang") {
       id: "fake",
       status: failedReceipt ? "failed" : "completed",
       sessionId: target,
+      generation: process.env.FAKE_RECEIPT_GENERATION,
       ...(failedReceipt ? { sideEffectCompleted: true } : {}),
       result: {
         compacted: true,
@@ -198,6 +200,18 @@ async function waitForLog(log, pattern, options = {}) {
   );
 }
 
+async function writeInstance(inboxRoot, { sessionId, generation, ageMs = 0 }) {
+  await mkdir(join(inboxRoot, "instances"), { recursive: true });
+  await writeFile(
+    join(inboxRoot, "instances", `${sessionId}-${generation}.json`),
+    `${JSON.stringify({
+      sessionId,
+      generation,
+      updatedAt: new Date(Date.now() - ageMs).toISOString(),
+    })}\n`,
+  );
+}
+
 async function createCase(t, name) {
   const root = await mkdtemp(join(tmpdir(), "self compact port "));
   const sessionDir = join(root, "session");
@@ -211,6 +225,8 @@ async function createCase(t, name) {
   await writeFile(draft, "unsubmitted user draft\n");
   const requestCli = join(root, "fake-request.mjs");
   await writeFile(requestCli, fakeRequestSource);
+  const inboxRoot = join(root, "session-inbox");
+  await writeInstance(inboxRoot, { sessionId: "target-session", generation: targetGeneration });
   const context = {
     name,
     root,
@@ -220,6 +236,7 @@ async function createCase(t, name) {
     events,
     draft,
     requestCli,
+    inboxRoot,
     lockDir: join(filesDir, "self-compact.lock"),
     requestCount: join(root, "request-count"),
     capturedInstructions: join(root, "captured-instructions"),
@@ -249,6 +266,8 @@ function caseEnvironment(context, overrides = {}) {
     COPILOT_AGENT_SESSION_ID: "target-session",
     SELF_COMPACT_WORKSPACE: context.workspace,
     SELF_COMPACT_REQUEST_CLI: context.requestCli,
+    COPILOT_SESSION_INBOX_DIR: context.inboxRoot,
+    FAKE_RECEIPT_GENERATION: targetGeneration,
     SELF_COMPACT_NODE_BIN: process.execPath,
     SELF_COMPACT_RUN_TOKEN: runToken,
     SELF_COMPACT_SUBMIT_POLLS: "1",
@@ -669,7 +688,7 @@ test("the verifier refuses a run whose lock token does not own the lock", async 
       log: artifacts.log,
       nodeBin: process.execPath,
       requestCli: context.requestCli,
-      inboxRoot: context.root,
+      inboxRoot: context.inboxRoot,
       requestTimeoutSeconds: 3,
       pollSeconds: 0.01,
       maxPolls: 10,
@@ -733,7 +752,7 @@ test("the verifier refuses to run without a positive handoff", async (t) => {
       log: artifacts.log,
       nodeBin: process.execPath,
       requestCli: context.requestCli,
-      inboxRoot: context.root,
+      inboxRoot: context.inboxRoot,
       requestTimeoutSeconds: 3,
       pollSeconds: 0.01,
       maxPolls: 10,
@@ -809,6 +828,7 @@ test("a crash at the publishing marker retains an unreclaimable lock", async (t)
 
   const publish = JSON.parse(await readFile(join(context.lockDir, "publish.json"), "utf8"));
   assert.equal(publish.targetSession, "target-session");
+  assert.equal(publish.targetGeneration, targetGeneration);
   assert.equal(publish.lockToken, armed.lockToken);
   assert.equal(publish.dedupeKey, `self-compact:target-session:${armed.lockToken}`);
   assert.equal(typeof publish.eventOffset, "number");
@@ -847,6 +867,7 @@ test("an ambiguous request timeout retains the lock", async (t) => {
   assert.equal(outcome.state, "request-published");
   const request = JSON.parse(await readFile(join(context.lockDir, "request.json"), "utf8"));
   assert.equal(request.id, "fake");
+  assert.equal(request.targetGeneration, targetGeneration);
   assert.equal(request.dedupeKey, `self-compact:target-session:${armed.lockToken}`);
   assert.match(request.completed, /completed[\\/]fake\.json$/);
 });
@@ -1006,8 +1027,14 @@ test("authorization classification refuses malformed and unaligned event windows
 });
 
 test("request classification separates publication, failure, and ambiguity", () => {
+  const generation = "gen-alpha";
   assert.deepEqual(
-    classifyRequestOutcome({ status: 64, output: "no instance\n", targetSession: "s" }),
+    classifyRequestOutcome({
+      status: 64,
+      output: "no instance\n",
+      targetSession: "s",
+      targetGeneration: generation,
+    }),
     {
       outcome: "rejected",
       published: false,
@@ -1017,38 +1044,154 @@ test("request classification separates publication, failure, and ambiguity", () 
   );
   const failed = classifyRequestOutcome({
     status: 1,
-    output: `request: p\n${JSON.stringify({ status: "failed", sessionId: "s" })}\n`,
+    output: `request: p\n${JSON.stringify({ status: "failed", sessionId: "s", generation })}\n`,
     targetSession: "s",
+    targetGeneration: generation,
   });
   assert.equal(failed.outcome, "failed");
   assert.equal(failed.release, true);
   const ambiguous = classifyRequestOutcome({
     status: 1,
-    output: `request: p\n${JSON.stringify({ status: "failed", sessionId: "s", ambiguousSideEffect: true })}\n`,
+    output: `request: p\n${JSON.stringify({ status: "failed", sessionId: "s", generation, ambiguousSideEffect: true })}\n`,
     targetSession: "s",
+    targetGeneration: generation,
   });
   assert.equal(ambiguous.outcome, "ambiguous");
   assert.equal(ambiguous.release, false);
-  const timedOut = classifyRequestOutcome({ status: 2, output: "request: p\n", targetSession: "s" });
+  const timedOut = classifyRequestOutcome({
+    status: 2,
+    output: "request: p\n",
+    targetSession: "s",
+    targetGeneration: generation,
+  });
   assert.equal(timedOut.outcome, "ambiguous");
   assert.equal(timedOut.release, false);
   const unmatched = classifyRequestOutcome({
     status: 0,
-    output: `request: p\n${JSON.stringify({ status: "completed", sessionId: "other" })}\n`,
+    output: `request: p\n${JSON.stringify({ status: "completed", sessionId: "other", generation })}\n`,
     targetSession: "s",
+    targetGeneration: generation,
   });
   assert.equal(unmatched.outcome, "unmatched");
+  const rotated = classifyRequestOutcome({
+    status: 0,
+    output: `request: p\n${JSON.stringify({
+      status: "completed",
+      sessionId: "s",
+      generation: "gen-beta",
+      result: { compacted: true, continuationAccepted: true },
+    })}\n`,
+    targetSession: "s",
+    targetGeneration: generation,
+  });
+  assert.equal(rotated.outcome, "unmatched");
+  assert.equal(rotated.release, false);
+  assert.match(rotated.reason, /different target generation/);
+  const postCompactWrongGeneration = classifyRequestOutcome({
+    status: 1,
+    output: `request: p\n${JSON.stringify({
+      status: "failed",
+      sessionId: "s",
+      generation: "gen-beta",
+      sideEffectCompleted: true,
+      result: { compacted: true },
+    })}\n`,
+    targetSession: "s",
+    targetGeneration: generation,
+  });
+  assert.equal(postCompactWrongGeneration.outcome, "failed");
   const completed = classifyRequestOutcome({
     status: 0,
     output: `request: p\n${JSON.stringify({
       status: "completed",
       sessionId: "s",
+      generation,
       result: { compacted: true, continuationAccepted: false },
     })}\n`,
     targetSession: "s",
+    targetGeneration: generation,
   });
   assert.equal(completed.outcome, "completed");
   assert.equal(completed.continuation, "failed");
+});
+
+test("fresh target generations honour the fifteen second heartbeat window", async (t) => {
+  const context = await createCase(t, "generation-freshness");
+  assert.deepEqual(
+    await resolveFreshGenerations(context.inboxRoot, "target-session"),
+    [targetGeneration],
+  );
+  await writeInstance(context.inboxRoot, {
+    sessionId: "target-session",
+    generation: "gen-stale",
+    ageMs: 60_000,
+  });
+  assert.deepEqual(
+    await resolveFreshGenerations(context.inboxRoot, "target-session"),
+    [targetGeneration],
+  );
+  assert.deepEqual(await resolveFreshGenerations(context.inboxRoot, "other-session"), []);
+  assert.deepEqual(await resolveFreshGenerations(join(context.root, "missing"), "target-session"), []);
+});
+
+test("no fresh target generation releases before the publishing marker", async (t) => {
+  const context = await createCase(t, "no-generation");
+  await rm(join(context.inboxRoot, "instances"), { recursive: true, force: true });
+  authorizingEvents(context);
+  const armed = await arm(context);
+  completeAuthorizingTurn(context, armed.stdout);
+  const log = await waitForLog(armed.log, /no fresh session-inbox instance for target-session/);
+  assert.doesNotMatch(log, /self-compact state: publishing/);
+  assert.equal(await requestCount(context), 0);
+  await waitFor(async () => !(await lockExists(context)), { label: "lock release" });
+});
+
+test("a stale heartbeat is not a live target generation", async (t) => {
+  const context = await createCase(t, "stale-generation");
+  await rm(join(context.inboxRoot, "instances"), { recursive: true, force: true });
+  await writeInstance(context.inboxRoot, {
+    sessionId: "target-session",
+    generation: targetGeneration,
+    ageMs: 60_000,
+  });
+  authorizingEvents(context);
+  const armed = await arm(context);
+  completeAuthorizingTurn(context, armed.stdout);
+  await waitForLog(armed.log, /no fresh session-inbox instance for target-session/);
+  assert.equal(await requestCount(context), 0);
+  await waitFor(async () => !(await lockExists(context)), { label: "lock release" });
+});
+
+test("an ambiguous fresh target releases before the publishing marker", async (t) => {
+  const context = await createCase(t, "ambiguous-generation");
+  await writeInstance(context.inboxRoot, {
+    sessionId: "target-session",
+    generation: "gen-beta",
+  });
+  authorizingEvents(context);
+  const armed = await arm(context);
+  completeAuthorizingTurn(context, armed.stdout);
+  const log = await waitForLog(
+    armed.log,
+    /multiple fresh session-inbox instances for target-session/,
+  );
+  assert.doesNotMatch(log, /self-compact state: publishing/);
+  assert.equal(await requestCount(context), 0);
+  await waitFor(async () => !(await lockExists(context)), { label: "lock release" });
+});
+
+test("a receipt from another target generation retains the lock", async (t) => {
+  const context = await createCase(t, "generation-mismatch");
+  authorizingEvents(context);
+  const armed = await arm(context, { env: { FAKE_RECEIPT_GENERATION: "gen-beta" } });
+  completeAuthorizingTurn(context, armed.stdout);
+  await waitForLog(armed.log, /different target generation than gen-alpha/);
+  assert.equal(await lockExists(context), true);
+  assert.equal(await requestCount(context), 1);
+  const publish = JSON.parse(await readFile(join(context.lockDir, "publish.json"), "utf8"));
+  assert.equal(publish.targetGeneration, targetGeneration);
+  const outcome = JSON.parse(await readFile(join(context.lockDir, "outcome.json"), "utf8"));
+  assert.equal(outcome.outcome, "retained");
 });
 
 test("the run token is deterministic and always eight lowercase hex characters", () => {

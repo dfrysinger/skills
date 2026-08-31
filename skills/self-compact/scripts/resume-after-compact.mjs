@@ -248,6 +248,43 @@ export function receiptPathsFor(root, id) {
   };
 }
 
+// Mirrors the freshness contract in extensions/session-inbox/request.mjs: an
+// instance heartbeat only proves a live generation for fifteen seconds.
+export const INSTANCE_FRESHNESS_MS = 15_000;
+
+export async function resolveFreshGenerations(inboxRoot, sessionId, now = Date.now()) {
+  const instancesDir = join(inboxRoot, "instances");
+  let names;
+  try {
+    names = await readdir(instancesDir);
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return [];
+    throw error;
+  }
+  const generations = new Set();
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    let instance;
+    try {
+      instance = JSON.parse(await readFile(join(instancesDir, name), "utf8"));
+    } catch {
+      // A concurrently replaced or malformed heartbeat is not a live target.
+      continue;
+    }
+    const age = now - Date.parse(instance?.updatedAt);
+    if (
+      instance?.sessionId === sessionId &&
+      instance?.generation &&
+      Number.isFinite(age) &&
+      age >= 0 &&
+      age <= INSTANCE_FRESHNESS_MS
+    ) {
+      generations.add(instance.generation);
+    }
+  }
+  return [...generations];
+}
+
 export function parseJsonLines(text) {
   const values = [];
   for (const line of text.split("\n")) {
@@ -575,7 +612,7 @@ export async function countCheckpointFiles(checkpointsDir, checkpointNumber) {
   ).length;
 }
 
-export function classifyRequestOutcome({ status, output, targetSession }) {
+export function classifyRequestOutcome({ status, output, targetSession, targetGeneration }) {
   const published = /^request: /m.test(output);
   if (status !== 0 && !published) {
     return {
@@ -586,6 +623,10 @@ export function classifyRequestOutcome({ status, output, targetSession }) {
     };
   }
   const receipts = parseJsonLines(output);
+  // A receipt only speaks for this run when it names the exact session and the
+  // generation resolved before the publication attempt.
+  const ownsRun = (receipt) =>
+    receipt.sessionId === targetSession && receipt.generation === targetGeneration;
   let effectiveStatus = status;
   if (status === 1) {
     const ambiguous = receipts.some(
@@ -603,6 +644,7 @@ export function classifyRequestOutcome({ status, output, targetSession }) {
     const postCompactFailure = receipts.some(
       (receipt) =>
         receipt.status === "failed" &&
+        ownsRun(receipt) &&
         receipt.sideEffectCompleted &&
         receipt.result &&
         typeof receipt.result === "object" &&
@@ -629,6 +671,7 @@ export function classifyRequestOutcome({ status, output, targetSession }) {
   }
 
   let valid = false;
+  let foreignGeneration = false;
   let continuation = "missing";
   for (const receipt of receipts) {
     if (receipt.sessionId !== targetSession) continue;
@@ -640,6 +683,10 @@ export function classifyRequestOutcome({ status, output, targetSession }) {
       Boolean(receipt.sideEffectCompleted) &&
       Boolean(result?.compacted);
     if (!completed && !completedSideEffect) continue;
+    if (!ownsRun(receipt)) {
+      foreignGeneration = true;
+      continue;
+    }
     valid = true;
     if (result && Object.hasOwn(result, "continuationAccepted")) {
       continuation = result.continuationAccepted ? "accepted" : "failed";
@@ -649,7 +696,9 @@ export function classifyRequestOutcome({ status, output, targetSession }) {
     return {
       outcome: "unmatched",
       published,
-      reason: "session-inbox returned no matching completed receipt",
+      reason: foreignGeneration
+        ? `session-inbox handled the compact under a different target generation than ${targetGeneration}`
+        : "session-inbox returned no matching completed receipt",
       release: false,
     };
   }
@@ -859,6 +908,26 @@ export async function verify(runFilePath) {
     if (boundary === null) fail("could not snapshot the pre-request event boundary");
 
     const dedupeKey = `self-compact:${run.targetSession}:${run.lockToken}`;
+    // Resolving the live target generation is the last definitive check before
+    // the publication attempt: an unknown or ambiguous target releases.
+    let generations;
+    try {
+      generations = await resolveFreshGenerations(run.inboxRoot, run.targetSession);
+    } catch {
+      fail("could not read session-inbox instance heartbeats", { release: true });
+    }
+    if (generations.length === 0) {
+      fail(`no fresh session-inbox instance for ${run.targetSession}`, {
+        release: true,
+      });
+    }
+    if (generations.length > 1) {
+      fail(`multiple fresh session-inbox instances for ${run.targetSession}`, {
+        release: true,
+      });
+    }
+    const targetGeneration = generations[0];
+
     await writeAtomic(
       lock.publishing,
       `${JSON.stringify(
@@ -866,6 +935,7 @@ export async function verify(runFilePath) {
           attemptedAt: new Date().toISOString(),
           eventOffset: boundary,
           targetSession: run.targetSession,
+          targetGeneration,
           toolCallId: run.toolCallId,
           runToken: run.runToken,
           lockToken: run.lockToken,
@@ -890,13 +960,13 @@ export async function verify(runFilePath) {
     if (publishedMatch) {
       const pendingPath = publishedMatch[1].trim();
       const id = basename(pendingPath).replace(/\.json$/, "");
-      let targetGeneration = null;
+      let publishedGeneration = null;
       const pendingText = await readTextOrNull(pendingPath);
       if (pendingText !== null) {
         try {
-          targetGeneration = JSON.parse(pendingText)?.target?.generation ?? null;
+          publishedGeneration = JSON.parse(pendingText)?.target?.generation ?? null;
         } catch {
-          targetGeneration = null;
+          publishedGeneration = null;
         }
       }
       await writeAtomic(
@@ -906,6 +976,9 @@ export async function verify(runFilePath) {
             id,
             publishedPath: pendingPath,
             targetGeneration,
+            publishedGeneration,
+            generationMatchesResolved:
+              publishedGeneration === null ? null : publishedGeneration === targetGeneration,
             dedupeKey,
             ...receiptPathsFor(run.inboxRoot, id),
           },
@@ -920,6 +993,7 @@ export async function verify(runFilePath) {
       status,
       output,
       targetSession: run.targetSession,
+      targetGeneration,
     });
     if (classified.outcome !== "completed") {
       failures.release = classified.release;
