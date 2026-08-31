@@ -3,7 +3,7 @@
 // verifier. Portable across Windows and POSIX hosts: Node built-ins only.
 
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { closeSync, openSync } from "node:fs";
 import { appendFile, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -11,11 +11,11 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  CONTINUATION_TEXT,
   RECEIPT_PREFIX,
   RECLAIMABLE_STATES,
   STATE_PREFIX,
   collectCandidates,
+  continuationTextFor,
   decodeRootEvents,
   exists,
   isEntrypoint,
@@ -366,6 +366,8 @@ export async function submit({ argv = process.argv.slice(2), env = process.env }
   const lockDir = join(filesDir, "self-compact.lock");
   const lock = lockPaths(lockDir);
   const lockToken = `${token}-${runId}`;
+  const continuationNonce = randomBytes(16).toString("hex");
+  const continuationPrompt = continuationTextFor(continuationNonce);
   const artifacts = runPaths(filesDir, runId);
 
   await acquireLock(lockDir, filesDir);
@@ -395,7 +397,7 @@ export async function submit({ argv = process.argv.slice(2), env = process.env }
       artifacts.instructions,
       `${candidate.brief}\n\nSELF_COMPACT_RUN_TOKEN: ${token}`,
     );
-    await writePrivate(artifacts.continuation, CONTINUATION_TEXT);
+    await writePrivate(artifacts.continuation, continuationPrompt);
     await writePrivate(
       artifacts.runFile,
       `${JSON.stringify(
@@ -404,6 +406,7 @@ export async function submit({ argv = process.argv.slice(2), env = process.env }
           runId,
           runToken: token,
           lockToken,
+          continuationNonce,
           toolCallId: candidate.callId,
           targetSession,
           workspace,

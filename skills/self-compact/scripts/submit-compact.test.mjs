@@ -11,14 +11,18 @@ import {
   LOCK_STATES,
   classifyAuthorization,
   classifyRequestOutcome,
+  continuationTextFor,
   decodeRootEvents,
   lockPaths,
   pidIsLive,
+  preparePublication,
+  probeCompletion,
   readEventTail,
   readTextOrNull,
   readTrimmedOrNull,
   resolveFreshGenerations,
   runPaths,
+  validateRun,
 } from "./resume-after-compact.mjs";
 import { inspectLockForReclaim, runTokenFrom, scanCandidate } from "./submit-compact.mjs";
 
@@ -33,6 +37,7 @@ const brief =
 const continuationText = "Compaction done; resume, do not compact.";
 const runToken = "0123abcd";
 const targetGeneration = "gen-alpha";
+const testContinuationNonce = "0123456789abcdef0123456789abcdef";
 
 const fakeRequestSource = `import {
   appendFileSync,
@@ -98,10 +103,20 @@ if (mode === "hang") {
   const instructions = readFileSync(instructionsPath, "utf8");
   const eventInstructions =
     mode === "wrong-token" ? instructions.slice(0, -8) + "deadbeef" : instructions;
+  if (mode === "activity-before-completion") {
+    appendEvent({
+      type: "user.message",
+      data: { content: "unrelated root activity" },
+    });
+  }
   if (mode !== "no-event") {
     appendEvent({
       type: "session.compaction_complete",
-      data: { success: true, customInstructions: eventInstructions, checkpointNumber: 2 },
+      data: {
+        success: mode !== "failed-compaction",
+        customInstructions: eventInstructions,
+        checkpointNumber: 2,
+      },
     });
   }
   const workspace = readFileSync(workspacePath, "utf8").replace(
@@ -133,7 +148,8 @@ if (mode === "hang") {
       appendEvent({ type: "user.message", data: { content: continuation, delivery } });
     }
   }
-  const continuationAccepted = mode !== "continuation-failed";
+  const continuationAccepted =
+    mode !== "continuation-failed" && mode !== "receipt-failed-with-event";
   const failedReceipt = mode === "post-compact-receipt-failed";
   console.log("request: fake");
   console.log("receipt: fake");
@@ -149,6 +165,7 @@ if (mode === "hang") {
         tokensRemoved: 10,
         messagesRemoved: 2,
         continuationAccepted,
+        ...(continuationAccepted ? { continuationDelivery: delivery } : {}),
       },
     }),
   );
@@ -340,12 +357,6 @@ function completeAuthorizingTurn(context, receiptContent, { callId = context.too
   ];
   if (trailingActivity) {
     events.push({ type: "user.message", data: { content: "intervening activity" } });
-  } else {
-    events.push(
-      { type: "assistant.turn_start" },
-      { type: "assistant.message", data: { content: "", toolRequests: [] } },
-      { type: "assistant.turn_end" },
-    );
   }
   appendEvents(context, events);
 }
@@ -428,7 +439,10 @@ test("verified compaction preserves the exact brief, token, checkpoint, and one 
     await readFile(context.capturedInstructions, "utf8"),
     `${brief}\n\nSELF_COMPACT_RUN_TOKEN: ${runToken}`,
   );
-  assert.equal(await readFile(context.capturedContinuation, "utf8"), continuationText);
+  assert.match(
+    await readFile(context.capturedContinuation, "utf8"),
+    new RegExp(`^${continuationText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n\\nSELF_COMPACT_CONTINUATION_TOKEN: [0-9a-f]{32}$`),
+  );
   const args = JSON.parse(await readFile(context.capturedArguments, "utf8"));
   assert.equal(args["--target-session"], "target-session");
   assert.equal(args["--timeout"], "3");
@@ -458,7 +472,10 @@ test("queued continuation delivery retains the lock", async (t) => {
   authorizingEvents(context);
   const armed = await arm(context, { env: { FAKE_REQUEST_MODE: "queued-continuation" } });
   completeAuthorizingTurn(context, armed.stdout);
-  await waitForLog(armed.log, /other root activity won the continuation race/);
+  await waitForLog(
+    armed.log,
+    /authoritative receipt did not prove continuation delivery/,
+  );
   assert.equal(await lockExists(context), true);
   assert.equal(await lockState(context), "checkpoint-observed");
 });
@@ -477,9 +494,74 @@ test("a failed SDK continuation receipt retains the lock", async (t) => {
   authorizingEvents(context);
   const armed = await arm(context, { env: { FAKE_REQUEST_MODE: "continuation-failed" } });
   completeAuthorizingTurn(context, armed.stdout);
-  await waitForLog(armed.log, /compact succeeded but the SDK continuation was not delivered/);
+  await waitForLog(
+    armed.log,
+    /authoritative receipt did not prove continuation delivery/,
+  );
   assert.equal(await lockExists(context), true);
   assert.equal(await requestCount(context), 1);
+});
+
+test("a failed compaction event after publication retains the lock", async (t) => {
+  const context = await createCase(t, "failed-compaction");
+  authorizingEvents(context);
+  const armed = await arm(context, {
+    env: { FAKE_REQUEST_MODE: "failed-compaction" },
+  });
+  completeAuthorizingTurn(context, armed.stdout);
+  await waitForLog(armed.log, /matching compaction completion reported failure/);
+  assert.equal(await lockExists(context), true);
+  assert.equal(await requestCount(context), 1);
+});
+
+test("root activity after the final scan prevents post-publication success", async (t) => {
+  const context = await createCase(t, "activity-before-completion");
+  authorizingEvents(context);
+  const armed = await arm(context, {
+    env: { FAKE_REQUEST_MODE: "activity-before-completion" },
+  });
+  completeAuthorizingTurn(context, armed.stdout);
+  await waitForLog(
+    armed.log,
+    /other root activity occurred before compaction completed/,
+  );
+  assert.equal(await lockExists(context), true);
+  assert.equal(await requestCount(context), 1);
+});
+
+test("an exact continuation event cannot upgrade a failed authoritative receipt", async (t) => {
+  const context = await createCase(t, "receipt-failed-with-event");
+  authorizingEvents(context);
+  const armed = await arm(context, {
+    env: { FAKE_REQUEST_MODE: "receipt-failed-with-event" },
+  });
+  completeAuthorizingTurn(context, armed.stdout);
+  await waitForLog(
+    armed.log,
+    /authoritative receipt did not prove continuation delivery/,
+  );
+  assert.equal(await lockExists(context), true);
+  assert.equal(await requestCount(context), 1);
+});
+
+test("separate compact runs receive different continuation nonces", async (t) => {
+  const first = await createCase(t, "fresh-nonce-a");
+  const second = await createCase(t, "fresh-nonce-b");
+  authorizingEvents(first);
+  authorizingEvents(second);
+  await arm(first);
+  await arm(second);
+  const firstRunId = await readTrimmedOrNull(join(first.lockDir, "run-id"));
+  const secondRunId = await readTrimmedOrNull(join(second.lockDir, "run-id"));
+  const firstRun = JSON.parse(
+    await readFile(runPaths(first.filesDir, firstRunId).runFile, "utf8"),
+  );
+  const secondRun = JSON.parse(
+    await readFile(runPaths(second.filesDir, secondRunId).runFile, "utf8"),
+  );
+  assert.match(firstRun.continuationNonce, /^[0-9a-f]{32}$/);
+  assert.match(secondRun.continuationNonce, /^[0-9a-f]{32}$/);
+  assert.notEqual(firstRun.continuationNonce, secondRun.continuationNonce);
 });
 
 test("earlier assistant prose does not block the current empty-content request", async (t) => {
@@ -662,7 +744,10 @@ test("the verifier refuses a run whose lock token does not own the lock", async 
   await writeFile(lock.state, "verifier-starting\n");
   const artifacts = runPaths(context.filesDir, "mismatch-run");
   await writeFile(artifacts.instructions, `${brief}\n\nSELF_COMPACT_RUN_TOKEN: ${runToken}`);
-  await writeFile(artifacts.continuation, continuationText);
+  await writeFile(
+    artifacts.continuation,
+    `${continuationText}\n\nSELF_COMPACT_CONTINUATION_TOKEN: ${testContinuationNonce}`,
+  );
   const runFile = artifacts.runFile;
   await writeFile(
     runFile,
@@ -671,6 +756,7 @@ test("the verifier refuses a run whose lock token does not own the lock", async 
       runId: "mismatch-run",
       runToken,
       lockToken: "intruder-token",
+      continuationNonce: testContinuationNonce,
       toolCallId: context.toolCallId,
       targetSession: "target-session",
       workspace: context.workspace,
@@ -727,7 +813,10 @@ test("the verifier refuses to run without a positive handoff", async (t) => {
   await writeFile(lock.token, "handoff-token\n");
   await writeFile(lock.state, "verifier-starting\n");
   await writeFile(artifacts.instructions, `${brief}\n\nSELF_COMPACT_RUN_TOKEN: ${runToken}`);
-  await writeFile(artifacts.continuation, continuationText);
+  await writeFile(
+    artifacts.continuation,
+    `${continuationText}\n\nSELF_COMPACT_CONTINUATION_TOKEN: ${testContinuationNonce}`,
+  );
   await writeFile(
     artifacts.runFile,
     JSON.stringify({
@@ -735,6 +824,7 @@ test("the verifier refuses to run without a positive handoff", async (t) => {
       runId: "no-handoff-run",
       runToken,
       lockToken: "handoff-token",
+      continuationNonce: testContinuationNonce,
       toolCallId: context.toolCallId,
       targetSession: "target-session",
       workspace: context.workspace,
@@ -844,13 +934,14 @@ test("a crash at the publishing marker retains an unreclaimable lock", async (t)
   assert.equal(await requestCount(context), 1);
 });
 
-test("a definitively failed request releases the lock", async (t) => {
+test("a definitively failed published request retains the lock", async (t) => {
   const context = await createCase(t, "failed-request");
   authorizingEvents(context);
   const armed = await arm(context, { env: { FAKE_REQUEST_MODE: "failed" } });
   completeAuthorizingTurn(context, armed.stdout);
   await waitForLog(armed.log, /session-inbox reported a failed compact request/);
-  await waitFor(async () => !(await lockExists(context)), { label: "lock release" });
+  assert.equal(await lockExists(context), true);
+  assert.equal(await lockState(context), "request-published");
   assert.equal(await requestCount(context), 1);
 });
 
@@ -892,13 +983,13 @@ test("an ambiguous side effect retains the lock", async (t) => {
   assert.equal(await requestCount(context), 1);
 });
 
-test("a failed receipt whose side effect completed still verifies", async (t) => {
+test("a failed receipt whose side effect completed retains the lock", async (t) => {
   const context = await createCase(t, "post-compact-receipt-failed");
   authorizingEvents(context);
   const armed = await arm(context, { env: { FAKE_REQUEST_MODE: "post-compact-receipt-failed" } });
   completeAuthorizingTurn(context, armed.stdout);
-  await waitForLog(armed.log, /verified token-bound compaction checkpoint 2 and one SDK continuation/);
-  await waitFor(async () => !(await lockExists(context)), { label: "lock release" });
+  await waitForLog(armed.log, /failure after the compact side effect completed/);
+  assert.equal(await lockExists(context), true);
   assert.equal(await requestCount(context), 1);
 });
 
@@ -909,7 +1000,7 @@ test("a completion bound to another token is not this run's compact", async (t) 
     env: { FAKE_REQUEST_MODE: "wrong-token", SELF_COMPACT_MAX_POLLS: "20" },
   });
   completeAuthorizingTurn(context, armed.stdout);
-  await waitForLog(armed.log, /matching token-bound compaction completion was not observed/);
+  await waitForLog(armed.log, /other root activity occurred before compaction completed/);
   assert.equal(await lockExists(context), true);
 });
 
@@ -998,6 +1089,11 @@ test("durable run metadata uses absolute platform paths", async (t) => {
   assert.match(run.log, / /, "the fixture path contains a space");
   assert.equal(run.lockToken, armed.lockToken);
   assert.equal(run.runToken, runToken);
+  assert.match(run.continuationNonce, /^[0-9a-f]{32}$/);
+  assert.equal(
+    await readFile(run.continuation, "utf8"),
+    `${continuationText}\n\nSELF_COMPACT_CONTINUATION_TOKEN: ${run.continuationNonce}`,
+  );
   completeAuthorizingTurn(context, armed.stdout);
   await waitForLog(armed.log, /verified token-bound compaction checkpoint 2 and one SDK continuation/);
 });
@@ -1006,6 +1102,86 @@ test("authorization classification refuses malformed and unaligned event windows
   assert.deepEqual(classifyAuthorization({ boundaryExceeded: true }, { toolCallId: "a", receipt: "r" }), {
     state: "cancel",
     reason: "authorization boundary exceeds event tail",
+  });
+
+  test("publication is marked before the final root-activity scan", async (t) => {
+    const root = await mkdtemp(join(tmpdir(), "self compact publish "));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const lock = lockPaths(join(root, "lock"));
+    await mkdir(lock.dir, { recursive: true });
+    const events = join(root, "events.jsonl");
+    await writeFile(
+      events,
+      `${JSON.stringify({ type: "user.message", data: { content: "other work" } })}\n`,
+    );
+    await assert.rejects(
+      preparePublication(lock, events, 0),
+      (error) =>
+        error.release === false &&
+        /request not published/.test(error.message),
+    );
+    assert.equal(await readTrimmedOrNull(lock.state), "publishing");
+  });
+
+  test("root activity before compact completion is classified explicitly", async (t) => {
+    const root = await mkdtemp(join(tmpdir(), "self compact completion "));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const events = join(root, "events.jsonl");
+    await writeFile(
+      events,
+      `${JSON.stringify({ type: "assistant.turn_start" })}\n`,
+    );
+    assert.deepEqual(await probeCompletion(events, 0, "instructions"), {
+      state: "activity",
+    });
+  });
+
+  test("run metadata requires a fresh 128-bit continuation nonce", () => {
+    const run = {
+      runId: "run",
+      runToken: "token",
+      lockToken: "lock",
+      continuationNonce: "0123456789abcdef0123456789abcdef",
+      toolCallId: "call",
+      targetSession: "session",
+      workspace: "workspace",
+      events: "events",
+      checkpointsDir: "checkpoints",
+      filesDir: "files",
+      lockDir: "lock-dir",
+      ready: "ready",
+      handoff: "handoff",
+      instructions: "instructions",
+      continuation: "continuation",
+      candidate: "candidate",
+      runFile: "run-file",
+      log: "log",
+      nodeBin: "node",
+      requestCli: "request",
+      inboxRoot: "inbox",
+      baselineSummaryCount: 0,
+      requestTimeoutSeconds: 1,
+      pollSeconds: 0.01,
+      maxPolls: 1,
+      authWaitSeconds: 0.01,
+      authScanBytes: 65536,
+      handoffPolls: 1,
+      handoffPollSeconds: 0.01,
+    };
+    assert.equal(validateRun(run), run);
+    assert.throws(
+      () => validateRun({ ...run, continuationNonce: "" }),
+      /continuationNonce is invalid/,
+    );
+    assert.throws(
+      () => validateRun({ ...run, continuationNonce: "0123" }),
+      /continuationNonce is invalid/,
+    );
+    assert.equal(
+      continuationTextFor(run.continuationNonce),
+      `${continuationText}\n\nSELF_COMPACT_CONTINUATION_TOKEN: ${run.continuationNonce}`,
+    );
+    assert.throws(() => continuationTextFor("0123"), /continuation nonce is invalid/);
   });
   assert.deepEqual(classifyAuthorization({ partial: true }, { toolCallId: "a", receipt: "r" }), {
     state: "wait",
@@ -1049,7 +1225,7 @@ test("request classification separates publication, failure, and ambiguity", () 
     targetGeneration: generation,
   });
   assert.equal(failed.outcome, "failed");
-  assert.equal(failed.release, true);
+  assert.equal(failed.release, false);
   const ambiguous = classifyRequestOutcome({
     status: 1,
     output: `request: p\n${JSON.stringify({ status: "failed", sessionId: "s", generation, ambiguousSideEffect: true })}\n`,

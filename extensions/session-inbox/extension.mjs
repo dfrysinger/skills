@@ -35,15 +35,6 @@ const confirmationTimeoutMs =
   configuredConfirmationTimeoutMs > 0
     ? configuredConfirmationTimeoutMs
     : 10_000;
-const configuredCompactStabilizationMs = Number.parseInt(
-  process.env.COPILOT_SESSION_INBOX_COMPACT_STABILIZATION_MS ?? "1000",
-  10,
-);
-const compactStabilizationMs =
-  Number.isFinite(configuredCompactStabilizationMs) &&
-  configuredCompactStabilizationMs >= 0
-    ? configuredCompactStabilizationMs
-    : 1_000;
 const configuredAutopilotConfirmationTimeoutMs = Number.parseInt(
   process.env.COPILOT_SESSION_INBOX_AUTOPILOT_CONFIRM_TIMEOUT_MS ??
     process.env.COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS ??
@@ -260,7 +251,7 @@ async function writeHeartbeat() {
   }
 }
 
-async function sendAndConfirm({ prompt, agentMode }) {
+async function sendAndConfirm({ prompt, agentMode, allowIdleDrain = false }) {
   const matchingEvents = [];
   let resolveEvent;
   const unsubscribe = session.on("user.message", (event) => {
@@ -292,11 +283,13 @@ async function sendAndConfirm({ prompt, agentMode }) {
       clearTimeout(timer);
     }
   };
+  const findDelivery = (deliveries) =>
+    matchingEvents.find((candidate) =>
+      deliveries.includes(candidate.data.delivery),
+    );
   const waitForDelivery = async (deliveries, deadline = confirmationDeadline) => {
     while (Date.now() < deadline) {
-      const event = matchingEvents.find((candidate) =>
-        deliveries.includes(candidate.data.delivery),
-      );
+      const event = findDelivery(deliveries);
       if (event) return event;
       await Promise.race([
         new Promise((resolve) => {
@@ -352,20 +345,91 @@ async function sendAndConfirm({ prompt, agentMode }) {
             preexistingQueueIds?.has(item.id) === false,
         );
         if (queuedMatches.length === 1) {
+          const queuedItemId = queuedMatches[0].id;
           diagnostics.log("sdk.send.promoting_queued", {
             messageId,
-            queuedItemId: queuedMatches[0].id,
+            queuedItemId,
           });
           // A caller timeout may retry this request. Keep mutating recovery
           // serialized under the same dedupe reservation until the RPC settles.
           const promoted = await session.rpc.queue.sendNow({
-            id: queuedMatches[0].id,
+            id: queuedItemId,
           });
           if (promoted.steered) {
             event = await waitForDelivery(["steering"]);
+          } else if (allowIdleDrain) {
+            const cleanupWindowMs = Math.min(
+              2_000,
+              Math.max(100, Math.floor(confirmationTimeoutMs / 4)),
+            );
+            event =
+              (await waitForDelivery(["idle", "steering"], confirmationDeadline)) ??
+              findDelivery(["idle", "steering"]) ??
+              event;
+            const cleanupDeadline = Date.now() + cleanupWindowMs;
+            const afterDelivery = await withinDeadline(
+              session.rpc.queue.pendingItems(),
+              cleanupDeadline,
+              "post-drain queue inspection",
+            );
+            const exactItemPending = afterDelivery.items.some(
+              (item) => item.id === queuedItemId,
+            );
+            if (event && event.data.delivery !== "queued" && !exactItemPending) {
+              // The native runtime consumed the exact queued item and emitted
+              // this run's nonce-bearing delivery event.
+            } else if (exactItemPending) {
+              const removed = await withinDeadline(
+                session.rpc.queue.removeAt({ id: queuedItemId }),
+                cleanupDeadline,
+                "queued continuation removal",
+              );
+              const lateEvent = await waitForDelivery(
+                ["idle", "steering"],
+                cleanupDeadline,
+              ) ?? findDelivery(["idle", "steering"]);
+              if (
+                !removed.removed ||
+                (lateEvent && lateEvent.data.delivery !== "queued") ||
+                (event && event.data.delivery !== "queued")
+              ) {
+                throw ambiguousSideEffectError(
+                  "queued continuation removal raced with delivery",
+                  {
+                    messageId,
+                    messageAccepted: true,
+                    delivery:
+                      lateEvent?.data.delivery ??
+                      (event?.data.delivery === "queued"
+                        ? "unconfirmed"
+                        : event?.data.delivery ?? "unconfirmed"),
+                    idleDelivery:
+                      lateEvent?.data.delivery === "idle" ||
+                      event?.data.delivery === "idle",
+                    queuedDelivery: true,
+                  },
+                );
+              }
+              const error = definitiveNoSideEffectError(
+                "queued continuation did not drain before the confirmation deadline and was removed",
+              );
+              error.terminalFallbackEligible = true;
+              throw error;
+            } else if (!event || event.data.delivery === "queued") {
+              throw ambiguousSideEffectError(
+                "queued continuation disappeared without a confirmed delivery",
+                {
+                  messageId,
+                  messageAccepted: true,
+                  delivery: "unconfirmed",
+                  idleDelivery: false,
+                  queuedDelivery: true,
+                },
+              );
+            }
           } else {
             const removed = await session.rpc.queue.removeAt({
-              id: queuedMatches[0].id,
+              id: queuedItemId,
             });
             if (removed.removed) {
               const error = definitiveNoSideEffectError(
@@ -481,7 +545,6 @@ async function compactAndWaitForCompletion(options) {
       });
     }
     if (completionError) throw completionError;
-    await new Promise((resolve) => setTimeout(resolve, compactStabilizationMs));
     return result;
   } finally {
     stopCompletion();
@@ -656,6 +719,7 @@ async function execute(request) {
           });
           const continuation = await sendAndConfirm({
             prompt: request.continuationPrompt,
+            allowIdleDrain: true,
           });
           continuationAccepted = continuation.messageAccepted;
           continuationMessageId = continuation.messageId;

@@ -13,6 +13,13 @@ export const CONTINUATION_TEXT = "Compaction done; resume, do not compact.";
 export const RECEIPT_PREFIX = "self-compact handoff receipt: ";
 export const STATE_PREFIX = "self-compact state: ";
 
+export function continuationTextFor(nonce) {
+  if (!/^[0-9a-f]{32}$/.test(nonce)) {
+    throw new VerifierError("continuation nonce is invalid", { release: false });
+  }
+  return `${CONTINUATION_TEXT}\n\nSELF_COMPACT_CONTINUATION_TOKEN: ${nonce}`;
+}
+
 export const LOCK_STATES = [
   "foreground",
   "verifier-starting",
@@ -496,7 +503,7 @@ export function classifyAuthorization(tail, { toolCallId, receipt }) {
     }
   }
   if (!sawTurnEnd || turnOpen) return { state: "wait" };
-  return { state: "ready" };
+  return { state: "ready", boundary: tail.size };
 }
 
 async function readEventRange(path, offset) {
@@ -554,6 +561,11 @@ export async function probeCompletion(eventsPath, offset, instructions) {
   for (const { line, end } of completeLines(buffer, offset)) {
     const event = decodeRootEvent(line);
     if (!event) continue;
+    if (ROOT_ACTIVITY_TYPES.has(event.type)) return { state: "activity" };
+    if (event.type === "assistant.message") {
+      const requests = toolRequestsOf(event);
+      if (requests && requests.length > 0) return { state: "activity" };
+    }
     if (event.type !== "session.compaction_complete") continue;
     const data = eventData(event) ?? event;
     if (typeof data.customInstructions !== "string") continue;
@@ -567,7 +579,32 @@ export async function probeCompletion(eventsPath, offset, instructions) {
       completionEnd: end,
     };
   }
+
   return { state: "wait" };
+}
+
+export async function probeRootActivity(eventsPath, offset) {
+  const buffer = await readEventRange(eventsPath, offset);
+  for (const { line } of completeLines(buffer, offset)) {
+    const event = decodeRootEvent(line);
+    if (!event) continue;
+    if (ROOT_ACTIVITY_TYPES.has(event.type)) return true;
+    if (event.type === "assistant.message") {
+      const requests = toolRequestsOf(event);
+      if (requests && requests.length > 0) return true;
+    }
+  }
+  return false;
+}
+
+export async function preparePublication(lock, eventsPath, boundary) {
+  await recordState(lock, "publishing");
+  if (await probeRootActivity(eventsPath, boundary)) {
+    throw new VerifierError(
+      "new root activity followed authorization; request not published",
+      { release: false },
+    );
+  }
 }
 
 export async function probeContinuation(eventsPath, offset, expected) {
@@ -627,7 +664,6 @@ export function classifyRequestOutcome({ status, output, targetSession, targetGe
   // generation resolved before the publication attempt.
   const ownsRun = (receipt) =>
     receipt.sessionId === targetSession && receipt.generation === targetGeneration;
-  let effectiveStatus = status;
   if (status === 1) {
     const ambiguous = receipts.some(
       (receipt) => receipt.status === "failed" && receipt.ambiguousSideEffect,
@@ -651,17 +687,22 @@ export function classifyRequestOutcome({ status, output, targetSession, targetGe
         receipt.result.compacted,
     );
     if (postCompactFailure) {
-      effectiveStatus = 0;
-    } else {
       return {
         outcome: "failed",
         published,
-        reason: "session-inbox reported a failed compact request",
-        release: true,
+        reason:
+          "session-inbox reported failure after the compact side effect completed",
+        release: false,
       };
     }
+    return {
+      outcome: "failed",
+      published,
+      reason: "session-inbox reported a failed compact request",
+      release: false,
+    };
   }
-  if (effectiveStatus !== 0) {
+  if (status !== 0) {
     return {
       outcome: "ambiguous",
       published,
@@ -673,23 +714,31 @@ export function classifyRequestOutcome({ status, output, targetSession, targetGe
   let valid = false;
   let foreignGeneration = false;
   let continuation = "missing";
+  let continuationDelivery;
   for (const receipt of receipts) {
     if (receipt.sessionId !== targetSession) continue;
     const result =
       receipt.result && typeof receipt.result === "object" ? receipt.result : null;
     const completed = receipt.status === "completed";
-    const completedSideEffect =
-      receipt.status === "failed" &&
-      Boolean(receipt.sideEffectCompleted) &&
-      Boolean(result?.compacted);
-    if (!completed && !completedSideEffect) continue;
+    if (!completed) continue;
     if (!ownsRun(receipt)) {
       foreignGeneration = true;
       continue;
     }
     valid = true;
-    if (result && Object.hasOwn(result, "continuationAccepted")) {
-      continuation = result.continuationAccepted ? "accepted" : "failed";
+    if (
+      result?.continuationAccepted === true &&
+      (result.continuationDelivery === "idle" ||
+        result.continuationDelivery === "steering")
+    ) {
+      continuation = "accepted";
+      continuationDelivery = result.continuationDelivery;
+    } else if (
+      result &&
+      (result.continuationAccepted === false ||
+        Object.hasOwn(result, "continuationError"))
+    ) {
+      continuation = "failed";
     }
   }
   if (!valid) {
@@ -702,7 +751,13 @@ export function classifyRequestOutcome({ status, output, targetSession, targetGe
       release: false,
     };
   }
-  return { outcome: "completed", published, continuation, release: false };
+  return {
+    outcome: "completed",
+    published,
+    continuation,
+    ...(continuationDelivery ? { continuationDelivery } : {}),
+    release: false,
+  };
 }
 
 function requiredString(run, key) {
@@ -730,11 +785,12 @@ function requiredNumber(run, key, { minimum = 0, maximum = Infinity } = {}) {
   return value;
 }
 
-function validateRun(run) {
+export function validateRun(run) {
   for (const key of [
     "runId",
     "runToken",
     "lockToken",
+    "continuationNonce",
     "toolCallId",
     "targetSession",
     "workspace",
@@ -754,6 +810,11 @@ function validateRun(run) {
     "inboxRoot",
   ]) {
     requiredString(run, key);
+  }
+  if (!/^[0-9a-f]{32}$/.test(run.continuationNonce)) {
+    throw new VerifierError("run metadata field continuationNonce is invalid", {
+      release: false,
+    });
   }
   requiredNumber(run, "baselineSummaryCount", { minimum: 0 });
   requiredNumber(run, "requestTimeoutSeconds", { minimum: 1 });
@@ -878,6 +939,7 @@ export async function verify(runFilePath) {
     const receipt = `${RECEIPT_PREFIX}${run.lockToken}`;
     const authorizationPolls = Math.floor(run.authWaitSeconds / run.pollSeconds) + 1;
     let authorized = false;
+    let boundary = null;
     for (let poll = 0; poll < authorizationPolls; poll += 1) {
       let tail;
       try {
@@ -891,6 +953,7 @@ export async function verify(runFilePath) {
       });
       if (probe.state === "ready") {
         authorized = true;
+        boundary = probe.boundary;
         break;
       }
       if (probe.state === "cancel") fail(probe.reason);
@@ -898,14 +961,15 @@ export async function verify(runFilePath) {
     }
     if (!authorized) fail("timed out waiting for the authorizing turn to end");
     await recordState(lock, "authorized");
-
-    let boundary;
-    try {
-      boundary = (await stat(run.events)).size;
-    } catch {
-      boundary = null;
+    if (!Number.isInteger(boundary) || boundary < 0) {
+      fail("could not preserve the authorization event boundary");
     }
-    if (boundary === null) fail("could not snapshot the pre-request event boundary");
+
+    const continuationText = await readFile(run.continuation, "utf8");
+    const expectedContinuation = continuationTextFor(run.continuationNonce);
+    if (continuationText !== expectedContinuation) {
+      fail("continuation prompt does not match its run nonce");
+    }
 
     const dedupeKey = `self-compact:${run.targetSession}:${run.lockToken}`;
     // Resolving the live target generation is the last definitive check before
@@ -949,8 +1013,14 @@ export async function verify(runFilePath) {
     );
     // Past this marker a side effect may exist; the lock is never reclaimed
     // automatically again.
-    await recordState(lock, "publishing");
     failures.release = false;
+
+    try {
+      await preparePublication(lock, run.events, boundary);
+    } catch (error) {
+      if (error instanceof VerifierError) throw error;
+      fail("could not perform the final root-activity check", { release: false });
+    }
 
     logLine(`submitting one session-inbox compact request for session ${run.targetSession}`);
     const { status, output } = await runRequest(run);
@@ -1015,10 +1085,15 @@ export async function verify(runFilePath) {
       }
       if (completion.state === "success") break;
       if (completion.state === "failed") {
-        fail("matching compaction completion reported failure", { release: true });
+        fail("matching compaction completion reported failure", { release: false });
       }
       if (completion.state === "invalid") {
         fail("matching compaction completion had no checkpoint number", {
+          release: false,
+        });
+      }
+      if (completion.state === "activity") {
+        fail("other root activity occurred before compaction completed", {
           release: false,
         });
       }
@@ -1061,14 +1136,17 @@ export async function verify(runFilePath) {
     }
     await recordState(lock, "checkpoint-observed");
 
-    if (classified.continuation === "failed") {
+    if (
+      classified.continuation !== "accepted" ||
+      (classified.continuationDelivery !== "idle" &&
+        classified.continuationDelivery !== "steering")
+    ) {
       fail(
-        `compact succeeded but the SDK continuation was not delivered; lock retained at ${lock.dir}`,
+        `compact succeeded but the authoritative receipt did not prove continuation delivery; lock retained at ${lock.dir}`,
         { release: false },
       );
     }
 
-    const continuationText = await readFile(run.continuation, "utf8");
     let continuationState = { state: "wait" };
     for (let poll = 0; poll < run.maxPolls; poll += 1) {
       try {

@@ -124,11 +124,11 @@ request:
 The detached verifier requires the same tool-call identity, the exact handoff
 receipt, and the end of that authorizing turn before creating the SDK request.
 
-The request protocol has no event-boundary or cancellation field. The verifier
-rejects conflicting root activity already persisted before enqueueing, but
-activity that races after request creation can leave the request pending until
-a later idle boundary. Do not interact with the session after the handoff until
-the fixed continuation arrives.
+The verifier preserves the exact successful authorization-tail byte boundary,
+resolves the target generation, writes its `publishing` marker, and then scans
+from that boundary before creating the SDK request. Any later unrelated root
+activity prevents success or automatic lock release. Do not interact with the
+session after the handoff until the nonce-bearing continuation arrives.
 
 ### Run exclusion and one-shot behavior
 
@@ -136,10 +136,10 @@ One session-scoped owner-token lock excludes concurrent helper runs. The
 verifier creates one request with a run-specific dedupe key and never retries
 it.
 
-A definitive failed receipt releases the lock. A timeout, missing receipt, or
-missing token-bound completion is ambiguous and retains the lock so another
-run cannot silently duplicate a compact. Do not delete an ambiguous lock
-until its per-run log and session-inbox receipt directories establish the
+A definitive failure before `publishing` may release the lock. Every failure
+at or after `publishing`, including a definitive continuation failure, retains
+the lock so another run cannot silently duplicate a compact. Do not delete a
+retained lock until its per-run log and session-inbox receipt establish the
 outcome.
 
 ### Completion and checkpoint identity
@@ -156,25 +156,32 @@ Checkpoint prose is not searched for a marker.
 
 ### Continuation
 
-The session-inbox extension submits this exact continuation through immediate
-SDK delivery:
+Each run generates a fresh 128-bit nonce. The session-inbox extension submits
+the fixed continuation prefix plus that nonce through immediate SDK delivery:
 
 ```text
 Compaction done; resume, do not compact.
+
+SELF_COMPACT_CONTINUATION_TOKEN: <32 lowercase hexadecimal characters>
 ```
 
 The extension subscribes before requesting compaction and requires the matching
 successful `session.compaction_complete` event. A manual compaction can finish
 while the session is already idle, so the CLI does not guarantee a later
-`session.idle` transition. After a short state-settling interval, the extension
-uses immediate delivery and verifies the result. If the continuation still
-enters FIFO and cannot be promoted to steering, it removes the queued item and
-fails the run instead of leaving delayed work behind.
+`session.idle` transition. The extension sends immediately from the matching
+completion path. If the exact newly observed queue item cannot be promoted
+because no main turn is live, it permits natural idle delivery until the
+confirmation deadline. Success requires the nonce-bearing native delivery
+event and disappearance of that exact item. Queue-removal failure, a late
+event, an event while the item remains, or disappearance without an event is
+ambiguous. No-event failure is definitive only after result-checked removal
+and a final event rescan.
 
-The session-inbox receipt proves that the SDK accepted the message; it does not
-depend on the CLI's FIFO queue. The verifier then requires exactly one matching
-root `user.message` with native `idle` or `steering` delivery after the matching
-completion. Queued delivery is rejected. It never types or retries the
+The authoritative session-inbox receipt must report continuation acceptance
+with native `idle` or `steering` delivery. The verifier then requires exactly
+one corroborating nonce-bearing root `user.message` after the matching
+completion. Event logs cannot upgrade a failed, ambiguous, or version-skewed
+receipt. Queued delivery is rejected. The verifier never types or retries the
 continuation.
 
 ## Failure handling
