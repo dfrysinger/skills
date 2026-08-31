@@ -136,3 +136,12 @@ test("defaults to the Node submitter rather than a shell script", async () => {
   assert.doesNotMatch(detail, /submit-compact\.sh/);
   assert.doesNotMatch(detail, /EFTYPE/);
 });
+
+test("does not treat the embedded extension host as the Node child runtime", async () => {
+  const source = await readFile(sourceExtension, "utf8");
+  assert.match(
+    source,
+    /const nodeBin = process\.env\.SELF_COMPACT_NODE_BIN \?\? "node";/,
+  );
+  assert.doesNotMatch(source, /execFileAsync\(\s*process\.execPath,/);
+});
