@@ -1,20 +1,20 @@
 # Autopilot brief template
 
-Two artifacts: the **charter** you persist and re-feed on the `/every` reminder
-(the load-bearing one you arm yourself), and the **optional objective** you
-best-effort send through the session-inbox SDK extension or print as a fallback
-for `/autopilot`. Fill every `<SLOT>`; delete any clause that doesn't apply
-rather than leaving a placeholder.
+Two artifacts: the **charter** you persist and re-feed through the `/every`
+schedules you arm yourself, and the **optional objective** you best-effort send
+through the session-inbox SDK extension or print as a fallback for
+`/autopilot`. Fill every `<SLOT>`; delete any clause that doesn't apply rather
+than leaving a placeholder.
 
 ## Objective — OPTIONAL, persisted and handed to `/autopilot`
 
-`/autopilot` is not an agent tool. After arming the charter re-brief, invoke
-the objective file in the current session through the SDK handoff as the final
-tool action when targeting is safe. The handoff invokes the native autopilot
-command and reads its state back to prove the exact objective was established.
-Otherwise print its contents and explain that the user must paste it to
-establish native autopilot. The charter re-brief continues to restore working
-rules, but it does not replace the persistent objective.
+`/autopilot` is not an agent tool. After arming every applicable schedule,
+invoke the objective file in the current session through the SDK handoff as the
+final tool action when targeting is safe. The handoff invokes the native
+autopilot command and reads its state back to prove the exact objective was
+established. Otherwise print its contents and explain that the user must paste
+it to establish native autopilot. The charter re-brief continues to restore
+working rules, but it does not replace the persistent objective.
 
 Persist a complete work order, not a compressed slogan. Autopilot re-reads it
 on every continuation, so include enough context to resume correctly after
@@ -42,15 +42,15 @@ Objective slots:
   the whole plan.
 - **`<DOD_REF>`** — the exact, unique heading of the Definition of Done that
   covers this run's scope. It is the objective's sole completion authority, and
-  the charter and the reminder point at the same heading, so all three stop on
-  one condition that can't drift apart. Its items must be observable (tests
-  green, the E2E scenario passes, the feature works end to end) so
-  autopilot stops only when they genuinely hold.
+  the charter and every applicable reminder point at the same heading, so all
+  surfaces stop on one condition that can't drift apart. Its items must be
+  observable (tests green, the E2E scenario passes, the feature works end to
+  end) so autopilot stops only when they genuinely hold.
 - **`<OUTCOME>`** — the finished user-visible result.
 - **`<NON_GOALS>`** — explicit boundaries that prevent the run from expanding
   into adjacent cleanup or redesign.
 
-## Charter — persisted to a file, re-fed on the `/every` reminder
+## Charter — persisted to a file, re-fed on the `/every` schedules
 
 The standing operating rules. This is the *how*; the objective owns the *what*
 and the stop condition, so the charter closes by pointing back at `<DOD_REF>`.
@@ -96,21 +96,26 @@ process after compaction without copying each skill's rules.
 > me. For systemic or critical work, preserve the plan's decision hierarchy,
 > constraint provenance, revisit conditions, and any active reframe record in
 > the current baton; inherited mechanisms do not become requirements merely
-> because they survived compaction. Also preserve the last accepted
-> independent constraint-challenge record, its accumulated active minutes,
-> current active interval start or pause timestamp and reason, its next due
-> point, any event trigger, and every relevant user statement received since
-> the prior accepted challenge as an exact quote with enough surrounding
-> context to classify it. Never replace those words with an agent summary.
-> Reconcile the clock at task start, phase
-> boundaries, scheduled re-briefs, resumptions, and active/blocked transitions.
-> Run `/dfrysinger-skills:dual-review`'s challenge-only mode immediately
-> after a design, charter, Definition-of-Done, trust-boundary, constraint, or
-> scope-expansion change, before adding a new subsystem, service, protocol,
-> store, broker, compiler, fork, native binary, repository, language, or
-> platform lane, when adapters or proof machinery mainly preserve inherited
-> behavior, or when the clock reaches 480 active implementation minutes. If the
-> clock is absent or inconsistent after resumption, treat the challenge as due.
+> because they survived compaction. Also preserve the last completed
+> independent constraint-challenge record and its `gate_status`,
+> `blocked_scope`, and `permitted_scope`; separately preserve the
+> unattended-run-owned schedule registry. Record each schedule's kind,
+> identifier, interval, and status; for the eight-hour challenge schedule also
+> record its armed-at timestamp, replacement generation, and nullable
+> `reset_after_reviewed_at`. Preserve any event trigger and
+> every relevant user statement received since the prior completed challenge
+> in the durable decision record or baton quote ledger with a stable event ID,
+> exact quote, and enough surrounding context to classify it. Never replace
+> those words with an agent summary. Before advancing an action,
+> require a `CLEAR` gate or a `PARTIAL` gate that explicitly permits that exact
+> action and does not block it.
+> Run `/dfrysinger-skills:constraint-challenge` when `development-loop` reports
+> an event trigger or when the independent eight-hour schedule fires. After an
+> event-triggered challenge completes, set `reset_after_reviewed_at` to that
+> review's timestamp and use the registry reset transaction to replace the
+> eight-hour schedule once. A periodic challenge does not set that marker.
+> After any due challenge returns, compare its new gate with the exact next
+> action again and stop if it no longer permits that action.
 > `<COORDINATION>`.
 > `<GRANTS>`. Stay on this
 > course until the objective's
@@ -129,6 +134,26 @@ process after compaction without copying each skill's rules.
 >   complete baton and invoke and follow this skill as the final action. Do not
 >   compact merely because the hourly reminder fired or while active live proof
 >   is in progress.
+
+Add this machine-readable registry to the persisted charter. Use
+`PENDING_CREATION` until `manage_schedule` returns the real identifier, then
+replace the identifier and set `status: live` immediately. Omit
+`constraint_challenge` for bounded work.
+
+```yaml
+schedule_registry:
+  charter_rebrief:
+    id: PENDING_CREATION
+    interval: 1h
+    status: pending
+  constraint_challenge:
+    id: PENDING_CREATION
+    interval: 8h
+    status: pending
+    armed_at: PENDING_CREATION
+    generation: 0
+    reset_after_reviewed_at: null
+```
 
 Charter slots:
 
@@ -171,9 +196,12 @@ Charter slots:
 For a systemic or critical run, the filled charter additionally names where
 the governing plan records its constraint provenance and reframe gate, and the
 current baton states whether any revisit condition is open. It also records the
-last accepted independent constraint challenge, active implementation time
-since that review as accumulated minutes plus active/pause timestamps, its next
-due point, any event trigger, and relevant user statements since the prior
+last completed independent constraint challenge, its `gate_status`,
+`blocked_scope`, and `permitted_scope`. Separately, `unattended-run` owns and
+records a schedule registry containing each schedule's kind, identifier,
+interval, and status; the challenge entry also records its armed-at timestamp
+and replacement generation plus its nullable `reset_after_reviewed_at`. The
+baton preserves any event trigger and relevant user statements since the prior
 challenge as exact contextual quotes.
 
 ## Worked example
@@ -215,3 +243,18 @@ challenge as exact contextual quotes.
 > - **Governing:** `/dfrysinger-skills:development-loop`
 > - **Execution:** `None`
 > - **Context:** `/dfrysinger-skills:self-compact`
+
+```yaml
+schedule_registry:
+  charter_rebrief:
+    id: schedule-101
+    interval: 1h
+    status: live
+  constraint_challenge:
+    id: schedule-102
+    interval: 8h
+    status: live
+    armed_at: 2026-08-31T06:00:00Z
+    generation: 0
+    reset_after_reviewed_at: null
+```

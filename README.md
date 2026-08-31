@@ -88,6 +88,7 @@ entries older than 14 days are removed when a logger starts.
 | --- | --- |
 | Explore how a project should solve a problem | [`scout`](./skills/scout/SKILL.md) |
 | Design a systemic or high-risk change | [`design-doc`](./skills/design-doc/SKILL.md) |
+| Challenge whether a design's premises still justify its scope | [`constraint-challenge`](./skills/constraint-challenge/SKILL.md) |
 | Build, fix, and ship a change | [`development-loop`](./skills/development-loop/SKILL.md) |
 | Review a change with two independent model families | [`dual-review`](./skills/dual-review/SKILL.md) |
 | Prove a user-visible change works in the real product | [`visual-proof`](./skills/visual-proof/SKILL.md) |
@@ -101,13 +102,14 @@ entries older than 14 days are removed when a logger starts.
 The default path is:
 
 1. [`scout`](./skills/scout/SKILL.md) finds what already exists and recommends whether to reuse, extend, or create.
-2. [`design-doc`](./skills/design-doc/SKILL.md) defines the durable work order when the change affects shared state, public contracts, architecture, security, or another broad boundary.
-3. [`prototype`](./skills/prototype/SKILL.md) sketches major UI changes in disposable HTML before implementation.
-4. [`development-loop`](./skills/development-loop/SKILL.md) owns implementation, targeted checks, live proof, review, and landing.
-5. [`guardrails`](./skills/guardrails/SKILL.md) turns important architecture rules into deterministic checks.
-6. [`visual-proof`](./skills/visual-proof/SKILL.md) captures precise still-image evidence for behavior that must be seen.
-7. [`walkthrough-video`](./skills/walkthrough-video/SKILL.md) records and attaches the real journey for pull requests that add new UX.
-8. [`dual-review`](./skills/dual-review/SKILL.md) uses independent model families to find and verify material defects.
+2. [`grill-me`](./skills/grill-me/SKILL.md) resolves the user need, scope, and decisions before a systemic or critical design is fixed.
+3. [`design-doc`](./skills/design-doc/SKILL.md) defines the durable work order and runs [`constraint-challenge`](./skills/constraint-challenge/SKILL.md) before and after selecting its architecture.
+4. [`prototype`](./skills/prototype/SKILL.md) sketches major UI changes in disposable HTML before implementation.
+5. [`development-loop`](./skills/development-loop/SKILL.md) owns implementation, targeted checks, live proof, review, and landing.
+6. [`guardrails`](./skills/guardrails/SKILL.md) turns important architecture rules into deterministic checks.
+7. [`visual-proof`](./skills/visual-proof/SKILL.md) captures precise still-image evidence for behavior that must be seen.
+8. [`walkthrough-video`](./skills/walkthrough-video/SKILL.md) records and attaches the real journey for pull requests that add new UX.
+9. [`dual-review`](./skills/dual-review/SKILL.md) uses independent model families to find and verify material defects.
 
 The process scales with risk. A bounded fix should stay bounded. A systemic change earns a design, deterministic architecture checks, and stronger live proof.
 
@@ -128,6 +130,7 @@ The process scales with risk. A bounded fix should stay bounded. A systemic chan
 
 ### Review and independent judgment
 
+- **[`constraint-challenge`](./skills/constraint-challenge/SKILL.md):** Independently challenge the load-bearing product, architecture, and security premises of systemic or critical work before design review and as implementation evolves.
 - **[`dual-review`](./skills/dual-review/SKILL.md):** Run independent reviews with current Claude and GPT model families, verify disputed findings, and block only on material defects introduced by the change.
 - **[`rubber-duck`](./skills/rubber-duck/SKILL.md):** Ask a different model family for one bounded, read-only second opinion. Copilot CLI uses its built-in rubber-duck agent, so this plugin copy is exposed only on hosts that need it.
 
@@ -175,7 +178,8 @@ Two companion tools complete the workflow without pretending to be skills:
 - **[`skill-create`](./skills/skill-create/SKILL.md):** Create and validate a reusable skill without requiring the full Dreaming lifecycle.
 - **[`writing-great-skills`](./skills/writing-great-skills/SKILL.md):** Structure skills so agents invoke them predictably and can follow them without excess context.
 
-These two skills are user-invoked and carry no automatic model-facing trigger: `grill-me` and `writing-great-skills`.
+`writing-great-skills` is user-invoked and carries no automatic model-facing
+trigger.
 
 ### macOS utilities
 
@@ -184,7 +188,7 @@ These two skills are user-invoked and carry no automatic model-facing trigger: `
 
 ### Focused utilities
 
-- **[`grill-me`](./skills/grill-me/SKILL.md):** Interview the user through every unresolved branch of a plan or design.
+- **[`grill-me`](./skills/grill-me/SKILL.md):** Interview the user through every unresolved branch of a plan or design; `design-doc` invokes it before fixing scope.
 
 ## Why these skills exist
 
