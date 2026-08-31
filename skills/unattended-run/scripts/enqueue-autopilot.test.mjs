@@ -70,7 +70,6 @@ const receipt = failed
       dedupeKey,
       status: "failed",
       sessionId,
-      ...(targetFlag === "--target-tmux" ? { tmuxSession: target } : {}),
       generation,
       error: "recipient rejected request",
     }
@@ -79,7 +78,6 @@ const receipt = failed
       dedupeKey,
       status: "completed",
       sessionId,
-      ...(targetFlag === "--target-tmux" ? { tmuxSession: target } : {}),
       generation,
       result,
     };
@@ -382,7 +380,7 @@ test("enforces timeout bounds and forwards accepted values", async (t) => {
   }
 });
 
-test("passes exact request arguments without agent mode or duplicate receipt ownership", async () => {
+test("confirms a tmux request from the resolved session receipt", async () => {
   const harness = await createCase({
     targetFlag: "--target-tmux",
     target: "whisky",
@@ -406,6 +404,9 @@ test("passes exact request arguments without agent mode or duplicate receipt own
       /session-inbox.*completed.*request-1\.json/u,
     );
     assert.equal(audit.authoritativeReceipt.dedupeKeyMatches, true);
+    assert.equal(audit.target.requestedType, "tmux");
+    assert.equal(audit.target.requested, "whisky");
+    assert.equal(audit.target.sessionId, "resolved-session");
   } finally {
     await rm(harness.root, { recursive: true, force: true });
   }

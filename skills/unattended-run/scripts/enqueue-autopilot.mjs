@@ -305,15 +305,13 @@ async function main() {
 
     const receipt = authoritative.receipt;
     const result = receipt?.result;
-    const targetMatches =
-      targetFlag === "--target-session"
-        ? receipt?.sessionId === target
-        : receipt?.tmuxSession === target;
+    const requestedSessionMatches =
+      targetFlag !== "--target-session" || receipt?.sessionId === target;
     const correlationConfirmed =
       nonEmptyString(receipt?.id) &&
       nonEmptyString(receipt?.sessionId) &&
       nonEmptyString(receipt?.generation) &&
-      targetMatches &&
+      requestedSessionMatches &&
       receipt?.dedupeKey ===
         expectedDedupeKey(receipt.sessionId, objectiveDigest) &&
       result?.objectiveId !== undefined &&
