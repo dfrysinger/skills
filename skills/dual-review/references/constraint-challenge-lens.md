@@ -19,16 +19,22 @@ two-family diff review. Launch one fresh read-only agent, keep it for both
 passes below, persist its record in the work order or baton, and return to the
 governing workflow with the verdict.
 
-Give it:
+For pass 1, give it:
 
-- the current work-order revision and Definition of Done;
+- the current work-order revision identifier, without the work order body;
+- an architecture-neutral extraction of product outcomes, observable
+  acceptance criteria, non-negotiable product boundaries, and rollback;
 - direct user decisions as exact quotes, their available context, and the
-  supported user journey;
+  supported user journey; and
 - relevant external policy, platform, compatibility, and observed-failure
-  evidence;
-- the prior challenge record, if one exists; and
-- for pass 2 only, the proposed architecture plus material tasks, components,
-  tests, and proof added since the prior accepted record.
+  evidence.
+
+For pass 2, add:
+
+- the full current work order and Definition of Done;
+- the proposed architecture plus material tasks, components, tests, and proof
+  added since the prior accepted record; and
+- the prior challenge record, if one exists.
 
 A record is current only when it names the exact work-order revision and work
 graph it reviewed, no mandatory event trigger occurred afterward, and its
@@ -36,11 +42,14 @@ durable active-time clock is below 480 minutes. Reuse one current accepted
 record when normal design review starts; do not run the challenger twice for
 the same revision and work graph.
 
-The whole challenge has a budget of 20 tool calls or 20 minutes. Inspect the
-three highest-leverage assumptions and material mechanisms added since the
-prior accepted record. If that slice cannot establish a verdict, return
-`UNKNOWN` with the smallest missing evidence; do not expand into a full code or
-repository audit.
+An accepted record has verdict `CONTINUE`. A blocking verdict becomes eligible
+for acceptance only after its required action changes the work order and a new
+challenge on that revision returns `CONTINUE`.
+
+The whole challenge has a 20-minute budget. Inspect the three highest-leverage
+assumptions and material mechanisms added since the prior accepted record. If
+that slice cannot establish a verdict, return `UNKNOWN` with the smallest
+missing evidence; do not expand into a full code or repository audit.
 
 ## Two-pass method
 
@@ -49,6 +58,26 @@ repository audit.
 Give the challenger the supported user journey, direct user decisions, external
 policy, platform facts, compatibility promises, and observed failures, but
 withhold the proposed component graph and implementation plan.
+
+When an accepted design document is the product source of truth, extract its
+objective, supported caller, observable outcomes, non-negotiable product
+boundaries, and rollback promise. Keep architecture-shaped non-goals,
+component names, protocol choices, and implementation-specific proof plans out
+of pass 1. A source does not become architecture-neutral merely because it is
+accepted.
+
+The challenger owns the last-mile quarantine. Scan every pass-1 input,
+including exact user quotes, for named components, protocols, services,
+stores, compilers, brokers, execution paths, and implementation-specific
+proof, plus any other mechanism or constraint that presupposes a design.
+Group repetition, then record every distinct material premise and its
+disposition in `pass1_architecture_exposure`. Exclude it from the job and
+minimum design until independent evidence traces it to a product outcome or
+security boundary. It may remain an alternative in the simplest-path
+comparison after evidence establishes that the path exists and supports the
+same outcome; that does not make it a requirement. An exact user quote may
+make a mechanism an important tactical decision; it does not turn the
+mechanism into a top-level need.
 
 Never give the reviewer an agent's paraphrase in place of the user's words.
 Quote the relevant user statement exactly and identify enough surrounding
@@ -116,15 +145,94 @@ For each claimed security rule, independently trace:
 - a narrower control that stops the same threat, when one exists; and
 - the measurable residual risk after narrowing.
 
+Treat this as a **trust-domain map**, not a list of reusable controls. Whenever
+a proposal, inherited rule, or simpler path carries a control across callers,
+actors, or operations, run a fresh **trust transfer test**. Record the original
+actor, operation, reachable threat, authority owner, enforcement point, and
+control; the candidate actor and operation; whether the same threat remains
+reachable; and whether the control should be retained, narrowed, or removed.
+Similar side effects do not make trust domains equivalent. Do not inherit a
+restriction from an untrusted actor into a trusted actor's operation whose
+authority is independently established merely because both can eventually
+affect the same asset.
+
 An author's label such as `product decision`, `security requirement`, or
 `existing architecture` is a claim, not proof. Historical implementation is
 provenance, not authority. A tactical user approval is also not proof of a
-top-level need. A control cannot expand from one actor to another merely
-because both actors produce the same side effect.
+top-level need.
 
 From that evidence, derive the smallest design that satisfies the verified user
-journey and security boundary. Mark unsupported or conflicting claims
-`UNKNOWN`; do not silently convert them into requirements.
+journey and security boundary. Name the simplest existing supported path found
+anywhere in the bounded evidence, not merely the path closest to the current
+proposal. Compare each evidenced path that could satisfy the same verified
+user outcome and non-negotiable boundaries using the scope-multiplication
+factors below. Choose the smallest or state the concrete incompatibility that
+rules it out. If the bounded packet cannot establish the relevant path set,
+mark it `UNKNOWN`; do not expand the audit or silently convert unsupported
+claims into requirements.
+
+Keep **properties** separate from **mechanisms**. Durability, atomicity,
+isolation, reviewability, and bounded authority may be required properties;
+the current service, protocol, store, compiler, broker, or runtime is only one
+candidate mechanism. A mechanism is supported only when external compatibility
+or policy requires that mechanism, or concrete evidence rules out simpler
+existing primitives that provide the same properties. An accepted design or
+working implementation proves availability, not necessity.
+
+Inventory platform and product primitives already present in the evidence,
+then compose the smallest path that satisfies the required properties. Do not
+limit the comparison to complete end-to-end paths already assembled by the
+proposal. For each composition edge, cite an existing supported interface and
+trace authority, data flow, lifecycle, and failure semantics across it. If the
+packet cannot prove that the primitives compose without a new boundary or
+weakened control, mark the path `UNKNOWN`. If the bounded packet cannot
+establish the relevant simpler-primitive set, mark the incumbent mechanism
+`UNKNOWN`, not unsupported. A non-security `UNKNOWN` alone does not justify
+removing or reframing a working incumbent; it does block new machinery whose
+necessity depends on that unknown.
+
+Run a **native primitive mirror check** for every proposed custom API, service,
+store, broker, or protocol under the selected scope nodes. Defer other material
+custom boundaries through `deferred_scope_nodes`. List the operations and
+semantics each selected boundary exposes, find any existing platform or product
+primitive in the evidence that provides the same abstraction, and identify the
+verified property the custom boundary adds. Split a heterogeneous boundary
+into independently authorized operation families or responsibilities before
+comparing it; one valid responsibility cannot justify unrelated operations
+that happen to share its process or service. Account for every operation
+family in `native_primitive_mirror`.
+
+When recommending that an operation family leave a shared boundary, run a
+trust transfer test for its post-split authority. The replacement must preserve
+or narrow credential and capability distribution; a simpler component graph
+does not justify granting authority to more callers.
+If no additional property is established, a proposed but unbuilt custom
+boundary is not the minimum design. For a working incumbent, or when comparison
+or property evidence is incomplete, mark the mechanism `UNKNOWN` under the
+incumbent rule above rather than inferring removal.
+
+When concurrency, fencing, locking, coordination, or multi-writer machinery is
+claimed, name the actual actors or executions, the reachable overlap, and the
+failure caused by their interleaving. Retries, resumed or restarted attempts,
+at-least-once delivery, and stale in-flight predecessors are candidate actors,
+not proof of overlap. Cite scheduler and lifecycle evidence that two executions
+can remain active against the same state. A removal counterfactual must state
+the outcome under every evidenced duplicate-execution condition. Platform-
+serialized execution does not justify multi-writer machinery. Cancellation
+rules out overlap only when evidence shows termination is synchronous and
+effective before another writer starts. A transactional stale-completion
+boundary may protect one named effect while overlap remains reachable; record
+that narrower protection in `transactional_effects` for selected scope nodes
+and make the removal counterfactual cover every other read, write, external
+call, and duplicate side effect under those nodes. Defer other material
+transactional boundaries through `deferred_scope_nodes`. Hypothetical future
+callers do not justify present concurrency machinery.
+
+Use `writer_lifecycle` as the single record of each logical writer or execution:
+how it is created, when it can remain active, how retry or resume starts, and
+how termination, cancellation, or lease expiry ends its authority. Cite the
+evidence that permits or excludes overlap. Entries in `concurrency_actors`
+reference these lifecycle records rather than restating them.
 
 ### 2. Compare the minimum design with the actual work
 
@@ -133,13 +241,48 @@ recent task assignments and handoffs, changed repositories and files, new
 tests and proof obligations, and material implementation added since the prior
 challenge.
 
-Trace in both directions:
+First build a **scope tree** from user outcome to architectural path to
+subsystem to leaf mechanism. For each material node record its parent,
+dependent machinery, claimed authority or evidence, provisional support
+status, and the scope retired if the node is removed. Apply the
+scope-multiplication factors below plus provenance weakness to rank the
+provisional nodes. Select the three highest-leverage nodes for tracing; those
+become the provisional top load-bearing assumptions. Record every other
+material node in `deferred_scope_nodes` with its rank and deferral reason;
+record missing evidence only when evidence is the reason.
+
+Then trace in both directions:
 
 - **Forward:** for each of the three highest-leverage assumptions, identify the
   components, implementation, tests, proof, and operations it creates.
-- **Reverse:** for every material component or work item added since the prior
-  accepted record, identify the verified user need, threat, external
-  obligation, or current compatibility promise that requires it.
+- **Reverse:** for every material component or work item under the three
+  selected nodes, identify the verified user need, threat, external obligation,
+  or current compatibility promise that requires it.
+
+Use those traces to confirm, clear, or overturn each provisional status. When
+a trace exposes a higher unsupported parent, replace the lower node and rerank
+within the three-node set; do not expand into a full-tree trace.
+
+Do not mark an architecture node supported merely because it currently
+implements a required property. Record the property separately, then either
+prove that the mechanism itself is required or mark the node `UNKNOWN` while
+testing simpler primitives.
+
+Use **layer peeling** when a leaf mechanism fails its trace. Continue upward
+through the service, protocol, store, compiler, broker, or other enclosing
+architecture that made the leaf appear necessary. The trace ends only at a
+verified user outcome, threat, external obligation, current compatibility
+promise, or a finding that the enclosing architecture is unsupported. Replacing
+one leaf while preserving an unsupported parent is not a minimum-design result.
+
+Run a **counterfactual** for each top-ranked assumption. State the assumption
+being removed now, enumerate the dependent machinery that disappears with it,
+name the simplest evidenced supported path after removal, and decide whether
+that path reaches the user outcome. If the proposal remains necessary, name
+the specific evidence-backed incompatibility that defeats the simpler path. A
+future contingency such as "if validation fails, stop" is a fallback plan, not
+a counterfactual. If the packet cannot establish either result, return
+`UNKNOWN` rather than inheriting the proposal.
 
 Reverse-trace work even when no design sentence names its premise. Repeated
 implementation behavior, acceptance machinery, adapters, fixtures, and proof
@@ -160,9 +303,8 @@ Rank assumptions by how much they multiply:
 
 Increase priority when provenance is weak or the assumption is several
 reasoning steps removed from the user-visible outcome. Investigate only the
-three highest-leverage assumptions unless one of them exposes another
-load-bearing dependency. This prioritization is mandatory: the pass must not
-become a broad audit of every default or numeric value.
+three assumptions selected and reranked through the scope tree so the pass
+does not become a broad audit of every default or numeric value.
 
 ## Mandatory triggers
 
@@ -197,16 +339,31 @@ reviewed_at:
 work_order_revision:
 work_graph_cutoff:
 evidence_sources:
+pass1_architecture_exposure:
 direct_user_quotes:
 user_statement_classification:
 job_to_be_done:
 inferred_product_judgment:
 top_level_goal_conflicts:
 verified_user_outcome:
+required_properties:
 minimum_design:
+simplest_existing_path:
+primitive_inventory:
+native_primitive_mirror:
+composition_edges:
+concurrency_actors:
+writer_lifecycle:
+transactional_effects:
+scope_tree:
 top_load_bearing_assumptions:
+deferred_scope_nodes:
+counterfactuals:
 untraced_work:
+enclosing_architecture_trace:
 security_boundary:
+trust_domain_map:
+trust_transfer_tests:
 scope_avoided_or_added:
 verdict: CONTINUE | NARROW | REFRAME | ESCALATE | UNKNOWN
 active_time:
@@ -243,8 +400,41 @@ Verdicts mean:
   product or implementation premise as nonbinding. For a security boundary,
   fail closed and obtain evidence before continuing.
 
-The challenger is complete when every top-ranked assumption has an independent
-trace, every material new mechanism in the bounded slice has a reverse trace,
-the minimum-design comparison is explicit, and one verdict is persisted.
-`NARROW`, `REFRAME`,
-`ESCALATE`, and security-relevant `UNKNOWN` block implementation.
+The challenger is complete only when every distinct material
+architecture-shaped premise in pass 1 has a recorded disposition and
+independent trace or exclusion, or the record states that none was visible;
+each required property is separated from its candidate mechanism; the
+primitive inventory covers the bounded evidence or records `UNKNOWN`; every
+custom boundary under the selected nodes has a native-primitive mirror
+comparison or records `UNKNOWN`;
+every independently authorized operation family under each selected custom
+boundary is accounted for in that comparison; every family recommended out of
+a shared boundary has a trust transfer test proving that credential and
+capability distribution is preserved or narrowed;
+every selected composition edge has an interface, authority, data-flow,
+lifecycle, and failure-semantics trace; every retained concurrency control
+names the actual overlapping actors or executions, references complete
+`writer_lifecycle` evidence that permits overlap, and records the
+duplicate-execution outcome; when scheduler or lifecycle evidence is
+unavailable, `writer_lifecycle` records `UNKNOWN` and any existing integrity
+control remains in place pending evidence; every transactional
+stale-completion boundary under the selected nodes records its protected effect
+in `transactional_effects`, and the corresponding removal counterfactual covers
+all unprotected reads, writes, external calls, and duplicate side effects
+under those nodes;
+the scope tree produces the three top-ranked assumptions; every top-ranked
+assumption has an independent trace and a removal counterfactual rather than a
+failure contingency; every material new mechanism in the bounded slice and
+the enclosing architecture reached by a failed trace have a reverse trace;
+every material scope node outside the three-node slice is recorded as deferred
+with its rank and deferral reason;
+the bounded packet's equivalent path set is considered and the simplest is
+either selected or rejected by concrete evidence, or the record returns
+`UNKNOWN` because that set cannot be established within budget; every security
+control is scoped to its trust domain and every cross-actor or cross-operation
+transfer has a recorded trust transfer test; the minimum-design comparison is
+explicit; and one verdict is persisted.
+`NARROW`, `REFRAME`, `ESCALATE`, and security-relevant `UNKNOWN` block
+implementation. A non-security `UNKNOWN` blocks only new machinery whose
+necessity depends on that unknown; unrelated work and a working incumbent may
+continue.

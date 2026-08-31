@@ -2,7 +2,7 @@
 
 Use this lens only when the review subject is a design document or work order.
 It supplements the normal evidence, causality, reachability, and round rules.
-The independent constraint challenge in
+For a systemic or critical design, the independent constraint challenge in
 [`constraint-challenge-lens.md`](./constraint-challenge-lens.md) runs first;
 this lens then checks whether the resulting minimum-design comparison and
 verdict are reflected honestly in the work order.
@@ -44,12 +44,15 @@ Reviewers answer:
 9. Are the three most load-bearing assumptions ranked by scope and risk
    leverage, and does each have independent evidence rather than an author
    label?
-10. Did the challenger reverse-trace substantial components, tests, and proof
-   obligations to a verified need, including effective rules that never
-   appeared as a design sentence?
-11. Are constraint revisit conditions and the reframe gate strong enough to
+10. Did the challenger reverse-trace each substantial component and its
+   enclosing architecture to a verified need, rather than stopping at the
+   newest mechanism?
+11. Did the challenger map each security control to the actor, asset,
+   operation, and threat that justify it before reusing the control in another
+   trust domain?
+12. Are constraint revisit conditions and the reframe gate strong enough to
    stop implementation when the design's assumptions cease to hold?
-12. Could an implementer who never saw the conversation identify the current
+13. Could an implementer who never saw the conversation identify the current
    integration points and distinguish binding decisions from historical
    context?
 
@@ -71,11 +74,21 @@ completion path and proves one of:
   top-level requirement, or silently resolves contradictory top-level goals;
 - substantial implementation or proof machinery has no reverse trace to a
   verified need, threat, obligation, or current compatibility promise;
+- the challenger removed or questioned a leaf mechanism while leaving its
+  unsupported enclosing architecture untouched;
+- a security control justified for one actor or trust domain is imposed on a
+  different actor without proving the same threat and authority boundary;
 - the work order cannot be executed without missing conversation context.
 
 Optional simplification, aesthetic preference, and alternative architecture are
 not findings when the proposed design already satisfies the objective with
 justified constraints.
+
+For a missing challenge record, cite its required location and quote the
+governing completion criterion from `constraint-challenge-lens.md`. For a weak
+record, cite the record itself. Classify either as `contract-regression`; the
+normal subject-quote requirement does not apply when the required artifact is
+absent.
 
 ## Round discipline
 
