@@ -3,7 +3,7 @@
 Use this lens only when the review subject is a design document or work order.
 It supplements the normal evidence, causality, reachability, and round rules.
 For a systemic or critical design, the independent constraint challenge in
-[`constraint-challenge-lens.md`](./constraint-challenge-lens.md) runs first;
+[`constraint-challenge`](../../constraint-challenge/SKILL.md) runs first;
 this lens then checks whether the resulting minimum-design comparison and
 verdict are reflected honestly in the work order.
 
@@ -22,7 +22,8 @@ Reviewers answer:
 
 1. For a systemic or critical design, did a fresh-context challenger
    independently trace the product goal and security rules, derive a minimum
-   design before seeing this architecture, and persist an accepted verdict?
+   design before seeing this architecture, and persist a current record whose
+   gate permits this review?
    Did it receive exact user quotes, distinguish top-level direction from
    tactical approval, define the end user's job to be done, and surface any
    contradictory top-level goals rather than choosing one silently?
@@ -85,10 +86,9 @@ not findings when the proposed design already satisfies the objective with
 justified constraints.
 
 For a missing challenge record, cite its required location and quote the
-governing completion criterion from `constraint-challenge-lens.md`. For a weak
-record, cite the record itself. Classify either as `contract-regression`; the
-normal subject-quote requirement does not apply when the required artifact is
-absent.
+governing completion criterion from `constraint-challenge`. For a weak record,
+cite the record itself. Classify either as `contract-regression`; the normal
+subject-quote requirement does not apply when the required artifact is absent.
 
 ## Round discipline
 

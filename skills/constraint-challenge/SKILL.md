@@ -1,4 +1,9 @@
-# Independent constraint challenge
+---
+name: constraint-challenge
+description: Challenge the load-bearing assumptions in systemic or critical work before implementation and while it evolves. Use when that work changes its design, charter, Definition of Done, trust boundary, constraint, or scope; before it adds a subsystem, service, protocol, store, broker, compiler, fork, repository, language, or platform lane; when its adapters preserve inherited behavior, proof machinery grows, or failures move between internal boundaries without user-visible progress; when completed work is used to preserve its architecture; or when the governing run lifecycle reports that its scheduled challenge is due.
+---
+
+# constraint-challenge
 
 Use this pass for every systemic or critical design before normal design review,
 and during implementation when one of the triggers below fires. It is a
@@ -6,22 +11,31 @@ focused challenge to the plan's premises, not a third full code reviewer.
 
 The challenger must run in a fresh, read-only context that did not author the
 plan. It distrusts both the proposed architecture and the rationale supplied by
-the author. It may read source, history, policy, platform documentation,
-accepted user decisions, task records, tests, and recent implementation
-evidence. It must not build, test, mutate, or propose a generalized replacement
-whose callers do not exist.
+the author. Pass 1 may read only its closed evidence packet. Pass 2 may also
+read source, history, policy, platform documentation, accepted user decisions,
+task records, tests, and recent implementation evidence. It must not build,
+test, mutate, or propose a generalized replacement whose callers do not exist.
 
-## Challenge-only invocation
+## Invocation
 
-This reference is an independently invokable mode of `dual-review`. A trigger
-during implementation runs this mode only; it does not start the normal
-two-family diff review. Launch one fresh read-only agent, keep it for both
-passes below, persist its record in the work order or baton, and return to the
+This skill is independent from implementation and diff review. A trigger runs
+only this challenge; it does not start `dual-review`'s normal two-family review.
+Prefer one fresh read-only agent for both passes below. When that agent is no
+longer available after document authoring, compaction, or a later trigger,
+launch a fresh read-only agent and give it the sealed pass-1 record to reconcile
+before pass 2. Persist the record in the work order or baton and return to the
 governing workflow with the verdict.
+
+Each invocation normally runs both passes back to back: first expose only the
+sealed evidence packet, persist pass 1, then reveal the proposal and current
+work graph for pass 2. The trigger decides when the complete challenge runs;
+quarantine is an input boundary, not a requirement to pause authoring between
+passes. Reuse a pass-1 record only when its evidence-packet revision is still
+exactly current.
 
 For pass 1, give it:
 
-- the current work-order revision identifier, without the work order body;
+- the pre-proposal evidence-packet revision identifier;
 - an architecture-neutral extraction of product outcomes, observable
   acceptance criteria, non-negotiable product boundaries, and rollback;
 - direct user decisions as exact quotes, their available context, and the
@@ -33,21 +47,31 @@ For pass 2, add:
 
 - the full current work order and Definition of Done;
 - the proposed architecture plus material tasks, components, tests, and proof
-  added since the prior accepted record; and
+  added since the prior completed record; and
 - the prior challenge record, if one exists.
 
-A record is current only when it names the exact work-order revision and work
-graph it reviewed, no mandatory event trigger occurred afterward, and its
-durable active-time clock is below 480 minutes. Reuse one current accepted
-record when normal design review starts; do not run the challenger twice for
-the same revision and work graph.
+A pass-1 record is current only for the exact evidence-packet revision it
+reviewed. A final record is current only when it also names the exact work-order
+revision and work graph it reviewed and no mandatory event trigger or
+caller-owned scheduled trigger occurred afterward. Reuse one current record
+when its gate permits the exact pending action; do not run the challenger twice
+for the same revisions, work graph, and action.
 
-An accepted record has verdict `CONTINUE`. A blocking verdict becomes eligible
-for acceptance only after its required action changes the work order and a new
-challenge on that revision returns `CONTINUE`.
+Derive `gate_status` from the verdict:
+
+- `CONTINUE` is `CLEAR`.
+- `NARROW`, `REFRAME`, `ESCALATE`, and security-relevant `UNKNOWN` are
+  `BLOCKED`.
+- A non-security `UNKNOWN` is `PARTIAL`. It must name `blocked_scope` and
+  `permitted_scope`, and permits an action only when that action is wholly
+  inside the permitted scope and outside the blocked scope.
+
+A `BLOCKED` or `PARTIAL` record gains no broader permission until its required
+action or missing evidence changes the work order or evidence packet and a new
+challenge clears that scope.
 
 The whole challenge has a 20-minute budget. Inspect the three highest-leverage
-assumptions and material mechanisms added since the prior accepted record. If
+assumptions and material mechanisms added since the prior completed record. If
 that slice cannot establish a verdict, return `UNKNOWN` with the smallest
 missing evidence; do not expand into a full code or repository audit.
 
@@ -84,6 +108,23 @@ Quote the relevant user statement exactly and identify enough surrounding
 context to distinguish a durable direction from a quick approval. If the
 original words are unavailable, label the decision `UNVERIFIED PARAPHRASE` and
 do not treat it as binding.
+
+Every `direct_user_quotes` entry must be an object containing `quote`,
+`source`, `event_id`, and `exact_match: true`. `source` is a supplied durable
+decision record or baton quote ledger, `event_id` identifies one record in it,
+and `quote` reproduces that record's complete value byte for byte. Never
+reconstruct, improve, combine, or invent a quote from text outside that record.
+Copy the quote and identifier together from the source record rather than
+retyping either field.
+Put interpretations only in
+`inferred_product_judgment`. If an exact source match cannot be found, omit the
+entry from
+`direct_user_quotes` and record the missing authority as `UNVERIFIED
+PARAPHRASE`. Include only direct quotations that the challenge actually uses
+as authority; identify incidental,
+superseded, or formatting-damaged decisions by source record rather than
+copying them into this field. A statement in a genuine top-level conflict is
+not superseded by convenience or recency; quote every side of the conflict.
 
 Classify each user statement by authority:
 
@@ -161,6 +202,19 @@ An author's label such as `product decision`, `security requirement`, or
 provenance, not authority. A tactical user approval is also not proof of a
 top-level need.
 
+Call a verified user need, reachable risk, external obligation, measured
+demand, or current compatibility promise an **authority anchor**.
+
+Separate an inherited constraint's observed existence from its authority to
+shape future design. Evidence that a rule, limit, default, or mechanism is
+currently enforced proves the present state only. Its necessity is a separate
+claim that requires a trace to an authority anchor. When the bounded evidence
+is complete enough to show that no such trace exists, mark the necessity claim
+`FAILED`. Use `UNKNOWN` only when a specific unavailable piece of evidence
+could decide the claim. Preserving an incumbent temporarily while evidence is
+missing is an operational precaution, not authority to add work that
+accommodates it.
+
 From that evidence, derive the smallest design that satisfies the verified user
 journey and security boundary. Name the simplest existing supported path found
 anywhere in the bounded evidence, not merely the path closest to the current
@@ -180,16 +234,18 @@ existing primitives that provide the same properties. An accepted design or
 working implementation proves availability, not necessity.
 
 Inventory platform and product primitives already present in the evidence,
-then compose the smallest path that satisfies the required properties. Do not
-limit the comparison to complete end-to-end paths already assembled by the
-proposal. For each composition edge, cite an existing supported interface and
-trace authority, data flow, lifecycle, and failure semantics across it. If the
-packet cannot prove that the primitives compose without a new boundary or
-weakened control, mark the path `UNKNOWN`. If the bounded packet cannot
-establish the relevant simpler-primitive set, mark the incumbent mechanism
-`UNKNOWN`, not unsupported. A non-security `UNKNOWN` alone does not justify
-removing or reframing a working incumbent; it does block new machinery whose
-necessity depends on that unknown.
+then compose the smallest path that satisfies the required properties. Search
+by required property across every layer already available to the caller and
+runtime. Do not restrict the search to the proposal's namespace, abstraction
+level, or already assembled end-to-end paths. For each composition edge, cite
+an existing supported interface and trace authority, data flow, lifecycle, and
+failure semantics across it. If the packet cannot prove that the primitives
+compose without a new boundary or weakened control, mark the path `UNKNOWN`.
+If the bounded packet cannot establish the relevant simpler-primitive set,
+set the incumbent mechanism's `necessity_status` to `UNKNOWN`, not `FAILED`. A
+non-security unknown necessity alone does not justify removing or reframing a
+working incumbent; it does block new machinery whose necessity depends on
+that unknown.
 
 Run a **native primitive mirror check** for every proposed custom API, service,
 store, broker, or protocol under the selected scope nodes. Defer other material
@@ -207,9 +263,20 @@ trust transfer test for its post-split authority. The replacement must preserve
 or narrow credential and capability distribution; a simpler component graph
 does not justify granting authority to more callers.
 If no additional property is established, a proposed but unbuilt custom
-boundary is not the minimum design. For a working incumbent, or when comparison
-or property evidence is incomplete, mark the mechanism `UNKNOWN` under the
-incumbent rule above rather than inferring removal.
+boundary is not the minimum design. A proposed or expanded mechanism bears the
+burden of proof: existing dependencies establish that it can be built, not
+that it is needed. Mark its necessity `FAILED` when no independent required
+property supports it, and do not use an `UNKNOWN` inherited constraint as
+authority for adding it. For a working incumbent whose comparison or property
+evidence is genuinely unavailable, keep its `transition_disposition` as
+`HOLD_PENDING_EVIDENCE`
+rather than inferring safe removal. A node whose `necessity_status` is
+`FAILED` cannot authorize a new or expanded mechanism regardless of its
+transition disposition. For a control on a security, integrity, or trust
+boundary, use `FAILED` only when the trust-domain map shows that the protected
+risk is unreachable or that another supported control preserves the required
+property through the transition; otherwise use `UNKNOWN` and leave the control
+in place.
 
 When concurrency, fencing, locking, coordination, or multi-writer machinery is
 claimed, name the actual actors or executions, the reachable overlap, and the
@@ -243,37 +310,73 @@ challenge.
 
 First build a **scope tree** from user outcome to architectural path to
 subsystem to leaf mechanism. For each material node record its parent,
-dependent machinery, claimed authority or evidence, provisional support
-status, and the scope retired if the node is removed. Apply the
+`node_kind` (`outcome`, `architecture_path`, `subsystem`, `leaf_mechanism`, or
+`parameter`), dependent machinery, claimed authority or evidence,
+`existence_status` (`PRESENT`, `PROPOSED`, `ABSENT`, or `UNKNOWN`),
+`necessity_status` (`SUPPORTED`, `FAILED`, or `UNKNOWN`),
+`transition_disposition` (`RETAIN`, `RETIRE`, `HOLD_PENDING_EVIDENCE`, or
+`EXCLUDE_FROM_TARGET`), and the scope removed from the target design if the
+node is excluded. Apply the
 scope-multiplication factors below plus provenance weakness to rank the
 provisional nodes. Select the three highest-leverage nodes for tracing; those
 become the provisional top load-bearing assumptions. Record every other
 material node in `deferred_scope_nodes` with its rank and deferral reason;
 record missing evidence only when evidence is the reason.
 
+Assign transition dispositions consistently:
+
+- `RETAIN` includes a node with supported necessity in the target design when
+  its existence is known, whether it already exists or must be created.
+- `RETIRE` applies to a present node with failed necessity only after a safe
+  transition is established.
+- `HOLD_PENDING_EVIDENCE` applies only to a node that is present, or may be
+  present, when its existence, necessity, or removal safety remains unresolved.
+  It preserves current operation but authorizes no expansion.
+- `EXCLUDE_FROM_TARGET` applies to a proposed or absent node whose necessity is
+  not supported.
+
 Then trace in both directions:
 
 - **Forward:** for each of the three highest-leverage assumptions, identify the
   components, implementation, tests, proof, and operations it creates.
 - **Reverse:** for every material component or work item under the three
-  selected nodes, identify the verified user need, threat, external obligation,
-  or current compatibility promise that requires it.
+  selected nodes, identify the authority anchor that requires it.
 
-Use those traces to confirm, clear, or overturn each provisional status. When
-a trace exposes a higher unsupported parent, replace the lower node and rerank
+Use those traces to confirm, clear, or overturn each provisional
+`necessity_status`. When a trace exposes a higher unsupported parent, replace
+the lower node and rerank
 within the three-node set; do not expand into a full-tree trace.
 
 Do not mark an architecture node supported merely because it currently
 implements a required property. Record the property separately, then either
-prove that the mechanism itself is required or mark the node `UNKNOWN` while
-testing simpler primitives.
+prove that the mechanism itself is required or set its `necessity_status` to
+`UNKNOWN` while testing simpler primitives. Record existence and transition
+separately.
 
 Use **layer peeling** when a leaf mechanism fails its trace. Continue upward
 through the service, protocol, store, compiler, broker, or other enclosing
 architecture that made the leaf appear necessary. The trace ends only at a
-verified user outcome, threat, external obligation, current compatibility
-promise, or a finding that the enclosing architecture is unsupported. Replacing
-one leaf while preserving an unsupported parent is not a minimum-design result.
+verified authority anchor or a finding that the enclosing architecture is
+unsupported. Replacing one leaf while preserving an unsupported parent is not
+a minimum-design result.
+
+Removing or reframing a scope-tree node excludes from the target design every
+descendant whose only supported caller or property came through that node. A
+descendant survives only when it has an independently evidenced caller or
+required property outside the removed path. Local correctness, completed
+implementation, or useful tests do not create that independent need. Existing
+production behavior remains `HOLD_PENDING_EVIDENCE` until a safe transition is
+established; excluding it as design authority is not permission to remove it
+unsafely. A narrower verdict may not retain in planned work machinery whose
+only reverse trace still ends at a failed parent. Under a `PARTIAL` gate,
+`permitted_scope` may contain only actions independent of the blocked
+`UNKNOWN` nodes.
+
+Begin pass 2 by reconciling the persisted pass-1 record. Every pass-1 primitive,
+architecture exposure, required property, and selected assumption must appear
+in pass 2 with an explicit retained, rejected, superseded, or still-unknown
+disposition. A promising simpler primitive found in pass 1 cannot disappear
+merely because the proposal supplies a more detailed incumbent mechanism.
 
 Run a **counterfactual** for each top-ranked assumption. State the assumption
 being removed now, enumerate the dependent machinery that disappears with it,
@@ -323,12 +426,12 @@ Run the challenge:
   user-visible progress;
 - when preserving completed work becomes an argument for preserving the
   architecture; and
-- after eight hours of active implementation since the last accepted
-  challenge. Known blocked or idle time does not count. If elapsed active time
-  cannot be reconstructed after resumption, treat the challenge as due.
+- when the governing run lifecycle reports that its scheduled challenge is
+  due.
 
-The event triggers run immediately; the eight-hour trigger is a backstop, not a
-reason to postpone an earlier challenge.
+The event triggers run immediately; a caller-owned schedule is a backstop, not
+a reason to postpone an earlier challenge. This skill does not own or maintain
+that schedule.
 
 ## Output and gate
 
@@ -336,11 +439,16 @@ Persist a short challenge record in the work order or durable baton:
 
 ```text
 reviewed_at:
+evidence_packet_revision:
 work_order_revision:
 work_graph_cutoff:
 evidence_sources:
 pass1_architecture_exposure:
 direct_user_quotes:
+  - quote:
+    source:
+    event_id:
+    exact_match: true
 user_statement_classification:
 job_to_be_done:
 inferred_product_judgment:
@@ -356,6 +464,15 @@ concurrency_actors:
 writer_lifecycle:
 transactional_effects:
 scope_tree:
+  - node:
+    parent:
+    node_kind: outcome | architecture_path | subsystem | leaf_mechanism | parameter
+    existence_status: PRESENT | PROPOSED | ABSENT | UNKNOWN
+    necessity_status: SUPPORTED | FAILED | UNKNOWN
+    transition_disposition: RETAIN | RETIRE | HOLD_PENDING_EVIDENCE | EXCLUDE_FROM_TARGET
+    dependent_machinery:
+    claimed_authority:
+    scope_removed_if_excluded:
 top_load_bearing_assumptions:
 deferred_scope_nodes:
 counterfactuals:
@@ -365,26 +482,12 @@ security_boundary:
 trust_domain_map:
 trust_transfer_tests:
 scope_avoided_or_added:
+pass2_dispositions:
 verdict: CONTINUE | NARROW | REFRAME | ESCALATE | UNKNOWN
-active_time:
-  accumulated_minutes:
-  active_interval_started_at:
-  paused_at:
-  pause_reason:
-next_review_due_at_active_minutes: 480
+gate_status: CLEAR | PARTIAL | BLOCKED
+blocked_scope:
+permitted_scope:
 ```
-
-Reconcile this clock at task start, phase boundaries, every scheduled re-brief,
-and when work becomes blocked, idle, or active:
-
-1. If an active interval is open, add its elapsed minutes to
-   `accumulated_minutes`, then close it.
-2. Open a new interval only while implementation is actively progressing.
-   Record a pause timestamp and reason while blocked or idle.
-3. After an accepted challenge, reset accumulated time to zero and open a new
-   interval only if implementation resumes.
-4. Treat a missing, overlapping, future-dated, or otherwise inconsistent clock
-   as due immediately.
 
 Verdicts mean:
 
@@ -400,9 +503,42 @@ Verdicts mean:
   product or implementation premise as nonbinding. For a security boundary,
   fail closed and obtain evidence before continuing.
 
+Derive the verdict from the highest failed or unresolved
+`necessity_status` in the scope tree:
+
+- A node with failed necessity permits `NARROW` only when its parent path
+  remains independently supported, excluding it does not change which path
+  reaches the user outcome, and the narrowed target design excludes every
+  descendant that depended on it.
+- Any other failed necessity, including a failed outcome or a failure that
+  changes the selected architectural path, requires `REFRAME` around the
+  nearest supported ancestor or verified user need.
+- A conflict between verified authorities requires `ESCALATE`.
+- With no failed necessity, an unresolved load-bearing necessity requires
+  `UNKNOWN`.
+- Use `CONTINUE` only when every selected node needed by the current action is
+  necessary and supported.
+
+Here, the architectural path is the end-to-end route from the user's trigger
+to the observable outcome and required trust properties, not every internal
+branch in the current work order. Removing a subsystem, many dependent tasks,
+or substantial completed work can still be `NARROW` when that end-to-end route
+remains the same. Use `REFRAME` only when the supported result requires a
+different end-to-end route or a different user outcome.
+
+The recorded assumption statuses, scope-tree dispositions, verdict,
+`gate_status`, and permitted scope must agree. Do not choose a softer verdict
+to preserve completed work.
+
 The challenger is complete only when every distinct material
 architecture-shaped premise in pass 1 has a recorded disposition and
 independent trace or exclusion, or the record states that none was visible;
+the record names the exact evidence-packet revision and, after pass 2, the exact
+work-order revision;
+every `direct_user_quotes` entry byte-matches its named source and every
+interpretation is kept out of that field;
+every pass-1 primitive, architecture exposure, required property, and selected
+assumption has an explicit pass-2 disposition;
 each required property is separated from its candidate mechanism; the
 primitive inventory covers the bounded evidence or records `UNKNOWN`; every
 custom boundary under the selected nodes has a native-primitive mirror
@@ -433,8 +569,14 @@ either selected or rejected by concrete evidence, or the record returns
 `UNKNOWN` because that set cannot be established within budget; every security
 control is scoped to its trust domain and every cross-actor or cross-operation
 transfer has a recorded trust transfer test; the minimum-design comparison is
-explicit; and one verdict is persisted.
+explicit; one verdict and its derived `gate_status` are persisted; and a
+`PARTIAL` gate names non-overlapping `blocked_scope` and `permitted_scope`.
+The verdict matches the highest failed or unresolved `necessity_status`; each
+selected node has a consistent `existence_status`, `necessity_status`, and
+`transition_disposition`; and no permitted scope contains machinery whose only
+reverse trace ends at an ancestor with failed necessity, has been excluded
+from the target design, or depends on a blocked unknown necessity.
 `NARROW`, `REFRAME`, `ESCALATE`, and security-relevant `UNKNOWN` block
 implementation. A non-security `UNKNOWN` blocks only new machinery whose
 necessity depends on that unknown; unrelated work and a working incumbent may
-continue.
+continue when the record's `PARTIAL` gate names them in `permitted_scope`.

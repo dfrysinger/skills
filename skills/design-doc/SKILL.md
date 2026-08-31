@@ -16,6 +16,25 @@ This skill owns the scope and architecture call. It ends when the document is
 written and reviewed. It does not build anything; `development-loop` owns
 forward motion.
 
+## 0. Align with the user
+
+Invoke `/dfrysinger-skills:grill-me` before fixing scope. Interview the user one
+question at a time, give a recommended answer with each question, and explore
+the codebase instead of asking anything the repository can answer. Walk the
+decision tree until the end user's job, success condition, boundaries, and
+load-bearing assumptions are mutually understood.
+
+Persist the resulting decisions as exact user quotes with enough context to
+classify their authority in a durable pre-proposal evidence packet. Record the
+decision-record path returned by `grill-me`, give the packet a revision
+identifier, and pass both to each challenge phase. A prior interview may be
+reused only when its objective, users, constraints, and non-goals still match
+this work. A material scope change returns here before the document is revised.
+
+**Complete when** the user need, observable success condition, boundaries, and
+unresolved decisions are explicit, and no answer obtainable from the codebase
+remains a question for the user.
+
 ## 1. Fix the scope
 
 State the objective in one sentence, then write the non-goals.
@@ -58,7 +77,7 @@ coverage, and the final end-to-end run.
 **Complete when** the document names one lane; for critical, a rollback path
 and the evidence that proves the boundary fails closed.
 
-## 3. Record constraint provenance and the reframe gate
+## 3. Record constraint provenance and prepare the challenge packet
 
 Architecture is shaped by constraints, so record the ones that materially
 narrow the design before selecting mechanisms. For each hard constraint, write:
@@ -74,26 +93,11 @@ Every hard numeric limit needs measured demand, platform evidence, or a named
 policy owner. Prior configuration and earlier implementation are provenance,
 not proof that the limit must remain.
 
-Do not accept the author's provenance table as self-proving. Before normal
-design review, `dual-review` ensures exactly one current independent constraint
-challenge exists: a
-fresh-context reviewer first derives the minimum design from the user's exact
-words plus direct policy, platform, compatibility, and observed-failure
-evidence without seeing the proposal, then compares that baseline with the
-work order. It distinguishes top-level user needs and product direction from
-scoped choices, tactical approvals, and ambiguous acknowledgements. It starts
-from the end user's job to be done, may make a clearly labeled product
-inference from the broader purpose, and escalates contradictions among
-top-level goals with the conflicting quotes intact. The challenger independently
-traces security rules to protected assets, untrusted actors, reachable harmful
-capabilities, actual enforcement points, and narrower equivalent controls.
-
-Rank the three most load-bearing assumptions by the components, repositories,
-platforms, trust boundaries, proof, and lasting maintenance they create.
-Reverse-trace every substantial mechanism and proof obligation to a verified
-need, threat, external obligation, or current compatibility promise. This
-catches effective constraints created by implementation and acceptance
-machinery even when no sentence states the rule.
+Do not accept the author's provenance table as self-proving. Assemble the exact
+user decisions, boundaries, existing capabilities, failures, and constraint
+evidence into a closed, architecture-neutral packet with its own revision
+identifier. Do not include proposed mechanisms. Section 6 gives this packet to
+a fresh challenger before revealing the completed proposal.
 
 Define the design's **reframe gate**. Implementation returns here before adding
 another component when a recorded revisit condition fires, a new subsystem
@@ -125,8 +129,9 @@ author statement that the concern is resolved.
 
 **Complete when** every architecture-shaping constraint has provenance and a
 revisit condition, every hard numeric limit has external or measured
-justification, the document names the conditions that force reframing, and its
-durable reframe status is `CLEAR` with evidence or `OPEN` with all five answers.
+justification, the sealed challenge packet has a revision identifier, the
+document names the conditions that force reframing, and its durable reframe
+status is `CLEAR` with evidence or `OPEN` with all five answers.
 
 ## 4. Write the document
 
@@ -186,6 +191,22 @@ check that would fail if the criterion were violated.
 
 ## 6. Review the work order
 
+Run `constraint-challenge` immediately before normal design review as one
+two-pass challenge:
+
+1. Launch a fresh read-only challenger with only the sealed evidence packet.
+   Persist its pass-1 minimum design before exposing the proposal.
+2. Continue the same challenger with the finished work order and proposed
+   architecture for pass 2.
+
+Apply its verdict and gate: remove unsupported machinery, reframe the
+end-to-end route when required, and resolve or explicitly block unknown
+load-bearing premises. If that changes the work order, repeat pass 2 against
+the new exact revision until the current gate permits design review. An
+`ESCALATE` verdict returns to section 0 for the smallest required user
+decision, creates a new evidence-packet revision, and reruns both passes before
+normal design review.
+
 Run `dual-review`'s normal bounded loop over the complete design document and
 its check contract. Tell both reviewers this is a design review so
 `dual-review` applies its disclosed architecture and scope lens before
@@ -211,14 +232,12 @@ The design document is the subject under review; the other artifacts are
 evidence and rubric. Keep unrelated discovery, rejected alternatives, and
 historical discussion out of the packet.
 
-`dual-review` owns running or reusing that challenge before the normal
-two-family review. `NARROW` requires the work order to remove or reduce the
-unsupported machinery and rerun the comparison. `REFRAME` returns to section
-3. `ESCALATE` requires a decision from the conflicting authority. A
-security-relevant `UNKNOWN` fails closed until evidence resolves it.
+`design-doc` owns the back-to-back challenge immediately before the normal
+two-family review. `dual-review` verifies that the resulting current record is
+present and reflected honestly in the work order.
 
-**Complete when** the independent challenge has an accepted current verdict
-and `dual-review`'s verification criteria are met.
+**Complete when** the independent challenge is current, its gate permits this
+design review, and `dual-review`'s verification criteria are met.
 
 ## 7. Stop
 
@@ -272,17 +291,20 @@ invoked if an instruction to continue already exists.
 The document is done when:
 
 1. the objective is one sentence and the non-goals are explicit;
-2. it names one lane, with rollback and fail-closed evidence when critical;
-3. every architecture-shaping constraint has provenance and a revisit
+2. the user need, observable success condition, boundaries, and material
+   decisions were established through a current `grill-me` interview;
+3. it names one lane, with rollback and fail-closed evidence when critical;
+4. every architecture-shaping constraint has provenance and a revisit
    condition;
-4. the durable reframe status is checkable, and implementation proceeds only
+5. the durable reframe status is checkable, and implementation proceeds only
    while it is `CLEAR`;
-5. the reuse contract explains why anything new exists;
-6. acceptance criteria are observable;
-7. every acceptance criterion has a check that would fail if violated;
-8. it carries a Definition of Done under a unique heading;
-9. the bounded `dual-review` process met its verification criteria;
-10. a fresh-context constraint challenger independently verified the product
-    and security premises, reverse-traced the actual machinery, and accepted
-    the current minimum-design comparison; and
-11. someone who was not in the conversation could build from it.
+6. the reuse contract explains why anything new exists;
+7. acceptance criteria are observable;
+8. every acceptance criterion has a check that would fail if violated;
+9. it carries a Definition of Done under a unique heading;
+10. the bounded `dual-review` process met its verification criteria;
+11. a fresh-context constraint challenger derived its minimum before seeing
+    the proposal, then independently verified the completed work order's product
+    and security premises, reverse-traced the actual machinery, and produced a
+    current gate that permits this design; and
+12. someone who was not in the conversation could build from it.

@@ -15,8 +15,9 @@ The governing rule is:
 > realistic blast radius. Promote to a heavier lane only when concrete evidence
 > requires it.
 
-This skill orchestrates `design-doc`, `rubber-duck`, `dual-review`,
-project-specific development/testing skills, and live validation.
+This skill orchestrates `design-doc`, `constraint-challenge`, `rubber-duck`,
+`dual-review`, project-specific development/testing skills, and live
+validation.
 
 The phase order is fail-closed:
 
@@ -78,13 +79,16 @@ resumption, at each phase boundary, and whenever the current action is waiting:
    builds, verifiers, or CI. Use the change-to-claim impact map to rerun only
    the proof reached by that candidate.
 6. For systemic or critical work, read the durable constraint-challenge record.
-   Reconcile its active-time clock now. Run the challenge-only mode defined in
-   [`dual-review`'s constraint-challenge lens](../dual-review/references/constraint-challenge-lens.md)
+   Before advancing the next action, require either a `CLEAR` gate or a
+   `PARTIAL` gate whose `permitted_scope` contains that exact action and whose
+   `blocked_scope` does not. Stop work under a `BLOCKED` gate or outside a
+   `PARTIAL` gate's permitted scope. Invoke
+   [`constraint-challenge`](../constraint-challenge/SKILL.md)
    immediately when its design or charter changed, a scope-expansion trigger
-   fired, or the clock reached 480 active implementation minutes. Supply the
+   fired, or the governing run lifecycle reports a scheduled challenge due.
+   Supply the
    relevant user statements as exact quotes with their available context,
-   including statements made since the prior accepted challenge. If the clock
-   is absent or inconsistent after resumption, treat it as due.
+   including statements made since the prior completed challenge.
 
 Parallelism stops at an actual dependency or exclusive boundary. One proof
 owner and one running candidate remain mandatory during live proof, and review,
@@ -335,27 +339,36 @@ new subsystem mainly to preserve an inherited limit or mechanism. Repeated
 movement of a failure to the next internal boundary without user-visible
 progress is evidence that the gate has fired.
 
-Also run the challenge-only mode defined in
-[`dual-review`'s constraint-challenge lens](../dual-review/references/constraint-challenge-lens.md)
-before adding a
+Also invoke [`constraint-challenge`](../constraint-challenge/SKILL.md) before
+adding a
 service, protocol, store, broker, compiler, fork, native binary, repository,
 language, or platform lane; when adapters or proof machinery mainly preserve
-inherited behavior; after a design, charter, Definition-of-Done, trust-boundary,
-or constraint change; and after eight active implementation hours. The
+inherited behavior; when repeated fixes move a failure between internal
+boundaries without user-visible progress; when completed work is used to
+justify preserving the architecture; after a design, charter,
+Definition-of-Done, trust-boundary, or constraint change; and when the
+governing run lifecycle reports a scheduled challenge due. The
 challenger reconstructs effective rules from the actual task, component, test,
 and proof graph, so a premise need not be written down to fire this gate.
 Prioritize its three highest-leverage assumptions rather than auditing every
 default.
 
-The durable challenge clock records accumulated active minutes, the current
-active interval start, and any pause timestamp and reason. Reconcile it at task
-start, phase boundaries, resumptions, and active/blocked transitions. Reset it
-only after an accepted challenge. A missing or inconsistent clock makes the
-challenge due; do not infer elapsed work from the wall clock alone.
 The challenge packet also carries the relevant user statements verbatim with
-their context. Preserve newly received user statements in the durable baton
-until a challenger has classified them; never replace them with an agent
+their context. Preserve each newly received user statement in the durable
+decision record or baton quote ledger with a stable event ID, exact quote, and
+context until a challenger has classified it; never replace it with an agent
 summary.
+
+After each challenge, compare the exact next action with `gate_status`,
+`permitted_scope`, and `blocked_scope`. Resume only when the gate permits that
+action.
+
+An `ESCALATE` verdict stops the blocked action and surfaces the smallest
+required user decision through normal prose or `agent-help`'s
+`decision_required` channel. Persist the answer in the decision record, mint a
+new evidence-packet revision, return to `design-doc` section 0 and section 3,
+and rerun both challenge passes. Advance only work explicitly permitted by the
+existing gate while that decision is unresolved.
 
 Persist the blocked outcome, the implicated constraint and provenance, the
 invariant that would fail if it changed, and the simpler alternative. Further
@@ -370,13 +383,13 @@ one, then take one of these exits into implementation:*
 
 - *Unattended, or long enough that the context will compact before the plan is
   done — run `unattended-run` against the work order. It arms the recurring
-  charter re-brief that holds the run on course through compaction, and points
-  its Definition of Done at the one the work order already carries. Register
-  `development-loop` as the charter's governing skill, project-specific
-  development and testing skills as execution skills, and `self-compact` as its
-  context skill. Complete its live-schedule gate before any phase-boundary
-  compact. It performs the handoff and compact itself, so do not invoke
-  `self-compact` or `handoff` first.*
+  charter re-brief and, for systemic or critical work, the independent
+  eight-hour constraint challenge. Both point at the Definition of Done the
+  work order already carries. Register `development-loop` as the charter's
+  governing skill, project-specific development and testing skills as
+  execution skills, and `self-compact` as its context skill. Complete its
+  schedule gate before any phase-boundary compact. It performs the handoff and
+  compact itself, so do not invoke `self-compact` or `handoff` first.*
 - *Attended and finishing in one sitting, but the run so far has been long —
   self-hand-off into implementation via the `handoff` skill.*
 
@@ -406,9 +419,9 @@ implementation after the behavior works.
 
 *Compaction point: persist the plan/lane/acceptance state. For a long or
 unattended run, section 3's `unattended-run` handoff must already have armed
-its live re-brief and owns this reset; a bare compact returns to an idle prompt.
-If the re-brief is not live, run `unattended-run` now instead of compacting.
-For an attended run, invoke `self-compact`.*
+every applicable schedule and owns this reset; a bare compact returns to an
+idle prompt. If any required schedule is not live, run `unattended-run` now
+instead of compacting. For an attended run, invoke `self-compact`.*
 
 Run the critical-path audit before starting the diff. Repeat it whenever a
 build, external agent, approval, or live system becomes the current wait.
@@ -905,11 +918,12 @@ section 7 to ensemble review.
 
 At every **Compaction point** marked above, invoke `self-compact`, except the
 first implementation handoff for a long or unattended run. Until that run has a
-confirmed live re-brief, invoke `unattended-run` instead and let it own the
-reset. Once its schedule is live, later compaction points use `self-compact`
-normally. Naming the skill is the instruction; a general intention to compact
-is not one, and is why agents arrive at review with a context full of resolved
-work.
+confirmed live charter schedule and, for systemic or critical work, a live
+eight-hour challenge schedule, invoke `unattended-run` instead and let it own
+the reset. Once every applicable schedule is live, later compaction points use
+`self-compact` normally. Naming the skill is the instruction; a general
+intention to compact is not one, and is why agents arrive at review with a
+context full of resolved work.
 
 Every unattended re-brief also reruns the critical-path audit. It reconciles
 the remaining dependency graph, delegated ownership, current waits, candidate
@@ -922,12 +936,15 @@ landed versus what remains, the change-to-claim impact map, and each live-proof
 receipt path, status, candidate identity, running identity, first divergence,
 unverified criteria, and covered post-proof deltas. For systemic and critical
 work, it also carries the
-constraint-provenance location, open revisit conditions, and current reframe
-status; persist any `OPEN` reframe record before compacting. Use the existing
-committed repo plan/design for systemic or critical work, and an existing
-issue, handoff, or named session artifact for bounded work. The summary points
-to this durable record; it does not recreate its evidence. When you are still
-stuck after a compact, `rubber-duck` before trying more variations.
+constraint-provenance location, open revisit conditions, current reframe
+status, the challenge record's `reviewed_at`, `gate_status`, `blocked_scope`,
+and `permitted_scope`, any unserviced event trigger, exact user quotes received
+since that review, and the charter-owned schedule registry; persist any `OPEN`
+reframe record before compacting. Use the existing committed repo plan/design
+for systemic or critical work, and an existing issue, handoff, or named session
+artifact for bounded work. The summary points to this durable record; it does
+not recreate its evidence. When you are still stuck after a compact,
+`rubber-duck` before trying more variations.
 
 ## Rabbit-hole stop rules
 
@@ -1020,8 +1037,9 @@ The change is complete when:
 8. the landed diff remains coherent and scoped; and
 9. the critical-path audit ran at each required trigger, and no remaining
    ready scope is unowned, overlapping, or serial without a named gate;
-10. systemic or critical work has a current accepted constraint-challenge
-    record, with no event trigger or eight-active-hour review overdue; and
+10. systemic or critical work has a current constraint-challenge record whose
+    gate permits the completed work, with no event trigger or delivered
+    scheduled-challenge tick unserviced; and
 11. every PR that adds a new user-facing visual journey contains its validated
     candidate-bound walkthrough movie, while fixes retain their required
     screenshot evidence.

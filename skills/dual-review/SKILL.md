@@ -1,6 +1,6 @@
 ---
 name: dual-review
-description: Bound dual review by evidence, scope, material risk, and a fixed round budget, and run its single-agent challenge-only mode when a systemic or critical plan needs an independent constraint check. Runs latest Claude Opus and latest non-mini/non-codex GPT in parallel for normal review, with finding-level verification only for disputed blockers. Use when a non-trivial diff needs review before landing, a systemic or critical design and its guards need pre-implementation review, or a governing workflow says a constraint challenge is due.
+description: Bound dual review by evidence, scope, material risk, and a fixed round budget. Runs latest Claude Opus and latest non-mini/non-codex GPT in parallel, with finding-level verification only for disputed blockers. Use when a non-trivial diff needs review before landing, or when a systemic or critical design and its guards need pre-implementation review.
 ---
 
 # dual-review
@@ -23,13 +23,6 @@ This protocol follows four review principles:
 
 Use for a non-trivial diff involving multiple files, behavior changes, error
 paths, shared state, persistence, concurrency, security, or domain logic.
-
-Use the standalone challenge-only mode in
-[`references/constraint-challenge-lens.md`](./references/constraint-challenge-lens.md)
-when `design-doc`, `development-loop`, or `unattended-run` says a systemic or
-critical plan needs an independent constraint challenge. That mode launches
-one fresh read-only challenger and does not run the normal two-family review.
-Its own record and verdict are its completion contract.
 
 Do not use for typo-only, formatting-only, generated-only, dependency-only, or
 other trivial changes already covered by a deterministic check. Use a security
@@ -111,10 +104,11 @@ When the subject is a design document or work order, load and give both
 reviewers
 [`references/design-scope-lens.md`](./references/design-scope-lens.md).
 For a systemic or critical design, first ensure there is one current focused
-independent challenge from
-[`references/constraint-challenge-lens.md`](./references/constraint-challenge-lens.md).
-Run that reference's challenge-only mode when no accepted current record
-exists. Persist the result and include it in both reviewers' evidence packet.
+independent review from
+[`constraint-challenge`](../constraint-challenge/SKILL.md). When no current
+record has a gate that permits this design review, stop and return to the
+governing `design-doc` process to invoke that skill. Include the current result
+in both reviewers' evidence packet.
 
 Architecture and scope are reviewed before implementation detail. The lens is
 the single source of truth for supported-caller, inherited-constraint,
@@ -444,8 +438,8 @@ The normal dual-review protocol is complete when:
 6. for a design review, both reviewers applied the architecture and scope lens
    and their output records `design_scope_lens.applied: true`; and
 7. for a systemic or critical design, a fresh-context constraint challenge
-   produced an accepted current verdict and is included in the review packet.
+   produced a current record whose gate permits this review, and that record is
+   included in the review packet.
 
-The standalone challenge-only mode is complete under
-`constraint-challenge-lens.md`; it does not require either normal reviewer
-family or a dual-review finding round.
+`constraint-challenge` completes independently; it does not require either
+normal reviewer family or a dual-review finding round.
