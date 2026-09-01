@@ -1,6 +1,6 @@
 ---
 name: unattended-run
-description: Keep a long, unattended Copilot CLI run on course. Arm an hourly `/every` charter recovery and, for systemic or critical work, a separate eight-hour independent constraint challenge, then hand off an optional autopilot objective through the session-inbox SDK extension and native command invocation. Use when starting a long autopilot or `/goal` run against a plan doc, sharpening its objective, or preventing drift across context compactions.
+description: Keep a long, unattended Copilot CLI run on course. Arm a two-hour `/every` charter recovery and, for systemic or critical work, a separate eight-hour independent constraint challenge, then hand off an optional autopilot objective through the session-inbox SDK extension and native command invocation. Use when starting a long autopilot or `/goal` run against a plan doc, sharpening its objective, or preventing drift across context compactions.
 ---
 
 # unattended-run
@@ -154,7 +154,7 @@ last completed independent constraint challenge, the live eight-hour schedule
 identifier and armed-at timestamp, its replacement generation, any event
 trigger, and all relevant user statements received since that challenge as
 exact quotes with enough context to classify them. The same registry records
-the hourly charter schedule identifier. A mechanism inherited through
+the two-hour charter schedule identifier. A mechanism inherited through
 compaction remains a mechanism, not a binding requirement.
 
 `unattended-run` is the single owner of the independent challenge schedule.
@@ -237,18 +237,18 @@ stale or duplicate reminders for this objective and create replacements,
 capturing every returned identifier and immediately changing its registry
 status from `pending` to `live`; leave unrelated schedules untouched.
 
-Arm the hourly charter recovery schedule with `manage_schedule` (the tool
+Arm the two-hour charter recovery schedule with `manage_schedule` (the tool
 `/every` runs), pointed at the file so each tick re-reads the authoritative
 copy:
 
 ```
-manage_schedule action=create interval=1h \
+manage_schedule action=create interval=2h \
   prompt="If you are currently making a user-directed edit to the plan, design
   doc, brief, or charter, finish the current coherent edit and persist it first.
   Then re-read your autopilot charter at <charter-path> and its current plan
   baton. Never replace an in-flight revision with the older persisted version.
   List active schedules and reconcile them against the charter registry. Stop
-  duplicate hourly reminders. For systemic or critical work, a missing,
+  duplicate charter reminders. For systemic or critical work, a missing,
   duplicated, or `replacing` challenge schedule makes the challenge due before
   the registry reset transaction repairs it.
   Follow the charter's Required process skills protocol exactly and reconcile
@@ -309,7 +309,7 @@ forever.
 
 **Complete when** the charter file names its governing, execution, and context
 skills; the registry contains the identifiers returned at creation; and
-`manage_schedule action=list` shows exactly one hourly charter reminder for
+`manage_schedule action=list` shows exactly one two-hour charter reminder for
 this objective plus, for systemic or critical work, exactly one eight-hour
 constraint-challenge reminder. Each applicable reminder points at the charter.
 The charter reminder follows the **Required process skills** protocol and
