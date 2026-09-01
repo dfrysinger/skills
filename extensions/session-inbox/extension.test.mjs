@@ -85,6 +85,7 @@ async function createHarness(initialState = {}) {
     delivery: "idle",
     idleCounter: 0,
     sessionName: "hotel",
+    userNamed: true,
     ...initialState,
   });
   await writeFile(callsPath, "");
@@ -166,7 +167,13 @@ export async function joinSession() {
     rpc: {
       metadata: {
         async snapshot() {
-          return {workspace: {id: "test-session", name: state().sessionName}};
+          return {
+            workspace: {
+              id: "test-session",
+              name: state().sessionName,
+              user_named: state().userNamed,
+            },
+          };
         },
         async isProcessing() {
           return {processing: state().processing};

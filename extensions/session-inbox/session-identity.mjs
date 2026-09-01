@@ -31,7 +31,8 @@ export async function currentSessionName(session) {
       );
     }),
   ]).finally(() => clearTimeout(timeout));
-  return snapshot.workspace?.name?.trim() || undefined;
+  if (snapshot.workspace?.user_named !== true) return undefined;
+  return snapshot.workspace.name?.trim() || undefined;
 }
 
 export async function preferredAgentName(session) {

@@ -50,7 +50,13 @@ test("identity prefers the current tmux name and refreshes after a rename", {
       rpc: {
         metadata: {
           async snapshot() {
-            return { workspace: { id: "session-1", name: "session-name" } };
+            return {
+              workspace: {
+                id: "session-1",
+                name: "session-name",
+                user_named: true,
+              },
+            };
           },
         },
       },
@@ -75,13 +81,43 @@ test("identity falls back to the current live Copilot session name", async () =>
       rpc: {
         metadata: {
           async snapshot() {
-            return { workspace: { id: "session-1", name: "india" } };
+            return {
+              workspace: { id: "session-1", name: "india", user_named: true },
+            };
           },
         },
       },
     };
     assert.equal(await currentSessionName(session), "india");
     assert.equal(await preferredAgentName(session), "india");
+  } finally {
+    if (previousPane === undefined) delete process.env.TMUX_PANE;
+    else process.env.TMUX_PANE = previousPane;
+  }
+});
+
+test("identity ignores an auto-generated session title", async () => {
+  const previousPane = process.env.TMUX_PANE;
+  try {
+    delete process.env.TMUX_PANE;
+    const session = {
+      rpc: {
+        metadata: {
+          async snapshot() {
+            return {
+              workspace: {
+                id: "session-1",
+                name: "Set Up Local Dev Builds",
+                user_named: false,
+              },
+            };
+          },
+        },
+      },
+    };
+
+    assert.equal(await currentSessionName(session), undefined);
+    assert.equal(await preferredAgentName(session), undefined);
   } finally {
     if (previousPane === undefined) delete process.env.TMUX_PANE;
     else process.env.TMUX_PANE = previousPane;
@@ -105,7 +141,7 @@ test("identity falls back to the session name when tmux lookup fails", {
       rpc: {
         metadata: {
           async snapshot() {
-            return { workspace: { name: "india" } };
+            return { workspace: { name: "india", user_named: true } };
           },
         },
       },
