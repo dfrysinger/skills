@@ -51,6 +51,12 @@ Do NOT use mailbox for:
   explicitly with `hotel@surface-pro`. There is no implicit broadcast or
   cross-machine aggregation. Set the stable machine label with
   `COPILOT_AGENT_MACHINE`; there is no hostname fallback.
+- **Durable ownership records use qualified addresses.** When a worktree,
+  checkout, file set, or assignment is owned by a mailbox agent, persist its
+  fully qualified `name@machine`, not only its display name. The qualified
+  address is the portable status and handoff route from any computer. A bare
+  name is only a same-machine convenience and must not establish durable write
+  ownership.
 - **Local mailbox = mutable delivery state.** Unqualified envelopes land at
   `$MAILBOX_LOCAL_ROOT/<recipient>/pending/<id>.json`, with attachments in a
   sibling `<id>/` directory. `MAILBOX_LOCAL_ROOT` defaults to
