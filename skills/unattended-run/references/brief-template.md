@@ -70,22 +70,26 @@ process after compaction without copying each skill's rules.
 > dependencies, mark the critical path, assign every substantial independent
 > ready scope to an available subagent when delegation is safe, and advance
 > another ready item whenever the current one is waiting. For every delegated
-> agent, keep its scope,
-> workspaces or branches, session or coordination channels, owed evidence,
-> blockers, and integration boundaries in the durable baton; mark agents I
-> assigned as first-class external owners there. Read the
+> agent, keep its stable assignment ID, scope, owned path boundary, workspaces
+> or branches, routable owner address, owed evidence, blockers, and integration
+> boundaries in the durable baton. Use fully qualified `name@machine` for
+> mailbox agents and the exact agent ID for native subagents; a bare display
+> name does not establish ownership or a status route. Mark agents I assigned
+> as first-class external owners there. Read the
 > delegated agent's
 > explicit result, mailbox response, or handoff before reporting its status or
 > assigning successor work; a dirty, clean, changing, or unchanged worktree is
 > artifact state, not worker state. If no current result exists, record the
-> worker state as unknown, request status once through its task or coordination
-> channel, and advance other ready work. Consume completed handoffs promptly,
+> worker state as unknown, request status once through its recorded routable
+> address, and advance other ready work. If that address is absent or ambiguous,
+> record the routing gap rather than guessing a machine or same-named agent.
+> Consume completed handoffs promptly,
 > close the prior assignment, and treat successor work as a new assignment. Give
 > every file-writing delegate an isolated worktree or checkout and never use
 > the coordinator's worktree as a concurrent write target. Freeze the completed
 > commit or receipt and explicitly transfer worktree ownership before another
 > writer enters it. If overlapping writers appear, stop that lane, make no
-> integration assumption from the mixed worktree, and restore one named owner
+> integration assumption from the mixed worktree, and restore one routable owner
 > before continuing. Keep the
 > coordinator focused on integration, decisions, unblocking, and unowned
 > critical-path work. Batch coherent fixes before expensive builds, verifiers,
@@ -174,13 +178,16 @@ Charter slots:
   approval-gated production actions such as deployment, merge-queue mutation,
   infrastructure changes, or writes to shared resources.
 - **`<COORDINATION>`** — when peers share the effort:
-  name every user-assigned agent, its owned scope, workspace or branch, session
-  or coordination channel, expected receipt or frozen handoff, and the durable
-  surface used to monitor and unblock it. Require worker status to come from
-  that agent's explicit result or handoff, never from repository movement. Give
-  every file-writing agent an isolated worktree or checkout, and record who may
-  write it now plus the evidence required to transfer ownership. If overlapping
-  writers appear, stop that lane and restore one named owner before continuing.
+  name every user-assigned agent, its stable assignment ID, owned scope and path
+  boundary, workspace or branch, routable owner address, expected receipt or
+  frozen handoff, and the durable surface used to monitor and unblock it.
+  Mailbox agents use fully qualified `name@machine`; native subagents use their
+  exact agent ID. A bare display name does not establish ownership or a status
+  route. Require worker status to come from that agent's explicit result or
+  handoff, never from repository movement. Give every file-writing agent an
+  isolated worktree or checkout, and record who may write it now plus the
+  evidence required to transfer ownership. If overlapping writers appear, stop
+  that lane and restore one routable owner before continuing.
   Include: `Do not wait for an agent to push to main; consume its reviewed
   frozen commit from its owned branch or worktree as soon as its dependencies
   and integration boundary are ready.` Omit only when no independent agents

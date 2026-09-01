@@ -49,12 +49,16 @@ resumption, at each phase boundary, and whenever the current action is waiting:
    worktree or checkout; read-only delegates may share a source tree. The
    coordinator's worktree is never a concurrent write target.
 3. Track every delegated agent as an owner, whether the user or coordinator
-   assigned it. Record its scope, workspace or branch, session or coordination
-   channel, expected evidence, and integration boundary. When the user assigned
-   the agent, preserve that record in the durable baton and treat it as a
-   first-class external owner. Keep each owner supplied with decisions and
-   dependencies, unblock it promptly, and consume completed handoffs and frozen
-   reviewed commits without waiting for `main`.
+   assigned it. Record its scope, owned path boundary, workspace or branch,
+   session or coordination channel, expected evidence, and integration
+   boundary. Give each assignment a stable ID and a routable owner address: a
+   mailbox agent uses its fully qualified `name@machine`, while a native
+   subagent uses its exact agent ID.
+   A bare display name does not identify an owner or establish where to request
+   status. When the user assigned the agent, preserve that record in the durable
+   baton and treat it as a first-class external owner. Keep each owner supplied
+   with decisions and dependencies, unblock it promptly, and consume completed
+   handoffs and frozen reviewed commits without waiting for `main`.
    Keep **worker state** separate from **artifact state**. Before reporting an
    assigned agent as active, waiting, blocked, failed, or complete, read that
    agent's latest explicit session result, task result, mailbox response, or
@@ -64,14 +68,15 @@ resumption, at each phase boundary, and whenever the current action is waiting:
    the worktree or issuing successor work.
    Evidence that predates the current assignment cannot establish its status.
    When no current explicit result exists, record the worker state as
-   `unknown`, request status once through its task or coordination channel, and
-   advance other ready work. Never substitute repository movement for the
-   missing response.
+   `unknown`, request status once through its recorded routable address, and
+   advance other ready work. If that address is missing or ambiguous, record the
+   routing gap and do not guess a machine or same-named agent. Never substitute
+   repository movement for the missing response.
    A successor task is a new assignment, even when it goes to the same agent.
    Freeze the prior commit or receipt and explicitly transfer worktree
    ownership before the coordinator or another writer touches it. If two
    writers appear in one delegated worktree, stop both integration assumptions
-   and restore one named owner before continuing.
+   and restore one routable owner before continuing.
 4. Keep the coordinating agent on integration, critical-path work, decisions,
    and blockers that no delegate can own. When one action is waiting, advance
    another ready item instead of polling or idling.

@@ -104,24 +104,29 @@ scheduled re-brief, the agent must:
 
 - rebuild the remaining dependency graph and mark the critical path;
 - assign every substantial independent ready scope to an available subagent;
-- for every delegated agent, reconcile its explicit scope, workspace or branch,
-  session or coordination channel, evidence owed, blockers, and integration
-  boundary; preserve user-assigned agents as first-class external owners in the
-  durable baton;
+- for every delegated agent, reconcile its explicit scope, owned path boundary,
+  workspace or branch, session or coordination channel, evidence owed,
+  blockers, and integration boundary; preserve a stable assignment ID and
+  routable owner address in the durable baton. Mailbox agents use fully
+  qualified `name@machine`; native subagents use their exact agent ID. A bare
+  display name does not establish ownership or a status route. Preserve
+  user-assigned agents as first-class external owners;
 - read each delegated agent's explicit session result, task result, mailbox
   response, or handoff before reporting its status, waiting on it, or assigning
   successor work; never infer worker state from whether its worktree is dirty,
   clean, changing, or unchanged;
 - when no explicit result from the current assignment exists, record the worker
-  state as `unknown`, request status once through its task or coordination
-  channel, and advance other ready work;
+  state as `unknown`, request status once through its recorded routable address,
+  and advance other ready work. If the address is absent or ambiguous, record
+  the ownership route as unresolved rather than guessing a machine or
+  same-named agent;
 - consume a completed handoff before inspecting its worktree, close the prior
   assignment, and treat any successor request as a new assignment;
 - give every file-writing delegate an isolated worktree or checkout and keep
   the coordinator's worktree free of concurrent writers;
 - freeze the completed commit or receipt and explicitly transfer worktree
   ownership before any other writer enters it; overlapping writers stop the
-  lane until one named owner is restored;
+  lane until one routable owner is restored;
 - keep the coordinator on integration, decisions, unblocking, and unowned
   critical-path work;
 - batch coherent fixes before expensive gates and avoid replaying unaffected
