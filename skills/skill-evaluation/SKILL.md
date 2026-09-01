@@ -65,7 +65,11 @@ Record unavailable authority as unavailable. A paraphrase does not become an
 exact quote because the original event cannot be recovered.
 
 Read [`references/case-contract.md`](references/case-contract.md) when choosing
-cutoffs, splitting phases, or importing historical artifacts.
+cutoffs or splitting phases. For a transcript-derived case, follow
+[`references/historical-case-capture.md`](references/historical-case-capture.md)
+to locate the authoritative session, export exact turns and events, trace the
+repository artifacts they produced or discussed, and preserve the capture
+receipts before selecting candidate and judge packets.
 
 Complete when a candidate cannot read the expected answer and a judge can trace
 every required behavior to frozen evidence.

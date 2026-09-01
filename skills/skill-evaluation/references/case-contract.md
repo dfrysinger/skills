@@ -12,6 +12,7 @@ CORPUS/
     judge-reference/
     criteria.md
     prompts/judge.md
+    capture/                 # optional authoring evidence, never staged directly
   frozen/<case-id>/
     current.json
     revisions/<root-digest>/
@@ -44,6 +45,10 @@ or replacing another case therefore does not invalidate it.
   the independently defined oracle from which they derive.
 - Generated summaries identify their source artifacts and remain evidence, not
   authority.
+- A transcript-derived case keeps its raw capture and query receipts under
+  `capture/`, then copies only deliberately selected exact evidence into a
+  candidate phase or `judge-reference/`. The runner never stages `capture/`
+  directly.
 
 ## Judgment
 
