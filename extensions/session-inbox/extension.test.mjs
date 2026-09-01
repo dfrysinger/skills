@@ -108,6 +108,10 @@ const record = (kind, value) =>
 const emit = (name, event = {}) => {
   for (const listener of listeners.get(name) ?? []) listener(event);
 };
+const durableEvents = [];
+let delayedDurableEvent;
+let eventLogReadCount = 0;
+let eventLogCursorExpired = false;
 let idleCounter = state().idleCounter;
 setInterval(() => {
   const current = state().idleCounter;
@@ -132,6 +136,9 @@ export async function joinSession() {
     async send(options) {
       record("send", options);
       const current = state();
+      if (current.expireEventLogCursorOnce) {
+        eventLogCursorExpired = false;
+      }
       if (current.rejectSendAfterRecord) {
         throw new Error("mock transport lost the accepted send response");
       }
@@ -147,19 +154,27 @@ export async function joinSession() {
           }) + "\\n",
         );
       }
-      if (
-        !current.suppressDelivery &&
-        !(options.agentMode === "autopilot" && current.suppressAutopilotDelivery)
-      ) {
-        queueMicrotask(() => emit("user.message", {
-          type: "user.message",
-          data: {
-            content: options.prompt,
-            delivery: current.delivery,
-            agentMode: options.agentMode,
-            source: options.agentMode === "autopilot" ? "sdk" : undefined,
-          },
-        }));
+      const deliveryEvent = {
+        type: "user.message",
+        timestamp: new Date().toISOString(),
+        data: {
+          content: options.prompt,
+          delivery: current.delivery,
+          agentMode: options.agentMode,
+          source: options.agentMode === "autopilot" ? "sdk" : undefined,
+        },
+      };
+      const deliverySuppressed =
+        current.suppressDelivery ||
+        (options.agentMode === "autopilot" && current.suppressAutopilotDelivery);
+      if (current.persistDeliveryAfterReads) {
+        delayedDurableEvent = deliveryEvent;
+        eventLogReadCount = 0;
+      } else if (!deliverySuppressed || current.persistDeliveryWithoutEmit) {
+        durableEvents.push(deliveryEvent);
+      }
+      if (!deliverySuppressed) {
+        queueMicrotask(() => emit("user.message", deliveryEvent));
       }
       return "message-" + Date.now();
     },
@@ -291,6 +306,41 @@ export async function joinSession() {
             );
           }
           return {removed: true};
+        },
+      },
+      eventLog: {
+        async tail() {
+          return {cursor: String(durableEvents.length)};
+        },
+        async read(options) {
+          if (
+            JSON.stringify(options.types) !== JSON.stringify(["user.message"]) ||
+            options.agentScope !== "primary" ||
+            options.includeEphemeral !== false
+          ) {
+            throw new Error("unexpected event-log filters");
+          }
+          eventLogReadCount += 1;
+          if (
+            delayedDurableEvent &&
+            eventLogReadCount >= state().persistDeliveryAfterReads
+          ) {
+            durableEvents.push(delayedDurableEvent);
+            delayedDurableEvent = undefined;
+          }
+          const start = Number.parseInt(options.cursor ?? "0", 10);
+          const events = durableEvents.slice(start, start + (options.max ?? 200));
+          const cursorStatus =
+            state().expireEventLogCursorOnce && !eventLogCursorExpired
+              ? "expired"
+              : "ok";
+          eventLogCursorExpired = true;
+          return {
+            events,
+            cursor: String(start + events.length),
+            hasMore: start + events.length < durableEvents.length,
+            cursorStatus,
+          };
         },
       },
       extensions: {
@@ -802,7 +852,73 @@ test("recipient extension submits SDK work and preserves phase state", async () 
       0,
     );
 
-    await harness.setState({ suppressDelivery: true, idleCounter: 10 });
+    await harness.setState({
+      suppressDelivery: true,
+      persistDeliveryWithoutEmit: true,
+      delivery: "steering",
+      idleCounter: 10,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await harness.request("persisted-delivery", {
+      kind: "send",
+      prompt: "persisted without live event",
+      mode: "immediate",
+      dedupeKey: "persisted-delivery",
+    });
+    const persistedDelivery = await harness.receipt(
+      "completed",
+      "persisted-delivery",
+    );
+    assert.equal(persistedDelivery.result.delivery, "steering");
+
+    await harness.setState({
+      suppressDelivery: true,
+      persistDeliveryWithoutEmit: false,
+      persistDeliveryAfterReads: 7,
+      delivery: "steering",
+      idleCounter: 10,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await harness.request("delayed-persisted-delivery", {
+      kind: "send",
+      prompt: "persisted after several reads",
+      mode: "immediate",
+      dedupeKey: "delayed-persisted-delivery",
+    });
+    const delayedPersistedDelivery = await harness.receipt(
+      "completed",
+      "delayed-persisted-delivery",
+    );
+    assert.equal(delayedPersistedDelivery.result.delivery, "steering");
+
+    await harness.setState({
+      suppressDelivery: true,
+      persistDeliveryWithoutEmit: true,
+      persistDeliveryAfterReads: undefined,
+      expireEventLogCursorOnce: true,
+      delivery: "steering",
+      idleCounter: 10,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await harness.request("reset-cursor-delivery", {
+      kind: "send",
+      prompt: "persisted after cursor reset",
+      mode: "immediate",
+      dedupeKey: "reset-cursor-delivery",
+    });
+    const resetCursorDelivery = await harness.receipt(
+      "completed",
+      "reset-cursor-delivery",
+    );
+    assert.equal(resetCursorDelivery.result.delivery, "steering");
+
+    await harness.setState({
+      suppressDelivery: true,
+      persistDeliveryWithoutEmit: false,
+      persistDeliveryAfterReads: undefined,
+      expireEventLogCursorOnce: false,
+      idleCounter: 10,
+    });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await harness.request("unconfirmed-send", {
       kind: "send",
