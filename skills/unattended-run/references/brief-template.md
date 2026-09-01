@@ -54,7 +54,7 @@ Objective slots:
 
 The standing operating rules. This is the *how*; the objective owns the *what*
 and the stop condition, so the charter closes by pointing back at `<DOD_REF>`.
-Keep the skill manifest structured so the hourly reminder can restore the
+Keep the skill manifest structured so the two-hour reminder can restore the
 process after compaction without copying each skill's rules.
 
 > Keep building against the plan at `<PLAN_DOC>`[ through `<SCOPE>`] in your
@@ -132,7 +132,7 @@ process after compaction without copying each skill's rules.
 > - **Context:** `/dfrysinger-skills:self-compact` — at the governing workflow's
 >   compaction points, or when context becomes noisy or repetitive, persist the
 >   complete baton and invoke and follow this skill as the final action. Do not
->   compact merely because the hourly reminder fired or while active live proof
+>   compact merely because the two-hour reminder fired or while active live proof
 >   is in progress.
 
 Add this machine-readable registry to the persisted charter. Use
@@ -144,7 +144,7 @@ replace the identifier and set `status: live` immediately. Omit
 schedule_registry:
   charter_rebrief:
     id: PENDING_CREATION
-    interval: 1h
+    interval: 2h
     status: pending
   constraint_challenge:
     id: PENDING_CREATION
@@ -227,7 +227,7 @@ challenge as exact contextual quotes.
 > worktree. Follow the required process skills below. Use rubber-duck to
 > brainstorm solutions and align on
 > paths forward whenever you get stuck. Keep the plan up to date so future agents
-> can pick it up. At run start, every phase boundary, and every hourly
+> can pick it up. At run start, every phase boundary, and every two-hour
 > re-brief, run `/dfrysinger-skills:development-loop`'s critical-path audit:
 > rebuild ready work and dependencies, assign every substantial independent
 > ready scope to an available subagent when delegation is safe, batch coherent
@@ -248,7 +248,7 @@ challenge as exact contextual quotes.
 schedule_registry:
   charter_rebrief:
     id: schedule-101
-    interval: 1h
+    interval: 2h
     status: live
   constraint_challenge:
     id: schedule-102
