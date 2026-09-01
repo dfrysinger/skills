@@ -253,6 +253,9 @@ async function writeHeartbeat() {
 
 async function sendAndConfirm({ prompt, agentMode, allowIdleDrain = false }) {
   const matchingEvents = [];
+  let eventLogCursor;
+  let eventLogCursorReset = false;
+  let sendStartedAt;
   let resolveEvent;
   const unsubscribe = session.on("user.message", (event) => {
     if (event.data.content !== prompt) return;
@@ -303,8 +306,92 @@ async function sendAndConfirm({ prompt, agentMode, allowIdleDrain = false }) {
     }
     return undefined;
   };
+  const readPersistedDelivery = async (
+    deliveries,
+    deadline = confirmationDeadline,
+    waitForNew = false,
+  ) => {
+    if (eventLogCursor === undefined || !session.rpc.eventLog?.read) {
+      return undefined;
+    }
+    try {
+      const maxPages = waitForNew ? Number.POSITIVE_INFINITY : 5;
+      for (
+        let page = 0;
+        page < maxPages && Date.now() < deadline;
+        page += 1
+      ) {
+        const liveEvent = findDelivery(deliveries);
+        if (liveEvent) return liveEvent;
+        const remainingMs = deadline - Date.now();
+        const result = await withinDeadline(
+          session.rpc.eventLog.read({
+            cursor: eventLogCursor,
+            max: 100,
+            waitMs: waitForNew ? Math.min(1_000, remainingMs) : 0,
+            types: ["user.message"],
+            agentScope: "primary",
+            includeEphemeral: false,
+          }),
+          deadline,
+          "event-log confirmation",
+        );
+        if (result.cursorStatus === "expired") {
+          eventLogCursorReset = true;
+          diagnostics.log("sdk.send.event_log_cursor_reset", {
+            cursorStatus: result.cursorStatus,
+          });
+        }
+        eventLogCursor = result.cursor;
+        const matchingPersistedEvents = result.events.filter(
+          (candidate) => {
+            if (candidate.data.content !== prompt) return false;
+            if (!eventLogCursorReset) return true;
+            const timestamp = Date.parse(candidate.timestamp);
+            return Number.isFinite(timestamp) && timestamp >= sendStartedAt;
+          },
+        );
+        const event = ["steering", "idle", "queued"]
+          .filter((delivery) => deliveries.includes(delivery))
+          .map((delivery) =>
+            matchingPersistedEvents.find(
+              (candidate) => candidate.data.delivery === delivery,
+            ),
+          )
+          .find(Boolean);
+        if (event) {
+          diagnostics.log("sdk.send.confirmed_from_event_log", {
+            delivery: event.data.delivery,
+          });
+          return event;
+        }
+        const lateLiveEvent = findDelivery(deliveries);
+        if (lateLiveEvent) return lateLiveEvent;
+        if (!result.hasMore && !waitForNew) return undefined;
+      }
+    } catch (error) {
+      diagnostics.log("sdk.send.event_log_confirmation_failed", {
+        error: errorDetails(error),
+      });
+    }
+    return undefined;
+  };
   try {
     let preexistingQueueIds;
+    if (session.rpc.eventLog?.tail) {
+      try {
+        const tail = await withinDeadline(
+          session.rpc.eventLog.tail(),
+          beforeSendSnapshotDeadline,
+          "pre-send event-log snapshot",
+        );
+        eventLogCursor = tail.cursor;
+      } catch (error) {
+        diagnostics.log("sdk.send.event_log_snapshot_failed", {
+          error: errorDetails(error),
+        });
+      }
+    }
     try {
       const pending = await withinDeadline(
         session.rpc.queue.pendingItems(),
@@ -319,18 +406,28 @@ async function sendAndConfirm({ prompt, agentMode, allowIdleDrain = false }) {
       });
     }
     diagnostics.log("sdk.send.started", { mode: "immediate", agentMode });
+    sendStartedAt = Date.now();
     const messageId = await session.send({
       prompt,
       mode: "immediate",
       ...(agentMode ? { agentMode } : {}),
     });
-    let event = await waitForDelivery(
-      ["idle", "steering", "queued"],
-      Math.min(
-        confirmationDeadline,
-        Date.now() + Math.min(2_000, confirmationTimeoutMs / 2),
-      ),
+    const initialConfirmationDeadline = Math.min(
+      confirmationDeadline,
+      Date.now() + Math.min(2_000, confirmationTimeoutMs / 2),
     );
+    let event =
+      findDelivery(["idle", "steering", "queued"]) ??
+      (await readPersistedDelivery(
+        ["idle", "steering", "queued"],
+        initialConfirmationDeadline,
+      ));
+    if (!event && Date.now() < initialConfirmationDeadline) {
+      event = await waitForDelivery(
+        ["idle", "steering", "queued"],
+        initialConfirmationDeadline,
+      );
+    }
     if (!event || event.data.delivery === "queued") {
       try {
         const pending = await withinDeadline(
@@ -455,7 +552,18 @@ async function sendAndConfirm({ prompt, agentMode, allowIdleDrain = false }) {
         );
       }
       if (!event || event.data.delivery === "queued") {
-        event = (await waitForDelivery(["idle", "steering"])) ?? event;
+        event =
+          (await readPersistedDelivery(
+            ["idle", "steering"],
+            confirmationDeadline,
+            true,
+          )) ?? event;
+        if (
+          (!event || event.data.delivery === "queued") &&
+          Date.now() < confirmationDeadline
+        ) {
+          event = (await waitForDelivery(["idle", "steering"])) ?? event;
+        }
       }
     }
     diagnostics.log(event ? "sdk.send.confirmed" : "sdk.send.unconfirmed", {
