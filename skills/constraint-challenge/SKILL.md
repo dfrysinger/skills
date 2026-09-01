@@ -27,7 +27,7 @@ The failure alone is not an event trigger. Run one challenge when that response
 matches a trigger above, folding related observations and discarded hypotheses
 that led to the same response into one evidence revision. When a diagnostic
 probe itself would change architecture, trust, authority, irreversible state,
-or a production contract, challenge that probe before it runs. A revisit
+or a production or release contract, challenge that probe before it runs. A revisit
 condition that fires without an observed failure forms its trigger immediately
 from the triggering evidence.
 

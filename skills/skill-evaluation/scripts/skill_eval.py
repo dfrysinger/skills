@@ -895,7 +895,9 @@ def run_case(
         prompt = (
             f"{prompt_body}\nCase revision: {case_revision}\n"
             "Candidate outputs and receipts are in this working directory. "
-            "Hidden evidence is under judge-reference/.\n"
+            "Hidden evidence is under judge-reference/. Use only relative paths "
+            "inside this working directory; do not inspect its parent or any "
+            "absolute path.\n"
         )
         prompt_path = run_root / f"judge-{slug}-prompt.md"
         prompt_path.write_text(prompt, encoding="utf-8")
