@@ -181,13 +181,13 @@ specific enough to be wrong: "the cache key omits the tenant id", not "caching
 is broken". Trace every hop that can change the reported result and stop there;
 a local predicate is one hop, not an expedition.
 
-An observed failure, mismatch, or fired revisit condition does not by itself
-select a design lane or trigger a constraint challenge. Complete this section's
-diagnosis with its reversible, single-purpose probes until the earliest
-verified divergence and smallest proposed response are known; do not implement
-that response meanwhile. When a diagnostic probe itself would change
-architecture, trust, authority, irreversible state, or a production contract,
-challenge that probe before it runs.
+An observed failure or mismatch does not by itself select a design lane or
+trigger a constraint challenge. Complete this section's diagnosis with its
+reversible, single-purpose probes until the earliest verified divergence and
+smallest proposed response are known; do not implement that response meanwhile.
+When a diagnostic probe itself would change architecture, trust, authority,
+irreversible state, or a production contract, challenge that probe before it
+runs.
 
 **Probe uncertain mechanisms before designing around them.** When the proposed
 fix depends on an unobserved browser or WebView operation, OS API, callback
