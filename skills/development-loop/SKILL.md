@@ -181,13 +181,30 @@ specific enough to be wrong: "the cache key omits the tenant id", not "caching
 is broken". Trace every hop that can change the reported result and stop there;
 a local predicate is one hop, not an expedition.
 
+Use this cost-ordered diagnosis ladder and do not skip a rung:
+
+1. Compare retained outputs and their metadata.
+2. Trace recorded inputs through the source and build or generation scripts.
+3. Read existing logs and use already-available diagnostic surfaces.
+4. Only then create new instrumentation, artifacts, or builds for one named
+   question the earlier rungs could not answer.
+
+Each rung is a gate. The next diagnostic action is the earliest available
+unfinished rung. A rung-4 action is authorized only when the record states what
+rungs 1-3 ruled out or why their evidence is unavailable, plus the one question
+the new evidence will answer.
+
 An observed failure or mismatch does not by itself select a design lane or
 trigger a constraint challenge. Complete this section's diagnosis with its
 reversible, single-purpose probes until the earliest verified divergence and
 smallest proposed response are known; do not implement that response meanwhile.
+Do not answer an unexplained failure by weakening or redefining the acceptance
+criterion it failed; that is a separate proposed response. Challenge a proposed
+response only when it meets a listed trigger, not merely because it edits a work
+order.
 When a diagnostic probe itself would change architecture, trust, authority,
-irreversible state, or a production contract, challenge that probe before it
-runs.
+irreversible state, or a production or release contract, challenge that probe
+before it runs.
 
 **Probe uncertain mechanisms before designing around them.** When the proposed
 fix depends on an unobserved browser or WebView operation, OS API, callback
@@ -226,14 +243,15 @@ design, tests, implementation discipline, or complete live acceptance. If a
 production edit fails to sharpen the boundary observation, the next action is
 a direct probe rather than another edit.
 
-When the failure resists reproduction — production-only, timing-dependent, no
-repro steps — force it with instrumentation, added logging, or a test that
-recreates its conditions. If it still will not surface, `rubber-duck` the trace
-for one pass, which returns either a verified divergence or one falsifiable
-hypothesis and the check that would distinguish it; run that check. A fix that
-ships on an undistinguished hypothesis says so in its durable record and is
-reviewed as a hypothesis at section 7. Carry on rather than stopping for the
-user.
+When rungs 1-3 are closed or unavailable and the failure still resists
+reproduction — production-only, timing-dependent, no repro steps — use the
+authorized rung-4 action to force it with instrumentation, added logging, or a
+test that recreates its conditions. If it still will not surface, `rubber-duck`
+the trace for one pass, which returns either a verified divergence or one
+falsifiable hypothesis and the check that would distinguish it; run that check.
+A fix that ships on an undistinguished hypothesis says so in its durable record
+and is reviewed as a hypothesis at section 7. Carry on rather than stopping for
+the user.
 
 When the failure is visual, capture it here through `visual-proof` while it
 still fails. After the edit lands there is no before to pair the fix against.
@@ -242,8 +260,14 @@ Complete when you can point at the observed failure, the traced path to it, and
 a named cause — or at a labeled hypothesis and the check that failed to settle
 it. When an uncertain runtime mechanism was involved, also record the
 hypothesis, distinguishing observation, observed result, and keep or reject
-decision. An unresolved mechanism may complete the diagnosis record, but it
-cannot authorize an implementation that depends on that mechanism.
+decision. Name the current diagnosis-ladder rung and its evidence status.
+Before naming the next diagnostic action, record `pre-probe challenge:
+required` or `pre-probe challenge: not required`, with its effects on
+architecture, trust, authority, irreversible state, and production or release
+contracts. A required challenge runs before the probe. Report a due or delivered
+scheduled challenge separately; it remains immediate and does not wait for
+failure diagnosis. An unresolved mechanism may complete the diagnosis record,
+but it cannot authorize an implementation that depends on that mechanism.
 
 ## 1. Triage the change before designing it
 
