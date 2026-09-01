@@ -181,6 +181,14 @@ specific enough to be wrong: "the cache key omits the tenant id", not "caching
 is broken". Trace every hop that can change the reported result and stop there;
 a local predicate is one hop, not an expedition.
 
+An observed failure, mismatch, or fired revisit condition does not by itself
+select a design lane or trigger a constraint challenge. Complete this section's
+diagnosis with its reversible, single-purpose probes until the earliest
+verified divergence and smallest proposed response are known; do not implement
+that response meanwhile. When a diagnostic probe itself would change
+architecture, trust, authority, irreversible state, or a production contract,
+challenge that probe before it runs.
+
 **Probe uncertain mechanisms before designing around them.** When the proposed
 fix depends on an unobserved browser or WebView operation, OS API, callback
 bridge, framework lifecycle, protocol, or external-service response, state one
@@ -333,11 +341,14 @@ revisit conditions. A design that turns out to be wrong goes back to
 
 ### Reframe gate
 
-For systemic and critical work, stop implementation and return to `design-doc`
-when a recorded revisit condition fires, or when implementation would add a
-new subsystem mainly to preserve an inherited limit or mechanism. Repeated
-movement of a failure to the next internal boundary without user-visible
-progress is evidence that the gate has fired.
+For systemic and critical work, a recorded revisit condition or evidence that
+implementation would add a new subsystem mainly to preserve an inherited limit
+or mechanism stops implementation. When an observed failure fired the gate,
+complete section 0's diagnosis before returning to `design-doc` with the
+earliest verified divergence and proposed response. For every other trigger,
+return immediately with its triggering evidence. Repeated movement of a failure
+to the next internal boundary without user-visible progress is evidence that
+the gate has fired.
 
 Also invoke [`constraint-challenge`](../constraint-challenge/SKILL.md) before
 adding a
@@ -352,6 +363,10 @@ challenger reconstructs effective rules from the actual task, component, test,
 and proof graph, so a premise need not be written down to fire this gate.
 Prioritize its three highest-leverage assumptions rather than auditing every
 default.
+
+For an observed failure, evaluate these triggers against the diagnosed response,
+not each intermediate symptom or hypothesis. Related observations from one
+diagnosis form one evidence revision and one challenge.
 
 The challenge packet also carries the relevant user statements verbatim with
 their context. Preserve each newly received user statement in the durable

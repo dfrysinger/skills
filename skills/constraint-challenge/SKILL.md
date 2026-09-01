@@ -21,9 +21,19 @@ machinery, or repeated fix grows without user-visible progress; when preserving
 completed work becomes an argument for preserving the architecture; and when
 the governing run lifecycle reports that its scheduled challenge is due.
 
-Event triggers run immediately; a caller-owned schedule is a backstop this
-skill does not own. A trigger runs only this challenge, not `dual-review`'s
-two-family review.
+For an observed failure or mismatch, `development-loop` diagnosis first
+identifies the earliest verified divergence and smallest proposed response.
+The failure alone is not an event trigger. Run one challenge when that response
+matches a trigger above, folding related observations and discarded hypotheses
+that led to the same response into one evidence revision. When a diagnostic
+probe itself would change architecture, trust, authority, irreversible state,
+or a production contract, challenge that probe before it runs. A revisit
+condition that fires without an observed failure forms its trigger immediately
+from the triggering evidence.
+
+Event triggers run immediately once formed; a caller-owned schedule is a
+backstop this skill does not own. A trigger runs only this challenge, not
+`dual-review`'s two-family review.
 
 Run the challenger in a fresh, read-only context that did not author the plan
 and distrusts both the proposed architecture and the author's rationale. It
