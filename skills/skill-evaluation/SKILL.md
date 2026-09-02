@@ -103,6 +103,22 @@ python3 "$SKILL_DIR/scripts/skill_eval.py" run CORPUS \
   --plugin-dir /path/to/plugin
 ```
 
+After changing a skill with a maintained regression corpus, run every frozen
+case together:
+
+```sh
+python3 "$SKILL_DIR/scripts/skill_eval.py" run-suite CORPUS \
+  --plugin-dir /path/to/plugin
+```
+
+Use `--case CASE_ID` repeatedly for a deliberate subset and `--workers N` to
+bound concurrent cases. Treat a subset as focused iteration, never as the
+release regression gate. For stochastic model or judge variance, use
+`--max-attempts N` to retry only cases that did not reach unanimous `PASS`;
+every attempt remains preserved and the report identifies cases that passed
+after retry. The suite command writes one aggregate report while preserving
+each case's independent run, receipts, and judgments.
+
 The runner:
 
 1. verifies the frozen case;
@@ -120,7 +136,8 @@ disabling custom instructions and built-in MCP servers; its receipt states that
 the authentication home was shared.
 
 Complete when the report identifies the exact skill revision, case revision,
-candidate outputs, and independent judgments.
+candidate outputs, and independent judgments. After a skill change, completion
+also requires the maintained full suite to pass when one exists.
 
 ## 6. Interpret and improve
 
@@ -128,6 +145,11 @@ Mechanical success means the run completed and its receipts match. Behavioral
 success requires unanimous `PASS` from independent Claude and GPT judges
 without seeing case-specific language in the skill. Any `FAIL` makes the result
 `FAIL`; otherwise any `UNANSWERABLE` makes it `UNANSWERABLE`.
+
+For a suite with bounded retries, each attempt keeps those semantics. The case
+passes when one identical-byte attempt reaches unanimous `PASS`; otherwise its
+last completed attempt determines the case result. Never discard failed
+attempts or describe a retry-assisted pass as deterministic.
 
 Classify a failure before editing:
 
@@ -158,4 +180,6 @@ The evaluation is complete only when:
 - at least two independent judges assess behavioral correctness for a material
   skill change;
 - a new case does not change any older case root digest; and
+- a maintained regression suite runs through one command and every included
+  case passes after a target-skill change; and
 - no evaluation repair introduces case-specific hints into the target skill.

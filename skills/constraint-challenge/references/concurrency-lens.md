@@ -28,6 +28,8 @@ reachable overlap, and the concrete failure their interleaving causes.
 - Platform-serialized execution does not justify multi-writer machinery.
 - Cancellation rules out overlap only when evidence shows termination is
   synchronous and effective before another writer starts.
+- An authority-anchored second writer with a named triggering event may justify
+  coordination before that event; record the authority and reachable overlap.
 - Hypothetical future callers do not justify present machinery.
 
 ## Actor topology per protected resource

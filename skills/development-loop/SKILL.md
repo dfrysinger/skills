@@ -102,6 +102,11 @@ resumption, at each phase boundary, and whenever the current action is waiting:
    relevant user statements as exact quotes with their available context,
    including statements made since the prior completed challenge.
 
+Before returning a status, plan, or next action, audit the draft against the
+applicable phase-loop rules above. Repair any ownership, diagnosis-order,
+critical-path, or proof-gate contradiction rather than leaving the governing
+rule implicit.
+
 Parallelism stops at an actual dependency or exclusive boundary. One proof
 owner and one running candidate remain mandatory during live proof, and review,
 broad CI, or PR work stays closed until the affected live claims pass.
@@ -1067,8 +1072,9 @@ literal `findings: []`.
   state, not whether an assigned agent is active, idle, blocked, failed, or
   complete. Read the agent's explicit result or handoff first, then inspect the
   artifact it delivered. When no current result exists, report `unknown` and
-  request status rather than guessing. Never prolong a completed assignment
-  because its worktree is dirty or changing.
+  request status rather than guessing. Do not let a replacement, coordinator,
+  or other writer act before explicit ownership transfer. Never prolong a
+  completed assignment because its worktree is dirty or changing.
 - **Partial proof promoted to pass.** Reproducing the failure, reaching login,
   or proving one downstream result cannot open the review gate when another
   acceptance checkpoint is broken or unseen.

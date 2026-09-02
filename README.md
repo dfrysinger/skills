@@ -177,7 +177,7 @@ Two companion tools complete the workflow without pretending to be skills:
 ### Skill authoring
 
 - **[`skill-create`](./skills/skill-create/SKILL.md):** Create and validate a reusable skill without requiring the full Dreaming lifecycle.
-- **[`skill-evaluation`](./skills/skill-evaluation/SKILL.md):** Build phase-isolated behavioral regression cases for any agent skill and obtain hidden-reference judgments from independent model families.
+- **[`skill-evaluation`](./skills/skill-evaluation/SKILL.md):** Build phase-isolated behavioral regression cases for any agent skill, run a complete corpus through one suite command, and obtain hidden-reference judgments from independent model families.
 - **[`writing-great-skills`](./skills/writing-great-skills/SKILL.md):** Structure skills so agents invoke them predictably and can follow them without excess context.
 
 `writing-great-skills` is user-invoked and carries no automatic model-facing

@@ -12,7 +12,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,6 +38,10 @@ def read_json(path: Path) -> dict:
 
 def utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def utc_instant() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def ensure_case_id(case_id: str) -> None:
@@ -108,6 +114,7 @@ Read the candidate outputs and receipts, then the hidden criteria and reference
 evidence. Judge whether the target skill exhibited the required behavior, not
 whether it copied reference wording. Identify overcorrection, unsupported
 claims, and any evidence-backed boundary the candidate weakened.
+{JUDGE_RUNTIME_CONTRACT}
 
 Return only JSON with:
 {{
@@ -118,6 +125,18 @@ Return only JSON with:
   "overcorrections": [],
   "generalized_skill_defect": null
 }}
+"""
+
+
+JUDGE_RUNTIME_CONTRACT = """Before returning `FAIL`, re-read every candidate
+output in full. For each entry in `missed`, name the criterion and either quote
+or precisely locate the candidate statement that contradicts it, or state that
+no behaviorally equivalent statement exists after checking the complete
+output. Do not report behavior as absent when it appears elsewhere under
+equivalent wording.
+Use `UNANSWERABLE` only when the hidden criteria's unanswerable condition is
+met, and name each decisive missing artifact or fact in `missed`; never return
+a bare `UNANSWERABLE`.
 """
 
 
@@ -436,7 +455,7 @@ def parse_run(
     skill: str,
     expected_model: str,
     cwd: Path,
-    require_skill: bool,
+    require_skill: bool | None,
 ) -> dict:
     messages: list[str] = []
     result_event = None
@@ -507,7 +526,7 @@ def parse_run(
             f"run used model identities {sorted(models)!r}, "
             f"expected {expected_model!r}"
         )
-    if skill_loaded != require_skill:
+    if require_skill is not None and skill_loaded != require_skill:
         action = "invoke" if require_skill else "not invoke"
         raise ValueError(f"run must {action} target skill {skill!r}")
     return {
@@ -716,6 +735,8 @@ def validate_judgment(judgment: dict, model: str) -> None:
         judgment["generalized_skill_defect"], str
     ):
         raise ValueError("generalized_skill_defect must be a string or null")
+    if judgment["verdict"] == "UNANSWERABLE" and not judgment["missed"]:
+        raise ValueError("UNANSWERABLE judgment must name decisive missing evidence")
 
 
 def model_family(model: str) -> str:
@@ -759,6 +780,8 @@ def run_case(
     effort: str,
     home_mode: str,
     timeout_seconds: int,
+    copilot_identity_record: dict | None = None,
+    harness_identity_record: dict | None = None,
 ) -> Path:
     if timeout_seconds <= 0:
         raise ValueError("timeout-seconds must be positive")
@@ -783,8 +806,11 @@ def run_case(
     snapshot_plugin(plugin_dir, pinned_plugin)
     identity = skill_identity(pinned_plugin, definition["target_skill"])
     write_json(run_root / "skill-identity.json", identity)
-    write_json(run_root / "copilot-identity.json", copilot_identity(copilot))
-    harness_identity = {
+    write_json(
+        run_root / "copilot-identity.json",
+        copilot_identity_record or copilot_identity(copilot),
+    )
+    harness_identity = harness_identity_record or {
         "path": str(Path(__file__).resolve()),
         "sha256": digest(Path(__file__).resolve()),
     }
@@ -829,7 +855,7 @@ def run_case(
                 skill=definition["target_skill"],
                 expected_model=model,
                 cwd=workdir,
-                require_skill=True,
+                require_skill=None if phase.get("resume") else True,
             )
             content = run_result["answer"]
             validate_candidate(content, phase)
@@ -892,6 +918,8 @@ def run_case(
         criteria = frozen / judge["criteria_file"]
         shutil.copyfile(criteria, workdir / "criteria.md")
         prompt_body = (frozen / judge["prompt_file"]).read_text(encoding="utf-8")
+        if JUDGE_RUNTIME_CONTRACT not in prompt_body:
+            prompt_body = f"{prompt_body.rstrip()}\n\n{JUDGE_RUNTIME_CONTRACT}"
         prompt = (
             f"{prompt_body}\nCase revision: {case_revision}\n"
             "Candidate outputs and receipts are in this working directory. "
@@ -1012,6 +1040,209 @@ def run_case(
     return run_root
 
 
+def result_from_run(run_root: Path) -> str:
+    judgments = [
+        read_json(path)["verdict"]
+        for path in sorted(run_root.glob("judgment-*.json"))
+    ]
+    if judgments and all(verdict == "PASS" for verdict in judgments):
+        return "PASS"
+    if "FAIL" not in judgments and "UNANSWERABLE" in judgments:
+        return "UNANSWERABLE"
+    return "FAIL"
+
+
+def run_suite(
+    root: Path,
+    plugin_dir: Path,
+    copilot: Path,
+    model: str,
+    effort: str,
+    home_mode: str,
+    timeout_seconds: int,
+    workers: int,
+    case_ids: list[str] | None = None,
+    max_attempts: int = 1,
+) -> tuple[Path, bool]:
+    if workers <= 0:
+        raise ValueError("workers must be positive")
+    if max_attempts <= 0:
+        raise ValueError("max attempts must be positive")
+    corpus = load_corpus(root)
+    selected = case_ids or corpus["cases"]
+    if not selected:
+        raise ValueError("the corpus contains no cases")
+    if len(selected) != len(set(selected)):
+        raise ValueError("suite case IDs must be unique")
+    unknown = sorted(set(selected) - set(corpus["cases"]))
+    if unknown:
+        raise ValueError(f"unknown suite cases: {unknown}")
+
+    started_at = utc_instant()
+    started_clock = time.monotonic()
+    suite_root = root / "suite-runs" / f"{utc_stamp()}-{uuid.uuid4().hex[:8]}"
+    suite_root.mkdir(parents=True)
+    harness_snapshot = suite_root / "skill_eval.py"
+    shutil.copyfile(Path(__file__).resolve(), harness_snapshot)
+    harness_identity_record = {
+        "path": str(harness_snapshot),
+        "sha256": digest(harness_snapshot),
+    }
+    suite_runtime = tempfile.TemporaryDirectory(prefix="skill-evaluation-suite-")
+    frozen_copilot = Path(suite_runtime.name) / "copilot"
+    shutil.copy2(copilot.resolve(), frozen_copilot)
+    copilot_identity_record = copilot_identity(frozen_copilot)
+    copilot_identity_record["source_path"] = str(copilot.resolve())
+    attempts_by_case = {case_id: [] for case_id in selected}
+    failures = []
+    pending = list(selected)
+    for attempt_number in range(1, max_attempts + 1):
+        if not pending:
+            break
+        next_pending = []
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    run_case,
+                    root,
+                    case_id,
+                    plugin_dir,
+                    frozen_copilot,
+                    model,
+                    effort,
+                    home_mode,
+                    timeout_seconds,
+                    copilot_identity_record,
+                    harness_identity_record,
+                ): case_id
+                for case_id in pending
+            }
+            for future in as_completed(futures):
+                case_id = futures[future]
+                try:
+                    run_root = future.result()
+                    attempt = {
+                        "attempt": attempt_number,
+                        "result": result_from_run(run_root),
+                        "run_path": str(run_root.relative_to(root)),
+                    }
+                    attempts_by_case[case_id].append(attempt)
+                    if attempt["result"] != "PASS":
+                        next_pending.append(case_id)
+                except Exception as error:
+                    attempt = {
+                        "attempt": attempt_number,
+                        "result": "ERROR",
+                        "error_type": type(error).__name__,
+                        "error": str(error),
+                    }
+                    attempts_by_case[case_id].append(attempt)
+                    if attempt_number < max_attempts:
+                        next_pending.append(case_id)
+                    else:
+                        failures.append({"case_id": case_id, **attempt})
+        pending = next_pending
+
+    results = []
+    for case_id in selected:
+        attempts = attempts_by_case[case_id]
+        try:
+            definition = read_json(frozen_case_path(root, case_id) / "case.json")
+        except (OSError, ValueError, json.JSONDecodeError):
+            try:
+                definition = read_json(root / "cases" / case_id / "case.json")
+            except (OSError, ValueError, json.JSONDecodeError):
+                definition = {}
+        successful = next(
+            (attempt for attempt in attempts if attempt["result"] == "PASS"),
+            None,
+        )
+        completed_attempts = [
+            attempt for attempt in attempts if attempt["result"] != "ERROR"
+        ]
+        final_attempt = successful or (
+            completed_attempts[-1] if completed_attempts else None
+        )
+        results.append(
+            {
+                "case_id": case_id,
+                "target_skill": definition.get("target_skill", "unknown"),
+                "cohort": definition.get("cohort", "default"),
+                "result": "PASS" if successful else (
+                    final_attempt["result"]
+                    if final_attempt and final_attempt["result"] != "ERROR"
+                    else "FAIL"
+                ),
+                "run_path": final_attempt.get("run_path") if final_attempt else None,
+                "attempt_count": len(attempts),
+                "attempts": attempts,
+            }
+        )
+
+    results.sort(key=lambda item: item["case_id"])
+    failures.sort(key=lambda item: item["case_id"])
+    passed = not failures and all(item["result"] == "PASS" for item in results)
+    completed_at = utc_instant()
+    duration_seconds = round(time.monotonic() - started_clock, 3)
+    write_json(
+        suite_root / "suite-result.json",
+        {
+            "schema_version": 1,
+            "result": "PASS" if passed else "FAIL",
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "duration_seconds": duration_seconds,
+            "model": model,
+            "effort": effort,
+            "max_attempts": max_attempts,
+            "home_mode": home_mode,
+            "plugin_dir": str(plugin_dir),
+            "cases": results,
+            "failures": failures,
+        },
+    )
+
+    report = [
+        "# Skill evaluation suite",
+        "",
+        f"**Result: {'PASS' if passed else 'FAIL'}**",
+        "",
+        f"- Cases requested: {len(selected)}",
+        f"- Cases completed: "
+        f"{sum(any(a['result'] != 'ERROR' for a in item['attempts']) for item in results)}",
+        f"- Execution failures: {len(failures)}",
+        f"- Duration: {duration_seconds:.3f} seconds",
+        f"- Candidate model: `{model}` ({effort})",
+        f"- Maximum attempts per case: {max_attempts}",
+        f"- Cases passing after retry: "
+        f"{sum(item['result'] == 'PASS' and item['attempt_count'] > 1 for item in results)}",
+        f"- Authentication home: `{home_mode}`",
+        "",
+        "## Cases",
+        "",
+        "| Case | Cohort | Skill | Attempts | Result |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for item in results:
+        report.append(
+            f"| `{item['case_id']}` | `{item['cohort']}` | "
+            f"`{item['target_skill']}` | {item['attempt_count']} | "
+            f"**{item['result']}** |"
+        )
+    if failures:
+        report.extend(["", "## Execution failures", ""])
+        for failure in failures:
+            report.append(
+                f"- `{failure['case_id']}`: {failure['error_type']}: "
+                f"{failure['error']}"
+            )
+    (suite_root / "SUITE-REPORT.md").write_text(
+        "\n".join(report) + "\n", encoding="utf-8"
+    )
+    suite_runtime.cleanup()
+    return suite_root, passed
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser()
     sub = result.add_subparsers(dest="command", required=True)
@@ -1047,6 +1278,22 @@ def parser() -> argparse.ArgumentParser:
         "--home-mode", choices=("existing", "isolated"), default="existing"
     )
     run.add_argument("--timeout-seconds", type=int, default=1200)
+
+    suite = sub.add_parser("run-suite")
+    suite.add_argument("corpus", type=Path)
+    suite.add_argument("--case", action="append")
+    suite.add_argument("--plugin-dir", type=Path, required=True)
+    suite.add_argument(
+        "--copilot", type=Path, default=Path.home() / ".local/bin/copilot"
+    )
+    suite.add_argument("--model", default="gpt-5.6-sol")
+    suite.add_argument("--effort", default="high")
+    suite.add_argument(
+        "--home-mode", choices=("existing", "isolated"), default="existing"
+    )
+    suite.add_argument("--timeout-seconds", type=int, default=1200)
+    suite.add_argument("--workers", type=int, default=3)
+    suite.add_argument("--max-attempts", type=int, default=1)
     return result
 
 
@@ -1080,6 +1327,22 @@ def main(argv: list[str] | None = None) -> int:
                     args.timeout_seconds,
                 )
             )
+        elif args.command == "run-suite":
+            suite_root, passed = run_suite(
+                root,
+                args.plugin_dir.expanduser().resolve(),
+                args.copilot.expanduser().resolve(),
+                args.model,
+                args.effort,
+                args.home_mode,
+                args.timeout_seconds,
+                args.workers,
+                args.case,
+                args.max_attempts,
+            )
+            print(suite_root)
+            if not passed:
+                return 1
     except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as error:
         print(f"skill-evaluation: {error}", file=sys.stderr)
         return 1

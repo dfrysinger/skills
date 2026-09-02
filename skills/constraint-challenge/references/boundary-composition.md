@@ -26,6 +26,13 @@ A proposed but unbuilt custom boundary that adds no independently required
 property is not the minimum design; mark its necessity `FAILED`. Existing
 dependencies establish that it can be built, not that it is needed.
 
+Separate payload production from publication or application. When the
+supported journey supplies an already authoritative payload, the actor that
+publishes or applies it does not inherit the compiler, planner, mock,
+compatibility, resume, or proof machinery that produced or described it.
+Retain each upstream mechanism only when the selected journey independently
+requires that actor to produce the payload.
+
 Record each material operation family's `node_id`. In section 4.2, carry the
 same `necessity_status` into an active node or retain it in this lens result
 when the node is deferred. Either form participates in the verdict; do not
