@@ -31,6 +31,40 @@ or a production or release contract, challenge that probe before it runs. A revi
 condition that fires without an observed failure forms its trigger immediately
 from the triggering evidence.
 
+Before launching a challenger, the caller persists a short **challenge
+admission** in the durable baton:
+
+```text
+challenge_admission: {
+  current_record, pending_action, changed_inputs,
+  trigger_kind, decision: REUSE | DELTA | FULL, reason
+}
+```
+
+`REUSE` is mandatory when the current record names the same evidence packet,
+work-order revision, work graph, and action, or when new evidence and the next
+action remain wholly inside its permitted scope. A consumed action, a failed
+attempt, new evidence, artifact movement, elapsed time, or a prior record's
+instruction to run another challenge does not independently form a trigger.
+The caller first diagnoses the result and tests the resulting proposed response
+against the trigger list. When no trigger matches, record `REUSE` and continue
+under the current gate without launching this skill.
+
+Use `DELTA` when a trigger is real but the user job, authority anchors,
+requirements, selected architecture path, and trust domains remain current.
+Give the blind pass the prior pass-1 record plus only the new sealed evidence;
+it records which prior conclusions the evidence invalidates. Pass 2 receives
+the prior final record, current proposal delta, and changed work graph. Use
+`FULL` when no current record exists or when the job, authority, required
+property, selected architecture path, or trust-domain map changed.
+
+Admission classifies what the proposed response changes, not whether that
+change is justified. A response that adds or relaxes a permission, trust
+boundary, subsystem, or other triggered mechanism remains a real `DELTA` or
+`FULL` trigger even when the challenge later marks its necessity `FAILED`.
+Preserve the admitted `trigger_kind` in the final record; do not erase the
+trigger merely because the verdict rejects the proposal.
+
 Event triggers run immediately once formed; a caller-owned schedule is a
 backstop this skill does not own. A trigger runs only this challenge, not
 `dual-review`'s two-family review.
@@ -59,14 +93,20 @@ Persist the record in the work order or durable baton and return to the
 governing workflow with its verdict and gate. A pass-1 record is current only
 for the exact evidence-packet revision it reviewed. A final record is current
 only when it also names the exact work-order revision and work graph it
-reviewed and no mandatory event or scheduled trigger fired afterward. Reuse one
-current record whose gate permits the exact pending action instead of rerunning
-the challenge for the same revisions, work graph, and action.
+reviewed and no mandatory event or scheduled trigger fired afterward. Later
+runtime evidence does not become reviewed evidence, but a persisted `REUSE`
+admission keeps the record's campaign gate applicable when diagnosis confirms
+that the evidence invalidates none of its subject, authority, trust, acceptance,
+or effect invariants. Reuse one applicable record whose gate permits the exact
+pending action instead of rerunning the challenge.
 
 Budget 20 minutes: the three **load-bearing** assumptions selected in section
 4.3 plus the material mechanisms added since the prior completed record. When
 that slice cannot establish a verdict, return `UNKNOWN` naming the smallest
-missing evidence rather than widening into a repository audit.
+missing evidence rather than widening into a repository audit. Record
+completeness comes from covering that bounded slice, not from repeating
+unchanged inventories. A delta record references unchanged sections by content
+hash and writes only invalidated or added entries in full.
 
 ## 2. Provenance is not authority
 
@@ -389,6 +429,14 @@ verified authority anchor or at a finding that the enclosing architecture is
 unsupported; replacing one leaf while preserving an unsupported parent is not a
 minimum-design result.
 
+When one challenge-authorized diagnostic or proof mechanism produces no
+user-visible progress and the proposed response is another mechanism on the
+same causal branch, the parent premise becomes mandatory active scope. Compare
+removing that parent against the user outcome before authorizing the next
+descendant. A second descendant may proceed only when positive evidence shows
+the parent-removal path is incompatible with a required property. Do not let a
+chain of individually narrow probes substitute for this parent counterfactual.
+
 Use these traces to confirm, clear, or overturn each provisional
 `necessity_status`. Where a trace exposes a higher unsupported parent, swap it
 into the active set and rerank within those three rather than expanding to a
@@ -437,6 +485,13 @@ the active nodes and fired lens results:
 - `CONTINUE` requires every node needed by the current action to be
   `SUPPORTED`.
 
+When `NARROW` removes an unsupported parent but leaves a simpler supported path,
+the current proposal remains blocked. Name the exact corrected successor
+campaign, its retained invariants, and whether its changed work order requires
+`DELTA` or `FULL` reconciliation. Do not leave the next step as an unspecified
+"rechallenge," and do not claim the corrected campaign is already cleared when
+it was absent from the reviewed work graph.
+
 The architectural path is the end-to-end route from the user's trigger to the
 observable outcome and required trust properties, not every internal branch of
 the work order. Removing a subsystem, many dependent tasks, or substantial
@@ -456,12 +511,39 @@ action or missing evidence changes the work order or evidence packet and a new
 challenge clears that scope. Recorded statuses, dispositions, verdict, gate,
 and scopes agree, and the verdict is never softened to preserve completed work.
 
+Scope a `CLEAR` or `PARTIAL` permission to the smallest coherent campaign that
+can produce the observable result, not automatically to one command. The
+record names campaign invariants, permitted setup-only retries, terminal
+conditions, and invalidation predicates. Reversible retries remain inside the
+same clearance only while subject bytes, authority, trust boundaries,
+acceptance criteria, and persistent or remote effects are unchanged. Use a
+one-shot permission when repetition itself adds authority, creates an
+irreversible effect, changes the evidence subject, or can hide the failed
+state.
+
+A record may specify a conditional revisit predicate, tied to a concrete
+future event and proposed response. It must not require another challenge
+merely because the permitted action ran, completed, or failed. The predicate
+forms a trigger only when its named evidence occurs and diagnosis selects the
+named material response.
+
 ## 7. Record
 
-Persist this record in the work order or durable baton. Braces mark nested keys
-and brackets mark repeated records; both are written out in full:
+Persist this record in the work order or durable baton. A `FULL` record writes
+the complete shape below. A `DELTA` record starts with
+`record_mode: DELTA`, `inherits_record: {path, sha256}`, and
+`invalidated_ids: []`; it writes changed entries in full and records inherited
+unchanged sections or entries under `inherited_ids`. A top-level field name is
+its section ID. Repeated entries use their existing `requirement_id`,
+`candidate_id`, or `node_id`; an unkeyed repeated section is inherited only as
+one whole section by field name and hash, or rewritten in full. Braces mark
+nested keys and brackets mark repeated records:
 
 ```text
+record_mode: FULL | DELTA
+inherits_record: {path, sha256} | null
+invalidated_ids: []
+inherited_ids: [{id, sha256}]
 reviewed_at:
 inputs: {evidence_packet_revision, work_order_revision, work_graph_cutoff, evidence_sources}
 quarantine: [{premise, disposition, independent_trace_or_exclusion}]
@@ -497,12 +579,18 @@ verdict: CONTINUE | NARROW | REFRAME | ESCALATE | UNKNOWN
 gate_status: CLEAR | PARTIAL | BLOCKED
 blocked_scope:
 permitted_scope:
+campaign: {invariants, permitted_retries, terminal_conditions, invalidation_predicates}
+revisit_predicates: [{event, proposed_response, trigger_kind}]
 ```
 
 ## 8. Complete when
 
 - The record names the exact evidence-packet revision and, after pass 2, the
   exact work-order revision and work-graph cutoff.
+- A `DELTA` record names and hash-verifies its inherited record, writes every
+  invalidated or added entry in full, and identifies every unchanged inherited
+  section or entry by stable ID and content hash. Use `FULL` instead when that
+  inheritance would be ambiguous.
 - Every `authority.direct_user_quotes` entry byte-matches its named source
   record, and interpretation sits outside that field.
 - Every distinct material architecture-shaped premise from pass 1 carries a
@@ -529,3 +617,7 @@ permitted_scope:
   and is reflected in the verdict even when that node is deferred.
 - One verdict, its derived `gate_status`, and any `PARTIAL` scopes are
   persisted and consistent with the recorded statuses.
+- Every executable permission names campaign invariants, retry and terminal
+  behavior, and the events that invalidate the clearance. Every revisit
+  predicate is conditional on named evidence and a material proposed response;
+  completion, failure, or consumption alone never requires another challenge.

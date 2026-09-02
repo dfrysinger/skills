@@ -87,7 +87,14 @@ resumption, at each phase boundary, and whenever the current action is waiting:
    Before advancing the next action, require either a `CLEAR` gate or a
    `PARTIAL` gate whose `permitted_scope` contains that exact action and whose
    `blocked_scope` does not. Stop work under a `BLOCKED` gate or outside a
-   `PARTIAL` gate's permitted scope. Invoke
+   `PARTIAL` gate's permitted scope. Before invoking, persist the challenge
+   admission tuple from
+   [`constraint-challenge`](../constraint-challenge/SKILL.md): current record,
+   pending action, changed inputs, named trigger, and `REUSE`, `DELTA`, or
+   `FULL` decision. A consumed action, failed attempt, new evidence, or prior
+   instruction to run another challenge is not a trigger; diagnose first and
+   evaluate the proposed response. Reuse a current record whenever its gate
+   still covers that response. Invoke
    [`constraint-challenge`](../constraint-challenge/SKILL.md)
    immediately when its design or charter changed, a scope-expansion trigger
    fired, or the governing run lifecycle reports a scheduled challenge due.
@@ -396,6 +403,14 @@ default.
 For an observed failure, evaluate these triggers against the diagnosed response,
 not each intermediate symptom or hypothesis. Related observations from one
 diagnosis form one evidence revision and one challenge.
+
+When a challenge-cleared diagnostic or proof mechanism makes no user-visible
+progress and diagnosis proposes another mechanism on the same causal branch,
+make the parent premise an active counterfactual before authorizing the next
+probe. Do not preserve a proof harness, adapter, or inherited mechanism merely
+because the prior action was consumed. Another challenge is due only when the
+new response independently matches a trigger; otherwise reuse the current
+campaign clearance.
 
 The challenge packet also carries the relevant user statements verbatim with
 their context. Preserve each newly received user statement in the durable
@@ -982,13 +997,14 @@ unverified criteria, and covered post-proof deltas. For systemic and critical
 work, it also carries the
 constraint-provenance location, open revisit conditions, current reframe
 status, the challenge record's `reviewed_at`, `gate_status`, `blocked_scope`,
-and `permitted_scope`, any unserviced event trigger, exact user quotes received
-since that review, and the charter-owned schedule registry; persist any `OPEN`
-reframe record before compacting. Use the existing committed repo plan/design
-for systemic or critical work, and an existing issue, handoff, or named session
-artifact for bounded work. The summary points to this durable record; it does
-not recreate its evidence. When you are still stuck after a compact,
-`rubber-duck` before trying more variations.
+and `permitted_scope`, campaign invariants and invalidation predicates, the
+latest challenge-admission decision, any unserviced event trigger, exact user
+quotes received since that review, and the charter-owned schedule registry;
+persist any `OPEN` reframe record before compacting. Use the existing committed
+repo plan/design for systemic or critical work, and an existing issue, handoff,
+or named session artifact for bounded work. The summary points to this durable
+record; it does not recreate its evidence. When you are still stuck after a
+compact, `rubber-duck` before trying more variations.
 
 ## Rabbit-hole stop rules
 
@@ -1004,6 +1020,11 @@ Stop and re-scope when any occurs:
 - round 3 introduces a new defect class unrelated to the fix delta;
 - review effort exceeds implementation effort without identifying a new
   must-fix risk;
+- a challenge record treats completion, failure, consumption, or new evidence
+  as an automatic reason for another challenge instead of naming a material
+  proposed response and trigger;
+- consecutive challenge-cleared probes move down one causal branch without
+  first testing removal of the parent premise;
 - the same behavior is being encoded in a functional test, architecture guard,
   design invariant, and E2E without each layer adding distinct evidence.
 
