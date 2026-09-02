@@ -105,8 +105,10 @@ Budget 20 minutes: the three **load-bearing** assumptions selected in section
 that slice cannot establish a verdict, return `UNKNOWN` naming the smallest
 missing evidence rather than widening into a repository audit. Record
 completeness comes from covering that bounded slice, not from repeating
-unchanged inventories. A delta record references unchanged sections by content
-hash and writes only invalidated or added entries in full.
+unchanged inventories in a delta record. Every record still carries each
+required property and retained product or security invariant needed to define
+the minimum path and executable scope. A delta record references unchanged
+sections by content hash and writes only invalidated or added entries in full.
 
 ## 2. Provenance is not authority
 
@@ -253,7 +255,7 @@ Each candidate records:
 - `operations` and `effects` — what it can do and what persistent or external
   effects it produces; classification derives from these alone, never from the
   policy or component label that introduced it;
-- `requirements` — one entry per `requirement_id` it could bear on, with a
+- `requirements` — one entry for every `requirement_id`, with a
   pass-1 disposition of `PROVIDES`, `MAY_PROVIDE`, or `NOT_RELEVANT`, where
   `NOT_RELEVANT` holds only when none of the recorded effects can produce any
   part of that requirement;
@@ -266,7 +268,10 @@ Every authority channel that can exercise a protected capability is also a
 candidate: when one control narrows a capability and another service, tool,
 adapter, or side channel recreates it for the same actor, they are one
 boundary, and the first control earns no credit for a restriction the second
-bypasses.
+bypasses. Reconcile the recreated effect against the denied effect before
+selecting either channel; authentication, journaling, or existing use of the
+second channel proves that it is controlled, not that the bypassed capability
+is necessary.
 
 A candidate that enters the ledger stays in it through pass 2.
 
@@ -305,28 +310,57 @@ Resolve every recorded candidate/requirement pair exactly once:
 - `UNKNOWN` — names the decisive missing evidence, which is never existing
   implementation, completed proof, or possible usefulness.
 
-Rejection requires positive evidence of incompatibility. Never infer a
-candidate is ephemeral, local, single-run, or otherwise incapable merely
-because persistence, restart, topology, or production wiring evidence is
-absent; resolve that pair `UNKNOWN`.
+Rejection requires positive evidence of incompatibility. When persistence,
+restart, topology, or production wiring bears on a recorded requirement or
+evidenced actor lifecycle, never infer a candidate is ephemeral, local,
+single-run, or otherwise incapable merely because that evidence is absent;
+resolve that pair `UNKNOWN`. When it bears on neither, do not use its absence
+to discount the candidate.
 
 Compare against the required property, not the incumbent ownership topology.
 An existing actor, service, process, or resource placement is not a concrete
 incompatibility unless an authority anchor requires that placement itself.
+Likewise, an alternative's missing evidence matters only when it bears on the
+recorded observable result for the actual supported actors and lifecycle. Do
+not reject or discount a substitute for lacking an incumbent-specific
+ownership model, cross-run lifetime, production wiring, or coordination
+semantic that no requirement or evidenced topology demands.
+The absence of a current interface or adapter is missing wiring, not a
+concrete incompatibility, unless authority requires the existing interface
+itself. Compare the smallest wiring needed for the substitute against the
+machinery the incumbent retains.
 
 Reopen a pass-1 disposition whenever pass 2 reveals an additional operation,
 permission, lifecycle, or effect: expand the candidate's `operations` and
 `effects` first, then resolve again. The pass-1 label never overrides newly
 visible capability evidence.
 
+Pass 2 does not manufacture authority from proposal detail. It may add a
+required property only when a newly visible operation or effect creates a
+reachable failure of the pass-1 job, authority, or trust boundary. A work
+order, design, charter, test, proof, artifact manifest, or internally coherent
+implementation cannot add an actor, outcome, or required property merely by
+describing the challenged mechanism.
+
 ### 4.2 Build the material scope tree
 
 Material scope is finite: the nodes present in the changed work graph and
 proposal since the prior completed record, plus each ancestor a reverse trace
-reaches from them. Nothing outside that set is in scope. Identify each node's
-identity, parent, and kind, then assign its provisional rank. Persist the full
-section 7 fields only for active nodes selected in section 4.3; deferred nodes
-retain their ID, rank, and deferral reason.
+reaches from them. It also includes any exact direct user decision that changes
+the supported caller, limits the agent or team's operational ownership, or
+explicitly removes work from scope, even when that excluded work is absent from
+the changed graph. Record that authority and its required action under
+`scope_avoided_or_added`; graph omission cannot erase a direct scope limit.
+Nothing else outside that set is in scope. Identify each node's identity,
+parent, and kind, then assign its provisional rank. Persist the full section 7
+fields only for active nodes selected in section 4.3; deferred nodes retain
+their ID, rank, and deferral reason.
+
+A binding acceptance criterion in the current work order remains in material
+scope for necessity analysis even when a charter calls it deferred,
+non-blocking for the current phase, or scheduled later. Sequencing controls
+when work runs; it does not supply authority or preserve an unsupported future
+gate.
 
 For each active node, comparison closure is a substitution invariant. Its
 `alternatives` holds the incumbent and every ledger candidate that could
@@ -348,6 +382,21 @@ The incumbent support rule follows from that set:
   the same missing evidence;
 - a substitute alternative `SELECTED` on a simpler path makes the node's
   necessity `FAILED`.
+
+Run an **incumbency check** before assigning `SUPPORTED` or `RETAIN`. Derive
+the actual actors and operations from the job, then remove hypothetical actors
+and actors created only by the incumbent machinery. Trace the mechanism to an
+authority anchor independent of the proposal; an accepted design statement
+that specifies the mechanism remains `claimed_authority`, not an
+`authority_anchor`. Apply missing-evidence standards symmetrically. Existing
+wiring, completed proof, and production use do not break a tie with a simpler
+substitute whose corresponding evidence is also missing.
+
+Apply that check to every incumbent placed on
+`minimum_design.simplest_existing_path`, not only to the three active nodes. A
+genuine simpler substitute left `UNKNOWN` makes the selected-path mechanism
+and verdict unresolved; deferring its comparison cannot leave the incumbent
+`SELECTED`.
 
 In section 4.2, reconcile every pass-1 and pass-2 lens result onto its material
 node. A lens-assigned `FAILED` or `UNKNOWN` overrides a weaker result from the
@@ -379,6 +428,8 @@ Assign transition dispositions consistently:
 Removing or reframing a node excludes every descendant whose only supported
 caller or property came through it; a descendant survives only on an
 independently evidenced caller or required property outside the removed path.
+Such a descendant cannot be labeled orthogonal or deferred to preserve it from
+the failed ancestor's disposition.
 
 ### 4.3 Rank the load-bearing three
 
@@ -397,9 +448,18 @@ steps from the user-visible outcome. Carry the three highest into
 `scope_tree.deferred` as `node_id`, `rank`, and deferral reason, naming missing
 evidence only when evidence is the reason.
 
+Nodes made mandatory by a fired lens or section 4.4 rule outrank discretionary
+nodes. When more than three are mandatory, inspect the three highest, record
+the unexamined mandatory nodes separately from ordinary deferrals, and return
+`UNKNOWN` naming them; no gate may clear work that overlaps them.
+
 When the resource-demand lens fires, its largest weakly authorized multiplier
 is mandatory active scope and displaces a lower-ranked node. It cannot be
-deferred while a dependent boundary, limit, or optimization is selected.
+ordinarily deferred while a dependent boundary, limit, or optimization is
+selected.
+When excessive demand motivates a proposed limit, the mechanism multiplying
+that demand is an ancestor in active scope; analyzing only the limit or its
+value does not satisfy the resource-demand lens.
 
 ### 4.4 Trace, peel, and run counterfactuals
 
@@ -422,12 +482,37 @@ For each active node:
   fallback plan, not a counterfactual; where neither result can be
   established, return `UNKNOWN`.
 
+For an assurance or proof node, decompose the protected property, the subject
+that must carry it, and the proof method. When the proof method's necessity
+fails, trace the narrow property independently and state the minimum evidence
+gate that preserves it on the supported path. Exclude excess assurance
+machinery without dropping an independently anchored identity, provenance,
+correspondence, integrity, or fail-closed property together with it. Follow
+the protected subject through every carrier and interface on the selected path
+to the observable result. Rejecting equality or reproducibility of a broader
+container does not make the narrower payload-to-carrier or
+carrier-to-execution correspondence inapplicable. A carrier used by the
+selected route is current scope for that correspondence even when broader
+construction or release work for the carrier is not.
+
 Use **layer peeling** when a leaf mechanism fails its trace: continue upward
 through the service, protocol, store, compiler, broker, or other enclosing
 architecture that made the leaf look necessary. The trace ends only at a
 verified authority anchor or at a finding that the enclosing architecture is
 unsupported; replacing one leaf while preserving an unsupported parent is not a
-minimum-design result.
+minimum-design result. When a load-bearing assumption fails, also re-test each
+sibling mechanism whose only reverse trace ends at that assumption. Retire,
+exclude, or hold that sibling by its own evidence and section 4.2 transition
+status rather than preserving adjacent machinery whose shared premise has
+already failed. Re-derive each sibling from the top-level job and independent
+authority anchors after removing the premise; a local requirement, test, or
+design statement created for that premise cannot become a replacement
+authority anchor.
+
+When an unsupported parent contains independently useful low-level
+capabilities, split those capabilities into ledger candidates. Retaining a
+primitive does not retain the parent's orchestration, protocol, compatibility
+layer, state machine, or proof campaign without its own authority trace.
 
 When one challenge-authorized diagnostic or proof mechanism produces no
 user-visible progress and the proposed response is another mechanism on the
@@ -436,6 +521,13 @@ removing that parent against the user outcome before authorizing the next
 descendant. A second descendant may proceed only when positive evidence shows
 the parent-removal path is incompatible with a required property. Do not let a
 chain of individually narrow probes substitute for this parent counterfactual.
+
+More generally, when a proposed mechanism compensates for a cost, limit,
+failure, or complexity created by an incumbent ancestor, that ancestor is
+mandatory active scope even on the first corrective attempt, subject only to
+section 4.3's mandatory-node overflow rule. Run the ancestor-removal
+counterfactual before selecting the compensating mechanism or retaining the
+ancestor as baseline.
 
 Use these traces to confirm, clear, or overturn each provisional
 `necessity_status`. Where a trace exposes a higher unsupported parent, swap it
@@ -510,6 +602,9 @@ A `BLOCKED` or `PARTIAL` record gains no broader permission until its required
 action or missing evidence changes the work order or evidence packet and a new
 challenge clears that scope. Recorded statuses, dispositions, verdict, gate,
 and scopes agree, and the verdict is never softened to preserve completed work.
+Every supported product or security invariant needed by the selected path
+appears explicitly in the final minimum design and permitted or blocked scope;
+deferring its implementing inventory does not defer or remove the invariant.
 
 Scope a `CLEAR` or `PARTIAL` permission to the smallest coherent campaign that
 can produce the observable result, not automatically to one command. The
@@ -585,6 +680,11 @@ revisit_predicates: [{event, proposed_response, trigger_kind}]
 
 ## 8. Complete when
 
+Before returning, audit the draft record against every applicable item below
+and repair omissions or contradictions. When missing evidence prevents an item
+from closing, record `UNKNOWN` and the resulting gate instead of silently
+omitting the requirement, candidate, node, or boundary.
+
 - The record names the exact evidence-packet revision and, after pass 2, the
   exact work-order revision and work-graph cutoff.
 - A `DELTA` record names and hash-verifies its inherited record, writes every
@@ -600,21 +700,82 @@ revisit_predicates: [{event, proposed_response, trigger_kind}]
   recorded candidate/requirement pair carries exactly one pass-2 resolution whose
   `REJECTED` names a concrete incompatibility and whose `UNKNOWN` names
   decisive missing evidence.
+- Every candidate's recorded operations and effects are checked against every
+  required property they could bear on, rather than being confined to one
+  property, namespace, abstraction level, or headline role.
 - Every deny-by-default, allowlist, or sandbox source records both the denied
   set and each explicitly allowed operation as separate ledger candidates.
 - Every active node's `alternatives` contains its incumbent and every genuine
   substitute exactly once, excludes merely complementary candidates, and its
   three statuses agree with the incumbent support rule and with each other.
+- Every incumbent on the minimum-design path has comparison closure; a simpler
+  substitute left `UNKNOWN` is reflected as unresolved in the verdict even
+  when its comparison node is deferred.
+- Every `SUPPORTED` or `RETAIN` mechanism names an authority anchor independent
+  of the proposed or accepted mechanism statement, and no node remains
+  `SUPPORTED` while a genuine substitute is `UNKNOWN` under evidence missing
+  equally for the incumbent.
+- Every alternative's `REJECTED` incompatibility or `UNKNOWN` evidence need
+  traces to a recorded requirement, observable result, and evidenced actor
+  lifecycle; no incumbent-specific topology or property is used as an
+  unstated requirement.
+- Every property added in pass 2 traces a newly visible operation or effect to
+  the pass-1 job, authority, or trust boundary; proposal and proof artifacts do
+  not supply that authority.
+- Every pass-1 `REJECTED` or `NOT_RELEVANT` disposition contradicted by a
+  pass-2 operation, permission, lifecycle, or effect is reopened and resolved
+  from the expanded candidate.
+- Every separately granted channel whose effects recreate a denied capability
+  is reconciled as part of that same boundary before either channel is
+  selected.
+- Every fired boundary-composition lens resolves each material operation
+  family separately under
+  [`boundary-composition.md`](references/boundary-composition.md); one
+  supported family does not retain unrelated coordination, storage,
+  compatibility, or proof families.
+- An authoritative payload already present at its consumer remains a candidate
+  independent of the machinery that produced or transported it; no upstream
+  provider or transfer is required unless the selected journey independently
+  requires producing or refreshing that payload.
+- Every retained multi-writer coordination family names either two evidenced
+  writer lifecycles with reachable overlap or an authority anchor for the
+  second writer and its triggering event; otherwise it is separated from any
+  independently required single-writer atomicity or crash-recovery property.
 - When resource demand is material, the largest weakly authorized multiplier
   is active; no dependent boundary uses an implementation maximum or appears
   in the minimum or permitted scope while that multiplier or supported demand
-  remains unresolved.
+  remains unresolved. If mandatory-node overflow prevents its inspection, the
+  verdict is `UNKNOWN` and overlapping work is blocked.
+- A parameter that bounds an incumbent mechanism cannot be selected, tuned, or
+  ordered as the preferred correction while that incumbent's comparison with
+  a genuine substitute remains unresolved; measurement may continue without
+  authorizing the parameter change.
+- When a proposed mechanism compensates for an incumbent ancestor's cost,
+  limit, failure, or complexity, the ancestor is active and its removal
+  counterfactual is resolved before the compensating mechanism is selected,
+  or mandatory-node overflow records it unexamined and forces `UNKNOWN`.
 - Each of the three active nodes carries an actual-caller list, a forward
   trace, a reverse trace, and a removal counterfactual; every other material
   node is deferred with its rank and reason.
 - Every fired lens has a recorded `lens_findings` result.
 - Every lens-assigned `FAILED` or `UNKNOWN` identifies its material `node_id`
   and is reflected in the verdict even when that node is deferred.
+- Every failed assurance method is separated from its protected property; the
+  final minimum design and scopes retain each independently anchored property
+  while excluding only the unsupported proof machinery, and trace the
+  protected subject through every selected carrier and interface to the
+  observable result.
+- A `FULL` pass-2 record restates every retained pass-1 required property and
+  its selected or permitted scope; implicit inheritance or a lens finding does
+  not substitute for that reconciliation.
+- Every sibling whose only reverse trace ended at a failed premise records
+  either a fresh top-level authority trace or the applicable `RETIRE`,
+  `EXCLUDE_FROM_TARGET`, or `HOLD_PENDING_EVIDENCE` disposition; requirements,
+  tests, and design statements created for the failed premise do not serve as
+  that authority.
+- Every descendant whose only trace ends at a failed or excluded ancestor
+  receives the corresponding transition disposition rather than an
+  orthogonal or deferred label.
 - One verdict, its derived `gate_status`, and any `PARTIAL` scopes are
   persisted and consistent with the recorded statuses.
 - Every executable permission names campaign invariants, retry and terminal
