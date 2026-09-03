@@ -380,6 +380,15 @@ document. Implement what it specifies and enforce its recorded constraint
 revisit conditions. A design that turns out to be wrong goes back to
 `design-doc`; do not reopen scope or architecture here.
 
+Before implementing a security control, read back four fields from the work
+order: protected asset, untrusted actor, operation that actor must not perform,
+and authority or policy making that operation unauthorized. Keep authorized
+deterministic owner behavior separate from model- or attacker-controlled
+behavior. If the proposed control instead constrains an owner's deliberate use
+of authority, or those four fields cannot be stated from independent evidence,
+stop and return to `design-doc` and `constraint-challenge`; do not build a
+smaller guard on the same unresolved premise.
+
 ### Reframe gate
 
 For systemic and critical work, a recorded revisit condition or evidence that

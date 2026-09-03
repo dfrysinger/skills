@@ -84,6 +84,13 @@ build-time function called from the trusted boundary, not by keeping the
 whole runtime service, executable, or protocol around as the new home for a
 trusted call.
 
+State separately what the trusted owner may intentionally authorize and what
+an untrusted model or input must never be able to add, change, or exercise on
+its own. A deliberate owner grant is not an escape from containment. Restrict
+that choice only when an explicit enterprise policy, external obligation, or
+higher authority requires it; a recommended default or preferred approval
+path is not enough.
+
 Work that turns out to be bounded — localized, reusing established architecture,
 touching none of the boundaries above — does not need this document. Say so and
 send it to `development-loop`, even when the document was what you were asked
