@@ -21,6 +21,9 @@ Choose the case shape:
 - one candidate phase for a reaction or routing skill;
 - ordered resumed phases when later evidence must remain hidden from an earlier
   blind pass;
+- an editable `repository-task` for a coding task with independent executable
+  target and regression checks; follow
+  [`references/repository-tasks.md`](references/repository-tasks.md);
 - hidden judge evidence for the correction, accepted result, or failure that
   must not influence the candidate.
 
@@ -134,6 +137,13 @@ Use `--home-mode isolated` when `COPILOT_GITHUB_TOKEN` is available. The default
 `existing` mode uses the current authenticated Copilot home while still
 disabling custom instructions and built-in MCP servers; its receipt states that
 the authentication home was shared.
+
+Repository tasks require successful `validate-case` admission and caller-supplied
+`COPILOT_GITHUB_TOKEN`. They always use an isolated Docker candidate and
+isolated judge homes. `--arm baseline` exposes no target plugin; `--arm skill`
+invokes the unchanged skill. Their executable score, behavioral verdict, and
+first-attempt suite success are reported separately. Candidate timeouts are
+scored failures; retries do not improve pass@1.
 
 Complete when the report identifies the exact skill revision, case revision,
 candidate outputs, and independent judgments. After a skill change, completion

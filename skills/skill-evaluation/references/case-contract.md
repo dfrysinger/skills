@@ -28,6 +28,11 @@ CORPUS/
 `frozen/<case-id>/revisions/<root-digest>/case-manifest.json`; adding, editing,
 or replacing another case therefore does not invalidate it.
 
+An explicit `case_type: repository-task` adds a frozen repository bundle,
+source modes, offline admission, and executable grading. Its authoring and
+execution contract is in [repository-tasks.md](repository-tasks.md).
+Missing `case_type` retains prose evaluation.
+
 ## Evidence boundaries
 
 - Candidate phases contain only evidence available at that point.
