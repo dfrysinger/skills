@@ -148,12 +148,13 @@ signal.
 
 After a runtime-relevant candidate change, first write the change-to-claim
 impact map required by section 6. Mark only affected claim rows `STALE` and open
-successor receipts for them. Preserve unaffected passing receipts as diagnostic
-history under their original fingerprints; they do not authorize a release
+successor receipts for them. Preserve completed receipts under their original
+execution identities; record new execution or checked reuse separately.
+Unaffected historical receipts need checked applicability before authorizing a
 verdict for the new candidate, but they do not mandate immediate replay. Treat
 aggregate release readiness as `STALE` until the final frozen-candidate
 campaign passes. Close a claim todo and write `PASS` only after its receipt
-validator accepts the current candidate.
+validator accepts direct proof or checked reuse for the current candidate.
 
 ### Tracer-bullet UI branch
 
@@ -526,8 +527,9 @@ exact dependency commit, rebase the child once, then run the expensive build,
 live-proof, and review ladder. Keep the proven stack frozen: movement on main
 alone is not a reason to rebase it. Move the dependency only for required
 mergeability, human direction, or a material dependency correction. When it
-does move, the child candidate and its runtime evidence change; freeze again
-and restart from the rebase rather than accumulating proof across histories.
+does move, freeze the child again and check evidence applicability under
+section 6. Reuse unchanged-component evidence with checked correspondence;
+rerun only claims whose relevant inputs changed or cannot be shown unchanged.
 
 For an expensive native, generated, or packaged runtime artifact, separate
 diagnosis from artifact production. Reproduce the exact failure, settle the
@@ -546,7 +548,8 @@ repository-health check is not permission to push a successor.
 Change the frozen candidate only when a completed check proves a reproducible
 candidate defect that reaches changed behavior. Diagnose it with the smallest
 equivalent local, platform, or manual canary, batch related fixes, rerun their
-focused checks, record the successor commit, and restart final proof once.
+focused checks, record the successor commit, and assemble its final applicable
+claim set using new proof and eligible unchanged-component evidence.
 When pull-request policy permits, keep large or expensive work draft during
 diagnosis and mark it ready only after the final candidate is frozen.
 
@@ -602,7 +605,8 @@ successor edit or review fix, rerun the claims reached by the change-to-claim
 impact map before review continues. The complete frozen-candidate campaign is
 the later landing and release-readiness gate. Do not dispatch review, broad CI,
 full lint, or PR work in parallel with an active live proof: a failed proof
-invalidates the premise of that work and wastes time.
+invalidates the premise of that work and wastes time. Eligible unchanged claims
+may use checked evidence reuse under this section instead of another execution.
 
 Before starting, record a structured **live-proof receipt** using
 [`references/live-proof-receipt.md`](./references/live-proof-receipt.md):
@@ -651,7 +655,8 @@ additional inputs and hashed. The helper rejects excluding tracked files.
 
 The receipt records evidence; it does not create evidence. Every `PASS` row must
 point to a direct observation, artifact, query result, or explicit human
-confirmation from this run. Agent-written summaries of what "should" have
+confirmation from the identified execution. Reuse references that execution;
+it never claims a new run. Agent-written summaries of what "should" have
 happened are not evidence.
 
 Run a real end-to-end check when the change affects runtime behavior that unit
@@ -724,8 +729,9 @@ reason (`login_required`, `permission_required`, `decision_required`, or
 domains, credentials, repository content, raw errors, or personal data, and do
 not send repeated notifications for the same blocker. Continue only independent
 work that cannot change the candidate or bypass the live-proof gate. Resume the
-same identified candidate when the user returns; if it changed, mark the receipt
-`STALE` and restart the scenario.
+same identified candidate when the user returns. If its relevant inputs changed
+or their correspondence cannot be established, mark applicability `STALE` and
+restart the scenario. An incomplete flow cannot become reusable passing proof.
 
 Use one proof owner and one running candidate. Scheduled turns and parallel
 agents must not restart the app, mutate the worktree, consume the fixture, or
@@ -734,48 +740,66 @@ run a competing scenario; keep them read-only or stop them until proof ends.
 During iterative development, a changed claim's gate opens only with its current
 receipt at `PASS`. Before the first review, every changed externally observable
 claim needs current proof. After a review fix or successor edit, the impact map
-reopens only affected claims; unaffected receipts remain diagnostic history
-until the final campaign. `FAIL`, `BLOCKED`, `STALE`, and `INCONCLUSIVE` keep
+reopens only affected claims; unaffected receipts need checked applicability to
+count as current proof. `FAIL`, `BLOCKED`, `STALE`, and `INCONCLUSIVE` keep
 their claim gates closed. On failure, record the first divergent checkpoint,
 return directly to sections 3-5, and rerun that claim before review continues.
 
 Run `scripts/validate-live-proof.py validate <receipt.json>` before opening a
-claim gate. It must recompute that receipt's exact candidate fingerprint and
-accept the complete scenario, forbidden-outcome evidence, visual inspection
-when required, empty unverified list, and absence of a manual workaround. Copy
-the accepted receipt path and result into `live_proof_receipts`, then close the
-matching claim todo. The validator's exit code, not the agent's summary, is the
-admission decision.
+claim gate; add `--reuse <correspondence.json>` for reused evidence
+as described in the reference. It must recompute the final candidate fingerprint
+and accept direct proof or checked input correspondence, plus the complete
+scenario, forbidden-outcome evidence, visual inspection when required, empty
+unverified list, and absence of a manual workaround. Copy the accepted receipt
+path, any correspondence-record path, final candidate identity, and result into
+`live_proof_receipts`, then close the matching claim todo.
+The validator's exit code, not the agent's summary, is the admission decision.
 
 Until the gate passes, describe the state as "candidate ready," "proof in
 progress," or the actual failure status. Do not say the feature works, is
 verified, or is ready to land.
 
-Each receipt remains exact to its covered runtime candidate. Candidate movement
-makes it non-current for a new release verdict. In the iterative loop, that
-does not force immediate replay of every unrelated receipt: use the impact map
-to reopen affected claims and retain unaffected receipts as diagnostic history.
-A later delta may be appended to a receipt without rerunning its live scenario
-only when all are true:
+**Reuse evidence by relevant inputs, not commit identity.** Test results and
+completed live scenarios may be reused when checked correspondence establishes
+that all exercised executable paths and their relevant configuration,
+dependencies, build inputs, runtime/environment inputs, generated assets, and
+fixtures are unchanged. Include the test/harness itself for deterministic
+results. A new commit, rebase, worktree location, or unrelated component change
+alone does not require another execution. Use the impact map to reopen affected
+claims and substantiate why the others remain unchanged.
 
-- it changes no executable source, runtime configuration, dependency, build
-  input, generated runtime asset, or behavior exercised by the scenario;
-- the receipt records the delta identity and why it cannot affect runtime;
-- the smallest deterministic check confirms the runtime artifact or exercised
-  path is unchanged.
+Keep the original receipt, candidate, process/model identity, and observations
+unchanged. Record the final candidate and checked correspondence separately.
+Capture reusable input identities at execution time using the reference's
+`--reuse-input` support; compare actual contents, file modes, and directory
+membership, including dirty, untracked, and ignored relevant inputs. An
+unchanged source file alone is insufficient when its dependencies, generated
+output, runtime, configuration, or caller path changed. Recheck path-sensitive
+behavior when moving worktrees.
 
-Comments outside generated artifacts, documentation, and test-only changes are
-typical eligible deltas. "Mechanically equivalent" executable edits are not;
-rerun the affected live scenario for those. Any unrecorded or runtime-relevant
-delta makes the affected receipt `STALE`.
+Rerun affected tests and scenarios when any relevant input changed, the scope
+is incomplete, or correspondence cannot be established. "Mechanically
+equivalent" executable edits within that scope still require rerunning.
+Unchanged components may retain eligible proof; newly changed or uncovered
+claims need new proof. Reuse never upgrades mocks or scripted model responses
+to actual model runs, waives human review/merge/release policy, or turns an
+incomplete acceptance set into completion.
 
 The final frozen-candidate acceptance campaign is stricter than iterative
 replay. Before landing or a release-readiness claim, validate the complete
-required receipt set against one exact candidate fingerprint. Re-derive that
-set from the acceptance criteria and reconcile it one-to-one with the campaign
-receipts before validation. Every required claim is fresh for that candidate,
-the aggregate verdict is `PASS`, and no evidence from different fingerprints
-is combined to fill the campaign.
+required receipt set against one exact target candidate fingerprint. Re-derive
+that set from the acceptance criteria and reconcile it one-to-one with the
+campaign receipts and applicability records. Every required claim must have
+current passing applicability, by direct proof or eligible checked reuse, and
+the aggregate verdict must be `PASS`. Original execution fingerprints remain
+unchanged; unchecked historical evidence cannot fill the campaign.
+
+The helper includes reuse scopes in its target fingerprint. Per-claim records
+with different scopes can therefore pass individually for the same worktree
+yet have different target hashes. That is not a passing single-fingerprint
+campaign. Report the concrete identity-contract conflict; do not relabel
+receipts, silently treat the hashes as equal, or replay unchanged behavior
+merely to hide it. See the receipt reference's campaign limitation.
 
 Before proof, designate evidence and test-output paths that are not build or
 runtime inputs. Creating or cleaning those outputs does not change candidate
@@ -797,7 +821,8 @@ receipt that matches or explicitly covers the reviewed tree. If an affected
 runtime claim has no passing receipt, stop: do not reinterpret scripted checks
 or an unaffected historical scenario as permission to review. Rerun
 `scripts/validate-live-proof.py validate <receipt.json>` for each affected
-claim and confirm its `live_proof_receipts` row is `PASS`; a remembered earlier
+claim, adding `--reuse <correspondence.json>` when needed, and confirm its
+`live_proof_receipts` row is `PASS`; a remembered earlier
 exit code is not current evidence. Once those claim gates pass, run the
 remaining deterministic validation proportionate to the lane, then review.
 
@@ -879,19 +904,19 @@ After review:
   reruns. Candidate movement makes aggregate release readiness `STALE`.
 - If review fixes changed runtime behavior, rerun the affected targeted tests
   and claim receipts.
-- If review produced only a delta eligible under section 6's receipt-validity
-  rule, append it to each affected receipt and rerun the required deterministic
-  check.
+- For evidence eligible under section 6's reuse rule, preserve its original
+  receipt and validate a separate correspondence record for the reviewed tree.
 - If review made a supposedly behavior-preserving executable edit, rerun the
   claims reached by that edit as required by section 6.
 - For systemic or critical work, determine rerun scope from the same reach map.
   Replay additional claims only when a named shared dependency or plausible
   regression path reaches them.
 
-After iterative reruns pass, run the complete final acceptance campaign on the
-frozen reviewed candidate. Every required claim is fresh under that one
-fingerprint; prior receipts from other fingerprints remain history, not
-campaign evidence.
+After iterative reruns pass, validate the complete final acceptance campaign
+for the frozen reviewed candidate. Every required claim must have passing
+applicability under that one target fingerprint. Prior executions may supply
+eligible checked reuse; differing scope-specific target hashes remain the
+explicit campaign conflict described in section 6.
 
 For a new user-facing visual journey, invoke `walkthrough-video` now, after the
 final reviewed candidate is frozen and before creating or updating its PR.

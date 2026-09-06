@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import struct
 import subprocess
 import sys
@@ -17,6 +18,10 @@ import zlib
 SCHEMA_VERSION = 1
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 EVIDENCE_KINDS = {"runtime", "artifact", "query", "human-confirmation"}
+INPUT_CLASSES = (
+    "executablePaths", "configuration", "dependencies",
+    "buildInputs", "runtimeInputs", "generatedInputs",
+)
 
 
 class ReceiptError(ValueError):
@@ -59,10 +64,40 @@ def _hash_file(path: Path) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
+def _reuse_input(worktree: Path, value: str) -> dict[str, str]:
+    relative = _relative_path(value, field="reuse input")
+    path = worktree / relative
+    for part in (path, *path.parents):
+        if part == worktree:
+            break
+        if part.is_symlink():
+            raise ReceiptError(f"reuse input must not traverse a symlink: {relative}")
+    digest = hashlib.sha256()
+
+    def visit(item: Path) -> None:
+        mode = item.lstat().st_mode
+        if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+            raise ReceiptError(f"reuse input must be a regular file or directory: {item}")
+        record = [item.relative_to(worktree).as_posix(), stat.S_IMODE(mode)]
+        if stat.S_ISREG(mode):
+            record.append(_hash_file(item))
+        digest.update(json.dumps(record).encode() + b"\0")
+        if stat.S_ISDIR(mode):
+            for child in sorted(item.iterdir()):
+                visit(child)
+
+    try:
+        visit(path)
+    except OSError as error:
+        raise ReceiptError(f"reuse input could not be read: {relative}: {error}") from error
+    return {"path": relative, "sha256": f"sha256:{digest.hexdigest()}"}
+
+
 def candidate_snapshot(
     worktree_value: str,
     excluded_outputs: list[str] | None = None,
     additional_inputs: list[str] | None = None,
+    reuse_inputs: list[str] | None = None,
 ) -> dict[str, object]:
     worktree = Path(worktree_value).expanduser().resolve()
     if not worktree.is_dir():
@@ -119,13 +154,24 @@ def candidate_snapshot(
         digest.update(file_hash.encode())
         digest.update(b"\0")
 
-    return {
+    reuse_paths = {
+        _relative_path(value, field="reuse input") for value in (reuse_inputs or [])
+    }
+    if reuse_paths:
+        reuse_paths.update(item["path"] for item in additional_records)
+    reuse_records = [_reuse_input(worktree, value) for value in sorted(reuse_paths)]
+    if reuse_records:
+        digest.update(b"reuse-inputs\0" + json.dumps(reuse_records, sort_keys=True).encode())
+    snapshot: dict[str, object] = {
         "worktree": str(worktree),
         "head": head,
         "fingerprint": f"sha256:{digest.hexdigest()}",
         "excludedOutputs": list(excluded),
         "additionalInputs": additional_records,
     }
+    if reuse_records:
+        snapshot["reuseInputs"] = reuse_records
+    return snapshot
 
 
 def _require_string(value: object, field: str, minimum: int = 1) -> str:
@@ -150,6 +196,50 @@ def _require_evidence(value: object, field: str) -> None:
             allowed = ", ".join(sorted(EVIDENCE_KINDS))
             raise ReceiptError(f"{field}[{index}].kind must be one of: {allowed}")
         _require_string(item.get("source"), f"{field}[{index}].source")
+
+
+def _require_input_coverage(value: object, field: str) -> None:
+    if not isinstance(value, dict):
+        raise ReceiptError(f"{field} must describe every input class")
+    for name in INPUT_CLASSES:
+        _require_string(value.get(name), f"{field}.{name}", minimum=12)
+
+
+def _validate_candidate(candidate: object) -> dict[str, object]:
+    if not isinstance(candidate, dict):
+        raise ReceiptError("candidate must be an object")
+    for field in ("worktree", "head", "fingerprint"):
+        _require_string(candidate.get(field), f"candidate.{field}")
+    excluded = candidate.get("excludedOutputs", [])
+    if not isinstance(excluded, list) or not all(isinstance(item, str) for item in excluded):
+        raise ReceiptError("candidate.excludedOutputs must be an array of paths")
+    paths: dict[str, list[str]] = {}
+    for field in ("additionalInputs", "reuseInputs"):
+        records = candidate.get(field, [])
+        if not isinstance(records, list) or not all(isinstance(item, dict) for item in records):
+            raise ReceiptError(f"candidate.{field} must be an array of objects")
+        paths[field] = [
+            _require_string(item.get("path"), f"candidate.{field}[].path")
+            for item in records
+        ]
+    current = candidate_snapshot(
+        _require_string(candidate.get("worktree"), "candidate.worktree"),
+        excluded, paths["additionalInputs"], paths["reuseInputs"],
+    )
+    for field in ("head", "fingerprint", "excludedOutputs", "additionalInputs", "reuseInputs"):
+        if candidate.get(field) != current.get(field):
+            raise ReceiptError(f"candidate is stale: {field} no longer matches")
+    return current
+
+
+def _read_json(path: Path) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ReceiptError(f"receipt could not be read as JSON: {error}") from error
+    if not isinstance(value, dict):
+        raise ReceiptError("receipt root must be an object")
+    return value
 
 
 def _png_pixels(path: Path) -> tuple[int, int, bool]:
@@ -244,14 +334,9 @@ def _png_pixels(path: Path) -> tuple[int, int, bool]:
     return width, height, has_spread
 
 
-def validate_receipt(path_value: str) -> dict[str, object]:
+def validate_receipt(path_value: str, reuse_value: str | None = None) -> dict[str, object]:
     receipt_path = Path(path_value).expanduser().resolve()
-    try:
-        receipt = json.loads(receipt_path.read_text())
-    except (OSError, json.JSONDecodeError) as error:
-        raise ReceiptError(f"receipt could not be read as JSON: {error}") from error
-    if not isinstance(receipt, dict):
-        raise ReceiptError("receipt root must be an object")
+    receipt = _read_json(receipt_path)
     if receipt.get("schemaVersion") != SCHEMA_VERSION:
         raise ReceiptError(f"schemaVersion must be {SCHEMA_VERSION}")
     receipt_id = _require_string(receipt.get("id"), "id")
@@ -265,24 +350,29 @@ def validate_receipt(path_value: str) -> dict[str, object]:
     candidate = receipt.get("candidate")
     if not isinstance(candidate, dict):
         raise ReceiptError("candidate must be an object")
-    excluded = candidate.get("excludedOutputs", [])
-    additional = candidate.get("additionalInputs", [])
-    if not isinstance(excluded, list) or not all(isinstance(item, str) for item in excluded):
-        raise ReceiptError("candidate.excludedOutputs must be an array of paths")
-    if not isinstance(additional, list) or not all(isinstance(item, dict) for item in additional):
-        raise ReceiptError("candidate.additionalInputs must be an array of objects")
-    additional_paths = [
-        _require_string(item.get("path"), "candidate.additionalInputs[].path")
-        for item in additional
-    ]
-    current = candidate_snapshot(
-        _require_string(candidate.get("worktree"), "candidate.worktree"),
-        excluded,
-        additional_paths,
-    )
-    for field in ("head", "fingerprint", "excludedOutputs", "additionalInputs"):
-        if candidate.get(field) != current[field]:
-            raise ReceiptError(f"candidate is stale: {field} no longer matches")
+    for field in ("worktree", "head", "fingerprint"):
+        _require_string(candidate.get(field), f"candidate.{field}")
+    if "reuseInputs" in candidate:
+        _require_input_coverage(receipt.get("reuseCoverageEvidence"), "reuseCoverageEvidence")
+    if reuse_value is None:
+        current = _validate_candidate(candidate)
+    else:
+        reuse = _read_json(Path(reuse_value).expanduser().resolve())
+        if reuse.get("schemaVersion") != SCHEMA_VERSION:
+            raise ReceiptError(f"reuse.schemaVersion must be {SCHEMA_VERSION}")
+        if reuse.get("sourceReceiptSha256") != _hash_file(receipt_path):
+            raise ReceiptError("reuse source receipt hash does not match")
+        if not candidate.get("reuseInputs"):
+            raise ReceiptError("reuse requires execution-time reuseInputs")
+        _require_input_coverage(
+            reuse.get("checkedCorrespondenceEvidence"), "checkedCorrespondenceEvidence"
+        )
+        current = _validate_candidate(reuse.get("candidate"))
+        if candidate["reuseInputs"] != current.get("reuseInputs"):
+            raise ReceiptError("reuse inputs changed or coverage no longer matches")
+        for field in ("additionalInputs", "excludedOutputs"):
+            if candidate.get(field) != current.get(field):
+                raise ReceiptError(f"reuse {field} changed or coverage no longer matches")
 
     running = receipt.get("running")
     if not isinstance(running, dict):
@@ -348,7 +438,15 @@ def validate_receipt(path_value: str) -> dict[str, object]:
         if capture.get("width") != width or capture.get("height") != height:
             raise ReceiptError(f"{prefix} dimensions do not match the PNG")
 
-    return {"id": receipt_id, "candidate": current["fingerprint"], "status": "PASS"}
+    result: dict[str, object] = {
+        "id": receipt_id, "candidate": current["fingerprint"], "status": "PASS"
+    }
+    if reuse_value is not None:
+        result["reusedFrom"] = {
+            "candidate": candidate["fingerprint"],
+            "receiptSha256": _hash_file(receipt_path),
+        }
+    return result
 
 
 def main() -> int:
@@ -361,20 +459,24 @@ def main() -> int:
     fingerprint_parser.add_argument("--worktree", required=True)
     fingerprint_parser.add_argument("--exclude", action="append", default=[])
     fingerprint_parser.add_argument("--additional-input", action="append", default=[])
+    fingerprint_parser.add_argument("--reuse-input", action="append", default=[])
 
     validate_parser = subparsers.add_parser(
         "validate", help="fail unless a receipt is a current PASS"
     )
     validate_parser.add_argument("receipt")
+    validate_parser.add_argument(
+        "--reuse", help="checked correspondence record for reuse on a frozen candidate"
+    )
 
     args = parser.parse_args()
     try:
         if args.command == "fingerprint":
             result = candidate_snapshot(
-                args.worktree, args.exclude, args.additional_input
+                args.worktree, args.exclude, args.additional_input, args.reuse_input
             )
         else:
-            result = validate_receipt(args.receipt)
+            result = validate_receipt(args.receipt, args.reuse)
     except ReceiptError as error:
         print(f"LIVE_PROOF FAIL: {error}", file=sys.stderr)
         return 1

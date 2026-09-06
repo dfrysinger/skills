@@ -45,8 +45,9 @@ data in the notification.
 Scheduled turns, background agents, and helper scripts can restart an app,
 replace a build, cancel an authentication episode, or consume a fixture while
 another proof is active. Assign one proof owner and keep other workers
-read-only. If candidate identity changes mid-scenario, mark the receipt `STALE`
-and restart the proof from its trigger.
+read-only. If relevant inputs change mid-scenario, or input correspondence
+cannot be established, mark applicability `STALE` and restart from the trigger.
+Commit or worktree bookkeeping alone is not a relevant input change.
 
 ## Fail-open test integrity (bash)
 
