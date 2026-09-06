@@ -726,7 +726,7 @@ def execute_repository(
                 else:
                     # Fresh controls distinguish a changed repository from broken infrastructure.
                     control = grade(frozen, task, run_root / "grading-control",
-                                    frozen / task["admission"]["reference_patch"])
+                                    admission.parent / "candidate-setup-reference" / "candidate.patch")
                     healthy = all(item["passed"] for item in control.values())
                     result.update(
                         execution_status="FAIL" if healthy else "INVALID",

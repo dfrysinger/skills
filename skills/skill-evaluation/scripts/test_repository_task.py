@@ -646,6 +646,10 @@ class RepositoryTaskTests(unittest.TestCase):
         self.assertEqual(result["execution_status"], "FAIL", result)
         self.assertEqual(result["failure_kind"], "candidate_grading")
         self.assertEqual(grade.call_count, 2)
+        self.assertEqual(
+            grade.call_args_list[1].args[3],
+            self.root / "candidate-setup-reference" / "candidate.patch",
+        )
 
     def test_unhealthy_fresh_control_is_invalid_not_candidate_failure(self):
         broken = {"target": {"passed": False}, "regression": {"passed": False}}
@@ -944,6 +948,49 @@ class DockerRepositoryTests(RepositoryTaskTests):
         self.assertEqual(result["candidate_cli"]["image_id"], self.image)
         for artifact in result["artifacts"]:
             self.assertEqual(evaluator.digest(run / artifact["path"]), artifact["sha256"])
+
+    def test_failed_candidate_uses_admitted_setup_source_in_control(self):
+        case = self.make_case()
+        definition = evaluator.read_json(case / "case.json")
+        definition["repository_task"]["candidate_setup"] = [{
+            "argv": ["python3", "-c",
+                     "from pathlib import Path; Path('helper.py').write_text('OFFSET = 0\\n')"],
+            "timeout_seconds": 10,
+        }]
+        evaluator.write_json(case / "case.json", definition)
+        (case / "repository" / "code.py").write_text(
+            "from helper import OFFSET\n"
+            "def add(a, b): return a - b + OFFSET\n"
+        )
+        (case / "judge-reference" / "reference.patch").write_text(
+            "diff --git a/code.py b/code.py\n--- a/code.py\n+++ b/code.py\n"
+            "@@ -1,2 +1,2 @@\n from helper import OFFSET\n"
+            "-def add(a, b): return a - b + OFFSET\n"
+            "+def add(a, b): return a + b + OFFSET\n"
+        )
+        frozen = evaluator.freeze_case(self.root, "example", False)
+        admission = repository.validate_repository_case(self.root, "example")
+        self.assertEqual(evaluator.read_json(admission / "admission-receipt.json")["status"], "PASS")
+        run = self.root / "runs" / "synthetic-failed-candidate"
+        run.mkdir()
+        script = (
+            "import json; "
+            "print(json.dumps({'type':'assistant.message','data':"
+            "{'content':'Source unchanged','model':'synthetic'}})); "
+            "print(json.dumps({'type':'result','exitCode':0,'usage':{'premiumRequests':0}}))"
+        )
+        with (
+            mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "nonsecret-synthetic-test"}),
+            mock.patch("repository_task.candidate_command", return_value=["python3", "-c", script]),
+        ):
+            result = repository.execute_repository(
+                self.root, "example", frozen, run, run / "unused-plugin",
+                "synthetic", "high", 15, "baseline")
+        self.assertEqual(result["execution_status"], "FAIL", result)
+        self.assertEqual(result["failure_kind"], "candidate_grading")
+        self.assertIn(b"helper.py", (run / "candidate.patch").read_bytes())
+        control = evaluator.read_json(run / "grading-control" / "grading.json")
+        self.assertTrue(all(item["passed"] for item in control.values()), control)
 
 
 if __name__ == "__main__":
