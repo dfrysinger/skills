@@ -170,8 +170,6 @@ def candidate_snapshot(
     if reuse_paths:
         reuse_paths.update(item["path"] for item in additional_records)
     reuse_records = [_reuse_input(worktree, value) for value in sorted(reuse_paths)]
-    if reuse_records:
-        digest.update(b"reuse-inputs\0" + json.dumps(reuse_records, sort_keys=True).encode())
     snapshot: dict[str, object] = {
         "worktree": str(worktree),
         "head": head,

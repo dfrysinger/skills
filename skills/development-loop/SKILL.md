@@ -798,12 +798,12 @@ current passing applicability, by direct proof or eligible checked reuse, and
 the aggregate verdict must be `PASS`. Original execution fingerprints remain
 unchanged; unchecked historical evidence cannot fill the campaign.
 
-The helper includes reuse scopes in its target fingerprint. Per-claim records
-with different scopes can therefore pass individually for the same worktree
-yet have different target hashes. That is not a passing single-fingerprint
-campaign. Report the concrete identity-contract conflict; do not relabel
-receipts, silently treat the hashes as equal, or replay unchanged behavior
-merely to hide it. See the receipt reference's campaign limitation.
+The helper keeps the complete candidate fingerprint independent of per-claim
+reuse scopes. It separately recomputes and compares each scope's input hashes.
+Every record must name the same complete target candidate and retain its own
+checked scope; a matching target fingerprint alone does not establish reuse.
+Relevant ignored runtime inputs still belong in the candidate's declared
+additional inputs.
 
 Before proof, designate evidence and test-output paths that are not build or
 runtime inputs. Creating or cleaning those outputs does not change candidate
@@ -919,8 +919,7 @@ After review:
 After iterative reruns pass, validate the complete final acceptance campaign
 for the frozen reviewed candidate. Every required claim must have passing
 applicability under that one target fingerprint. Prior executions may supply
-eligible checked reuse; differing scope-specific target hashes remain the
-explicit campaign conflict described in section 6.
+eligible checked reuse with separately validated per-claim input scopes.
 
 For a new user-facing visual journey, invoke `walkthrough-video` now, after the
 final reviewed candidate is frozen and before creating or updating its PR.

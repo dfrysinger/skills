@@ -24,8 +24,8 @@ commit hash does not establish reach.
 Direct validation remains fingerprint-strict. An unaffected receipt from an
 earlier execution needs an explicit checked correspondence record to establish
 current applicability. Final acceptance requires all claims to apply to one
-exact target fingerprint, including any eligible reused evidence. Different
-scope-specific target hashes do not satisfy that campaign requirement.
+exact target fingerprint, including any eligible reused evidence. Per-claim
+scope hashes are checked separately and do not replace that complete identity.
 
 ## 2. Freeze the candidate
 
@@ -290,22 +290,19 @@ the full original fingerprint still matches. Empty directories and other
 filesystem properties not established by the original evidence must not be
 treated as historical observations.
 
-### Final-campaign fingerprint limitation
+### Final-campaign identity and claim scopes
 
-The candidate fingerprint includes `reuseInputs` as well as the whole-tree
-identity and additional inputs. For example, snapshots with scopes `src/a`
-and `src/b` can describe the same untouched worktree and commit yet have
-different fingerprints. Individual correspondence validation does not establish
-the final campaign's required single target fingerprint.
+The complete candidate fingerprint covers the whole-tree identity and declared
+additional inputs. `reuseInputs` records separately checked claim coverage, not
+another executable candidate. Snapshots with scopes `src/a` and `src/b` therefore
+share the same target fingerprint when the complete candidate is unchanged.
+Changing either component still changes that complete fingerprint.
 
-Keep scope-specific hashes intact. Do not strip scope fields, rewrite original
-receipts, or treat matching commit/worktree names as equivalent candidate
-fingerprints. A shared target scope is usable only when its complete input set
-is genuinely unchanged and eligible for every referenced receipt. If the
-per-claim records cannot meet the common-target requirement, report the exact
-conflicting scopes and hashes and leave aggregate readiness blocked. Resolving
-that identity contract is separate from executing unchanged scenarios again;
-this helper does not supply a cross-scope campaign validator.
+Keep each scope and its hashes intact. Validation recomputes both the complete
+target identity and its scope records, then compares the scope to the original
+execution's inputs. A matching target fingerprint alone is not evidence of
+unchanged claim inputs. Declare relevant ignored runtime inputs as additional
+inputs rather than relying on a scope to include them in the complete identity.
 
 Maintain the complete applicable claim set outside these individual receipts:
 map every final acceptance criterion to a direct receipt or to an original

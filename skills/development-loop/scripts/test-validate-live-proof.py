@@ -140,17 +140,24 @@ class ValidateLiveProofTest(unittest.TestCase):
     def test_accepts_complete_current_receipt(self) -> None:
         self.validate()
 
-    def test_scope_specific_fingerprints_do_not_define_one_campaign(self) -> None:
+    def test_independent_scopes_share_the_complete_candidate_fingerprint(self) -> None:
         (self.worktree / "other.txt").write_text("independent component\n")
+        complete = MODULE.candidate_snapshot(str(self.worktree))
         narrow = MODULE.candidate_snapshot(str(self.worktree), reuse_inputs=["app.txt"])
         broad = MODULE.candidate_snapshot(
             str(self.worktree), reuse_inputs=["app.txt", "other.txt"]
         )
         self.assertEqual(narrow["worktree"], broad["worktree"])
         self.assertEqual(narrow["head"], broad["head"])
-        self.assertNotEqual(narrow["fingerprint"], broad["fingerprint"])
+        self.assertEqual(narrow["fingerprint"], complete["fingerprint"])
+        self.assertEqual(broad["fingerprint"], complete["fingerprint"])
+        self.assertNotEqual(narrow["reuseInputs"], broad["reuseInputs"])
         self.assertEqual(MODULE._validate_candidate(narrow), narrow)
         self.assertEqual(MODULE._validate_candidate(broad), broad)
+        (self.worktree / "other.txt").write_text("changed component\n")
+        changed = MODULE.candidate_snapshot(str(self.worktree), reuse_inputs=["app.txt"])
+        self.assertNotEqual(changed["fingerprint"], narrow["fingerprint"])
+        self.assertEqual(changed["reuseInputs"], narrow["reuseInputs"])
 
     def test_rejects_stale_candidate(self) -> None:
         (self.worktree / "app.txt").write_text("changed after proof\n")
