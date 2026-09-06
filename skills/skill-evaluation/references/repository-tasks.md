@@ -94,6 +94,11 @@ work offline in the pinned image. Candidate setup runs before the model in
 its container. Grader setup runs independently before each target/regression
 check. Prefer installing dependencies outside the source tree: generated
 files inside that tree are included in patch capture, even when ignored by Git.
+When setup creates an image-local dependency symlink at a path absent from
+frozen source, the evaluator records its relative path and literal target
+before model invocation. Final capture omits only that exact unchanged link;
+removing it or replacing it with ordinary source remains visible in the patch.
+All other symlinks and special entries are refused without following a target.
 
 ## Freeze and admit
 
@@ -107,10 +112,11 @@ The source and hidden grading packet join the existing digest-addressed case
 root. Repository-task bundle manifests include source modes. Prose case
 manifests retain their existing shape.
 
-Admission runs candidate setup on base and reference source, then grades fresh
-base and reference checkouts. It requires the declared base target failure,
-healthy base regressions, and healthy reference target/regression checks.
-Every setup command must succeed. Admission requires no model or credentials.
+Admission runs candidate setup on base and reference source, captures each
+ordinary-source control patch, then grades those patches in fresh checkouts.
+It requires the declared base target failure, healthy base regressions, and
+healthy reference target/regression checks. Every setup command and setup-link
+observation must succeed. Admission requires no model or credentials.
 
 `admission-runs/` retains commands, exact raw logs, actual container mounts,
 network settings, image identity, case revision, harness module digests, and
@@ -181,8 +187,10 @@ After the candidate is stopped, a separate trusted checkout computes its
 patch against frozen source. Candidate Git history, indexes, ignore rules,
 attributes, and hooks do not establish that base. Capture includes new and
 ignored files, deletions, executable-bit changes, and binary changes; it
-excludes Git metadata. Unsupported candidate filesystem entries produce a
-scored output failure rather than silently disappearing.
+excludes Git metadata. Exact unchanged setup-owned runtime links recorded
+before invocation are omitted without following them; unsupported candidate
+filesystem entries produce a scored output failure rather than silently
+disappearing.
 
 Each grading check gets a fresh patched source tree and the original hidden
 entrypoints mounted read-only at `/grader`. Graders have no token or network.
