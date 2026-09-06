@@ -140,6 +140,18 @@ class ValidateLiveProofTest(unittest.TestCase):
     def test_accepts_complete_current_receipt(self) -> None:
         self.validate()
 
+    def test_scope_specific_fingerprints_do_not_define_one_campaign(self) -> None:
+        (self.worktree / "other.txt").write_text("independent component\n")
+        narrow = MODULE.candidate_snapshot(str(self.worktree), reuse_inputs=["app.txt"])
+        broad = MODULE.candidate_snapshot(
+            str(self.worktree), reuse_inputs=["app.txt", "other.txt"]
+        )
+        self.assertEqual(narrow["worktree"], broad["worktree"])
+        self.assertEqual(narrow["head"], broad["head"])
+        self.assertNotEqual(narrow["fingerprint"], broad["fingerprint"])
+        self.assertEqual(MODULE._validate_candidate(narrow), narrow)
+        self.assertEqual(MODULE._validate_candidate(broad), broad)
+
     def test_rejects_stale_candidate(self) -> None:
         (self.worktree / "app.txt").write_text("changed after proof\n")
         self.assert_rejected(self.receipt, "candidate is stale")

@@ -290,10 +290,27 @@ the full original fingerprint still matches. Empty directories and other
 filesystem properties not established by the original evidence must not be
 treated as historical observations.
 
+### Final-campaign fingerprint limitation
+
+The candidate fingerprint includes `reuseInputs` as well as the whole-tree
+identity and additional inputs. For example, snapshots with scopes `src/a`
+and `src/b` can describe the same untouched worktree and commit yet have
+different fingerprints. Individual correspondence validation does not establish
+the final campaign's required single target fingerprint.
+
+Keep scope-specific hashes intact. Do not strip scope fields, rewrite original
+receipts, or treat matching commit/worktree names as equivalent candidate
+fingerprints. A shared target scope is usable only when its complete input set
+is genuinely unchanged and eligible for every referenced receipt. If the
+per-claim records cannot meet the common-target requirement, report the exact
+conflicting scopes and hashes and leave aggregate readiness blocked. Resolving
+that identity contract is separate from executing unchanged scenarios again;
+this helper does not supply a cross-scope campaign validator.
+
 Maintain the complete applicable claim set outside these individual receipts:
 map every final acceptance criterion to a direct receipt or to an original
 receipt plus its checked correspondence record. Validate every referenced
-record against the same frozen final candidate. Changed and uncovered claims
+record against the same exact frozen target fingerprint. Changed and uncovered claims
 need new proof; an unchanged component's scenario need not be newly executed.
 A reused receipt covers its entire original scenario, not an invented subset
 that removes failing checkpoints.
