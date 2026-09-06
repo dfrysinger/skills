@@ -13,6 +13,8 @@ import time
 import uuid
 from pathlib import Path
 
+import measurement
+
 from skill_eval import (
     copy_packet, digest, frozen_case_path, read_json, resolve_under,
     utc_stamp, verify_case, write_json,
@@ -175,6 +177,7 @@ def validate_definition(definition: dict, root: Path, *, frozen: bool = False) -
 
 
 def command_result(command: list[str], log: Path, timeout: int) -> dict:
+    started_at = measurement.instant()
     started = time.monotonic()
     timed_out = False
     try:
@@ -191,6 +194,7 @@ def command_result(command: list[str], log: Path, timeout: int) -> dict:
         "command": command, "exit_code": code, "timed_out": timed_out,
         "elapsed_seconds": round(time.monotonic() - started, 3),
         "log": log.name, "raw_log_sha256": digest(log),
+        "started_at": started_at, "completed_at": measurement.instant(),
     }
     write_json(log.with_suffix(".receipt.json"), result)
     return result
@@ -295,6 +299,9 @@ class Container:
     def close(self) -> None:
         self.checked(["docker", "rm", "--force", self.name], "remove")
         self.stopped = True
+
+    def usage_events(self, session_id: str) -> bytes | None:
+        return measurement.container_events(self.name, session_id, stopped=self.stopped)
 
     def __exit__(self, exc_type, exc, traceback) -> None:
         self.close()
@@ -422,7 +429,8 @@ def harness_sources() -> list[dict]:
     directory = Path(__file__).resolve().parent
     return [
         {"path": name, "sha256": digest(directory / name)}
-        for name in ("skill_eval.py", "repository_task.py")
+        for name in ("skill_eval.py", "repository_task.py", "measurement.py",
+                     "quality_review.py", "evaluation_history.py")
     ]
 
 
@@ -500,7 +508,8 @@ def require_admission(root: Path, case_id: str, binding: dict) -> Path:
     raise ValueError("matching successful admission required; run validate-case")
 
 
-def candidate_command(model: str, effort: str, prompt: str, arm: str) -> list[str]:
+def candidate_command(model: str, effort: str, prompt: str, arm: str,
+                      session_id: str | None = None) -> list[str]:
     tools = LOCAL_TOOLS + (",skill" if arm == "skill" else "")
     command = [
         "copilot", "-C", "/workspace/repo", "-p", prompt,
@@ -509,7 +518,8 @@ def candidate_command(model: str, effort: str, prompt: str, arm: str) -> list[st
         "--allow-all-paths", "--no-custom-instructions", "--disable-builtin-mcps",
         "--no-remote", "--no-remote-export", "--no-auto-update", "--no-bash-env",
         "--no-ask-user", "--no-color", "--output-format", "json", "--log-level", "error",
-        "--secret-env-vars=COPILOT_GITHUB_TOKEN", "--session-id", str(uuid.uuid4()),
+        "--secret-env-vars=COPILOT_GITHUB_TOKEN", "--session-id",
+        measurement.session_uuid(session_id or str(uuid.uuid4())),
     ]
     if arm == "skill":
         command += ["--plugin-dir", "/plugin"]
@@ -519,10 +529,13 @@ def candidate_command(model: str, effort: str, prompt: str, arm: str) -> list[st
 def execute_repository(
     root: Path, case_id: str, frozen: Path, run_root: Path, plugin: Path,
     model: str, effort: str, timeout_seconds: int, arm: str,
+    *, timeline: measurement.Timeline | None = None,
 ) -> dict:
     from skill_eval import parse_run, validate_candidate
 
     started = time.monotonic()
+    owned_timeline = timeline is None
+    timeline = timeline or measurement.Timeline()
     task = read_json(frozen / "case.json")["repository_task"]
     definition = read_json(frozen / "case.json")
     result = {
@@ -586,28 +599,52 @@ def execute_repository(
                         if record["exit_code"] != 0:
                             raise ValueError("candidate setup failed before candidate execution")
                     stage = "candidate"
-                    command = candidate_command(model, effort, prompt, arm)
-                    record = container.execute(
-                        {"argv": command, "timeout_seconds": timeout_seconds}, "trajectory", token=True)
-                    result["candidate"] = record
-                    if record["timed_out"]:
-                        result.update(execution_status="FAIL", failure_kind="candidate_timeout")
-                    elif record["exit_code"] != 0:
-                        raise ValueError("candidate CLI failed; inspect retained trajectory")
-                    else:
-                        parsed = parse_run(
-                            run_root / "candidate" / "trajectory.log",
-                            skill=definition["target_skill"], expected_model=model,
-                            cwd=Path("/workspace/repo"), require_skill=arm == "skill",
-                            boundary="docker-local-packets",
-                        )
-                        result.update({key: parsed[key] for key in
-                                       ("usage", "tool_calls", "input_tokens", "output_tokens")})
-                        result["observed_models"] = parsed["models"]
-                        result["skill_invoked"] = parsed["skill_loaded"]
-                        validate_candidate(parsed["answer"], phase)
-                        (run_root / "candidate-output.md").write_text(parsed["answer"] + "\n", encoding="utf-8")
-                    container.stop()
+                    timeline.switch("candidate")
+                    session_id = str(uuid.uuid4())
+                    result["candidate_session_id"] = session_id
+                    command = candidate_command(model, effort, prompt, arm, session_id)
+                    invoked_at, invoked_clock = measurement.instant(), time.monotonic()
+                    outcome = "failed"
+                    try:
+                        record = container.execute(
+                            {"argv": command, "timeout_seconds": timeout_seconds}, "trajectory", token=True)
+                        result["candidate"] = record
+                        if record["timed_out"]:
+                            outcome = "timed_out"
+                            result.update(execution_status="FAIL", failure_kind="candidate_timeout")
+                        elif record["exit_code"] != 0:
+                            raise ValueError("candidate CLI failed; inspect retained trajectory")
+                        else:
+                            outcome = "completed"
+                            parsed = parse_run(
+                                run_root / "candidate" / "trajectory.log",
+                                skill=definition["target_skill"], expected_model=model,
+                                cwd=Path("/workspace/repo"), require_skill=arm == "skill",
+                                boundary="docker-local-packets",
+                            )
+                            result.update({key: parsed[key] for key in
+                                           ("usage", "tool_calls", "input_tokens", "output_tokens")})
+                            result["observed_models"] = parsed["models"]
+                            result["skill_invoked"] = parsed["skill_loaded"]
+                            validate_candidate(parsed["answer"], phase)
+                            (run_root / "candidate-output.md").write_text(parsed["answer"] + "\n", encoding="utf-8")
+                    except KeyboardInterrupt:
+                        outcome = "interrupted"
+                        raise
+                    finally:
+                        timeline.switch("cleanup", status=outcome)
+                        try:
+                            container.stop()
+                        finally:
+                            measurement.collect(
+                                destination=run_root / "measurements" / "candidate.json",
+                                session_id=session_id, role="candidate", phase=phase["id"],
+                                model=model, effort=effort, cli_version=result["candidate_cli"]["version"],
+                                log=run_root / "candidate" / "trajectory.log",
+                                capture=lambda: container.usage_events(session_id),
+                                source="container_eventfile", started_at=invoked_at,
+                                started_clock=invoked_clock, outcome=outcome,
+                            )
             finally:
                 # Export only after the context has stopped/removed its sole writer.
                 if container.created and not container.stopped:
@@ -616,6 +653,7 @@ def execute_repository(
                 result["patch_sha256"] = digest(patch)
             if result["failure_kind"] != "candidate_timeout":
                 stage = "grading"
+                timeline.switch("deterministic_grading")
                 grades = grade(frozen, task, run_root / "grading", patch)
                 if all(item["passed"] for item in grades.values()):
                     result.update(execution_status="PASS", failure_kind=None)
@@ -629,12 +667,17 @@ def execute_repository(
                         failure_kind="candidate_grading" if healthy else "grading_environment",
                     )
     except CandidateStateError as error:
+        timeline.end_stage("failed")
         result.update(execution_status="FAIL", failure_kind="candidate_output",
                       error_type=type(error).__name__, error=str(error))
     except (OSError, ValueError, InfrastructureError, subprocess.TimeoutExpired) as error:
+        timeline.end_stage("failed")
         result.update(execution_status="INVALID", failure_kind=stage,
                       error_type=type(error).__name__, error=str(error))
     result["elapsed_seconds"] = round(time.monotonic() - started, 3)
+    if owned_timeline:
+        measurement.write_once(run_root / "execution-timing.json", timeline.finish(
+            "failed" if result["execution_status"] == "INVALID" else "completed"))
     result["artifacts"] = [
         {"path": path.relative_to(run_root).as_posix(), "sha256": digest(path)}
         for path in sorted(run_root.rglob("*"))

@@ -304,6 +304,13 @@ class SkillEvalTests(unittest.TestCase):
             )
         )
         self.assertEqual(len(receipts), 1)
+        run = receipts[0].parent
+        timing = json.loads((run / "timing.json").read_text())
+        self.assertEqual(timing["status"], "failed")
+        self.assertEqual(timing["stages"][-1]["name"], "cleanup")
+        accounting = json.loads((run / "accounting.json").read_text())
+        self.assertEqual(accounting["candidate"]["sessions"], 1)
+        self.assertIsNone(accounting["candidate"]["credits"])
 
     def test_run_with_fake_copilot(self) -> None:
         case_dir = self.make_case()
@@ -377,6 +384,14 @@ class SkillEvalTests(unittest.TestCase):
         self.assertFalse((run / "criteria.md").exists())
         identity = json.loads((run / "skill-identity.json").read_text())
         self.assertIn("target-plugin", identity["plugin_dir"])
+        accounting = json.loads((run / "accounting.json").read_text())
+        self.assertEqual(accounting["candidate"]["sessions"], 1)
+        self.assertEqual(accounting["evaluation"]["sessions"], 2)
+        self.assertEqual(len(list((run / "measurements").glob("*.json"))), 4)
+        timing = json.loads((run / "timing.json").read_text())
+        self.assertEqual(timing["status"], "completed")
+        self.assertIn("behavioral_judging", {stage["name"] for stage in timing["stages"]})
+        self.assertTrue((run / "reporting-timing.json").is_file())
 
     def test_run_suite_with_fake_copilot(self) -> None:
         for case_id in ("first-case", "second-case"):
