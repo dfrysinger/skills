@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -14,12 +16,248 @@ from skill_eval import (
     freeze_case,
     frozen_case_path,
     init_corpus,
+    parse_native_run,
     parse_run,
     run_case,
     run_suite,
     validate_judgment,
     verify_case,
 )
+
+
+class NativeRunTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.packet = self.root / "packet"
+        (self.packet / "candidate").mkdir(parents=True)
+        (self.packet / "candidate" / "code.py").write_text("source\n")
+        self.session_id = str(uuid.uuid4())
+        self.model = "gpt-example"
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def events(self):
+        return [
+            {"type": "session.start", "data": {
+                "sessionId": self.session_id, "selectedModel": self.model}},
+            {"type": "tool.execution_start", "data": {
+                "toolName": "view", "toolCallId": "read", "arguments": {"path": "candidate/code.py"}}},
+            {"type": "tool.execution_complete", "data": {
+                "toolCallId": "read", "success": True, "result": {"content": "source payload"}}},
+            {"type": "assistant.message", "data": {"model": self.model, "content": "answer"}},
+            {"type": "session.shutdown", "data": {}},
+        ]
+
+    def encoded(self, events):
+        return ("\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n").encode()
+
+    def parse(self, content):
+        return parse_native_run(
+            content, session_id=self.session_id, expected_model=self.model, cwd=self.packet)
+
+    def test_native_answer_models_views_and_byte_marker_without_result_event(self):
+        events = self.events()
+        events.insert(1, {"type": "assistant.message", "data": {
+            "model": self.model, "content": "", "toolRequests": [{"toolCallId": "read"}]}})
+        events.insert(-1, {"type": "session.usage_checkpoint", "data": {"totalNanoAiu": 1}})
+        # A Unicode line separator inside source text is not a JSONL record boundary.
+        events[3]["data"]["result"]["content"] = "source\u2028payload"
+        content = self.encoded(events)
+        parsed = self.parse(content)
+        self.assertEqual(parsed["answer"], "answer")
+        self.assertEqual(parsed["models"], [self.model])
+        self.assertEqual(parsed["viewed_paths"], ["candidate/code.py"])
+        self.assertEqual(parsed["tool_calls"], 1)
+        self.assertEqual(parsed["event_count"], len(events))
+        self.assertEqual(parsed["event_sha256"], hashlib.sha256(content).hexdigest())
+        self.assertNotIn("source", json.dumps(parsed))
+        self.assertNotIn("result_exit_code", parsed)
+        self.assertEqual(self.parse(content[:-1])["answer"], "answer")
+
+    def test_missing_corrupt_and_malformed_records_are_refused(self):
+        valid = self.encoded(self.events())
+        for content in (
+            None, b"", b"invalid", b"\xff", b"[]\n", b"null\n", b"1\n", b"{}\n",
+            b'{"type":[],"data":{}}\n', b'{"type":"","data":{}}\n',
+            b'{"type":"system.message","data":[]}\n',
+            b'{"type":"system.message"}\n',
+            b'{"type":"system.message","data":{},"data":{}}\n',
+            b'{"type":"system.message","data":{"value":NaN}}\n',
+            b'{"type":"system.message","data":{"value":Infinity}}\n',
+            b"[" * 2000 + b"]" * 2000,
+            valid + b"\n", valid + b"invalid", b"\n" + valid,
+        ):
+            with self.subTest(content=repr(content)[:80]), self.assertRaises(ValueError):
+                self.parse(content)
+        for data in (None, [], "", 1):
+            events = self.events()
+            events.insert(1, {"type": "system.message", "data": data})
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                self.parse(self.encoded(events))
+
+    def test_lifecycle_and_owned_session_refusals(self):
+        valid = self.events()
+        cases = [
+            valid[1:], valid[:-1], [valid[0], *valid], [*valid, valid[-1]],
+            [valid[0], valid[-1], *valid[1:-1]], [valid[0], valid[-1]],
+            [valid[3], *valid], [*valid, {"type": "user.message", "data": {}}],
+            [*valid, {"type": "session.usage_checkpoint", "data": {}}],
+            [valid[0], {"type": "session.resume", "data": {}}, *valid[1:]],
+            [valid[0], {"type": "result", "data": {}, "exitCode": 0}, *valid[1:]],
+        ]
+        for index, events in enumerate(cases):
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                self.parse(self.encoded(events))
+        for session in (str(uuid.uuid4()), None, "", [], 1):
+            events = self.events()
+            events[0]["data"]["sessionId"] = session
+            with self.subTest(session=session), self.assertRaisesRegex(ValueError, "identity"):
+                self.parse(self.encoded(events))
+
+    def test_selected_model_is_not_actual_assistant_model_evidence(self):
+        for index, field in ((0, "selectedModel"), (3, "model")):
+            for value in ("other-model", None, [], 1):
+                events = self.events()
+                events[index]["data"][field] = value
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, "model"):
+                    self.parse(self.encoded(events))
+            events = self.events()
+            del events[index]["data"][field]
+            with self.subTest(missing=field), self.assertRaisesRegex(ValueError, "model"):
+                self.parse(self.encoded(events))
+        events = self.events()
+        events.insert(1, {"type": "assistant.message", "data": {"model": "other-model", "content": ""}})
+        with self.assertRaisesRegex(ValueError, "model"):
+            self.parse(self.encoded(events))
+        with self.assertRaisesRegex(ValueError, "final assistant"):
+            self.parse(self.encoded([self.events()[0], self.events()[-1]]))
+
+    def test_tool_pairing_and_success_flags_are_strict(self):
+        valid = self.events()
+        for events in (
+            [valid[0], *valid[2:]], [*valid[:2], *valid[3:]],
+            [*valid[:2], valid[1], *valid[2:]],
+            [*valid[:3], valid[2], *valid[3:]],
+            [*valid[:3], valid[1], valid[2], *valid[3:]],
+        ):
+            with self.subTest(events=events), self.assertRaises(ValueError):
+                self.parse(self.encoded(events))
+        for index, field, values in (
+            (1, "toolCallId", (None, "", " ", 1, [])),
+            (2, "toolCallId", (None, "", "orphan", 1, [])),
+            (2, "success", (None, 0, 1, "true", [])),
+            (2, "toolName", ("bash", [], None)),
+        ):
+            for value in values:
+                events = self.events()
+                events[index]["data"][field] = value
+                with self.subTest(index=index, field=field, value=value), self.assertRaises(ValueError):
+                    self.parse(self.encoded(events))
+        for index, field in ((1, "toolCallId"), (2, "toolCallId"), (2, "success")):
+            events = self.events()
+            del events[index]["data"][field]
+            with self.subTest(missing=field), self.assertRaises(ValueError):
+                self.parse(self.encoded(events))
+
+    def test_successful_views_must_have_resolvable_packet_paths(self):
+        for arguments in (None, [], "{}", {}, {"path": None}, {"path": []},
+                          {"path": ""}, {"path": " "}, {"path": "missing.py"},
+                          {"path": "candidate/\x00"}):
+            events = self.events()
+            events[1]["data"]["arguments"] = arguments
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                self.parse(self.encoded(events))
+        for requested in ("candidate", str(self.packet / "candidate/code.py"), "candidate/../candidate/code.py"):
+            events = self.events()
+            events[1]["data"]["arguments"]["path"] = requested
+            parsed = self.parse(self.encoded(events))
+            self.assertEqual(parsed["viewed_paths"], [
+                "candidate" if requested == "candidate" else "candidate/code.py"])
+
+    def test_failed_invalid_views_are_counted_but_never_successful_reads(self):
+        for arguments in ({}, None, [], {"path": []}, {"path": "../outside"}, {"path": "\x00"}):
+            events = self.events()
+            events[1:1] = [
+                {"type": "tool.execution_start", "data": {
+                    "toolName": "view", "toolCallId": "failed", "arguments": arguments}},
+                {"type": "tool.execution_complete", "data": {"toolCallId": "failed", "success": False}},
+            ]
+            with self.subTest(arguments=arguments):
+                parsed = self.parse(self.encoded(events))
+                self.assertEqual(parsed["tool_calls"], 2)
+                self.assertEqual(parsed["viewed_paths"], ["candidate/code.py"])
+                del events[3:5]
+                parsed = self.parse(self.encoded(events))
+                self.assertEqual(parsed["tool_calls"], 1)
+                self.assertEqual(parsed["viewed_paths"], [])
+
+    def test_final_answer_must_follow_tools_and_be_nonempty(self):
+        for content in ("", " \n", None, [], 1):
+            events = self.events()
+            events[3]["data"]["content"] = content
+            with self.subTest(content=content), self.assertRaises(ValueError):
+                self.parse(self.encoded(events))
+        valid = self.events()
+        for events in (
+            [valid[0], valid[3], *valid[1:3], valid[-1]],
+            [valid[0], valid[1], valid[3], valid[2], valid[-1]],
+            [*valid[:-1], {"type": "assistant.message", "data": {"model": self.model, "content": ""}},
+             valid[-1]],
+        ):
+            with self.subTest(events=events), self.assertRaises(ValueError):
+                self.parse(self.encoded(events))
+        for requests in ([{"toolCallId": "unstarted"}], {}, None):
+            events = self.events()
+            events[3]["data"]["toolRequests"] = requests
+            with self.subTest(requests=requests), self.assertRaises(ValueError):
+                self.parse(self.encoded(events))
+
+    def test_new_activity_cannot_reuse_an_earlier_final_answer(self):
+        for kind in ("user.message", "assistant.turn_start"):
+            events = self.events()
+            events.insert(-1, {"type": kind, "data": {}})
+            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, "final assistant"):
+                self.parse(self.encoded(events))
+            events.insert(-1, {"type": "assistant.message", "data": {
+                "model": self.model, "content": "new answer"}})
+            self.assertEqual(self.parse(self.encoded(events))["answer"], "new answer")
+
+    def test_stdout_and_native_share_quality_tool_and_escape_refusals(self):
+        outside = self.root / "outside"
+        outside.write_text("outside source\n")
+        (self.packet / "escape").symlink_to(outside)
+        for name, arguments in (
+            ("bash", {"command": "true"}), ("skill", {"skill": "example-skill"}),
+            (None, {}), ([], {}), ("view", {"path": "../outside"}),
+            ("view", {"path": str(outside)}), ("view", {"path": "escape"}),
+        ):
+            events = self.events()
+            events[1]["data"].update(toolName=name, arguments=arguments)
+            stdout = self.root / "stdout.jsonl"
+            stdout.write_bytes(self.encoded([*events[1:-1], {"type": "result", "exitCode": 0}]))
+            with self.subTest(name=name, arguments=arguments):
+                with self.assertRaises(ValueError):
+                    self.parse(self.encoded(events))
+                with self.assertRaises(ValueError):
+                    parse_run(stdout, skill="example-skill", expected_model=self.model,
+                              cwd=self.packet, require_skill=False, allowed_tools={"view"})
+
+    def test_stdout_still_requires_result_and_its_own_model_evidence(self):
+        stdout = self.root / "stdout.jsonl"
+        for events in (
+            self.events(),
+            [{"type": "assistant.message", "data": {"content": "answer", "model": self.model}},
+             {"type": "result", "exitCode": 1}],
+            [{"type": "session.start", "data": {"selectedModel": self.model}},
+             {"type": "assistant.message", "data": {"content": "answer"}},
+             {"type": "result", "exitCode": 0}],
+        ):
+            stdout.write_bytes(self.encoded(events))
+            with self.subTest(events=events), self.assertRaises(ValueError):
+                parse_run(stdout, skill="example-skill", expected_model=self.model,
+                          cwd=self.packet, require_skill=False, allowed_tools={"view"})
 
 
 class SkillEvalTests(unittest.TestCase):
