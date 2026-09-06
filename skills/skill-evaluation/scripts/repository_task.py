@@ -76,7 +76,8 @@ def scaffold_repository(case_dir: Path) -> None:
     write_json(case_dir / "case.json", definition)
 
 
-def ordinary_files(root: Path, *, skip_git: bool = False) -> list[Path]:
+def ordinary_files(root: Path, *, skip_git: bool = False,
+                   runtime_links: dict[str, str] | None = None) -> list[Path]:
     files = []
     for directory, names, filenames in os.walk(root, followlinks=False):
         if skip_git:
@@ -85,13 +86,45 @@ def ordinary_files(root: Path, *, skip_git: bool = False) -> list[Path]:
         for name in [*names, *filenames]:
             path = Path(directory) / name
             mode = path.lstat().st_mode
-            if stat.S_ISLNK(mode) or not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+            relative = path.relative_to(root).as_posix()
+            if stat.S_ISLNK(mode):
+                if runtime_links is not None and runtime_links.get(relative) == os.readlink(path):
+                    continue
+                raise ValueError(f"unsupported repository filesystem entry: {path}")
+            if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
                 raise ValueError(f"unsupported repository filesystem entry: {path}")
             if name == ".git":
                 raise ValueError(f"Git metadata is not repository evidence: {path}")
             if stat.S_ISREG(mode):
                 files.append(path)
     return sorted(files)
+
+
+def observe_setup_links(frozen: Path, source: Path) -> list[dict[str, str]]:
+    frozen_paths = {
+        path.relative_to(frozen / "repository")
+        for path in ordinary_files(frozen / "repository")
+    }
+    links = []
+    for directory, names, filenames in os.walk(source, followlinks=False):
+        names[:] = [name for name in names if name != ".git"]
+        filenames = [name for name in filenames if name != ".git"]
+        for name in [*names, *filenames]:
+            path = Path(directory) / name
+            mode = path.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                relative = path.relative_to(source)
+                if any(
+                    frozen_path == relative or frozen_path.is_relative_to(relative)
+                    for frozen_path in frozen_paths
+                ):
+                    raise ValueError(
+                        f"setup-created symlink overlaps frozen source: {relative}"
+                    )
+                links.append({"path": relative.as_posix(), "target": os.readlink(path)})
+            elif not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+                raise ValueError(f"unsupported repository filesystem entry: {path}")
+    return links
 
 
 def validate_command(command: dict, *, graded: bool = False) -> None:
@@ -327,15 +360,21 @@ def git(repository: Path, arguments: list[str], *, input_bytes: bytes | None = N
     return result.stdout
 
 
-def copy_source(source: Path, destination: Path) -> None:
+def copy_source(source: Path, destination: Path,
+                runtime_links: dict[str, str] | None = None) -> None:
     destination.mkdir(parents=True, exist_ok=True)
-    for path in ordinary_files(source, skip_git=True):
+    for path in ordinary_files(source, skip_git=True, runtime_links=runtime_links):
         target = destination / path.relative_to(source)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
 
 
-def export_patch(frozen: Path, candidate: Path, patch: Path) -> None:
+def export_patch(frozen: Path, candidate: Path, patch: Path,
+                 setup_links: list[dict[str, str]] | None = None) -> None:
+    runtime_links = {
+        item["path"]: item["target"]
+        for item in setup_links or []
+    }
     with tempfile.TemporaryDirectory(prefix="skill-eval-export-") as directory:
         trusted = Path(directory) / "repository"
         copy_packet(frozen / "repository", trusted)
@@ -352,7 +391,7 @@ def export_patch(frozen: Path, candidate: Path, patch: Path) -> None:
                 else:
                     entry.unlink()
         try:
-            copy_source(candidate, trusted)
+            copy_source(candidate, trusted, runtime_links)
         except (PermissionError, ValueError) as error:
             raise CandidateStateError(f"candidate source export failed: {error}") from error
         git(trusted, ["add", "--all", "--force"])
@@ -406,9 +445,7 @@ def grade(frozen: Path, task: dict, artifacts: Path, patch: Path | None = None) 
 
 
 def check_candidate_setup(frozen: Path, task: dict, artifacts: Path,
-                          patch: Path | None = None) -> list[dict]:
-    if not task["candidate_setup"]:
-        return []
+                          patch: Path | None = None) -> dict:
     artifacts.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".setup-", dir=artifacts) as directory:
         source = Path(directory) / "repository"
@@ -416,13 +453,28 @@ def check_candidate_setup(frozen: Path, task: dict, artifacts: Path,
         if patch is not None:
             apply_patch(source, patch)
         records = []
-        with Container(task["image"], [(source, "/workspace/repo", True)], artifacts) as container:
-            for index, command in enumerate(task["candidate_setup"]):
-                record = container.execute(command, f"setup-{index}")
-                records.append(record)
-                if record["exit_code"] != 0:
-                    break
-        return records
+        if task["candidate_setup"]:
+            with Container(task["image"], [(source, "/workspace/repo", True)], artifacts) as container:
+                for index, command in enumerate(task["candidate_setup"]):
+                    record = container.execute(command, f"setup-{index}")
+                    records.append(record)
+                    if record["exit_code"] != 0:
+                        raise InfrastructureError("candidate setup failed during admission")
+        links = observe_setup_links(frozen, source)
+        write_json(artifacts / "setup-runtime-links.json", {
+            "schema_version": 1,
+            "links": links,
+        })
+        exported_patch = artifacts / "candidate.patch"
+        export_patch(frozen, source, exported_patch, links)
+        return {
+            "commands": records,
+            "runtime_links": links,
+            "patch": {
+                "path": exported_patch.name,
+                "sha256": digest(exported_patch),
+            },
+        }
 
 
 def harness_sources() -> list[dict]:
@@ -458,9 +510,14 @@ def validate_repository_case(root: Path, case_id: str) -> Path:
             frozen, task, artifacts / "candidate-setup-reference",
             frozen / task["admission"]["reference_patch"],
         )
-        base = grade(frozen, task, artifacts / "base")
-        reference = grade(frozen, task, artifacts / "reference",
-                          frozen / task["admission"]["reference_patch"])
+        base = grade(
+            frozen, task, artifacts / "base",
+            artifacts / "candidate-setup-base" / setup_base["patch"]["path"],
+        )
+        reference = grade(
+            frozen, task, artifacts / "reference",
+            artifacts / "candidate-setup-reference" / setup_reference["patch"]["path"],
+        )
         failure = task["admission"]["base_target_failure"]
         check = base["target"]["check"]
         intended_failure = bool(
@@ -471,7 +528,6 @@ def validate_repository_case(root: Path, case_id: str) -> Path:
         valid = (
             intended_failure and all(item["setup_ok"] for item in base.values())
             and base["regression"]["passed"] and all(item["passed"] for item in reference.values())
-            and all(item["exit_code"] == 0 for item in setup_base + setup_reference)
         )
         receipt.update(status="PASS" if valid else "INVALID",
                        base=base, reference=reference, intended_base_failure=intended_failure,
@@ -551,6 +607,8 @@ def execute_repository(
     }
     stage = "admission"
     patch = run_root / "candidate.patch"
+    setup_links: list[dict[str, str]] = []
+    candidate_started = False
     try:
         image = image_identity(task["image"])
         result["image"] = image
@@ -598,6 +656,12 @@ def execute_repository(
                         record = container.execute(command, f"setup-{index}")
                         if record["exit_code"] != 0:
                             raise ValueError("candidate setup failed before candidate execution")
+                    stage = "candidate_setup_observation"
+                    setup_links = observe_setup_links(frozen, repository)
+                    write_json(run_root / "candidate" / "setup-runtime-links.json", {
+                        "schema_version": 1,
+                        "links": setup_links,
+                    })
                     stage = "candidate"
                     timeline.switch("candidate")
                     session_id = str(uuid.uuid4())
@@ -606,6 +670,7 @@ def execute_repository(
                     invoked_at, invoked_clock = measurement.instant(), time.monotonic()
                     outcome = "failed"
                     try:
+                        candidate_started = True
                         record = container.execute(
                             {"argv": command, "timeout_seconds": timeout_seconds}, "trajectory", token=True)
                         result["candidate"] = record
@@ -649,8 +714,9 @@ def execute_repository(
                 # Export only after the context has stopped/removed its sole writer.
                 if container.created and not container.stopped:
                     raise InfrastructureError("candidate stop could not be confirmed; patch not exported")
-                export_patch(frozen, repository, patch)
-                result["patch_sha256"] = digest(patch)
+                if candidate_started:
+                    export_patch(frozen, repository, patch, setup_links)
+                    result["patch_sha256"] = digest(patch)
             if result["failure_kind"] != "candidate_timeout":
                 stage = "grading"
                 timeline.switch("deterministic_grading")

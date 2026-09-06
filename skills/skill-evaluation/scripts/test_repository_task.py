@@ -156,6 +156,242 @@ class RepositoryTaskTests(unittest.TestCase):
         self.assertEqual(patch.read_bytes(), b"")
         repository.apply_patch(candidate, patch)
 
+    def test_setup_runtime_link_is_literal_and_excluded_from_export(self):
+        frozen = self.freeze()
+        candidate = Path(self.temp.name) / "candidate"
+        evaluator.copy_packet(frozen / "repository", candidate)
+        outside = Path(self.temp.name) / "outside-sentinel"
+        outside.write_text("outside source must not be captured\n")
+        (candidate / "runtime-link").symlink_to("../outside-sentinel")
+        links = repository.observe_setup_links(frozen, candidate)
+        self.assertEqual(links, [{"path": "runtime-link", "target": "../outside-sentinel"}])
+        (candidate / "code.py").write_text("def add(a, b): return a + b\n")
+        (candidate / "ignored.txt").write_text("must be captured\n")
+        (candidate / "mode.sh").chmod(0o644)
+        patch = Path(self.temp.name) / "candidate.patch"
+        repository.export_patch(frozen, candidate, patch, links)
+        self.assertNotIn(b"outside source must not be captured", patch.read_bytes())
+        fresh = Path(self.temp.name) / "fresh"
+        evaluator.copy_packet(frozen / "repository", fresh)
+        repository.apply_patch(fresh, patch)
+        self.assertEqual((fresh / "code.py").read_text(), "def add(a, b): return a + b\n")
+        self.assertEqual((fresh / "ignored.txt").read_text(), "must be captured\n")
+        self.assertEqual((fresh / "mode.sh").stat().st_mode & 0o777, 0o644)
+        self.assertFalse((fresh / "runtime-link").exists())
+
+    def test_removed_and_ordinary_replaced_setup_links_are_exported(self):
+        frozen = self.freeze()
+        removed = Path(self.temp.name) / "removed"
+        evaluator.copy_packet(frozen / "repository", removed)
+        (removed / "runtime-link").symlink_to("runtime-target")
+        links = repository.observe_setup_links(frozen, removed)
+        (removed / "runtime-link").unlink()
+        removed_patch = Path(self.temp.name) / "removed.patch"
+        repository.export_patch(frozen, removed, removed_patch, links)
+        self.assertEqual(removed_patch.read_bytes(), b"")
+
+        replacement = Path(self.temp.name) / "replacement"
+        evaluator.copy_packet(frozen / "repository", replacement)
+        (replacement / "runtime-link").symlink_to("runtime-target")
+        links = repository.observe_setup_links(frozen, replacement)
+        (replacement / "runtime-link").unlink()
+        (replacement / "runtime-link").mkdir()
+        (replacement / "runtime-link" / "source.py").write_text("replacement source\n")
+        replacement_patch = Path(self.temp.name) / "replacement.patch"
+        repository.export_patch(frozen, replacement, replacement_patch, links)
+        fresh = Path(self.temp.name) / "replacement-fresh"
+        evaluator.copy_packet(frozen / "repository", fresh)
+        repository.apply_patch(fresh, replacement_patch)
+        self.assertEqual(
+            (fresh / "runtime-link" / "source.py").read_text(),
+            "replacement source\n",
+        )
+
+    def test_setup_links_reject_frozen_source_collisions_and_ancestors(self):
+        case = self.make_case()
+        (case / "repository" / "nested").mkdir()
+        (case / "repository" / "nested" / "source.py").write_text("frozen source\n")
+        frozen = evaluator.freeze_case(self.root, "example", False)
+
+        collision = Path(self.temp.name) / "collision"
+        evaluator.copy_packet(frozen / "repository", collision)
+        (collision / "code.py").unlink()
+        (collision / "code.py").symlink_to("runtime-target")
+        with self.assertRaisesRegex(ValueError, "overlaps frozen source"):
+            repository.observe_setup_links(frozen, collision)
+
+        ancestor = Path(self.temp.name) / "ancestor"
+        evaluator.copy_packet(frozen / "repository", ancestor)
+        shutil.rmtree(ancestor / "nested")
+        (ancestor / "nested").symlink_to("runtime-target")
+        with self.assertRaisesRegex(ValueError, "overlaps frozen source"):
+            repository.observe_setup_links(frozen, ancestor)
+
+    def test_export_refuses_retargeted_and_new_setup_links(self):
+        frozen = self.freeze()
+        retargeted = Path(self.temp.name) / "retargeted"
+        evaluator.copy_packet(frozen / "repository", retargeted)
+        (retargeted / "runtime-link").symlink_to("runtime-target")
+        links = repository.observe_setup_links(frozen, retargeted)
+        (retargeted / "runtime-link").unlink()
+        (retargeted / "runtime-link").symlink_to("different-target")
+        with self.assertRaises(repository.CandidateStateError):
+            repository.export_patch(frozen, retargeted, Path(self.temp.name) / "retargeted.patch", links)
+
+        added = Path(self.temp.name) / "added"
+        evaluator.copy_packet(frozen / "repository", added)
+        (added / "runtime-link").symlink_to("runtime-target")
+        links = repository.observe_setup_links(frozen, added)
+        (added / "new-link").symlink_to("runtime-target")
+        with self.assertRaises(repository.CandidateStateError):
+            repository.export_patch(frozen, added, Path(self.temp.name) / "added.patch", links)
+
+        special = Path(self.temp.name) / "special"
+        evaluator.copy_packet(frozen / "repository", special)
+        os.mkfifo(special / "unsupported")
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            repository.observe_setup_links(frozen, special)
+        with self.assertRaises(repository.CandidateStateError):
+            repository.export_patch(frozen, special, Path(self.temp.name) / "special.patch")
+
+    def test_setup_capture_without_commands_preserves_no_setup_export(self):
+        frozen = self.freeze()
+        task = evaluator.read_json(frozen / "case.json")["repository_task"]
+        artifacts = Path(self.temp.name) / "setup-capture"
+        capture = repository.check_candidate_setup(frozen, task, artifacts)
+        self.assertEqual(capture["commands"], [])
+        self.assertEqual(capture["runtime_links"], [])
+        self.assertEqual((artifacts / capture["patch"]["path"]).read_bytes(), b"")
+
+    def test_admission_replays_setup_exports_for_base_and_reference(self):
+        case = self.make_case()
+        definition = evaluator.read_json(case / "case.json")
+        definition["repository_task"]["candidate_setup"] = [{
+            "argv": ["create-runtime-link"],
+            "timeout_seconds": 10,
+        }]
+        evaluator.write_json(case / "case.json", definition)
+        frozen = evaluator.freeze_case(self.root, "example", False)
+        graded_patches = []
+
+        class FakeContainer:
+            def __init__(self, image, mounts, artifacts, **kwargs):
+                self.source = mounts[0][0]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def execute(self, command, label, **kwargs):
+                (self.source / "runtime-link").symlink_to("image-runtime")
+                return {"exit_code": 0, "timed_out": False}
+
+        def fake_grade(frozen, task, artifacts, patch):
+            graded_patches.append((artifacts.name, patch.read_bytes()))
+            target = artifacts / "target"
+            target.mkdir(parents=True)
+            target_passed = artifacts.name == "reference"
+            check = {
+                "exit_code": 0 if target_passed else 1,
+                "timed_out": False,
+                "log": "check.log",
+            }
+            (target / check["log"]).write_text(
+                "TARGET_CHECKS_PASSED" if target_passed else "wrong addition",
+            )
+            return {
+                "target": {
+                    "setup_ok": True,
+                    "passed": target_passed,
+                    "check": check,
+                },
+                "regression": {
+                    "setup_ok": True,
+                    "passed": True,
+                    "check": check,
+                },
+            }
+
+        with (
+            mock.patch("repository_task.image_identity", return_value={"id": self.image}),
+            mock.patch("repository_task.Container", FakeContainer),
+            mock.patch("repository_task.grade", side_effect=fake_grade),
+        ):
+            admission = repository.validate_repository_case(self.root, "example")
+
+        receipt = evaluator.read_json(admission / "admission-receipt.json")
+        self.assertEqual(receipt["status"], "PASS")
+        self.assertEqual(
+            receipt["candidate_setup_base"]["runtime_links"],
+            [{"path": "runtime-link", "target": "image-runtime"}],
+        )
+        self.assertEqual([name for name, _ in graded_patches], ["base", "reference"])
+        self.assertEqual(graded_patches[0][1], b"")
+        self.assertIn(b"return a + b", graded_patches[1][1])
+
+    def test_pre_model_failures_are_not_reclassified_as_candidate_output(self):
+        case = self.make_case()
+        definition = evaluator.read_json(case / "case.json")
+        definition["repository_task"]["candidate_setup"] = [{
+            "argv": ["prepare-source"],
+            "timeout_seconds": 10,
+        }]
+        evaluator.write_json(case / "case.json", definition)
+        frozen = evaluator.freeze_case(self.root, "example", False)
+        admission = Path(self.temp.name) / "admission.json"
+        admission.write_text("{}")
+
+        for failure, expected_stage in (
+            ("setup", "candidate_setup"),
+            ("observation", "candidate_setup_observation"),
+        ):
+            class FakeContainer:
+                def __init__(self, image, mounts, artifacts, **kwargs):
+                    self.artifacts = artifacts
+                    self.source = mounts[0][0]
+                    self.created = True
+                    self.stopped = False
+                    self.artifacts.mkdir(parents=True)
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    self.stopped = True
+
+                def execute(self, command, label, **kwargs):
+                    log = self.artifacts / f"{label}.log"
+                    log.write_text("copilot test\n")
+                    if label == "cli-version":
+                        return {"exit_code": 0, "log": log.name}
+                    if failure == "setup":
+                        (self.source / "unexpected-link").symlink_to("runtime-target")
+                        return {"exit_code": 1, "log": log.name}
+                    (self.source / "code.py").unlink()
+                    (self.source / "code.py").symlink_to("runtime-target")
+                    return {"exit_code": 0, "log": log.name}
+
+            run = Path(self.temp.name) / f"{failure}-run"
+            run.mkdir()
+            with (
+                mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "nonsecret-test-sentinel"}),
+                mock.patch("repository_task.image_identity", return_value={"id": self.image}),
+                mock.patch("repository_task.require_admission", return_value=admission),
+                mock.patch("repository_task.Container", FakeContainer),
+                mock.patch("repository_task.grade") as grade,
+            ):
+                result = repository.execute_repository(
+                    self.root, "example", frozen, run, run / "plugin",
+                    "fake", "high", 1, "baseline",
+                )
+            self.assertEqual(result["execution_status"], "INVALID", result)
+            self.assertEqual(result["failure_kind"], expected_stage)
+            self.assertNotEqual(result["failure_kind"], "candidate_output")
+            self.assertFalse((run / "candidate.patch").exists())
+            grade.assert_not_called()
+
     def test_completion_marker_without_zero_exit_is_not_success(self):
         log = Path(self.temp.name) / "check.log"
         log.write_text("TARGET_CHECKS_PASSED")
