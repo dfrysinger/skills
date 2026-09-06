@@ -236,7 +236,8 @@ class RepositoryTaskTests(unittest.TestCase):
         destination = Path(self.temp.name) / "harness"
         identity = evaluator.harness_identity(destination)
         self.assertEqual({item["path"] for item in identity["modules"]},
-                         {"skill_eval.py", "repository_task.py"})
+                         {"skill_eval.py", "repository_task.py", "measurement.py",
+                          "quality_review.py", "evaluation_history.py"})
         for module in identity["modules"]:
             self.assertEqual(evaluator.digest(destination / module["path"]), module["sha256"])
 
@@ -290,6 +291,10 @@ class RepositoryTaskTests(unittest.TestCase):
             def stop(self):
                 self.stopped = True
 
+            def usage_events(self, session_id):
+                owner.assertTrue(self.stopped)
+                return None
+
             def execute(self, command, label, **kwargs):
                 log = self.artifacts / f"{label}.log"
                 if label == "cli-version":
@@ -325,6 +330,11 @@ class RepositoryTaskTests(unittest.TestCase):
         result, run, grade = self.fake_execution(timeout=True)
         self.assertEqual(result["execution_status"], "FAIL", result)
         self.assertEqual(result["failure_kind"], "candidate_timeout")
+        usage = evaluator.read_json(run / "measurements" / "candidate.json")
+        self.assertEqual(usage["outcome"], "timed_out")
+        self.assertEqual(usage["session_id"], result["candidate_session_id"])
+        self.assertEqual(usage["premium_requests"], 0.33)
+        self.assertEqual(usage["completeness"], "partial")
         self.assertIn(b"return a + b", (run / "candidate.patch").read_bytes())
         self.assertEqual(result["patch_sha256"], evaluator.digest(run / "candidate.patch"))
         self.assertTrue((run / "candidate" / "trajectory.log").is_file())
@@ -334,6 +344,9 @@ class RepositoryTaskTests(unittest.TestCase):
         result, run, grade = self.fake_execution(cli_failure=True)
         self.assertEqual(result["execution_status"], "INVALID", result)
         self.assertTrue((run / "candidate.patch").is_file())
+        usage = evaluator.read_json(run / "measurements" / "candidate.json")
+        self.assertEqual(usage["outcome"], "failed")
+        self.assertEqual(usage["premium_requests"], 0.33)
         grade.assert_not_called()
 
     def test_candidate_setup_breakage_during_grading_is_scored(self):
@@ -367,7 +380,7 @@ class RepositoryTaskTests(unittest.TestCase):
         (skill / "SKILL.md").write_text("example")
         original = []
 
-        def execute(root, case_id, frozen, run, *args):
+        def execute(root, case_id, frozen, run, *args, **kwargs):
             result = {"execution_status": "PASS", "behavioral_verdict": None, "failure_kind": None}
             evaluator.write_json(run / "execution-result.json", result)
             original.append(evaluator.digest(run / "execution-result.json"))
@@ -388,6 +401,69 @@ class RepositoryTaskTests(unittest.TestCase):
         final = evaluator.read_json(run / "repository-result.json")
         self.assertEqual(final["execution_status"], "PASS")
         self.assertEqual(final["behavioral_verdict"], "FAIL")
+
+    def test_quality_failure_preserves_correctness_and_full_timing(self):
+        frozen = self.freeze()
+        plugin = self.root / "plugin"
+        skill = plugin / "skills" / "example-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("example")
+        original = []
+        clock = [0.0]
+
+        def execute(root, case_id, frozen, run, *args, **kwargs):
+            timer = kwargs["timeline"]
+            clock[0] = 2
+            timer.switch("candidate")
+            clock[0] = 5
+            timer.switch("deterministic_grading")
+            clock[0] = 8
+            result = {"execution_status": "PASS", "behavioral_verdict": None, "failure_kind": None}
+            evaluator.write_json(run / "execution-result.json", result)
+            original.append(evaluator.digest(run / "execution-result.json"))
+            return result
+
+        def judges(**kwargs):
+            clock[0] = 11
+            raise ValueError("synthetic behavioral failure")
+
+        def quality(**kwargs):
+            clock[0] = 13
+            return {"complete": False, "reviewers": [{"status": "failed"}]}
+
+        with (
+            mock.patch("skill_eval.time.monotonic", side_effect=lambda: clock[0]),
+            mock.patch("repository_task.execute_repository", side_effect=execute),
+            mock.patch("skill_eval.run_judges", side_effect=judges),
+            mock.patch("quality_review.review_repository", side_effect=quality) as review,
+            mock.patch("skill_eval.copilot_identity", return_value={"version": "fake"}),
+        ):
+            run = evaluator.run_case(self.root, "example", plugin, Path("/fake"),
+                                     "fake", "high", "existing", 1, quality_review=True)
+        review.assert_called_once()
+        self.assertEqual(evaluator.digest(run / "execution-result.json"), original[0])
+        result = evaluator.read_json(run / "repository-result.json")
+        self.assertEqual(result["execution_status"], "PASS")
+        self.assertIn("behavioral_error", result)
+        self.assertFalse(result["quality_assessment"]["complete"])
+        timing = evaluator.read_json(run / "timing.json")
+        self.assertEqual(timing["elapsed_seconds"], 13)
+        self.assertEqual([stage["name"] for stage in timing["stages"]],
+                         ["preparation", "candidate", "deterministic_grading",
+                          "behavioral_judging", "quality_review", "cleanup"])
+        self.assertEqual(timing["stages"][3]["status"], "failed")
+        self.assertEqual(timing["stages"][4]["status"], "failed")
+
+    def test_run_setup_failure_retains_timing_and_zero_uninvoked_spend(self):
+        self.freeze()
+        with mock.patch("skill_eval.snapshot_plugin", side_effect=ValueError("bad plugin")):
+            run = evaluator.run_case(self.root, "example", self.root / "missing", Path("/fake"),
+                                     "fake", "high", "existing", 1)
+        self.assertEqual(evaluator.read_json(run / "execution-result.json")["execution_status"], "INVALID")
+        timing = evaluator.read_json(run / "timing.json")
+        self.assertEqual(timing["stages"][0]["status"], "failed")
+        self.assertEqual(timing["stages"][-1]["name"], "cleanup")
+        self.assertEqual(evaluator.read_json(run / "accounting.json")["total"]["credits"], 0)
 
     def test_suite_pass_at_one_does_not_use_retry_or_behavioral_verdict(self):
         self.freeze()

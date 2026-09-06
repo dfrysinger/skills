@@ -221,6 +221,16 @@ listed; overall suite success additionally requires independent behavioral
 success. Suites snapshot the plugin and all harness modules and refuse a
 case revision or harness change between attempts.
 
+Add `--quality-review` to `run` or a repository-only `run-suite` for independent
+source-only shipping assessments. This requests additional paid Claude/GPT
+invocations using the case's judge models. Findings remain reviewer-reported;
+they do not rewrite executable or behavioral results or trigger retries.
+
+All attempts retain role-separated usage and full wall timing. Query their
+authoritative artifacts with `history CORPUS --format json|markdown`.
+See [measurement and quality history](measurement.md) for coverage, units,
+failure handling and comparison populations.
+
 ## Toolchain example and focused checks
 
 `examples/Dockerfile` is a generic starting point, not a prebuilt execution
@@ -233,7 +243,7 @@ docker build -f examples/Dockerfile -t skill-eval-local .
 docker image inspect skill-eval-local --format '{{.Id}}'
 
 cd scripts
-python3 -m unittest -q test_skill_eval test_repository_task.RepositoryTaskTests
+python3 -m unittest -q test_skill_eval test_repository_task.RepositoryTaskTests test_measurement
 SKILL_EVAL_TEST_IMAGE=sha256:YOUR_IMAGE_ID \
   python3 -m unittest -q test_repository_task.DockerRepositoryTests
 ```
