@@ -182,7 +182,7 @@ outputs are not excluded from these scopes: do not place evidence inside an
 input directory. Symlinks and special files in reuse scopes are rejected
 rather than treating a link's unchanged spelling as unchanged target content.
 
-In the original receipt, add `reuseCoverageEvidence`, an object with all six
+For a new execution, add `reuseCoverageEvidence` to its receipt, with all six
 keys below. Each value names the relevant recorded paths and the evidence
 establishing their coverage, or explains why that input class is inapplicable:
 
@@ -202,9 +202,8 @@ An unchanged measurement file without a fresh check of the actual runtime,
 environment, model, or external state is not correspondence evidence. If an
 input cannot be identified or measured reliably, rerun the affected scenario.
 Do not manufacture execution-time measurements after the fact or edit an old
-receipt to add them. Receipts without execution-time `reuseInputs` remain valid
-for direct validation, but this helper cannot admit cross-candidate reuse of
-them.
+receipt to add them. A legacy receipt without `reuseInputs` may instead use the
+validated-source derivation below.
 
 For the final frozen candidate, run `fingerprint` again with the same input
 scopes, additional inputs, and output exclusions. Store that new candidate
@@ -237,11 +236,59 @@ python3 "$SKILL_DIR/scripts/validate-live-proof.py" validate "$RECEIPT" \
 
 This validates the original scenario and visual requirements, checks its
 receipt hash, recomputes the target's full fingerprint, and requires identical
-recorded input scopes and hashes. The original worktree need not still exist.
+recorded input scopes and hashes. With execution-time `reuseInputs`, the original
+worktree need not still exist.
 Output identifies the target fingerprint and `reusedFrom` original fingerprint
 and receipt hash, not a new execution. Any relevant input change, removed scope,
 missing coverage evidence, or later target mutation fails closed. Ordinary
 validation without `--reuse` still requires an exact current fingerprint.
+
+### Legacy receipts with a retained original candidate
+
+Missing predeclared scope metadata alone does not require replay. If the
+original worktree is still available at its recorded path and its full
+candidate fingerprint still validates, the helper can derive a scoped baseline
+now. This route does not reconstruct repositories or accept a replacement source
+path. The original receipt bytes and execution identity remain unchanged.
+
+Build the target candidate with `fingerprint --reuse-input` as above. In its
+separate correspondence JSON, add:
+
+- `"deriveLegacyBaseline": true`;
+- `legacyCoverageEvidence`, an object with the same six keys as
+  `checkedCorrespondenceEvidence`. Describe why the original recorded inputs
+  cover the scenario, including original runtime/environment measurements, and
+  explain any inapplicable input classes.
+
+Keep `checkedCorrespondenceEvidence` for the fresh source-to-target comparison.
+Coverage must come from the original fingerprint-bound files or original direct
+evidence, not newly asserted old values. Relevant ignored inputs must already
+appear in the old candidate's `additionalInputs`. Newly measuring an ignored
+runtime, dependency, configuration, or generated input cannot establish what
+the old execution used. Unknown relevant inputs keep the gate closed.
+
+Validate and save the result separately:
+
+```bash
+python3 "$SKILL_DIR/scripts/validate-live-proof.py" validate "$RECEIPT" \
+  --reuse /path/to/correspondence.json > /path/to/applicability.json
+```
+
+The helper validates the original full candidate before deriving any baseline,
+rejects scoped files absent from that fingerprint's coverage, hashes the chosen
+scope, and checks the original candidate again. It then requires identical
+target input hashes and all ordinary receipt gates. The applicability output's
+`legacyBaseline.origin` is `derived-during-validation`, with the derived input
+hashes. It is not an execution-time snapshot or a new scenario run.
+
+Every subsequent legacy validation repeats this derivation from the exact
+original source; a supplied `legacyBaseline` is not trusted as input. Preserve
+the original worktree until final admission. A stale, unavailable, or redirected
+source, uncovered ignored/excluded inputs, or incomplete runtime correspondence
+cannot use this route. Dirty and non-ignored untracked inputs are eligible when
+the full original fingerprint still matches. Empty directories and other
+filesystem properties not established by the original evidence must not be
+treated as historical observations.
 
 Maintain the complete applicable claim set outside these individual receipts:
 map every final acceptance criterion to a direct receipt or to an original

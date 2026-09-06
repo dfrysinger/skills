@@ -771,8 +771,12 @@ claims and substantiate why the others remain unchanged.
 Keep the original receipt, candidate, process/model identity, and observations
 unchanged. Record the final candidate and checked correspondence separately.
 Capture reusable input identities at execution time using the reference's
-`--reuse-input` support; compare actual contents, file modes, and directory
-membership, including dirty, untracked, and ignored relevant inputs. An
+`--reuse-input` support when available. A legacy receipt can instead derive a
+baseline during validation if its original worktree still matches its full
+recorded candidate fingerprint; preserve the receipt and store that derivation
+in the separate applicability result. Do not call it an execution-time snapshot.
+Compare actual contents, file modes, and directory membership, including dirty,
+untracked, and ignored relevant inputs. An
 unchanged source file alone is insufficient when its dependencies, generated
 output, runtime, configuration, or caller path changed. Recheck path-sensitive
 behavior when moving worktrees.

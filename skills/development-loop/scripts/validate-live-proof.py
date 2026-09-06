@@ -64,7 +64,9 @@ def _hash_file(path: Path) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
-def _reuse_input(worktree: Path, value: str) -> dict[str, str]:
+def _reuse_input(
+    worktree: Path, value: str, covered_files: set[str] | None = None,
+) -> dict[str, str]:
     relative = _relative_path(value, field="reuse input")
     path = worktree / relative
     for part in (path, *path.parents):
@@ -78,7 +80,15 @@ def _reuse_input(worktree: Path, value: str) -> dict[str, str]:
         mode = item.lstat().st_mode
         if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
             raise ReceiptError(f"reuse input must be a regular file or directory: {item}")
-        record = [item.relative_to(worktree).as_posix(), stat.S_IMODE(mode)]
+        item_path = item.relative_to(worktree).as_posix()
+        if covered_files is not None:
+            covered = (
+                item_path in covered_files if stat.S_ISREG(mode)
+                else any(name.startswith(f"{item_path}/") for name in covered_files)
+            )
+            if not covered:
+                raise ReceiptError(f"legacy input was not covered by the original fingerprint: {item_path}")
+        record = [item_path, stat.S_IMODE(mode)]
         if stat.S_ISREG(mode):
             record.append(_hash_file(item))
         digest.update(json.dumps(record).encode() + b"\0")
@@ -242,6 +252,33 @@ def _read_json(path: Path) -> dict[str, object]:
     return value
 
 
+def _legacy_reuse_inputs(
+    candidate: dict[str, object], target: dict[str, object],
+) -> list[dict[str, str]]:
+    source = _validate_candidate(candidate)
+    if source["worktree"] != candidate["worktree"]:
+        raise ReceiptError("legacy source worktree moved or was redirected")
+    worktree = Path(source["worktree"])
+    recorded = _git(
+        worktree, "ls-files", "--cached", "--others", "--exclude-standard", "-z"
+    ).split(b"\0")
+    covered_files = {
+        name for raw in recorded if raw
+        for name in [raw.decode("utf-8", errors="surrogateescape")]
+        if not _is_excluded(name, tuple(source["excludedOutputs"]))
+    }
+    covered_files.update(item["path"] for item in source["additionalInputs"])
+    scopes = target.get("reuseInputs")
+    if not scopes:
+        raise ReceiptError("legacy reuse requires a non-empty target input scope")
+    baseline = [
+        _reuse_input(worktree, item["path"], covered_files) for item in scopes
+    ]
+    # A derived baseline is usable only while its original candidate is still verifiable.
+    _validate_candidate(candidate)
+    return baseline
+
+
 def _png_pixels(path: Path) -> tuple[int, int, bool]:
     if path.stat().st_size > 50 * 1024 * 1024:
         raise ReceiptError(f"capture is too large to validate safely: {path}")
@@ -354,6 +391,7 @@ def validate_receipt(path_value: str, reuse_value: str | None = None) -> dict[st
         _require_string(candidate.get(field), f"candidate.{field}")
     if "reuseInputs" in candidate:
         _require_input_coverage(receipt.get("reuseCoverageEvidence"), "reuseCoverageEvidence")
+    legacy_baseline = None
     if reuse_value is None:
         current = _validate_candidate(candidate)
     else:
@@ -362,13 +400,20 @@ def validate_receipt(path_value: str, reuse_value: str | None = None) -> dict[st
             raise ReceiptError(f"reuse.schemaVersion must be {SCHEMA_VERSION}")
         if reuse.get("sourceReceiptSha256") != _hash_file(receipt_path):
             raise ReceiptError("reuse source receipt hash does not match")
-        if not candidate.get("reuseInputs"):
-            raise ReceiptError("reuse requires execution-time reuseInputs")
         _require_input_coverage(
             reuse.get("checkedCorrespondenceEvidence"), "checkedCorrespondenceEvidence"
         )
         current = _validate_candidate(reuse.get("candidate"))
-        if candidate["reuseInputs"] != current.get("reuseInputs"):
+        source_inputs = candidate.get("reuseInputs")
+        if not source_inputs:
+            if reuse.get("deriveLegacyBaseline") is not True:
+                raise ReceiptError("reuse requires execution-time reuseInputs or explicit legacy derivation")
+            _require_input_coverage(
+                reuse.get("legacyCoverageEvidence"), "legacyCoverageEvidence"
+            )
+            legacy_baseline = _legacy_reuse_inputs(candidate, current)
+            source_inputs = legacy_baseline
+        if source_inputs != current.get("reuseInputs"):
             raise ReceiptError("reuse inputs changed or coverage no longer matches")
         for field in ("additionalInputs", "excludedOutputs"):
             if candidate.get(field) != current.get(field):
@@ -446,6 +491,11 @@ def validate_receipt(path_value: str, reuse_value: str | None = None) -> dict[st
             "candidate": candidate["fingerprint"],
             "receiptSha256": _hash_file(receipt_path),
         }
+        if legacy_baseline is not None:
+            result["legacyBaseline"] = {
+                "origin": "derived-during-validation",
+                "reuseInputs": legacy_baseline,
+            }
     return result
 
 

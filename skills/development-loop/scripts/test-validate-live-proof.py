@@ -6,6 +6,7 @@ import copy
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -421,6 +422,128 @@ class ValidateLiveProofTest(unittest.TestCase):
         self.validate()
         runtime.write_text("changed\n")
         self.assert_rejected(self.receipt, "candidate is stale")
+
+    def prepare_legacy(
+        self, inputs: list[str] | None = None,
+        additional: list[str] | None = None, excluded: list[str] | None = None,
+    ) -> dict[str, object]:
+        self.inputs = inputs or ["app.txt"]
+        self.receipt["candidate"] = MODULE.candidate_snapshot(
+            str(self.worktree), excluded_outputs=excluded, additional_inputs=additional
+        )
+        self.receipt_path.write_text(json.dumps(self.receipt))
+        self.source_bytes = self.receipt_path.read_bytes()
+        self.original_worktree = self.worktree
+        target = self.root / "target"
+        subprocess.run(
+            ["git", "-C", str(self.worktree), "worktree", "add", "-q", "--detach", str(target)],
+            check=True,
+        )
+        shutil.copytree(
+            self.worktree, target, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git")
+        )
+        self.worktree = target
+        self.coverage = {
+            name: "Checked against the original recorded inputs and scenario evidence."
+            for name in MODULE.INPUT_CLASSES
+        }
+        self.reuse_path = self.root / "reuse.json"
+        record = self.reuse_record()
+        record["candidate"] = MODULE.candidate_snapshot(
+            str(target), excluded, additional, self.inputs
+        )
+        record["deriveLegacyBaseline"] = True
+        record["legacyCoverageEvidence"] = self.coverage.copy()
+        return record
+
+    def test_derives_legacy_baseline_without_rewriting_execution(self) -> None:
+        record = self.prepare_legacy()
+        (self.worktree / "unrelated.txt").write_text("independent change\n")
+        subprocess.run(["git", "-C", str(self.worktree), "add", "unrelated.txt"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.worktree), "commit", "-qm", "unrelated"], check=True
+        )
+        record["candidate"] = self.reuse_record()["candidate"]
+        result = self.validate_reuse(record)
+        self.assertEqual(result["legacyBaseline"], {
+            "origin": "derived-during-validation",
+            "reuseInputs": record["candidate"]["reuseInputs"],
+        })
+        self.assertEqual(result["reusedFrom"]["candidate"], self.receipt["candidate"]["fingerprint"])
+        self.assertEqual(self.receipt_path.read_bytes(), self.source_bytes)
+        completed = subprocess.run(
+            ["python3", str(SCRIPT), "validate", str(self.receipt_path), "--reuse", str(self.reuse_path)],
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(json.loads(completed.stdout), result)
+
+    def test_legacy_accepts_retained_dirty_untracked_and_recorded_ignored_inputs(self) -> None:
+        (self.worktree / "app.txt").write_text("original dirty code\n")
+        (self.worktree / "fixture.txt").write_text("original untracked fixture\n")
+        (self.worktree / ".gitignore").write_text("runtime.env\n")
+        (self.worktree / "runtime.env").write_text("recorded runtime identity\n")
+        record = self.prepare_legacy(
+            ["app.txt", "fixture.txt"], additional=["runtime.env"]
+        )
+        self.validate_reuse(record)
+        (self.original_worktree / "runtime.env").write_text("runtime changed\n")
+        with self.assertRaisesRegex(MODULE.ReceiptError, "candidate is stale"):
+            self.validate_reuse(record)
+
+    def test_legacy_rejects_changed_source_even_outside_requested_scope(self) -> None:
+        record = self.prepare_legacy()
+        (self.original_worktree / "unrelated.txt").write_text("source no longer exact\n")
+        with self.assertRaisesRegex(MODULE.ReceiptError, "candidate is stale"):
+            self.validate_reuse(record)
+
+    def test_legacy_rejects_changed_target_inputs_with_fresh_fingerprint(self) -> None:
+        record = self.prepare_legacy()
+        (self.worktree / "app.txt").write_text("new executable content\n")
+        record["candidate"] = self.reuse_record()["candidate"]
+        record["legacyBaseline"] = {
+            "origin": "derived-during-validation",
+            "reuseInputs": record["candidate"]["reuseInputs"],
+        }
+        with self.assertRaisesRegex(MODULE.ReceiptError, "reuse inputs changed"):
+            self.validate_reuse(record)
+
+    def test_legacy_rejects_missing_or_redirected_source(self) -> None:
+        record = self.prepare_legacy()
+        original = self.original_worktree
+        moved = self.root / "moved"
+        original.rename(moved)
+        with self.assertRaisesRegex(MODULE.ReceiptError, "git .* failed|does not exist"):
+            self.validate_reuse(record)
+        original.symlink_to(moved, target_is_directory=True)
+        with self.assertRaisesRegex(MODULE.ReceiptError, "moved or was redirected"):
+            self.validate_reuse(record)
+
+    def test_legacy_rejects_unrecorded_ignored_runtime_input(self) -> None:
+        (self.worktree / ".gitignore").write_text("runtime.env\n")
+        (self.worktree / "runtime.env").write_text("unverified runtime identity\n")
+        record = self.prepare_legacy(["app.txt", "runtime.env"])
+        with self.assertRaisesRegex(MODULE.ReceiptError, "not covered by the original fingerprint"):
+            self.validate_reuse(record)
+
+    def test_legacy_rejects_unrecorded_excluded_input(self) -> None:
+        (self.worktree / "generated.txt").write_text("unverified generated input\n")
+        record = self.prepare_legacy(["app.txt", "generated.txt"], excluded=["generated.txt"])
+        with self.assertRaisesRegex(MODULE.ReceiptError, "not covered by the original fingerprint"):
+            self.validate_reuse(record)
+
+    def test_legacy_rejects_missing_coverage_and_failed_original_scenario(self) -> None:
+        record = self.prepare_legacy()
+        for name in MODULE.INPUT_CLASSES:
+            with self.subTest(input_class=name):
+                incomplete = copy.deepcopy(record)
+                del incomplete["legacyCoverageEvidence"][name]
+                with self.assertRaisesRegex(MODULE.ReceiptError, "legacyCoverageEvidence"):
+                    self.validate_reuse(incomplete)
+        self.receipt["scenario"]["checkpoints"][0]["result"] = "FAIL"
+        self.receipt_path.write_text(json.dumps(self.receipt))
+        record["sourceReceiptSha256"] = MODULE._hash_file(self.receipt_path)
+        with self.assertRaisesRegex(MODULE.ReceiptError, "result must be PASS"):
+            self.validate_reuse(record)
 
 
 if __name__ == "__main__":
