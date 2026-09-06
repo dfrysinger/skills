@@ -107,6 +107,23 @@ artifacts preserve each reviewer, outcome, failure and finding without
 consolidation. Assessment destinations are write-once; a second write is
 refused. There is no standalone reassessment command.
 
+After a successful CLI exit, quality validation reads the exact owned native
+session before its temporary home is deleted. It requires a matching fresh
+session, selected and observed assistant models, terminal shutdown, paired
+allowlisted tools, in-packet successful views and a final answer. A failed view
+does not count as a source read. Missing, corrupt or incomplete events fail the
+review without falling back to stdout; rejection by the unchanged 32 MiB reader
+limit also fails quality validation.
+
+The reviewer's `validation` record identifies native session events, their byte
+digest and record count, and successful process completion. The digest marks
+bytes inspected in process, not independently re-verifiable durable integrity
+evidence. No separate native transcript or tool-payload copy is retained. The existing
+stdout artifact, its digest and measurement errors remain intact.
+Native review success does not upgrade accounting completeness or change
+historical assessments. Candidate and behavioral judging keep their separate
+stdout validation contract.
+
 Shipping judgments are `acceptable`, `needs_revision`,
 `fundamentally_incorrect` or `unassessable`. Findings require a baseline or
 candidate file, inclusive one-based line range, matching source quotation,

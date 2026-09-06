@@ -12,7 +12,7 @@ from pathlib import Path
 
 import measurement
 from skill_eval import (
-    DEFAULT_JUDGES, copy_packet, digest, model_family, parse_json_output, parse_run,
+    DEFAULT_JUDGES, copy_packet, digest, model_family, parse_json_output, parse_native_run,
     read_json, run_copilot,
 )
 
@@ -166,6 +166,7 @@ def review_repository(
             slug = f"{index}-{re.sub(r'[^a-z0-9]+', '-', model.lower()).strip('-')}"
             log = destination / f"{slug}-raw.jsonl"
             session_id = str(uuid.uuid4())
+            home = Path(directory) / f"home-{slug}"
             reviewer = {"model": model, "family": model_family(model), "session_id": session_id,
                         "status": "failed", "effort": "high"}
             try:
@@ -173,15 +174,19 @@ def review_repository(
                     copilot=copilot, plugin_dir=empty_plugin, cwd=packet,
                     prompt=PROMPT, model=model, effort="high", log=log,
                     session_id=session_id, resume=False, home_mode="isolated",
-                    run_home=Path(directory) / f"home-{slug}", timeout_seconds=timeout_seconds,
+                    run_home=home, timeout_seconds=timeout_seconds,
                     allow_skill=False, measurement_path=run_root / "measurements" / f"quality-{slug}.json",
                     role="quality_judge", phase=f"quality:{model}",
                     cli_version=read_json(run_root / "copilot-identity.json").get("version"),
                 )
-                parsed = parse_run(
-                    log, skill=definition["target_skill"], expected_model=model,
-                    cwd=packet, require_skill=False, allowed_tools={"view"},
+                parsed = parse_native_run(
+                    measurement.host_events(home, session_id), session_id=session_id,
+                    expected_model=model, cwd=packet,
                 )
+                reviewer["validation"] = {
+                    "source": "native_session_events", "sha256": parsed["event_sha256"],
+                    "record_count": parsed["event_count"], "process_completed_successfully": True,
+                }
                 value = parse_json_output(parsed["answer"])
                 validate_review(value, packet)
                 reviewer.update(status="completed", **value, viewed_paths=parsed["viewed_paths"])

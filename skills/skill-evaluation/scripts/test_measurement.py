@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -342,6 +343,39 @@ class QualityTests(unittest.TestCase):
                           "trigger": "A concrete input", "explanation": "A concrete risk"}],
         }
 
+    def native_events(self, kwargs, answer):
+        records = [
+            {"type": "session.start", "data": {
+                "sessionId": kwargs["session_id"], "selectedModel": kwargs["model"]}},
+            {"type": "tool.execution_start", "data": {
+                "toolCallId": "empty", "toolName": "view", "arguments": {}}},
+            {"type": "tool.execution_complete", "data": {"toolCallId": "empty", "success": False}},
+            {"type": "tool.execution_start", "data": {
+                "toolCallId": "read", "toolName": "view", "arguments": {"path": "candidate/code.py"}}},
+            {"type": "tool.execution_complete", "data": {
+                "toolCallId": "read", "success": True, "result": {"content": "native-only source payload"}}},
+            {"type": "assistant.message", "data": {
+                "content": answer, "model": kwargs["model"], "reasoningText": "native-only reasoning"}},
+            {"type": "session.shutdown", "data": {"totalNanoAiu": 1_000_000_000}},
+        ]
+        content = ("\n".join(json.dumps(record) for record in records) + "\n").encode()
+        path = kwargs["run_home"] / "session-state" / kwargs["session_id"] / "events.jsonl"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(content)
+        return path, content
+
+    def new_run(self, name):
+        run = self.root / "runs" / name / "example"
+        run.mkdir(parents=True)
+        for filename in ("candidate.patch", "copilot-identity.json"):
+            (run / filename).write_bytes((self.run / filename).read_bytes())
+        return run
+
+    def assess(self, run=None):
+        return quality_review.review_repository(
+            frozen=self.frozen, run_root=run or self.run, definition=self.definition,
+            copilot=Path("/fake"), timeout_seconds=1)
+
     def test_packet_contains_only_source_and_public_requirements(self):
         packet = self.run / "packet"
         manifest = quality_review.prepare_packet(
@@ -387,6 +421,7 @@ class QualityTests(unittest.TestCase):
                 {"type": "assistant.message", "data": {"content": answer, "model": kwargs["model"]}},
                 {"type": "result", "exitCode": 0},
             )))
+            self.native_events(kwargs, answer)
             m.collect(
                 destination=kwargs["measurement_path"], session_id=kwargs["session_id"],
                 role=kwargs["role"], phase=kwargs["phase"], model=kwargs["model"],
@@ -437,6 +472,7 @@ class QualityTests(unittest.TestCase):
                     "content": json.dumps(value), "model": kwargs["model"]}},
                 {"type": "result", "exitCode": 0},
             )))
+            self.native_events(kwargs, json.dumps(value))
 
         with mock.patch.object(quality_review, "run_copilot", side_effect=transport):
             result = quality_review.review_repository(
@@ -446,6 +482,192 @@ class QualityTests(unittest.TestCase):
         self.assertTrue(result["disagreement"])
         self.assertEqual(len(result["reviewers"][0]["findings"]), 1)
         self.assertEqual(result["reviewers"][1]["findings"], [])
+
+    def test_native_success_keeps_stdout_errors_partial_accounting_and_no_native_payloads(self):
+        calls = []
+        measurements = {}
+        markers = {}
+        stdout = "{corrupt redacted stdout\n"
+
+        def transport(**kwargs):
+            calls.append(kwargs)
+            _, content = self.native_events(kwargs, json.dumps(self.review()))
+            markers[kwargs["session_id"]] = hashlib.sha256(content).hexdigest()
+            with mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "synthetic-test-token"}), mock.patch.object(
+                skill_eval.subprocess, "run",
+                return_value=subprocess.CompletedProcess(["fake"], 0, stdout=stdout),
+            ):
+                result = skill_eval.run_copilot(**kwargs)
+            measurements[kwargs["measurement_path"]] = kwargs["measurement_path"].read_bytes()
+            return result
+
+        with mock.patch.object(quality_review, "run_copilot", side_effect=transport):
+            result = self.assess()
+        self.assertTrue(result["complete"])
+        records = []
+        for call, reviewer in zip(calls, result["reviewers"]):
+            self.assertEqual(reviewer["status"], "completed")
+            self.assertEqual(reviewer["validation"], {
+                "source": "native_session_events", "sha256": markers[reviewer["session_id"]],
+                "record_count": 7, "process_completed_successfully": True,
+            })
+            self.assertEqual(reviewer["viewed_paths"], ["candidate/code.py"])
+            self.assertEqual(call["log"].read_text(), stdout)
+            self.assertEqual(reviewer["raw_log_sha256"], skill_eval.digest(call["log"]))
+            self.assertFalse(call["run_home"].exists())
+            self.assertEqual(call["measurement_path"].read_bytes(), measurements[call["measurement_path"]])
+            records.append(skill_eval.read_json(call["measurement_path"]))
+            self.assertEqual(records[-1]["completeness"], "error")
+            self.assertTrue(records[-1]["errors"])
+        accounting = m.accounting(records)["evaluation"]
+        self.assertEqual(accounting["observed_credits"], 2)
+        self.assertIsNone(accounting["credits"])
+        self.assertFalse(accounting["complete"])
+        for path in self.run.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(b"native-only", path.read_bytes())
+        self.assertFalse(list(self.run.rglob("events.jsonl")))
+
+    def test_failed_process_cannot_be_rescued_by_terminal_native_events(self):
+        self.definition["judge"]["models"] = self.definition["judge"]["models"][:1]
+        for name, outcome in (("timeout", "timed_out"), ("nonzero", "failed"), ("invocation", "failed")):
+            calls = []
+
+            def transport(**kwargs):
+                calls.append(kwargs)
+                self.native_events(kwargs, json.dumps(self.review()))
+                with mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "synthetic-test-token"}), mock.patch.object(
+                    skill_eval.subprocess, "run",
+                ) as process:
+                    if name == "timeout":
+                        process.side_effect = subprocess.TimeoutExpired(["fake"], 1, output=b"partial stdout")
+                    elif name == "nonzero":
+                        process.return_value = subprocess.CompletedProcess(["fake"], 2, stdout="failed stdout")
+                    else:
+                        process.side_effect = OSError("invocation unavailable")
+                    return skill_eval.run_copilot(**kwargs)
+
+            with self.subTest(name=name), mock.patch.object(
+                quality_review, "run_copilot", side_effect=transport,
+            ), mock.patch.object(quality_review, "parse_native_run") as parse:
+                result = self.assess(self.new_run(name))
+                parse.assert_not_called()
+            self.assertFalse(result["complete"])
+            reviewer = result["reviewers"][0]
+            self.assertEqual(reviewer["status"], "failed")
+            self.assertNotIn("validation", reviewer)
+            self.assertNotIn("judgment", reviewer)
+            self.assertEqual(skill_eval.read_json(calls[0]["measurement_path"])["outcome"], outcome)
+            self.assertFalse(calls[0]["run_home"].exists())
+
+    def test_native_quality_success_does_not_fill_unknown_credit_totals(self):
+        self.definition["judge"]["models"] = self.definition["judge"]["models"][:1]
+        measurements = {}
+
+        def transport(**kwargs):
+            path, content = self.native_events(kwargs, json.dumps(self.review()))
+            path.write_bytes(content.replace(b'"totalNanoAiu": 1000000000', b'"totalPremiumRequests": 0.33'))
+            with mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "synthetic-test-token"}), mock.patch.object(
+                skill_eval.subprocess, "run",
+                return_value=subprocess.CompletedProcess(["fake"], 0, stdout=""),
+            ):
+                result = skill_eval.run_copilot(**kwargs)
+            measurements[kwargs["measurement_path"]] = kwargs["measurement_path"].read_bytes()
+            return result
+
+        with mock.patch.object(quality_review, "run_copilot", side_effect=transport):
+            result = self.assess()
+        self.assertTrue(result["complete"])
+        for path, original in measurements.items():
+            self.assertEqual(path.read_bytes(), original)
+            record = skill_eval.read_json(path)
+            self.assertEqual(record["premium_requests"], 0.33)
+            self.assertIsNone(record["credits"])
+            accounting = m.accounting([record])["evaluation"]
+            self.assertFalse(accounting["complete"])
+            self.assertIsNone(accounting["credits"])
+            self.assertIsNone(accounting["observed_credits"])
+
+    def test_missing_rejected_or_invalid_native_events_never_fall_back_to_valid_stdout(self):
+        self.definition["judge"]["models"] = self.definition["judge"]["models"][:1]
+        for failure in ("missing", "corrupt", "wrong-session", "wrong-model", "incomplete", "oversized", "symlink"):
+            calls = []
+
+            def transport(**kwargs):
+                calls.append(kwargs)
+                answer = json.dumps(self.review())
+                kwargs["log"].write_text("\n".join(json.dumps(event) for event in (
+                    {"type": "assistant.message", "data": {"content": answer, "model": kwargs["model"]}},
+                    {"type": "result", "exitCode": 0},
+                )))
+                path, content = self.native_events(kwargs, answer)
+                if failure == "missing":
+                    path.parent.rename(path.parent.with_name(str(uuid.uuid4())))
+                elif failure == "corrupt":
+                    path.write_bytes(b"{broken\n")
+                elif failure == "wrong-session":
+                    path.write_bytes(content.replace(kwargs["session_id"].encode(), str(uuid.uuid4()).encode()))
+                elif failure == "wrong-model":
+                    path.write_bytes(content.replace(kwargs["model"].encode(), b"other-model"))
+                elif failure == "incomplete":
+                    path.write_bytes(b"\n".join(content.splitlines()[:-1]) + b"\n")
+                elif failure == "oversized":
+                    with path.open("r+b") as stream:
+                        stream.truncate(m.MAX_EVENT_BYTES + 1)
+                else:
+                    target = path.with_name("linked.jsonl")
+                    path.rename(target)
+                    path.symlink_to(target)
+
+            with self.subTest(failure=failure), mock.patch.object(
+                quality_review, "run_copilot", side_effect=transport,
+            ), mock.patch.object(m, "host_events", wraps=m.host_events) as read:
+                result = self.assess(self.new_run(failure))
+                read.assert_called_once_with(calls[0]["run_home"], calls[0]["session_id"])
+            reviewer = result["reviewers"][0]
+            self.assertFalse(result["complete"])
+            self.assertEqual(reviewer["status"], "failed")
+            self.assertNotIn("validation", reviewer)
+            self.assertNotIn("judgment", reviewer)
+            self.assertTrue(reviewer["error"])
+            self.assertEqual(reviewer["raw_log_sha256"], skill_eval.digest(calls[0]["log"]))
+            self.assertFalse(calls[0]["run_home"].exists())
+            if failure == "oversized":
+                self.assertIn("byte limit", reviewer["error"]["message"])
+
+    def test_native_transport_cannot_relax_json_or_exact_quotation_checks(self):
+        self.definition["judge"]["models"] = self.definition["judge"]["models"][:1]
+        bad_quote = self.review()
+        bad_quote["findings"][0]["quotation"] = "invented quotation"
+        for index, answer in enumerate(("not-json", "[]", json.dumps(bad_quote))):
+            def transport(**kwargs):
+                kwargs["log"].write_text("stdout is not the review source")
+                self.native_events(kwargs, answer)
+
+            with self.subTest(answer=answer), mock.patch.object(
+                quality_review, "run_copilot", side_effect=transport,
+            ):
+                result = self.assess(self.new_run(f"invalid-answer-{index}"))
+            self.assertFalse(result["complete"])
+            reviewer = result["reviewers"][0]
+            self.assertEqual(reviewer["status"], "failed")
+            self.assertNotIn("judgment", reviewer)
+            self.assertEqual(reviewer["validation"]["source"], "native_session_events")
+            if index == 2:
+                self.assertIn("quotation", reviewer["error"]["message"])
+
+    def test_native_unassessable_is_not_an_acceptable_judgment(self):
+        self.definition["judge"]["models"] = self.definition["judge"]["models"][:1]
+        value = {"judgment": "unassessable", "summary": "Decisive source is missing.", "findings": []}
+
+        def transport(**kwargs):
+            kwargs["log"].write_text("stdout is not the review source")
+            self.native_events(kwargs, json.dumps(value))
+
+        with mock.patch.object(quality_review, "run_copilot", side_effect=transport):
+            result = self.assess()
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["reviewers"][0]["judgment"], "unassessable")
 
     def test_review_audit_rejects_execution_and_outside_reads(self):
         packet = self.run / "packet"

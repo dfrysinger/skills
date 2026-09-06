@@ -505,6 +505,31 @@ def verify_case(root: Path, case_id: str) -> int:
     return count
 
 
+def validate_tool_allowlist(data: dict, allowed_tools: set[str] | None) -> None:
+    if allowed_tools is not None and (
+        not isinstance(data.get("toolName"), str) or data["toolName"] not in allowed_tools
+    ):
+        raise ValueError("review invoked a tool outside its read-only allowlist")
+
+
+def resolve_view(arguments: object, cwd: Path) -> tuple[str, str, bool] | None:
+    if not isinstance(arguments, dict) or not isinstance(arguments.get("path"), str):
+        return None
+    requested = arguments["path"]
+    resolved = Path(requested).expanduser()
+    if not resolved.is_absolute():
+        resolved = cwd / resolved
+    resolved = resolved.resolve()
+    return requested, str(resolved), resolved.is_relative_to(cwd.resolve())
+
+
+def successful_view_path(view: tuple[str, str, bool], cwd: Path, boundary: str) -> str:
+    requested, resolved, inside = view
+    if not inside and boundary == "prose":
+        raise ValueError(f"view escaped evaluation workdir: {requested}")
+    return Path(resolved).relative_to(cwd.resolve()).as_posix() if inside else requested
+
+
 def parse_run(
     log: Path,
     *,
@@ -542,10 +567,7 @@ def parse_run(
             if isinstance(content, str) and content.strip():
                 messages.append(content)
         elif event_type == "tool.execution_start":
-            if allowed_tools is not None and (
-                not isinstance(data.get("toolName"), str) or data["toolName"] not in allowed_tools
-            ):
-                raise ValueError("review invoked a tool outside its read-only allowlist")
+            validate_tool_allowlist(data, allowed_tools)
             tool_calls.append(data)
             arguments = data.get("arguments")
             if (
@@ -559,19 +581,11 @@ def parse_run(
                 elif isinstance(data.get("toolCallId"), str):
                     pending_skills.add(data["toolCallId"])
             if data.get("toolName") == "view" and isinstance(arguments, dict):
-                requested = arguments.get("path")
                 call_id = data.get("toolCallId")
-                if isinstance(requested, str) and isinstance(call_id, str):
-                    resolved = Path(requested).expanduser()
-                    if not resolved.is_absolute():
-                        resolved = cwd / resolved
-                    resolved = resolved.resolve()
-                    try:
-                        resolved.relative_to(cwd.resolve())
-                        inside = True
-                    except ValueError:
-                        inside = False
-                    pending_views[call_id] = (requested, str(resolved), inside)
+                if isinstance(call_id, str):
+                    view = resolve_view(arguments, cwd)
+                    if view is not None:
+                        pending_views[call_id] = view
         elif event_type == "tool.execution_complete":
             call_id = data.get("toolCallId")
             if isinstance(call_id, str) and call_id in pending_skills and data.get("success") is True:
@@ -581,15 +595,7 @@ def parse_run(
                 and call_id in pending_views
                 and data.get("success") is True
             ):
-                requested, resolved, inside = pending_views[call_id]
-                if not inside and boundary == "prose":
-                    raise ValueError(
-                        f"view escaped evaluation workdir: {requested}"
-                    )
-                viewed_paths.append(
-                    Path(resolved).relative_to(cwd.resolve()).as_posix()
-                    if inside else requested
-                )
+                viewed_paths.append(successful_view_path(pending_views[call_id], cwd, boundary))
         elif event_type == "result":
             result_event = event
     if result_event is None or result_event.get("exitCode") != 0:
@@ -617,6 +623,114 @@ def parse_run(
         "input_tokens": None,
         "output_tokens": None,
         "boundary": boundary,
+    }
+
+
+def parse_native_run(
+    content: bytes | None, *, session_id: str, expected_model: str, cwd: Path,
+) -> dict:
+    """Validate one fresh source-quality session; the caller owns process success."""
+    measurement.session_uuid(session_id)
+    if not content:
+        raise ValueError("missing native session events")
+
+    def unique_fields(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate native event field")
+            result[key] = value
+        return result
+
+    def reject_constant(value):
+        raise ValueError("non-finite native event value")
+
+    try:
+        lines = content.decode("utf-8").split("\n")
+    except UnicodeError as error:
+        raise ValueError("native session events must be UTF-8") from error
+    if lines[-1] == "":
+        lines.pop()
+    started = False
+    shutdown = False
+    answer = None
+    models: set[str] = set()
+    calls: set[str] = set()
+    pending: dict[str, dict] = {}
+    viewed_paths: list[str] = []
+    for index, line in enumerate(lines, 1):
+        try:
+            event = json.loads(line, object_pairs_hook=unique_fields, parse_constant=reject_constant)
+        except (ValueError, RecursionError) as error:
+            raise ValueError(f"invalid native event JSON at record {index}") from error
+        if not isinstance(event, dict):
+            raise ValueError("native event must be an object")
+        kind, data = event.get("type"), event.get("data")
+        if not isinstance(kind, str) or not kind or not isinstance(data, dict):
+            raise ValueError("native event requires a type and object data")
+        if shutdown:
+            raise ValueError("native events continue after session shutdown")
+        if kind == "session.start":
+            if started or index != 1:
+                raise ValueError("native session requires exactly one initial start")
+            if data.get("sessionId") != session_id:
+                raise ValueError("native session identity mismatch")
+            if data.get("selectedModel") != expected_model:
+                raise ValueError("native session selected model mismatch")
+            started = True
+        elif not started:
+            raise ValueError("native session is missing its initial start")
+        elif kind in {"session.resume", "result"}:
+            raise ValueError("native quality events must describe a fresh session")
+        elif kind == "session.shutdown":
+            if pending:
+                raise ValueError("native session has missing tool completions")
+            shutdown = True
+        elif kind == "assistant.message":
+            if data.get("model") != expected_model:
+                raise ValueError("native assistant message model mismatch")
+            models.add(data["model"])
+            if not isinstance(data.get("content"), str):
+                raise ValueError("native assistant message content must be a string")
+            if "toolRequests" in data and not isinstance(data["toolRequests"], list):
+                raise ValueError("native assistant tool requests must be an array")
+            answer = None if data.get("toolRequests") else data["content"]
+        elif kind in {"user.message", "assistant.turn_start"}:
+            answer = None
+        elif kind == "tool.execution_start":
+            validate_tool_allowlist(data, {"view"})
+            call_id = data.get("toolCallId")
+            if not isinstance(call_id, str) or not call_id.strip() or call_id in calls:
+                raise ValueError("native tool start requires a unique call identity")
+            calls.add(call_id)
+            pending[call_id] = data
+            answer = None
+        elif kind == "tool.execution_complete":
+            call_id = data.get("toolCallId")
+            if not isinstance(call_id, str) or call_id not in pending:
+                raise ValueError("native tool completion has no pending start")
+            if type(data.get("success")) is not bool:
+                raise ValueError("native tool completion requires boolean success")
+            start = pending.pop(call_id)
+            if "toolName" in data and data["toolName"] != start["toolName"]:
+                raise ValueError("native tool completion name mismatch")
+            if data["success"]:
+                view = resolve_view(start.get("arguments"), cwd)
+                if view is None or not view[0].strip():
+                    raise ValueError("successful native view requires a source path")
+                path = successful_view_path(view, cwd, "prose")
+                if not Path(view[1]).exists():
+                    raise ValueError("successful native view source is unavailable")
+                viewed_paths.append(path)
+            answer = None
+    if not started or not shutdown:
+        raise ValueError("native session is missing its terminal shutdown")
+    if models != {expected_model} or not isinstance(answer, str) or not answer.strip():
+        raise ValueError("native session requires a nonempty final assistant message")
+    return {
+        "answer": answer, "models": sorted(models), "viewed_paths": viewed_paths,
+        "tool_calls": len(calls), "event_count": len(lines),
+        "event_sha256": hashlib.sha256(content).hexdigest(),
     }
 
 
