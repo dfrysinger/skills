@@ -252,6 +252,11 @@ class SkillEvalTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             freeze_case(self.root, "example-case", replace=False)
 
+    def test_scaffolded_judge_prompt_has_one_json_contract(self) -> None:
+        case_dir = self.make_case()
+        prompt = (case_dir / "prompts" / "judge.md").read_text()
+        self.assertEqual(prompt.count("Return only JSON with:"), 1)
+
     def test_candidate_validation_failure_has_receipt(self) -> None:
         case_dir = self.make_case()
         definition_path = case_dir / "case.json"
@@ -315,7 +320,8 @@ class SkillEvalTests(unittest.TestCase):
     def test_run_with_fake_copilot(self) -> None:
         case_dir = self.make_case()
         (case_dir / "prompts" / "judge.md").write_text(
-            "Act as an independent behavioral judge for the `example-skill` skill.\n",
+            "Act as an independent behavioral judge for the `example-skill` skill.\n"
+            "Preserve this custom prose criterion.\n",
             encoding="utf-8",
         )
         definition_path = case_dir / "case.json"
@@ -344,9 +350,12 @@ class SkillEvalTests(unittest.TestCase):
             "prompt=sys.argv[sys.argv.index('-p')+1]\n"
             "model=sys.argv[sys.argv.index('--model')+1]\n"
             "if 'independent behavioral judge' in prompt:\n"
-            " out=json.dumps({'verdict':'PASS','confidence':'HIGH',"
-            "'matched':['claim'],'missed':[],'overcorrections':[],"
-            "'generalized_skill_defect':None})\n"
+            " if 'Return only JSON with:' in prompt:\n"
+            "  out=json.dumps({'verdict':'PASS','confidence':'HIGH',"
+            "  'matched':['claim'],'missed':[],'overcorrections':[],"
+            "  'generalized_skill_defect':None})\n"
+            " else:\n"
+            "  out='PASS\\nThe custom criterion was met.'\n"
             "else:\n"
             " print(json.dumps({'type':'tool.execution_start','data':"
             "{'toolName':'skill','arguments':{'skill':'example-skill'},"
@@ -381,6 +390,9 @@ class SkillEvalTests(unittest.TestCase):
             "never return\na bare `UNANSWERABLE`",
             (run / "judge-claude-opus-5-prompt.md").read_text(),
         )
+        judge_prompt = (run / "judge-claude-opus-5-prompt.md").read_text()
+        self.assertIn("Preserve this custom prose criterion.", judge_prompt)
+        self.assertEqual(judge_prompt.count("Return only JSON with:"), 1)
         self.assertFalse((run / "criteria.md").exists())
         identity = json.loads((run / "skill-identity.json").read_text())
         self.assertIn("target-plugin", identity["plugin_dir"])
@@ -471,6 +483,12 @@ class SkillEvalTests(unittest.TestCase):
             Path(harnesses[0]["path"]).parent.resolve(),
             suite_root.resolve(),
         )
+        for case in result["cases"]:
+            for prompt_path in (self.root / case["run_path"]).glob("judge-*-prompt.md"):
+                self.assertEqual(
+                    prompt_path.read_text().count("Return only JSON with:"),
+                    1,
+                )
 
     def test_run_suite_rejects_invalid_selection(self) -> None:
         plugin = Path(self.temp.name) / "unused-plugin"

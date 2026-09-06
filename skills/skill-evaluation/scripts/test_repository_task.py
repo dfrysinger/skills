@@ -241,6 +241,59 @@ class RepositoryTaskTests(unittest.TestCase):
         for module in identity["modules"]:
             self.assertEqual(evaluator.digest(destination / module["path"]), module["sha256"])
 
+    def test_custom_repository_judge_prompt_gets_required_json_contract(self):
+        case = self.make_case()
+        custom_prompt = "Apply this custom repository-specific judgment criterion.\n"
+        (case / "prompts" / "judge.md").write_text(custom_prompt, encoding="utf-8")
+        frozen = evaluator.freeze_case(self.root, "example", False)
+        run_root = Path(self.temp.name) / "run"
+        run_root.mkdir()
+        for name in ("skill-identity.json", "copilot-identity.json", "harness-identity.json"):
+            (run_root / name).write_text("{}\n", encoding="utf-8")
+        captured_prompts = []
+        judgment = {
+            "verdict": "PASS",
+            "confidence": "HIGH",
+            "matched": ["criterion"],
+            "missed": [],
+            "overcorrections": [],
+            "generalized_skill_defect": None,
+        }
+
+        def fake_run_copilot(**kwargs):
+            captured_prompts.append(kwargs["prompt"])
+            kwargs["log"].write_text("{}\n", encoding="utf-8")
+            return ["fake-copilot", "-p", kwargs["prompt"]]
+
+        with (
+            mock.patch("skill_eval.run_copilot", side_effect=fake_run_copilot),
+            mock.patch(
+                "skill_eval.parse_run",
+                return_value={
+                    "answer": json.dumps(judgment),
+                    "models": ["claude-opus-5"],
+                    "result_exit_code": 0,
+                    "viewed_paths": [],
+                },
+            ),
+        ):
+            evaluator.run_judges(
+                frozen=frozen,
+                definition=evaluator.read_json(frozen / "case.json"),
+                run_root=run_root,
+                pinned_plugin=Path(self.temp.name) / "plugin",
+                copilot=Path(self.temp.name) / "copilot",
+                home_mode="existing",
+                timeout_seconds=60,
+                candidate_artifacts=[],
+            )
+
+        self.assertEqual(len(captured_prompts), 2)
+        for prompt in captured_prompts:
+            self.assertIn(custom_prompt.rstrip(), prompt)
+            self.assertEqual(prompt.count("Return only JSON with:"), 1)
+            self.assertIn("Assess supported scope and process", prompt)
+
     def test_missing_auth_is_invalid_with_receipt(self):
         frozen = self.freeze()
         run = Path(self.temp.name) / "run"
