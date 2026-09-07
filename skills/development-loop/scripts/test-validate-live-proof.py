@@ -322,7 +322,7 @@ class ValidateLiveProofTest(unittest.TestCase):
         (self.worktree / ".gitignore").write_text("runtime.env\n")
         runtime = self.worktree / "runtime.env"
         runtime.write_text("original\n")
-        self.prepare_reuse()
+        self.prepare_reuse(["app.txt", "runtime.env"])
         self.receipt["candidate"] = MODULE.candidate_snapshot(
             str(self.worktree), additional_inputs=["runtime.env"], reuse_inputs=self.inputs
         )
@@ -336,6 +336,9 @@ class ValidateLiveProofTest(unittest.TestCase):
         )
         self.validate_reuse(accepted)
         record = self.reuse_record()
+        record["candidate"] = MODULE.candidate_snapshot(
+            str(self.worktree), additional_inputs=["runtime.env"], reuse_inputs=["app.txt"]
+        )
         with self.assertRaisesRegex(MODULE.ReceiptError, "reuse inputs changed"):
             self.validate_reuse(record)
         runtime.write_text("changed\n")
@@ -344,6 +347,69 @@ class ValidateLiveProofTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(MODULE.ReceiptError, "reuse inputs changed"):
             self.validate_reuse(record)
+
+    def test_unrelated_additional_inputs_keep_explicit_reuse_scope(self) -> None:
+        (self.worktree / ".gitignore").write_text("desktop.js\n")
+        desktop = self.worktree / "desktop.js"
+        desktop.write_text("original desktop output\n")
+        self.prepare_reuse()
+        self.receipt["candidate"] = MODULE.candidate_snapshot(
+            str(self.worktree), additional_inputs=["desktop.js"], reuse_inputs=self.inputs
+        )
+        self.receipt_path.write_text(json.dumps(self.receipt))
+        original = self.receipt_path.read_bytes()
+        desktop.write_text("changed desktop output\n")
+        record = self.reuse_record()
+        record["candidate"] = MODULE.candidate_snapshot(
+            str(self.worktree), additional_inputs=["desktop.js"], reuse_inputs=self.inputs
+        )
+        self.assertEqual(
+            record["candidate"]["reuseInputs"], self.receipt["candidate"]["reuseInputs"]
+        )
+        self.assertNotEqual(
+            record["candidate"]["fingerprint"], self.receipt["candidate"]["fingerprint"]
+        )
+        self.validate_reuse(record)
+        self.assertEqual(self.receipt_path.read_bytes(), original)
+        desktop.write_text("changed after correspondence\n")
+        with self.assertRaisesRegex(MODULE.ReceiptError, "candidate is stale"):
+            self.validate_reuse(record)
+
+    def test_target_only_additional_input_preserves_full_identity_for_both_reuse_paths(self) -> None:
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                (self.worktree / ".gitignore").write_text("desktop.js\n")
+                if legacy:
+                    record = self.prepare_legacy()
+                else:
+                    self.prepare_reuse()
+                    record = self.reuse_record()
+                desktop = self.worktree / "desktop.js"
+                desktop.write_text("target-only generated output\n")
+                complete = MODULE.candidate_snapshot(
+                    str(self.worktree), additional_inputs=["desktop.js"]
+                )
+                record["candidate"] = MODULE.candidate_snapshot(
+                    str(self.worktree), additional_inputs=["desktop.js"],
+                    reuse_inputs=self.inputs,
+                )
+                self.assertEqual(record["candidate"]["fingerprint"], complete["fingerprint"])
+                self.assertEqual(
+                    [item["path"] for item in record["candidate"]["reuseInputs"]], self.inputs
+                )
+                self.assertNotEqual(
+                    record["candidate"]["fingerprint"], self.receipt["candidate"]["fingerprint"]
+                )
+                self.validate_reuse(record)
+                self.assertEqual(self.receipt_path.read_bytes(), self.source_bytes)
+                forged = copy.deepcopy(record)
+                forged["candidate"]["fingerprint"] = "sha256:" + "0" * 64
+                with self.assertRaisesRegex(MODULE.ReceiptError, "candidate is stale"):
+                    self.validate_reuse(forged)
+                desktop.write_text("modified after binding\n")
+                with self.assertRaisesRegex(MODULE.ReceiptError, "candidate is stale"):
+                    self.validate_reuse(record)
+                desktop.unlink()
 
     def test_rejects_new_ignored_file_in_scoped_directory(self) -> None:
         scope = self.worktree / "inputs"
@@ -502,9 +568,15 @@ class ValidateLiveProofTest(unittest.TestCase):
         (self.worktree / ".gitignore").write_text("runtime.env\n")
         (self.worktree / "runtime.env").write_text("recorded runtime identity\n")
         record = self.prepare_legacy(
-            ["app.txt", "fixture.txt"], additional=["runtime.env"]
+            ["app.txt", "fixture.txt", "runtime.env"], additional=["runtime.env"]
         )
         self.validate_reuse(record)
+        (self.worktree / "runtime.env").write_text("changed relevant target runtime\n")
+        record["candidate"] = MODULE.candidate_snapshot(
+            str(self.worktree), additional_inputs=["runtime.env"], reuse_inputs=self.inputs
+        )
+        with self.assertRaisesRegex(MODULE.ReceiptError, "reuse inputs changed"):
+            self.validate_reuse(record)
         (self.original_worktree / "runtime.env").write_text("runtime changed\n")
         with self.assertRaisesRegex(MODULE.ReceiptError, "candidate is stale"):
             self.validate_reuse(record)

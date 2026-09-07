@@ -167,8 +167,6 @@ def candidate_snapshot(
     reuse_paths = {
         _relative_path(value, field="reuse input") for value in (reuse_inputs or [])
     }
-    if reuse_paths:
-        reuse_paths.update(item["path"] for item in additional_records)
     reuse_records = [_reuse_input(worktree, value) for value in sorted(reuse_paths)]
     snapshot: dict[str, object] = {
         "worktree": str(worktree),
@@ -413,9 +411,8 @@ def validate_receipt(path_value: str, reuse_value: str | None = None) -> dict[st
             source_inputs = legacy_baseline
         if source_inputs != current.get("reuseInputs"):
             raise ReceiptError("reuse inputs changed or coverage no longer matches")
-        for field in ("additionalInputs", "excludedOutputs"):
-            if candidate.get(field) != current.get(field):
-                raise ReceiptError(f"reuse {field} changed or coverage no longer matches")
+        if candidate.get("excludedOutputs") != current.get("excludedOutputs"):
+            raise ReceiptError("reuse excludedOutputs changed or coverage no longer matches")
 
     running = receipt.get("running")
     if not isinstance(running, dict):

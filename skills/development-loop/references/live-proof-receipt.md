@@ -176,8 +176,11 @@ Before execution, add `--reuse-input <relative-file-or-directory>` to the
 fingerprint command for every exercised executable path and relevant input.
 Directory scopes include all descendants, including ignored files, so added
 or removed runtime inputs are detected. File content, permissions, type, and
-directory membership are hashed. Named `--additional-input` files are also
-included automatically when reuse inputs are supplied. Excluded evidence
+directory membership are hashed. `--additional-input` files contribute to the
+complete candidate identity, not automatically to a claim's reuse scope.
+Declare relevant ignored inputs in both `--additional-input` and `--reuse-input`
+(or a containing reuse directory). Unrelated generated files remain part of
+the complete identity without becoming dependencies of every claim. Excluded evidence
 outputs are not excluded from these scopes: do not place evidence inside an
 input directory. Symlinks and special files in reuse scopes are rejected
 rather than treating a link's unchanged spelling as unchanged target content.
@@ -205,8 +208,10 @@ Do not manufacture execution-time measurements after the fact or edit an old
 receipt to add them. A legacy receipt without `reuseInputs` may instead use the
 validated-source derivation below.
 
-For the final frozen candidate, run `fingerprint` again with the same input
-scopes, additional inputs, and output exclusions. Store that new candidate
+For the final frozen candidate, run `fingerprint` again with the same claim
+input scopes and output exclusions, and all of the target's additional inputs.
+Additional inputs outside the claim scope may differ; the target's complete
+identity is still recomputed and must remain fresh. Store that new candidate
 object in a separate correspondence JSON:
 
 ```json
