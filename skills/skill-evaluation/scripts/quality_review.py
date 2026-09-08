@@ -13,11 +13,15 @@ from pathlib import Path
 import measurement
 from skill_eval import (
     DEFAULT_JUDGES, copy_packet, digest, model_family, parse_json_output, parse_native_run,
-    read_json, run_copilot,
+    partition_fields, read_json, run_copilot,
 )
 
 
 PROMPT_VERSION = "source-quality-v2"
+REVIEW_FIELDS = {"judgment", "summary", "findings"}
+FINDING_FIELDS = {
+    "path", "start_line", "end_line", "quotation", "severity", "trigger", "explanation",
+}
 PROMPT = """Act as an independent source-quality reviewer.
 
 Read requirements/task.md and every file under requirements/evidence/,
@@ -83,8 +87,21 @@ def prepare_packet(frozen: Path, definition: dict, patch: Path, destination: Pat
     return manifest
 
 
+def partition_review(value: dict) -> tuple[dict, list[list[str | int]]]:
+    canonical, ignored = partition_fields(value, REVIEW_FIELDS)
+    if isinstance(canonical.get("findings"), list):
+        findings = []
+        for index, finding in enumerate(canonical["findings"]):
+            if isinstance(finding, dict):
+                finding, extra = partition_fields(finding, FINDING_FIELDS)
+                ignored.extend(["findings", index, *path] for path in extra)
+            findings.append(finding)
+        canonical["findings"] = findings
+    return canonical, ignored
+
+
 def validate_review(value: dict, packet: Path) -> None:
-    if set(value) != {"judgment", "summary", "findings"}:
+    if set(value) != REVIEW_FIELDS:
         raise ValueError("quality review has invalid fields")
     if not isinstance(value["judgment"], str) or value["judgment"] not in {
         "acceptable", "needs_revision", "fundamentally_incorrect", "unassessable",
@@ -95,9 +112,7 @@ def validate_review(value: dict, packet: Path) -> None:
     if not isinstance(value["findings"], list):
         raise ValueError("quality findings must be an array")
     for finding in value["findings"]:
-        if not isinstance(finding, dict) or set(finding) != {
-            "path", "start_line", "end_line", "quotation", "severity", "trigger", "explanation",
-        }:
+        if not isinstance(finding, dict) or set(finding) != FINDING_FIELDS:
             raise ValueError("quality finding has invalid fields")
         relative = finding["path"]
         if not isinstance(relative, str):
@@ -192,9 +207,19 @@ def review_repository(
                     "source": "native_session_events", "sha256": parsed["event_sha256"],
                     "record_count": parsed["event_count"], "process_completed_successfully": True,
                 }
-                value = parse_json_output(parsed["answer"])
+                response_path = destination / f"{slug}-response.json"
+                measurement.write_once(response_path, {"answer": parsed["answer"]})
+                reviewer["selected_response"] = {
+                    "path": response_path.relative_to(run_root).as_posix(),
+                    "sha256": digest(response_path),
+                }
+                value, ignored = partition_review(parse_json_output(parsed["answer"]))
                 validate_review(value, packet)
-                reviewer.update(status="completed", **value, viewed_paths=parsed["viewed_paths"])
+                reviewer.update(
+                    status="completed", judgment=value["judgment"], summary=value["summary"],
+                    findings=value["findings"], viewed_paths=parsed["viewed_paths"],
+                    supplemental_fields_ignored=ignored,
+                )
             except (OSError, ValueError, subprocess.TimeoutExpired) as error:
                 reviewer["error"] = {"type": type(error).__name__, "message": str(error)}
             reviewer["raw_log_sha256"] = digest(log) if log.is_file() else None

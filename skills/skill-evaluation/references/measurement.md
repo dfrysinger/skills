@@ -137,6 +137,30 @@ cannot erase a successful reviewer or imply a complete acceptable assessment.
 An unavailable patch produces an explicit incomplete assessment without
 starting reviewers.
 
+### Supplemental reviewer fields
+
+Quality and behavioral callers select the defined assessment fields before
+strict validation. Additional quality finding fields are also excluded.
+Missing fields, incorrect types, invalid source citations and invalid
+invocation evidence still fail; fields are never repaired or defaulted.
+
+`supplemental_fields_ignored` on quality reviewer records and behavioral
+receipts lists excluded locations as arrays of keys and list indices. An empty
+list means interpretation ran and found no additional fields. Excluded values
+are unvalidated commentary, not assessment data or caller-owned provenance.
+
+Each selected answer is saved exactly in an `{"answer": "..."}` envelope named
+`*-response.json`. The caller's `selected_response` contains its run-relative
+path and file hash. This preserves supplemental values, fences and trailing
+prose without retaining native tool or reasoning payloads. If required output
+validation fails after selection, the failed reviewer record or failure receipt
+still links the answer. Failures before selection have no answer artifact.
+
+Canonical behavioral judgments retain their defined fields and caller-selected
+model. History does not interpret or rewrite older records, including rejected
+responses. Absence of these diagnostics on older records does not mean they
+were interpreted. Behavioral failure isolation is unchanged.
+
 ## Read historical results
 
 ```sh
