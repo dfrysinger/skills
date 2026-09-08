@@ -96,8 +96,9 @@ resumption, at each phase boundary, and whenever the current action is waiting:
    evaluate the proposed response. Reuse a current record whenever its gate
    still covers that response. Invoke
    [`constraint-challenge`](../constraint-challenge/SKILL.md)
-   immediately when its design or charter changed, a scope-expansion trigger
-   fired, or the governing run lifecycle reports a scheduled challenge due.
+   immediately when the proposed response materially changes scope,
+   architecture, trust, authority, or policy, or when its reframe gate fires.
+   Time passing alone never makes a challenge due.
    Supply the
    relevant user statements as exact quotes with their available context,
    including statements made since the prior completed challenge.
@@ -407,9 +408,9 @@ service, protocol, store, broker, compiler, fork, native binary, repository,
 language, or platform lane; when adapters or proof machinery mainly preserve
 inherited behavior; when repeated fixes move a failure between internal
 boundaries without user-visible progress; when completed work is used to
-justify preserving the architecture; after a design, charter,
-Definition-of-Done, trust-boundary, or constraint change; and when the
-governing run lifecycle reports a scheduled challenge due. The
+justify preserving the architecture; and after a material design, charter,
+Definition-of-Done, trust-boundary, authority, policy, or constraint change.
+Time passing alone never fires this gate. The
 challenger reconstructs effective rules from the actual task, component, test,
 and proof graph, so a premise need not be written down to fire this gate.
 Prioritize its three highest-leverage assumptions rather than auditing every
@@ -456,10 +457,11 @@ the work ahead is long, write that Definition of Done if bounded work lacks
 one, then take one of these exits into implementation:*
 
 - *Unattended, or long enough that the context will compact before the plan is
-  done — run `unattended-run` against the work order. It arms the recurring
-  charter re-brief and, for systemic or critical work, the independent
-  eight-hour constraint challenge. Both point at the Definition of Done the
-  work order already carries. Register `development-loop` as the charter's
+  done — run `unattended-run` against the work order. It arms one four-hour
+  liveness backstop; critical-path re-briefs and systemic or critical
+  constraint challenges remain event-driven. The backstop points at the
+  Definition of Done the work order already carries. Register
+  `development-loop` as the charter's
   governing skill, project-specific development and testing skills as
   execution skills, and `self-compact` as its context skill. Complete its
   schedule gate before any phase-boundary compact. It performs the handoff and
@@ -493,12 +495,14 @@ implementation after the behavior works.
 
 *Compaction point: persist the plan/lane/acceptance state. For a long or
 unattended run, section 3's `unattended-run` handoff must already have armed
-every applicable schedule and owns this reset; a bare compact returns to an
-idle prompt. If any required schedule is not live, run `unattended-run` now
+the four-hour liveness schedule and owns this reset; a bare compact returns to
+an idle prompt. If the required schedule is not live, run `unattended-run` now
 instead of compacting. For an attended run, invoke `self-compact`.*
 
-Run the critical-path audit before starting the diff. Repeat it whenever a
-build, external agent, approval, or live system becomes the current wait.
+Run the critical-path audit before starting the diff. Repeat it after
+compaction or resumption, candidate movement, every phase boundary, failure,
+ownership handoff, or material user direction, and whenever a build, external
+agent, approval, or live system becomes the current wait.
 
 Preserve a healthy development process before creating another one. When the
 same worktree already has a watcher-backed app or service running, classify the
@@ -1018,18 +1022,17 @@ section 7 to ensemble review.
 ## Context hygiene
 
 At every **Compaction point** marked above, invoke `self-compact`, except the
-first implementation handoff for a long or unattended run. Until that run has a
-confirmed live charter schedule and, for systemic or critical work, a live
-eight-hour challenge schedule, invoke `unattended-run` instead and let it own
-the reset. Once every applicable schedule is live, later compaction points use
+first implementation handoff for a long or unattended run. Until that run has
+one confirmed live four-hour liveness schedule and no legacy challenge
+schedule pointed at its charter, invoke `unattended-run` instead and let it own
+the reset. Once the liveness schedule is live, later compaction points use
 `self-compact` normally. Naming the skill is the instruction; a general
 intention to compact is not one, and is why agents arrive at review with a
 context full of resolved work.
 
-Every unattended re-brief also reruns the critical-path audit. It reconciles
-the remaining dependency graph, delegated ownership, current waits, candidate
-batching, and proof replay scope against this skill rather than merely
-confirming that a charter still exists.
+Every event-driven re-brief reruns the critical-path audit. The four-hour
+liveness tick reruns it only when the durable baton, ownership, candidate or
+proof state, or schedule registry is stale or inconsistent.
 
 The baton this loop hands forward is the plan path, lane, objective, acceptance
 criteria, non-goals, remaining Definition-of-Done items, branch, what has
@@ -1146,8 +1149,8 @@ The change is complete when:
 9. the critical-path audit ran at each required trigger, and no remaining
    ready scope is unowned, overlapping, or serial without a named gate;
 10. systemic or critical work has a current constraint-challenge record whose
-    gate permits the completed work, with no event trigger or delivered
-    scheduled-challenge tick unserviced; and
+    gate permits the completed work, with no qualifying event trigger
+    unserviced; and
 11. every PR that adds a new user-facing visual journey contains its validated
     candidate-bound walkthrough movie, while fixes retain their required
     screenshot evidence.
