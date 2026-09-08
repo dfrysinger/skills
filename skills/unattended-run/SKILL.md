@@ -1,23 +1,25 @@
 ---
 name: unattended-run
-description: Keep a long, unattended Copilot CLI run on course. Arm a two-hour `/every` charter recovery and, for systemic or critical work, a separate eight-hour independent constraint challenge, then hand off an optional autopilot objective through the session-inbox SDK extension and native command invocation. Use when starting a long autopilot or `/goal` run against a plan doc, sharpening its objective, or preventing drift across context compactions.
+description: Keep a long, unattended Copilot CLI run on course with event-driven re-briefs and constraint challenges, one lightweight four-hour liveness backstop, and an optional autopilot objective delivered through the session-inbox SDK. Use when starting a long autopilot or `/goal` run against a plan doc, sharpening its objective, or preventing drift across context compactions.
 ---
 
 # unattended-run
 
-For a long, unattended Copilot CLI run, up to three things keep the agent on
+For a long, unattended Copilot CLI run, three things keep the agent on
 course:
 
-- A recurring **charter re-brief** — an `/every` reminder that re-anchors the
-  *how* (governing skills, worktree, push policy, autonomy mandate, plan
-  hygiene, compaction discipline) on each tick, so a compacted context doesn't
-  drift. **You arm this yourself with
-  `manage_schedule` before any same-session compact. It is the load-bearing
-  deliverable of this skill.**
-- For systemic or critical work, a recurring **constraint challenge** — a
-  separate `/every 8h` schedule that invokes the independent challenger without
-  asking the working agent to measure elapsed time. An earlier event-triggered
-  challenge resets this interval by replacing the schedule.
+- **Event-driven governance** — the governing workflow re-runs its
+  critical-path audit at task start, compaction or resumption, candidate
+  movement, phase boundaries, failures, ownership handoffs, and material user
+  direction. Systemic and critical work invokes `constraint-challenge` only
+  when `development-loop` reports a material scope, architecture, trust,
+  authority, policy, or reframe trigger.
+- A lightweight **four-hour liveness backstop** — one `/every` reminder checks
+  that the durable baton, owner, candidate or proof state, and schedule
+  registry remain coherent. It performs the full re-brief only when that check
+  finds stale or inconsistent state. **Arm it yourself with `manage_schedule`
+  before any same-session compact. It is the load-bearing scheduled deliverable
+  of this skill.**
 - An **optional `/autopilot` objective** that drives the *what* until the agent
   determines the task is complete. A detached request asks the session-inbox
   extension to invoke the native `/autopilot` command directly, then reads the
@@ -54,10 +56,10 @@ the resolved session ID. This is expected and is **NOT a blocker**:
   continuation only after the session's `summary_count` proves compaction
   landed. Then end your turn. Selected autopilot mode alone does not reliably
   create the post-compact turn.
-- The run does **not** need `/autopilot` to proceed — the `/every` re-brief you
-  arm yourself is what keeps it on course.
+- The run does **not** need `/autopilot` to proceed — event-driven re-briefs
+  and the liveness backstop keep it on course.
 
-Arm the re-brief, send the objective through the target session's extension
+Arm the liveness backstop, send the objective through the target session's extension
 when safe, and continue the actual work autonomously. If the extension is
 unavailable, print the objective instead.
 
@@ -95,12 +97,14 @@ governing skill. Otherwise choose the skill whose process owns the Definition
 of Done. Do not preserve every currently loaded skill: planning, explanation,
 and one-time investigation skills are not standing process dependencies.
 `unattended-run` itself never belongs in the execution-skill manifest. It
-remains the named owner to invoke when either schedule must be armed, repaired,
-reset, or stopped.
+remains the named owner to invoke when the liveness schedule must be armed,
+migrated, repaired, or stopped.
 
 Every charter includes the `/dfrysinger-skills:development-loop` critical-path
-audit, even when another skill governs the run. At run start and every
-scheduled re-brief, the agent must:
+audit, even when another skill governs the run. Run it at task start,
+compaction or resumption, candidate movement, every phase boundary, failure,
+ownership handoff, and material user direction. When the liveness backstop
+finds stale or inconsistent state, it runs the same audit before continuing:
 
 - rebuild the remaining dependency graph and mark the critical path;
 - assign every substantial independent ready scope to an available subagent;
@@ -137,11 +141,10 @@ scheduled re-brief, the agent must:
   constraint-challenge record; require its `CLEAR` gate, or a `PARTIAL` gate
   whose `permitted_scope` contains the exact next action and whose
   `blocked_scope` does not, before advancing that action; execute any
-  event-triggered challenge that `development-loop` reports due and any
-  periodic challenge delivered by the independent eight-hour schedule. Supply
-  relevant user statements as exact quotes with their available context. After
-  a due challenge returns, compare its new gate with the exact next action
-  again before continuing.
+  event-triggered challenge that `development-loop` reports due. Time passing
+  alone never makes a challenge due. Supply relevant user statements as exact
+  quotes with their available context. After a due challenge returns, compare
+  its new gate with the exact next action again before continuing.
 
 The charter names any user-assigned agent roster and its durable coordination
 surface. "Use subagents liberally" alone is not a sufficient delegation
@@ -155,33 +158,33 @@ first — with `design-doc` for systemic or critical work, or at
 For systemic or critical work, the charter also points to the plan's decision
 hierarchy, constraint-provenance record, and reframe gate. Its current baton
 names any open revisit condition or active reframe record. It also records the
-last completed independent constraint challenge, the live eight-hour schedule
-identifier and armed-at timestamp, its replacement generation, any event
-trigger, and all relevant user statements received since that challenge as
-exact quotes with enough context to classify them. The same registry records
-the two-hour charter schedule identifier. A mechanism inherited through
-compaction remains a mechanism, not a binding requirement.
+last completed independent constraint challenge, any unserviced event trigger,
+and all relevant user statements received since that challenge as exact quotes
+with enough context to classify them. The schedule registry records only the
+four-hour liveness backstop. A mechanism inherited through compaction remains
+a mechanism, not a binding requirement.
 
-`unattended-run` is the single owner of the independent challenge schedule.
-After an event-triggered challenge completes, set
-`reset_after_reviewed_at` to that review's timestamp. A reset is due only while
-that field is non-null. Set the registry state to `replacing`, list schedules,
-stop every live challenge schedule pointed at this charter, create one
-replacement, then persist its returned identifier, new `armed_at`, incremented
-generation, `live` state, and cleared reset marker. Re-list and require exactly
-one matching challenge schedule before continuing; if more remain, stop all
-matches and create one replacement. A periodic challenge never sets the reset
-marker and leaves its recurring schedule in place. Do not compact during a
-reset. On resumption, if
-the Definition of Done remains open, reconcile every applicable schedule. For
-systemic or critical work, a missing, duplicated, or `replacing` challenge
-schedule makes the challenge due before repair so an unknown gap cannot defer
-review.
+Existing charters may still name a two-hour charter reminder or an eight-hour
+challenge schedule. Migrate them at the next safe phase boundary: finish any
+in-flight live proof and list schedules. Preserve every legacy registry entry,
+add the pending `liveness` entry alongside them, create and confirm one
+four-hour liveness backstop, then persist its returned identifier and `live`
+status. Only after that replacement is live, stop every old charter or
+challenge schedule pointed at the charter and remove its legacy registry entry.
+Re-list and require exactly one matching liveness schedule before compacting.
+The migration itself never makes a constraint challenge due. If the new
+liveness schedule cannot be created or confirmed, remove only its pending
+entry and leave the prior schedules and registry unchanged. Do not remove the
+run's recovery path. To roll back a completed migration, use
+[`references/legacy-schedule-rollback.md`](references/legacy-schedule-rollback.md)
+to recreate and confirm the prior schedules before stopping the liveness
+schedule, then restore their registry entries. Existing event triggers remain
+valid throughout rollback.
 
 Persist the objective body in its own file, without the `/autopilot` prefix,
 because the detached helper sends the whole file. Persist the charter
-separately so every applicable schedule can re-read only the standing
-operating rules.
+separately so the liveness schedule can re-read only the standing operating
+rules.
 
 **Complete when** both files exist, no `<SLOT>` remains, both point at the same
 Definition-of-Done heading, every skill in the manifest owns work or a gate
@@ -190,10 +193,10 @@ audit and any assigned-agent roster, and every systemic or critical charter
 preserves the constraint and reframe pointers plus their current status.
 
 **Handoff gate.** The finished brief is a complete work order, but do not
-compact yet. A bare compact returns to an idle prompt; before step 2 there are
-no schedules or objective to create the next turn.
+compact yet. A bare compact returns to an idle prompt; before step 2 there is no
+liveness schedule or objective to create the next turn.
 
-For a same-session handoff, complete step 2 first. Once the re-brief is
+For a same-session handoff, complete step 2 first. Once the liveness backstop is
 confirmed live, self-hand-off with a **soft reset**. Build this private
 `self_compact` tool argument using `self-compact`'s brief protocol:
 
@@ -209,121 +212,83 @@ After compaction: Continue this charter at step 3, invoke the objective as the l
 Call `self_compact` with that one `brief` argument as the final action. The
 extension arms and hands off to its detached verifier, which authorizes after
 tool completion, submits the compact, and resumes only after the matching
-compaction event and checkpoint land. The live charter schedule remains the durable
-recovery path. Missing either required schedule or the verifier makes the handoff
-incomplete.
+compaction event and checkpoint land. The live liveness schedule remains the
+durable recovery path. Missing either the required schedule or the verifier
+makes the handoff incomplete.
 
 Use `/new` instead only if the planning conversation must remain separately
 resumable. It starts a fresh session, so the new-session prompt itself must
-invoke `unattended-run` and arm the `/every` re-brief before doing any work:
+invoke `unattended-run` and arm the liveness backstop before doing any work:
 
 ```
-/new Use /dfrysinger-skills:unattended-run against <brief-path>, arm every
-applicable /every schedule, and start work.
+/new Use /dfrysinger-skills:unattended-run against <brief-path>, arm the
+four-hour liveness backstop, and start work.
 ```
 
 See the `handoff` skill for both recipes.
 
-### 2. Arm every applicable `/every` schedule — do this yourself
-These schedules keep the run on course, and you can create them without the
-user. Persist the charter to a durable file the run and every applicable
-reminder reads — alongside the plan (e.g. `docs/<feature>-autopilot.md`) so a
-future agent inherits it, or a session file for a throwaway run. The persisted
-file includes the charter prose and its complete **Required process skills**
-manifest.
+### 2. Arm the four-hour liveness backstop — do this yourself
+This schedule keeps the run recoverable, and you can create it without the
+user. Persist the charter to a durable file the run and reminder both read —
+alongside the plan (e.g. `docs/<feature>-autopilot.md`) so a future agent
+inherits it, or a session file for a throwaway run. The persisted file includes
+the charter prose and its complete **Required process skills** manifest.
 
-Before creating either reminder, add a schedule registry to the persisted
-charter. Each entry records `kind`, `id`, `interval`, and `status`; the
-challenge entry also records `armed_at` and `generation`. Run
-`manage_schedule action=list`. Reuse one live schedule of each applicable kind
-already pointed at this file only when its prompt matches the contracts below,
-and persist its identifier. Treat any other matching reminder as stale. Stop
-stale or duplicate reminders for this objective and create replacements,
-capturing every returned identifier and immediately changing its registry
-status from `pending` to `live`; leave unrelated schedules untouched.
+For a new charter, add a schedule registry to the persisted charter with one
+`liveness` entry containing `kind`, `id`, `interval`, and `status`. For a
+legacy charter, follow the migration transaction above and do not replace its
+registry before the new schedule is confirmed. Run `manage_schedule
+action=list`. Reuse one live liveness schedule already pointed at this file
+only when its prompt matches the contract below, and persist its identifier.
+Treat every other charter or challenge reminder pointed at this file as stale.
+If no matching liveness schedule exists, create and confirm one replacement,
+capture its returned identifier, and immediately change its registry status
+from `pending` to `live`. Only then stop stale or duplicate reminders for this
+objective; leave unrelated schedules untouched.
 
-Arm the two-hour charter recovery schedule with `manage_schedule` (the tool
-`/every` runs), pointed at the file so each tick re-reads the authoritative
-copy:
+Arm the four-hour liveness schedule with `manage_schedule` (the tool `/every`
+runs), pointed at the file so each tick re-reads the authoritative copy:
 
 ```
-manage_schedule action=create interval=2h \
+manage_schedule action=create interval=4h \
   prompt="If you are currently making a user-directed edit to the plan, design
   doc, brief, or charter, finish the current coherent edit and persist it first.
   Then re-read your autopilot charter at <charter-path> and its current plan
   baton. Never replace an in-flight revision with the older persisted version.
   List active schedules and reconcile them against the charter registry. Stop
-  duplicate charter reminders. For systemic or critical work, a missing,
-  duplicated, or `replacing` challenge schedule makes the challenge due before
-  the registry reset transaction repairs it.
-  Follow the charter's Required process skills protocol exactly and reconcile
-  the current work against it; execute any skill invocation or compaction action
-  the charter says is due now rather than merely acknowledging it. Run
-  /dfrysinger-skills:development-loop's critical-path audit: rebuild ready work
-  and dependencies, reconcile every delegated owner and blocker from that
-  agent's session or coordination channel rather than its worktree, consume
-  completed handoffs, record silent owners as unknown and request status once,
-  assign every independent ready scope that can run safely in parallel, batch
-  work before expensive gates, and advance another ready item during waits.
-  Confirm the
-  workspace, push policy, objective, current phase, proof gates, and any open
-  constraint revisit or reframe condition, and correct any drift before
-  continuing. For systemic or critical work, inspect the persisted
-  constraint-challenge record, persist relevant user statements in the durable
-  decision record or baton quote ledger with stable event IDs, exact quotes,
-  and context, and compare the exact next action with `gate_status`,
-  `permitted_scope`, and `blocked_scope`. Do not advance
-  under a `BLOCKED` gate or outside a `PARTIAL` gate's permitted scope. If
-  `development-loop` reports an event-triggered challenge due, run it rather
-  than merely acknowledging it. After it returns, use the registry reset
-  transaction to replace the eight-hour constraint schedule once, compare the
-  new gate with the exact next action again, and stop if it no longer permits
-  that action. During active live proof, remain read-only and
-  advance only work that cannot mutate the candidate, its worktree, its
-  fixture, or its running process. Stop this schedule once the charter's
+  duplicate liveness reminders and every legacy charter re-brief or challenge
+  schedule pointed at this charter. Re-list and require exactly one matching
+  four-hour liveness schedule. Check only whether the workspace, objective, current phase,
+  candidate or proof identity, active owner routes, and registry are present
+  and mutually consistent. If they are current, do not run a full re-brief or
+  constraint challenge merely because this tick fired; continue the current
+  plan. If any state is stale, missing, duplicated, or inconsistent, follow the
+  charter's Required process skills protocol and run
+  /dfrysinger-skills:development-loop's critical-path audit before continuing.
+  For systemic or critical work, invoke constraint-challenge only when
+  development-loop reports a material scope, architecture, trust, authority,
+  policy, or reframe trigger. Time passing alone is not a trigger. During active live proof,
+  remain read-only and advance only work that cannot mutate its candidate,
+  worktree, fixture, or process. Stop this schedule once the charter's
   referenced Definition of Done is verifiably met by stopping every schedule
   identifier in the charter registry plus any live schedule pointed at this
   charter, then verifying their absence."
 ```
 
-For systemic or critical work, arm the independent challenge schedule
-separately:
-
-```
-manage_schedule action=create interval=8h \
-  prompt="Re-read the unattended-run charter at <charter-path> and its current
-  plan baton. If a user-directed edit to the plan, design doc, brief, or charter
-  is in flight, finish and persist that coherent edit first. If active live
-  proof is in progress, do not mutate its candidate, worktree, fixture, or
-  process; complete that proof, then service this challenge before further
-  mutating work. If the referenced Definition of Done is already met, stop
-  every schedule identifier in the charter registry plus any live schedule
-  pointed at this charter, then verify their absence. Otherwise collect
-  relevant user statements since the prior review as exact contextual quotes,
-  invoke
-  /dfrysinger-skills:constraint-challenge now, and persist its complete durable
-  record. Compare the exact next action with the new gate and stop work that it
-  blocks. This is the periodic challenge tick; leave this recurring schedule
-  in place."
-```
-
-The charter remains authoritative for skill and compaction policy; each
-schedule points to it and requires its own due action to happen. Both ticks
-carry their own off-switch, so they disengage on arrival rather than nagging
-forever.
+The charter remains authoritative for skill and compaction policy. The
+liveness tick carries its own off-switch, so it disengages on arrival rather
+than nagging forever.
 
 **Complete when** the charter file names its governing, execution, and context
-skills; the registry contains the identifiers returned at creation; and
-`manage_schedule action=list` shows exactly one two-hour charter reminder for
-this objective plus, for systemic or critical work, exactly one eight-hour
-constraint-challenge reminder. Each applicable reminder points at the charter.
-The charter reminder follows the **Required process skills** protocol and
-requires the critical-path audit; the challenge reminder invokes the
-independent review with exact-quote input. A same-session compact is forbidden
-until this criterion passes.
+skills; the registry contains the identifier returned at creation; and
+`manage_schedule action=list` shows exactly one four-hour liveness reminder for
+this objective and no challenge schedule pointed at the charter. The reminder
+checks coherent state cheaply and invokes the **Required process skills**
+protocol only when it finds stale or inconsistent state. A same-session
+compact is forbidden until this criterion passes.
 
 ### 3. Hand off `/autopilot` through native command invocation
-After the charter exists and every applicable `/every` reminder is live, invoke
+After the charter exists and the liveness reminder is live, invoke
 the persisted objective in your own Copilot CLI session when all of these hold:
 
 - The user has not asked you to leave autopilot disabled.
@@ -366,8 +331,8 @@ continue without blocking:
 
 ```
 The native autopilot objective could not be established automatically.
-Without it, the /every re-brief restores the working rules but does not provide
-the same persistent goal-driven continuation:
+Without it, the /every liveness backstop repairs stale working state but does
+not provide the same persistent goal-driven continuation:
 
 Paste `/autopilot ` followed by the complete contents of <objective-file>.
 ```
@@ -375,7 +340,8 @@ Paste `/autopilot ` followed by the complete contents of <objective-file>.
 If `/allow-all` is needed, print it for the user; never include it in the SDK
 handoff. The detached helper reports post-launch failure through its receipt and
 macOS notification. The native objective drives what to finish; the `/every`
-re-brief independently restores how to work after compaction.
+liveness backstop repairs stale state after compaction while event triggers
+drive normal re-briefs.
 
 **Complete when** the detached handoff was launched as the last action, or the
 fallback was printed because SDK targeting was unavailable.
@@ -393,5 +359,5 @@ Autopilot remaining selected afterward is the current CLI default and requires
 no cleanup. Do not enqueue `/autopilot off`, change `stayInAutopilot`, or
 otherwise alter the user's selected mode.
 
-**Complete when** every applicable schedule is stopped and the verified task
+**Complete when** the liveness schedule is stopped and the verified task
 has finished normally.
