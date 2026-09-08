@@ -376,6 +376,29 @@ class QualityTests(unittest.TestCase):
             frozen=self.frozen, run_root=run or self.run, definition=self.definition,
             copilot=Path("/fake"), timeout_seconds=1)
 
+    def test_review_prompt_explains_nested_requirements_and_missing_evidence(self):
+        prompts = []
+
+        def transport(**kwargs):
+            prompts.append(kwargs["prompt"])
+            kwargs["log"].write_text("{}\n", encoding="utf-8")
+            self.native_events(kwargs, json.dumps(self.review()))
+
+        with mock.patch.object(quality_review, "run_copilot", side_effect=transport):
+            assessment = self.assess()
+        self.assertTrue(assessment["complete"])
+        self.assertEqual(len(prompts), len(self.definition["judge"]["models"]))
+        for prompt in prompts:
+            self.assertIn("requirements/task.md", prompt)
+            self.assertIn("every file under requirements/evidence/", prompt)
+            self.assertIn("including nested directories", prompt)
+            self.assertIn("A directory listing is not the contents of its files.", prompt)
+            self.assertIn("Missing decisive evidence requires unassessable", prompt)
+            self.assertIn("every object level, including each finding", prompt)
+            self.assertIn("Put qualifications in summary or explanation", prompt)
+        self.assertEqual(
+            (self.run / "quality" / "prompt.md").read_text(encoding="utf-8"), prompts[0])
+
     def test_packet_contains_only_source_and_public_requirements(self):
         packet = self.run / "packet"
         manifest = quality_review.prepare_packet(
@@ -397,6 +420,7 @@ class QualityTests(unittest.TestCase):
             {"start_line": 0}, {"end_line": 100}, {"start_line": True},
             {"quotation": "not present"}, {"quotation": ""}, {"trigger": ""},
             {"severity": "5"}, {"severity": []},
+            {"additional_assessment": "A qualification belongs in existing fields"},
         ):
             value = self.review()
             value["findings"][0].update(change)

@@ -143,6 +143,9 @@ equivalent wording.
 Use `UNANSWERABLE` only when the hidden criteria's unanswerable condition is
 met, and name each decisive missing artifact or fact in `missed`; never return
 a bare `UNANSWERABLE`.
+Return exactly the six fields in the JSON output contract, with no additional
+keys. Put every observation and qualification in the existing fields; do not
+add a separate field for a requested assessment.
 """
 
 
