@@ -625,7 +625,7 @@ class QualityTests(unittest.TestCase):
         manifest = quality_review.prepare_packet(
             self.frozen, self.definition, self.run / "candidate.patch", packet)
         self.assertEqual({Path(item["path"]).parts[0] for item in manifest},
-                         {"baseline", "candidate", "requirements"})
+                         {"baseline", "candidate", "requirements", "source-nodes.json"})
         self.assertTrue(all((packet / item["path"]).stat().st_mode & 0o222 == 0 for item in manifest))
         content = "\n".join(path.read_text() for path in packet.rglob("*") if path.is_file())
         self.assertIn("return a - b", content)

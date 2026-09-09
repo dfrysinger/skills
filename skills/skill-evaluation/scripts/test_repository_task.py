@@ -228,7 +228,7 @@ class RepositoryTaskTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "overlaps frozen source"):
             repository.observe_setup_links(frozen, ancestor)
 
-    def test_export_refuses_retargeted_and_new_setup_links(self):
+    def test_export_refuses_retargeted_setup_links_and_special_entries(self):
         frozen = self.freeze()
         retargeted = Path(self.temp.name) / "retargeted"
         evaluator.copy_packet(frozen / "repository", retargeted)
@@ -238,14 +238,6 @@ class RepositoryTaskTests(unittest.TestCase):
         (retargeted / "runtime-link").symlink_to("different-target")
         with self.assertRaises(repository.CandidateStateError):
             repository.export_patch(frozen, retargeted, Path(self.temp.name) / "retargeted.patch", links)
-
-        added = Path(self.temp.name) / "added"
-        evaluator.copy_packet(frozen / "repository", added)
-        (added / "runtime-link").symlink_to("runtime-target")
-        links = repository.observe_setup_links(frozen, added)
-        (added / "new-link").symlink_to("runtime-target")
-        with self.assertRaises(repository.CandidateStateError):
-            repository.export_patch(frozen, added, Path(self.temp.name) / "added.patch", links)
 
         special = Path(self.temp.name) / "special"
         evaluator.copy_packet(frozen / "repository", special)

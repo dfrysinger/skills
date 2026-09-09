@@ -35,7 +35,7 @@ class InfrastructureError(RuntimeError):
 
 
 class CandidateStateError(ValueError):
-    """Candidate output cannot be represented as an ordinary source patch."""
+    """Candidate output cannot be represented as a source patch."""
 
 
 def scaffold_repository(case_dir: Path) -> None:
@@ -79,26 +79,35 @@ def scaffold_repository(case_dir: Path) -> None:
 
 
 def ordinary_files(root: Path, *, skip_git: bool = False,
-                   runtime_links: dict[str, str] | None = None) -> list[Path]:
+                   runtime_links: dict[str, str] | None = None,
+                   allow_source_links: bool = False) -> list[Path]:
     files = []
-    for directory, names, filenames in os.walk(root, followlinks=False):
-        if skip_git:
-            names[:] = [name for name in names if name != ".git"]
-            filenames = [name for name in filenames if name != ".git"]
-        for name in [*names, *filenames]:
-            path = Path(directory) / name
-            mode = path.lstat().st_mode
-            relative = path.relative_to(root).as_posix()
-            if stat.S_ISLNK(mode):
-                if runtime_links is not None and runtime_links.get(relative) == os.readlink(path):
+    directories = [root]
+    while directories:
+        # Classify nodes without os.walk's following directory-link stat.
+        with os.scandir(directories.pop()) as entries:
+            for entry in entries:
+                if skip_git and entry.name == ".git":
                     continue
-                raise ValueError(f"unsupported repository filesystem entry: {path}")
-            if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
-                raise ValueError(f"unsupported repository filesystem entry: {path}")
-            if name == ".git":
-                raise ValueError(f"Git metadata is not repository evidence: {path}")
-            if stat.S_ISREG(mode):
-                files.append(path)
+                path = Path(entry.path)
+                mode = path.lstat().st_mode
+                relative = path.relative_to(root).as_posix()
+                if entry.name == ".git":
+                    raise ValueError(f"Git metadata is not repository evidence: {path}")
+                if stat.S_ISLNK(mode):
+                    if runtime_links is not None and relative in runtime_links:
+                        if runtime_links[relative] == os.readlink(path):
+                            continue
+                        raise ValueError(f"retargeted setup symlink: {path}")
+                    if not allow_source_links:
+                        raise ValueError(f"unsupported repository filesystem entry: {path}")
+                    files.append(path)
+                elif stat.S_ISDIR(mode):
+                    directories.append(path)
+                elif stat.S_ISREG(mode):
+                    files.append(path)
+                else:
+                    raise ValueError(f"unsupported repository filesystem entry: {path}")
     return sorted(files)
 
 
@@ -365,10 +374,14 @@ def git(repository: Path, arguments: list[str], *, input_bytes: bytes | None = N
 def copy_source(source: Path, destination: Path,
                 runtime_links: dict[str, str] | None = None) -> None:
     destination.mkdir(parents=True, exist_ok=True)
-    for path in ordinary_files(source, skip_git=True, runtime_links=runtime_links):
+    for path in ordinary_files(source, skip_git=True, runtime_links=runtime_links,
+                               allow_source_links=True):
         target = destination / path.relative_to(source)
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
+        if stat.S_ISLNK(path.lstat().st_mode):
+            os.symlink(os.readlink(os.fsencode(path)), os.fsencode(target))
+        else:
+            shutil.copy2(path, target)
 
 
 def export_patch(frozen: Path, candidate: Path, patch: Path,
@@ -404,7 +417,7 @@ def export_patch(frozen: Path, candidate: Path, patch: Path,
 def apply_patch(repository: Path, patch: Path) -> None:
     if patch.stat().st_size:
         git(repository, ["apply", "--binary", "--whitespace=nowarn", "-"], input_bytes=patch.read_bytes())
-    ordinary_files(repository)
+    ordinary_files(repository, allow_source_links=True)
 
 
 def completed_check(record: dict, command: dict, artifacts: Path) -> bool:
