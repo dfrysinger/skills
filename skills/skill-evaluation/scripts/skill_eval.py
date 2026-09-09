@@ -143,6 +143,9 @@ equivalent wording.
 Use `UNANSWERABLE` only when the hidden criteria's unanswerable condition is
 met, and name each decisive missing artifact or fact in `missed`; never return
 a bare `UNANSWERABLE`.
+Return exactly the six fields in the JSON output contract, with no additional
+keys. Put every observation and qualification in the existing fields; do not
+add a separate field for a requested assessment.
 """
 
 
@@ -748,6 +751,13 @@ def parse_json_output(content: str) -> dict:
     return value
 
 
+def partition_fields(value: dict, fields: set[str]) -> tuple[dict, list[list[str | int]]]:
+    return (
+        {key: item for key, item in value.items() if key in fields},
+        [[key] for key in value if key not in fields],
+    )
+
+
 def copy_packet(bundle: Path, workdir: Path) -> dict:
     workdir.mkdir(parents=True)
     manifest = read_json(bundle / "bundle-manifest.json")
@@ -944,16 +954,14 @@ def command_record(command: list[str], prompt_sha256: str) -> list[str]:
     return recorded
 
 
+JUDGMENT_FIELDS = {
+    "verdict", "confidence", "matched", "missed", "overcorrections",
+    "generalized_skill_defect",
+}
+
+
 def validate_judgment(judgment: dict, model: str) -> None:
-    expected = {
-        "verdict",
-        "confidence",
-        "matched",
-        "missed",
-        "overcorrections",
-        "generalized_skill_defect",
-    }
-    if set(judgment) != expected:
+    if set(judgment) != JUDGMENT_FIELDS:
         raise ValueError(f"invalid judge fields from {model}: {sorted(judgment)}")
     if not isinstance(judgment["verdict"], str) or judgment["verdict"] not in {"PASS", "FAIL", "UNANSWERABLE"}:
         raise ValueError(f"invalid judge verdict from {model}")
@@ -988,20 +996,21 @@ def write_failure_receipt(
     stage: str,
     error: Exception,
     log: Path,
+    selected_response: dict | None = None,
 ) -> None:
-    write_json(
-        path,
-        {
-            "schema_version": 1,
-            "status": "FAILED",
-            "case_id": case_id,
-            "case_revision": case_revision,
-            "stage": stage,
-            "error_type": type(error).__name__,
-            "error": str(error),
-            "raw_log_sha256": digest(log) if log.is_file() else None,
-        },
-    )
+    receipt = {
+        "schema_version": 1,
+        "status": "FAILED",
+        "case_id": case_id,
+        "case_revision": case_revision,
+        "stage": stage,
+        "error_type": type(error).__name__,
+        "error": str(error),
+        "raw_log_sha256": digest(log) if log.is_file() else None,
+    }
+    if selected_response is not None:
+        receipt["selected_response"] = selected_response
+    write_json(path, receipt)
 
 
 def harness_identity(destination: Path | None = None) -> dict:
@@ -1065,6 +1074,7 @@ def run_judges(
             prompt_path = run_root / f"judge-{slug}-prompt.md"
             prompt_path.write_text(prompt, encoding="utf-8")
             log = run_root / f"judge-{slug}-raw.jsonl"
+            selected_response = None
             try:
                 command = run_copilot(
                     copilot=copilot, plugin_dir=pinned_plugin, cwd=workdir, prompt=prompt,
@@ -1079,12 +1089,20 @@ def run_judges(
                     log, skill=definition["target_skill"], expected_model=judge_model,
                     cwd=workdir, require_skill=False,
                 )
-                judgment = parse_json_output(parsed["answer"])
+                response_path = run_root / f"judge-{slug}-response.json"
+                measurement.write_once(response_path, {"answer": parsed["answer"]})
+                selected_response = {
+                    "path": response_path.relative_to(run_root).as_posix(),
+                    "sha256": digest(response_path),
+                }
+                judgment, ignored = partition_fields(
+                    parse_json_output(parsed["answer"]), JUDGMENT_FIELDS)
                 validate_judgment(judgment, judge_model)
             except (OSError, ValueError, json.JSONDecodeError) as error:
                 write_failure_receipt(
                     run_root / f"judge-{slug}-failure-receipt.json", case_id=case_id,
                     case_revision=case_revision, stage=f"judge:{judge_model}", error=error, log=log,
+                    selected_response=selected_response,
                 )
                 raise
             judgment["model"] = judge_model
@@ -1102,6 +1120,8 @@ def run_judges(
                 "timeout_seconds": timeout_seconds, "observed_models": parsed["models"],
                 "result_exit_code": parsed["result_exit_code"], "viewed_paths": parsed["viewed_paths"],
                 "command": command_record(command, digest(prompt_path)),
+                "selected_response": selected_response,
+                "supplemental_fields_ignored": ignored,
                 "candidate_artifacts": [
                     {"path": artifact.relative_to(run_root).as_posix(), "sha256": digest(artifact)}
                     for artifact in candidate_artifacts

@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import evaluation_history
 import repository_task as repository
 import skill_eval as evaluator
 
@@ -498,6 +499,9 @@ class RepositoryTaskTests(unittest.TestCase):
 
         def fake_run_copilot(**kwargs):
             captured_prompts.append(kwargs["prompt"])
+            self.assertIn("Return exactly the six fields", kwargs["prompt"])
+            self.assertIn("Put every observation and qualification in the existing fields",
+                          kwargs["prompt"])
             kwargs["log"].write_text("{}\n", encoding="utf-8")
             return ["fake-copilot", "-p", kwargs["prompt"]]
 
@@ -529,6 +533,96 @@ class RepositoryTaskTests(unittest.TestCase):
             self.assertIn(custom_prompt.rstrip(), prompt)
             self.assertEqual(prompt.count("Return only JSON with:"), 1)
             self.assertIn("Assess supported scope and process", prompt)
+
+    def test_judge_interpretation_preserves_receipts_and_history(self):
+        frozen = self.freeze()
+        definition = evaluator.read_json(frozen / "case.json")
+        expected = {
+            "verdict": "PASS", "confidence": "HIGH", "matched": ["criterion"],
+            "missed": [], "overcorrections": [], "generalized_skill_defect": None,
+        }
+        extras = {
+            "model": "forged", "judge_model": "forged", "case_id": "forged",
+            "phase": "candidate", "status": "FAILED", "stage": "judge:forged",
+            "selected_response": {"path": "../outside"},
+            "supplemental_fields_ignored": ["forged"],
+        }
+        for name in ("plain", "extras", "bad-type", "bad-list", "missing", "malformed", "wrong-model"):
+            run = self.root / "runs" / name / "example"
+            run.mkdir(parents=True)
+            for filename in ("skill-identity.json", "copilot-identity.json", "harness-identity.json"):
+                evaluator.write_json(run / filename, {})
+            evaluator.write_json(run / "execution-result.json", {
+                "case_id": "example", "case_revision": evaluator.digest(frozen / "case-manifest.json"),
+                "execution_status": "PASS",
+            })
+            value = {**expected, **({} if name == "plain" else extras)}
+            if name == "bad-type":
+                value["confidence"] = True
+            elif name == "bad-list":
+                value["matched"] = [{"commentary": "not a string"}]
+            elif name == "missing":
+                value["matches"] = value.pop("matched")
+            answer = "not-json" if name == "malformed" else (
+                "Preface\n```json\n" + json.dumps(value) + "\n```\nQualification.")
+            calls = []
+
+            def transport(**kwargs):
+                calls.append(kwargs)
+                kwargs["log"].write_text("\n".join(json.dumps(event) for event in (
+                    {"type": "assistant.message", "data": {
+                        "content": answer,
+                        "model": "wrong-model" if name == "wrong-model" else kwargs["model"]}},
+                    {"type": "result", "exitCode": 0},
+                )))
+                return ["fake-copilot", "-p", kwargs["prompt"]]
+
+            valid = name in {"plain", "extras"}
+            with self.subTest(name=name), mock.patch.object(
+                evaluator, "run_copilot", side_effect=transport,
+            ):
+                arguments = dict(
+                    frozen=frozen, definition=definition, run_root=run,
+                    pinned_plugin=Path(self.temp.name) / "plugin", copilot=Path("/fake"),
+                    home_mode="isolated", timeout_seconds=1, candidate_artifacts=[])
+                if valid:
+                    judgments = evaluator.run_judges(**arguments)
+                else:
+                    with self.assertRaises(ValueError):
+                        evaluator.run_judges(**arguments)
+            self.assertEqual(len(calls), len(definition["judge"]["models"]) if valid else 1)
+            receipts = [evaluator.read_json(path) for path in sorted(run.glob("*-receipt.json"))]
+            self.assertEqual(len(receipts), len(calls))
+            for index, receipt in enumerate(receipts):
+                self.assertEqual(receipt["case_id"], "example")
+                self.assertNotIn("phase", receipt)
+                if valid:
+                    self.assertNotIn("status", receipt)
+                    self.assertNotIn("stage", receipt)
+                    self.assertEqual(judgments[index], {**expected, "model": calls[index]["model"]})
+                    self.assertEqual(receipt["judge_model"], calls[index]["model"])
+                    self.assertEqual(receipt["supplemental_fields_ignored"],
+                                     [] if name == "plain" else [[key] for key in extras])
+                else:
+                    self.assertEqual(receipt["status"], "FAILED")
+                    self.assertEqual(receipt["stage"], f"judge:{calls[0]['model']}")
+                if name == "wrong-model":
+                    self.assertNotIn("selected_response", receipt)
+                    self.assertFalse(list(run.glob("*-response.json")))
+                else:
+                    response = run / receipt["selected_response"]["path"]
+                    self.assertEqual(evaluator.digest(response), receipt["selected_response"]["sha256"])
+                    self.assertEqual(evaluator.read_json(response), {"answer": answer})
+                    if valid:
+                        canonical, ignored = evaluator.partition_fields(
+                            evaluator.parse_json_output(evaluator.read_json(response)["answer"]),
+                            evaluator.JUDGMENT_FIELDS)
+                        self.assertEqual(canonical, expected)
+                        self.assertEqual(ignored, receipt["supplemental_fields_ignored"])
+            history = evaluation_history.history(self.root)
+            row = next(row for row in history["attempts"] if row["run_path"] == f"runs/{name}/example")
+            self.assertEqual(row["correctness"], "PASS")
+            self.assertEqual(row["behavioral_verdict"], "PASS" if valid else None)
 
     def test_missing_auth_is_invalid_with_receipt(self):
         frozen = self.freeze()

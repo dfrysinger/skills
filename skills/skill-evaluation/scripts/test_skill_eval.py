@@ -470,6 +470,15 @@ class SkillEvalTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_judgment({"verdict": "PASS"}, "claude-opus-5")
 
+    def test_additional_judgment_fields_are_rejected(self) -> None:
+        judgment = {
+            "verdict": "PASS", "confidence": "HIGH", "matched": ["criterion"],
+            "missed": [], "overcorrections": [], "generalized_skill_defect": None,
+            "additional_assessment": "An otherwise valid observation",
+        }
+        with self.assertRaisesRegex(ValueError, "invalid judge fields"):
+            validate_judgment(judgment, "claude-opus-5")
+
     def test_bare_unanswerable_judgment_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "decisive missing evidence"):
             validate_judgment(
@@ -494,6 +503,8 @@ class SkillEvalTests(unittest.TestCase):
         case_dir = self.make_case()
         prompt = (case_dir / "prompts" / "judge.md").read_text()
         self.assertEqual(prompt.count("Return only JSON with:"), 1)
+        self.assertIn("Return exactly the six fields", prompt)
+        self.assertIn("Put every observation and qualification in the existing fields", prompt)
 
     def test_candidate_validation_failure_has_receipt(self) -> None:
         case_dir = self.make_case()

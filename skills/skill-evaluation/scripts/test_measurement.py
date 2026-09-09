@@ -376,6 +376,29 @@ class QualityTests(unittest.TestCase):
             frozen=self.frozen, run_root=run or self.run, definition=self.definition,
             copilot=Path("/fake"), timeout_seconds=1)
 
+    def test_review_prompt_explains_nested_requirements_and_missing_evidence(self):
+        prompts = []
+
+        def transport(**kwargs):
+            prompts.append(kwargs["prompt"])
+            kwargs["log"].write_text("{}\n", encoding="utf-8")
+            self.native_events(kwargs, json.dumps(self.review()))
+
+        with mock.patch.object(quality_review, "run_copilot", side_effect=transport):
+            assessment = self.assess()
+        self.assertTrue(assessment["complete"])
+        self.assertEqual(len(prompts), len(self.definition["judge"]["models"]))
+        for prompt in prompts:
+            self.assertIn("requirements/task.md", prompt)
+            self.assertIn("every file under requirements/evidence/", prompt)
+            self.assertIn("including nested directories", prompt)
+            self.assertIn("A directory listing is not the contents of its files.", prompt)
+            self.assertIn("Missing decisive evidence requires unassessable", prompt)
+            self.assertIn("every object level, including each finding", prompt)
+            self.assertIn("Put qualifications in summary or explanation", prompt)
+        self.assertEqual(
+            (self.run / "quality" / "prompt.md").read_text(encoding="utf-8"), prompts[0])
+
     def test_packet_contains_only_source_and_public_requirements(self):
         packet = self.run / "packet"
         manifest = quality_review.prepare_packet(
@@ -397,6 +420,7 @@ class QualityTests(unittest.TestCase):
             {"start_line": 0}, {"end_line": 100}, {"start_line": True},
             {"quotation": "not present"}, {"quotation": ""}, {"trigger": ""},
             {"severity": "5"}, {"severity": []},
+            {"additional_assessment": "A qualification belongs in existing fields"},
         ):
             value = self.review()
             value["findings"][0].update(change)
@@ -406,6 +430,93 @@ class QualityTests(unittest.TestCase):
         invalid["judgment"] = []
         with self.assertRaises(ValueError):
             quality_review.validate_review(invalid, packet)
+
+    def test_supplemental_fields_preserve_answer_and_caller_metadata(self):
+        self.definition["judge"]["models"] = self.definition["judge"]["models"][:1]
+        extras = {
+            "model": "forged", "family": "forged", "session_id": "forged",
+            "status": "not_run", "validation": {"forged": True},
+            "viewed_paths": ["../outside"], "raw_log_sha256": "forged",
+            "phase": "candidate", "stage": "judge:forged", "effort": "low",
+            "selected_response": {"path": "../outside"},
+            "supplemental_fields_ignored": [], "a/b[0]": {"note": "unvalidated"},
+        }
+        for index, additional in enumerate(({}, extras)):
+            value = self.review()
+            value.update(additional)
+            expected_ignored = [[key] for key in additional]
+            if additional:
+                value["findings"][0]["note"] = {"confidence": "unvalidated"}
+                expected_ignored.append(["findings", 0, "note"])
+            answer = "Preface\n```json\n" + json.dumps(value) + "\n```\nTrailing qualification."
+            calls = []
+
+            def transport(**kwargs):
+                calls.append(kwargs)
+                kwargs["log"].write_text("stdout is not the selected answer")
+                self.native_events(kwargs, answer)
+
+            run = self.new_run(f"fields-{index}")
+            with self.subTest(additional=bool(additional)), mock.patch.object(
+                quality_review, "run_copilot", side_effect=transport,
+            ):
+                result = self.assess(run)
+            self.assertTrue(result["complete"])
+            reviewer = result["reviewers"][0]
+            self.assertEqual({key: reviewer[key] for key in quality_review.REVIEW_FIELDS}, self.review())
+            self.assertEqual(reviewer["supplemental_fields_ignored"], expected_ignored)
+            self.assertEqual(reviewer["model"], calls[0]["model"])
+            self.assertEqual(reviewer["session_id"], calls[0]["session_id"])
+            self.assertEqual(reviewer["family"], skill_eval.model_family(calls[0]["model"]))
+            self.assertEqual(reviewer["effort"], "high")
+            self.assertEqual(reviewer["viewed_paths"], ["candidate/code.py"])
+            self.assertEqual(reviewer["validation"]["source"], "native_session_events")
+            self.assertEqual(reviewer["raw_log_sha256"], skill_eval.digest(calls[0]["log"]))
+            self.assertNotIn("phase", reviewer)
+            self.assertNotIn("stage", reviewer)
+            response = run / reviewer["selected_response"]["path"]
+            self.assertEqual(skill_eval.digest(response), reviewer["selected_response"]["sha256"])
+            self.assertEqual(skill_eval.read_json(response), {"answer": answer})
+            parsed = skill_eval.parse_json_output(skill_eval.read_json(response)["answer"])
+            original = json.dumps(parsed)
+            self.assertEqual(quality_review.partition_review(parsed), (self.review(), expected_ignored))
+            self.assertEqual(json.dumps(parsed), original)
+            skill_eval.write_json(run / "execution-result.json", {
+                "case_id": "example", "case_revision": result["case_revision"],
+                "patch_sha256": result["patch_sha256"], "execution_status": "PASS",
+            })
+            rows = evaluation_history.history(self.root)["attempts"]
+            row = next(row for row in rows if row["run_path"] == run.relative_to(self.root).as_posix())
+            self.assertEqual(row["correctness"], "PASS")
+            self.assertEqual(row["quality"]["reviewers"], [reviewer])
+
+    def test_projection_does_not_repair_required_evidence(self):
+        packet = self.run / "packet"
+        quality_review.prepare_packet(
+            self.frozen, self.definition, self.run / "candidate.patch", packet)
+        invalid = [
+            {"summary": "Missing fields", "findings": []},
+            {**self.review(), "summary": []},
+            {**self.review(), "judgment": "PASS"},
+            {**self.review(), "findings": {}},
+            {**self.review(), "findings": [False]},
+        ]
+        for change in (
+            {"path": "../outside"}, {"start_line": True}, {"end_line": 100},
+            {"quotation": "invented"}, {"severity": []}, {"trigger": ""},
+        ):
+            value = self.review()
+            value["findings"][0].update(change)
+            value["findings"][0]["note"] = "supplemental"
+            invalid.append(value)
+        misspelled = self.review()
+        misspelled["findings"][0]["start_lines"] = misspelled["findings"][0].pop("start_line")
+        invalid.append(misspelled)
+        for value in invalid:
+            value["commentary"] = "supplemental"
+            canonical, _ = quality_review.partition_review(value)
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                quality_review.validate_review(canonical, packet)
 
     def test_one_failed_reviewer_keeps_other_and_refuses_reassessment(self):
         calls = []
@@ -557,6 +668,7 @@ class QualityTests(unittest.TestCase):
             self.assertEqual(reviewer["status"], "failed")
             self.assertNotIn("validation", reviewer)
             self.assertNotIn("judgment", reviewer)
+            self.assertNotIn("selected_response", reviewer)
             self.assertEqual(skill_eval.read_json(calls[0]["measurement_path"])["outcome"], outcome)
             self.assertFalse(calls[0]["run_home"].exists())
 
@@ -629,6 +741,7 @@ class QualityTests(unittest.TestCase):
             self.assertEqual(reviewer["status"], "failed")
             self.assertNotIn("validation", reviewer)
             self.assertNotIn("judgment", reviewer)
+            self.assertNotIn("selected_response", reviewer)
             self.assertTrue(reviewer["error"])
             self.assertEqual(reviewer["raw_log_sha256"], skill_eval.digest(calls[0]["log"]))
             self.assertFalse(calls[0]["run_home"].exists())
@@ -653,6 +766,10 @@ class QualityTests(unittest.TestCase):
             self.assertEqual(reviewer["status"], "failed")
             self.assertNotIn("judgment", reviewer)
             self.assertEqual(reviewer["validation"]["source"], "native_session_events")
+            response = self.run.parent.parent / f"invalid-answer-{index}" / "example"
+            response = response / reviewer["selected_response"]["path"]
+            self.assertEqual(skill_eval.read_json(response), {"answer": answer})
+            self.assertEqual(skill_eval.digest(response), reviewer["selected_response"]["sha256"])
             if index == 2:
                 self.assertIn("quotation", reviewer["error"]["message"])
 
@@ -747,6 +864,29 @@ class HistoryTests(unittest.TestCase):
         text = evaluation_history.markdown(first)
         self.assertIn("unknown", text)
         self.assertIn("invalid_spend", text)
+
+    def test_history_does_not_backfill_or_reinterpret_legacy_reviews(self):
+        for status in ("completed", "failed"):
+            path = self.run_fixture(status, "PASS", old=True)
+            reviewer = {"status": status, "model": "claude-opus-5"}
+            if status == "completed":
+                reviewer.update(judgment="acceptable", summary="Source reviewed.", findings=[])
+            else:
+                reviewer["error"] = "Original extra-field rejection"
+                skill_eval.write_failure_receipt(
+                    path / "judge-legacy-failure-receipt.json", case_id="example",
+                    case_revision="fixed", stage="judge:claude-opus-5",
+                    error=ValueError("Original extra-field rejection"), log=path / "missing.log")
+            skill_eval.write_json(path / "quality" / "assessment.json", {
+                "schema_version": 1, "complete": status == "completed", "case_revision": "fixed",
+                "patch_sha256": None, "expected_models": ["claude-opus-5"],
+                "reviewers": [reviewer],
+            })
+        before = {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
+        result = evaluation_history.history(self.root)
+        self.assertEqual(len(result["attempts"]), 2)
+        self.assertNotIn("supplemental_fields_ignored", json.dumps(result))
+        self.assertEqual(before, {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()})
 
     def test_suite_owned_runs_count_once_and_retry_excluded_from_first_ratio(self):
         cases = []
