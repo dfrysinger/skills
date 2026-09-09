@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import tempfile
@@ -10,6 +11,7 @@ import unittest
 import uuid
 from pathlib import Path
 from unittest import mock
+import measurement
 
 from skill_eval import (
     add_case,
@@ -75,6 +77,54 @@ class NativeRunTests(unittest.TestCase):
         self.assertNotIn("source", json.dumps(parsed))
         self.assertNotIn("result_exit_code", parsed)
         self.assertEqual(self.parse(content[:-1])["answer"], "answer")
+
+    def test_large_native_reader_keeps_original_digest_and_strict_terminal_checks(self):
+        events = self.events()
+        path = self.root / "large-native.jsonl"
+        with path.open("wb") as stream:
+            stream.write(self.encoded(events[:1]))
+            for index in range(2):
+                start = {**events[1], "data": {**events[1]["data"], "toolCallId": str(index)}}
+                complete = {**events[2], "data": {
+                    **events[2]["data"], "toolCallId": str(index),
+                    "result": {"content": "x" * (17 * 1024 * 1024)},
+                }}
+                stream.write(self.encoded([start, complete]))
+            stream.write(self.encoded(events[3:]).replace(b"\n", b"\r\n").rstrip(b"\r\n"))
+        self.assertGreater(path.stat().st_size, measurement.MAX_EVENT_BYTES)
+        expected = hashlib.sha256()
+        with path.open("rb") as stream:
+            while chunk := stream.read(65536):
+                expected.update(chunk)
+        with path.open("rb") as stream:
+            parsed = self.parse(stream)
+        self.assertEqual(parsed["event_sha256"], expected.hexdigest())
+        self.assertEqual(parsed["event_count"], 7)
+        self.assertEqual(parsed["answer"], "answer")
+        self.assertEqual(parsed["tool_calls"], 2)
+        self.assertEqual(parsed["viewed_paths"], ["candidate/code.py"] * 2)
+        self.assertNotIn("content", parsed)
+        with path.open("ab") as stream:
+            stream.write(b'\n{"type":"session.usage_checkpoint","data":{}}\n')
+        with path.open("rb") as stream, self.assertRaisesRegex(ValueError, "after session shutdown"):
+            self.parse(stream)
+
+    def test_native_reader_bound_is_raw_bytes_and_never_an_unbounded_read(self):
+        class BoundedReader(io.BytesIO):
+            def read(self, size=-1):
+                if not 0 < size <= 65536:
+                    raise AssertionError("unbounded native read")
+                return super().read(size)
+
+        content = self.encoded(self.events())
+        self.assertEqual(self.parse(BoundedReader(content))["event_sha256"], hashlib.sha256(content).hexdigest())
+        events = self.events()
+        events[2]["data"]["result"]["content"] = "\u00e9" * 200
+        record = self.encoded(events[2:3])
+        with mock.patch.object(measurement, "MAX_EVENT_BYTES", len(record.decode())), self.assertRaisesRegex(
+            ValueError, "record exceeds byte limit",
+        ):
+            self.parse(BoundedReader(self.encoded(events)))
 
     def test_missing_corrupt_and_malformed_records_are_refused(self):
         valid = self.encoded(self.events())

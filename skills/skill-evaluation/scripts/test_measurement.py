@@ -13,6 +13,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
@@ -27,6 +28,15 @@ def events(nano=1_000_000_000, kind="session.shutdown", **extra):
     return (json.dumps({"type": kind, "data": {
         "totalNanoAiu": nano, "totalPremiumRequests": 0.33, **extra,
     }}) + "\n").encode()
+
+
+def capture_bytes(content):
+    return nullcontext(io.BytesIO(content) if content is not None else None)
+
+
+def read_capture(capture):
+    with capture as content:
+        return content.read() if content is not None else None
 
 
 class MeasurementTests(unittest.TestCase):
@@ -45,7 +55,9 @@ class MeasurementTests(unittest.TestCase):
         return m.collect(
             destination=self.root / f"{name}.measurement.json", session_id=kwargs.pop("session_id", self.session),
             role=kwargs.pop("role", "candidate"), phase=name, model="gpt-example", effort="high",
-            cli_version="test-cli", log=log, capture=lambda: content, source="container_eventfile",
+            cli_version="test-cli", log=log,
+            capture=kwargs.pop("capture", lambda: capture_bytes(content)),
+            source=kwargs.pop("source", "container_eventfile"),
             started_at=kwargs.pop("started_at", "2026-01-01T00:00:00+00:00"),
             started_clock=time.monotonic(), outcome=kwargs.pop("outcome", "completed"), **kwargs,
         )
@@ -163,49 +175,50 @@ class MeasurementTests(unittest.TestCase):
         unrelated = home / "session-state" / str(uuid.uuid4()) / "events.jsonl"
         unrelated.parent.mkdir()
         unrelated.write_bytes(b"unrelated secret")
-        self.assertEqual(m.host_events(home, self.session), events())
+        self.assertEqual(read_capture(m.host_events(home, self.session)), events())
         path.unlink()
-        self.assertIsNone(m.host_events(home, self.session))
+        self.assertIsNone(read_capture(m.host_events(home, self.session)))
         with self.assertRaises(m.MeasurementError):
-            m.host_events(home, "../outside")
+            read_capture(m.host_events(home, "../outside"))
 
-    def test_host_symlink_directory_fifo_hardlink_and_oversize_rejected(self):
+    def test_host_symlink_directory_fifo_hardlink_and_overbound_record_rejected(self):
         home, path = self.home_file()
         outside = self.root / "outside"
         outside.write_bytes(b"secret")
         path.symlink_to(outside)
         with self.assertRaises(m.MeasurementError):
-            m.host_events(home, self.session)
+            read_capture(m.host_events(home, self.session))
         path.unlink()
         path.mkdir()
         with self.assertRaises(m.MeasurementError):
-            m.host_events(home, self.session)
+            read_capture(m.host_events(home, self.session))
         path.rmdir()
         os.mkfifo(path)
         with self.assertRaises(m.MeasurementError):
-            m.host_events(home, self.session)
+            read_capture(m.host_events(home, self.session))
         path.unlink()
         os.link(outside, path)
         with self.assertRaises(m.MeasurementError):
-            m.host_events(home, self.session)
+            read_capture(m.host_events(home, self.session))
         path.unlink()
         path.write_bytes(b"x" * 20)
         with mock.patch.object(m, "MAX_EVENT_BYTES", 10), self.assertRaises(m.MeasurementError):
-            m.host_events(home, self.session)
+            with m.host_events(home, self.session) as stream:
+                m.observations(stream, "host_eventfile", terminal=True)
         path.unlink()
         path.parent.rmdir()
         path.parent.symlink_to(self.root, target_is_directory=True)
         with self.assertRaises(m.MeasurementError):
-            m.host_events(home, self.session)
+            read_capture(m.host_events(home, self.session))
         home_alias = self.root / "home-alias"
         home_alias.symlink_to(home, target_is_directory=True)
         with self.assertRaises(m.MeasurementError):
-            m.host_events(home_alias, self.session)
+            read_capture(m.host_events(home_alias, self.session))
 
     def test_archive_single_regular_only_and_no_extraction(self):
         data = events()
         regular = ("events.jsonl", tarfile.REGTYPE, data)
-        self.assertEqual(m.archive_events(self.archive([regular])), data)
+        self.assertEqual(read_capture(m.archive_events(self.archive([regular]))), data)
         for entries in (
             [regular, regular],
             [("events.jsonl", tarfile.SYMTYPE, b"")],
@@ -216,35 +229,37 @@ class MeasurementTests(unittest.TestCase):
             [("/events.jsonl", tarfile.REGTYPE, data)],
         ):
             with self.subTest(entries=entries), self.assertRaises(m.MeasurementError):
-                m.archive_events(self.archive(entries))
+                read_capture(m.archive_events(self.archive(entries)))
         with mock.patch.object(m, "MAX_EVENT_BYTES", 1), self.assertRaises(m.MeasurementError):
-            m.archive_events(self.archive([regular]))
+            with m.archive_events(self.archive([regular])) as stream:
+                m.observations(stream, "container_eventfile", terminal=True)
         with self.assertRaises(m.MeasurementError):
-            m.archive_events(self.archive([regular]) + self.archive([regular]))
+            read_capture(m.archive_events(self.archive([regular]) + self.archive([regular])))
         self.assertFalse((self.root / "events.jsonl").exists())
 
     def test_container_exact_path_stopped_guard_absence_and_capture_error(self):
-        with mock.patch.object(m, "bounded_command", return_value=(
-            0, self.archive([("events.jsonl", tarfile.REGTYPE, events())]), b"",
-        )) as command:
-            self.assertEqual(m.container_events("owned", self.session, stopped=True), events())
+        with mock.patch.object(m, "bounded_command", return_value=nullcontext((
+            0, io.BytesIO(self.archive([("events.jsonl", tarfile.REGTYPE, events())])), b"",
+        ))) as command:
+            self.assertEqual(read_capture(m.container_events("owned", self.session, stopped=True)), events())
             self.assertEqual(command.call_args.args[0], [
                 "docker", "cp", f"owned:/tmp/eval-home/session-state/{self.session}/events.jsonl", "-"])
             with self.assertRaises(m.MeasurementError):
-                m.container_events("owned", self.session, stopped=False)
+                read_capture(m.container_events("owned", self.session, stopped=False))
         message = f"Could not find the file /tmp/eval-home/session-state/{self.session}/events.jsonl in container owned"
-        with mock.patch.object(m, "bounded_command", return_value=(1, b"", message.encode())):
-            self.assertIsNone(m.container_events("owned", self.session, stopped=True))
-        with mock.patch.object(m, "bounded_command", return_value=(1, b"", b"daemon broken")):
+        with mock.patch.object(m, "bounded_command", return_value=nullcontext((1, io.BytesIO(), message.encode()))):
+            self.assertIsNone(read_capture(m.container_events("owned", self.session, stopped=True)))
+        with mock.patch.object(m, "bounded_command", return_value=nullcontext((1, io.BytesIO(), b"daemon broken"))):
             with self.assertRaises(m.MeasurementError):
-                m.container_events("owned", self.session, stopped=True)
+                read_capture(m.container_events("owned", self.session, stopped=True))
 
     def test_bounded_collection_limits_pipes_before_allocation(self):
-        with mock.patch.object(m, "MAX_ARCHIVE_BYTES", 1024):
-            with self.assertRaisesRegex(m.MeasurementError, "byte limit"):
-                m.bounded_command([sys.executable, "-c", "import os; os.write(1, b'x' * 100000)"])
+        with self.assertRaisesRegex(m.MeasurementError, "stderr exceeds byte limit"):
+            with m.bounded_command([sys.executable, "-c", "import os; os.write(2, b'x' * 100000)"]):
+                self.fail("oversized stderr accepted")
         with self.assertRaisesRegex(m.MeasurementError, "timed out"):
-            m.bounded_command([sys.executable, "-c", "import time; time.sleep(10)"], timeout=0.05)
+            with m.bounded_command([sys.executable, "-c", "import time; time.sleep(10)"], timeout=0.05):
+                self.fail("timed out capture accepted")
 
     def test_read_failure_only_persists_filtered_error(self):
         destination = self.root / "failed.measurement.json"
@@ -286,7 +301,7 @@ class MeasurementTests(unittest.TestCase):
                           resume=False, home_mode="existing", run_home=self.root, timeout_seconds=1,
                           allow_skill=False, measurement_path=destination, role="quality_judge")
             with mock.patch.object(skill_eval.subprocess, "run") as run, mock.patch.object(
-                m, "host_events", return_value=None,
+                m, "host_events", side_effect=lambda *args: nullcontext(None),
             ):
                 if isinstance(failure, Exception):
                     run.side_effect = failure
@@ -317,6 +332,212 @@ class MeasurementTests(unittest.TestCase):
         record = skill_eval.read_json(destination)
         self.assertEqual(record["completeness"], "unknown")
         self.assertIsNone(record["credits"])
+
+    def large_file(self, path):
+        record = b'{"type":"tool.execution_complete","data":{"content":"' + b"x" * (1024 * 1024) + b'"}}\n'
+        with path.open("wb") as stream:
+            for _ in range(34):
+                stream.write(record)
+            stream.write(events())
+        self.assertGreater(path.stat().st_size, 33 * 1024 * 1024)
+
+    def test_large_host_accounting_has_terminal_usage_and_closes_reader(self):
+        home, path = self.home_file()
+        self.large_file(path)
+        with m.host_events(home, self.session) as stream:
+            self.assertEqual(m.observations(stream, "host_eventfile", terminal=True)[-1]["raw"]["totalNanoAiu"],
+                             1_000_000_000)
+        self.assertTrue(stream.closed)
+        record = self.record(name="large-host", capture=lambda: m.host_events(home, self.session),
+                             source="host_eventfile")
+        self.assertEqual(record["credits"], 1)
+        self.assertEqual(record["completeness"], "complete")
+        self.assertEqual(len(record["observations"]), 1)
+
+    def test_large_stdout_accounting_remains_partial_without_native_terminal(self):
+        self.large_file(self.root / "large-stdout.jsonl")
+        record = self.record(name="large-stdout")
+        self.assertEqual(record["credits"], 1)
+        self.assertEqual(record["completeness"], "partial")
+        self.assertEqual(record["errors"], [])
+        self.assertEqual(record["observations"][0]["source"], "invocation_stdout")
+
+    def test_large_stopped_container_spools_beyond_both_former_ceilings(self):
+        path = self.root / "large-events.jsonl"
+        self.large_file(path)
+        archive = self.root / "large.tar"
+        with tarfile.open(archive, "w") as output, path.open("rb") as stream:
+            member = tarfile.TarInfo("events.jsonl")
+            member.size = path.stat().st_size
+            output.addfile(member, stream)
+        self.assertGreater(archive.stat().st_size, 33 * 1024 * 1024)
+        command = m.bounded_command
+        spools = []
+        temporary_file = m.tempfile.TemporaryFile
+
+        def spool(**kwargs):
+            result = temporary_file(**kwargs)
+            spools.append(result)
+            self.assertEqual(os.fstat(result.fileno()).st_mode & 0o077, 0)
+            return result
+
+        def local_copy(argv):
+            self.assertEqual(argv, ["docker", "cp",
+                                   f"owned:/tmp/eval-home/session-state/{self.session}/events.jsonl", "-"])
+            return command([sys.executable, "-c",
+                            "import shutil,sys; shutil.copyfileobj(open(sys.argv[1], 'rb'), sys.stdout.buffer)",
+                            str(archive)])
+
+        with mock.patch.object(m, "bounded_command", side_effect=local_copy), mock.patch.object(
+            m.tempfile, "TemporaryFile", side_effect=spool,
+        ):
+            record = self.record(name="large-container",
+                                 capture=lambda: m.container_events("owned", self.session, stopped=True))
+        self.assertEqual(record["credits"], 1)
+        self.assertEqual(record["completeness"], "complete")
+        self.assertEqual(len(spools), 1)
+        self.assertTrue(spools[0].closed)
+
+    def test_raw_record_bound_grammar_and_bounded_reads(self):
+        class ShortReader(io.BytesIO):
+            def read(self, size=-1):
+                if not 0 < size <= 65536:
+                    raise AssertionError("unbounded read")
+                return super().read(min(size, 2))
+
+        separators = ("\r\n", "\r", "\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+        content = "".join('{"type":"system.message"}' + separator for separator in separators).encode()
+        records = list(m.jsonl_records(ShortReader(content), grammar="telemetry"))
+        self.assertEqual(b"".join(raw for raw, _ in records), content)
+        self.assertEqual(len(records), len(separators))
+        self.assertTrue(all(event["type"] == "system.message" for _, event in records))
+        raw = b'{"type":"system.message","text":"' + ("\u00e9" * 40).encode() + b'"}\n'
+        self.assertLess(len(raw.decode()), 100)
+        self.assertGreater(len(raw), 100)
+        for grammar in ("native", "telemetry"):
+            with mock.patch.object(m, "MAX_EVENT_BYTES", len(raw)):
+                self.assertEqual(len(list(m.jsonl_records(io.BytesIO(raw), grammar=grammar))), 1)
+            with mock.patch.object(m, "MAX_EVENT_BYTES", len(raw) - 1), self.assertRaisesRegex(
+                m.MeasurementError, "record exceeds byte limit",
+            ):
+                list(m.jsonl_records(io.BytesIO(raw), grammar=grammar))
+        duplicates = b'{"type":"system.message","data":{"n":NaN},"data":{}}\n'
+        self.assertEqual(len(list(m.jsonl_records(duplicates, grammar="telemetry"))), 1)
+        with self.assertRaises(m.MeasurementError):
+            list(m.jsonl_records(duplicates, grammar="native"))
+
+    def test_corrupt_late_records_and_read_errors_do_not_admit_partial_source(self):
+        class BrokenReader(io.BytesIO):
+            def read(self, size=-1):
+                raise OSError("unavailable source")
+
+        for index, content in enumerate((events() + b"\xff\n", events() + b"{broken\n")):
+            record = self.record(name=f"corrupt-{index}", content=content)
+            self.assertEqual(record["completeness"], "error")
+            self.assertEqual(record["observations"], [])
+        record = self.record(name="broken-reader", capture=lambda: nullcontext(BrokenReader()))
+        self.assertEqual(record["completeness"], "error")
+        self.assertIsNone(record["credits"])
+
+    def test_archive_corruption_is_rejected_before_member_is_exposed(self):
+        data = self.archive([("events.jsonl", tarfile.REGTYPE, events())])
+        end = 512 + len(events())
+        corruptions = (
+            data[:end - 1], data[:1024], data[:-1],
+            data[:end] + b"x" + data[end + 1:],
+            data[:-512] + b"x" + data[-511:],
+            self.archive([("events.jsonl", tarfile.GNUTYPE_SPARSE, b"")]),
+            self.archive([("events.jsonl", tarfile.FIFOTYPE, b"")]),
+        )
+        for content in corruptions:
+            with self.subTest(size=len(content)), self.assertRaises(m.MeasurementError):
+                with m.archive_events(io.BytesIO(content)):
+                    self.fail("corrupt archive exposed its member")
+        spools = []
+        temporary_file = m.tempfile.TemporaryFile
+
+        def spool(**kwargs):
+            result = temporary_file(**kwargs)
+            spools.append(result)
+            return result
+
+        for program in ("import sys; sys.stdout.write('not a tar')",
+                        "import time; time.sleep(10)",
+                        "import os; os.write(2, b'x'*100000)"):
+            with mock.patch.object(m.tempfile, "TemporaryFile", side_effect=spool), self.assertRaises(
+                m.MeasurementError,
+            ):
+                with m.bounded_command([sys.executable, "-c", program], timeout=0.1) as (_, output, _):
+                    with m.archive_events(output):
+                        self.fail("invalid archive accepted")
+            self.assertTrue(spools[-1].closed)
+
+    def test_large_resume_prefix_and_suffix_keep_only_new_cumulative_observations(self):
+        home, path = self.home_file()
+        self.large_file(path)
+        first = self.record(name="before", capture=lambda: m.host_events(home, self.session),
+                            source="host_eventfile")
+        suffix = b'{"type":"session.resume","data":{}}\n' + events(2_000_000_000, "session.usage_checkpoint") + events(
+            3_000_000_000)
+
+        def resume(*args, **kwargs):
+            with path.open("ab") as stream:
+                stream.write(suffix)
+            return subprocess.CompletedProcess(["fake"], 0, stdout="")
+
+        destination = self.root / "after.measurement.json"
+        with mock.patch.dict(os.environ, {"COPILOT_HOME": str(home)}), mock.patch.object(
+            skill_eval.subprocess, "run", side_effect=resume,
+        ):
+            skill_eval.run_copilot(
+                copilot=Path("/fake"), plugin_dir=self.root, cwd=self.root, prompt="public",
+                model="gpt-example", effort="high", log=self.root / "after.jsonl", session_id=self.session,
+                resume=True, home_mode="existing", run_home=home, timeout_seconds=1,
+                allow_skill=True, measurement_path=destination)
+        record = skill_eval.read_json(destination)
+        self.assertEqual(record["completeness"], "complete")
+        self.assertEqual([item["raw"]["totalNanoAiu"] for item in record["observations"]],
+                         [2_000_000_000, 3_000_000_000])
+        self.assertEqual(m.accounting([first, record])["candidate"]["credits"], 3)
+
+    def test_resume_exact_byte_offset_and_changed_truncated_missing_prefix_errors(self):
+        prefix = b' \r\n' + events()[:-1]
+        suffix = b"\n" + events(3_000_000_000)
+        snapshot = m.snapshot_events(io.BytesIO(prefix))
+        self.assertEqual(snapshot, (len(prefix), hashlib.sha256(prefix).hexdigest()))
+        source = io.BytesIO(prefix + suffix)
+        m.verify_prefix(source, snapshot)
+        self.assertEqual(source.tell(), len(prefix))
+        self.assertEqual(m.observations(source, "host_eventfile", terminal=True)[0]["raw"]["totalNanoAiu"],
+                         3_000_000_000)
+        home, path = self.home_file()
+        for failure in ("changed", "truncated", "missing", "missing-before"):
+            path.write_bytes(events())
+            if failure == "missing-before":
+                path.unlink()
+
+            def resume(*args, **kwargs):
+                if failure == "missing":
+                    path.unlink()
+                elif failure == "truncated":
+                    path.write_bytes(events()[:-1])
+                else:
+                    path.write_bytes(events(3_000_000_000))
+                return subprocess.CompletedProcess(["fake"], 0, stdout=events(3_000_000_000).decode())
+
+            destination = self.root / f"{failure}.measurement.json"
+            with self.subTest(failure=failure), mock.patch.dict(os.environ, {"COPILOT_HOME": str(home)}), mock.patch.object(
+                skill_eval.subprocess, "run", side_effect=resume,
+            ):
+                skill_eval.run_copilot(
+                    copilot=Path("/fake"), plugin_dir=self.root, cwd=self.root, prompt="public",
+                    model="gpt-example", effort="high", log=self.root / f"{failure}.jsonl", session_id=self.session,
+                    resume=True, home_mode="existing", run_home=home, timeout_seconds=1,
+                    allow_skill=True, measurement_path=destination)
+            record = skill_eval.read_json(destination)
+            self.assertEqual(record["completeness"], "error")
+            self.assertTrue(record["errors"])
+            self.assertTrue(all(item["source"] == "invocation_stdout" for item in record["observations"]))
 
 
 class QualityTests(unittest.TestCase):
@@ -537,7 +758,7 @@ class QualityTests(unittest.TestCase):
                 destination=kwargs["measurement_path"], session_id=kwargs["session_id"],
                 role=kwargs["role"], phase=kwargs["phase"], model=kwargs["model"],
                 effort=kwargs["effort"], cli_version="fake", log=kwargs["log"],
-                capture=lambda: events(), source="host_eventfile",
+                capture=lambda: capture_bytes(events()), source="host_eventfile",
                 started_at=m.instant(), started_clock=time.monotonic(), outcome="completed")
 
         with mock.patch.object(quality_review, "run_copilot", side_effect=transport):
@@ -725,7 +946,7 @@ class QualityTests(unittest.TestCase):
                     path.write_bytes(b"\n".join(content.splitlines()[:-1]) + b"\n")
                 elif failure == "oversized":
                     with path.open("r+b") as stream:
-                        stream.truncate(m.MAX_EVENT_BYTES + 1)
+                        stream.truncate(len(content) + m.MAX_EVENT_BYTES + 1)
                 else:
                     target = path.with_name("linked.jsonl")
                     path.rename(target)
@@ -833,9 +1054,9 @@ class HistoryTests(unittest.TestCase):
                 destination=path / "measurements" / "candidate.json",
                 session_id=str(uuid.uuid4()), role="candidate", phase="candidate",
                 model="gpt-example", effort="high", cli_version="fake", log=log,
-                capture=lambda: events(credits * 1_000_000_000,
+                capture=lambda: capture_bytes(events(credits * 1_000_000_000,
                                        "session.shutdown" if complete else "session.usage_checkpoint")
-                                if credits is not None else None,
+                                if credits is not None else None),
                 source="container_eventfile", started_at=m.instant(),
                 started_clock=time.monotonic(), outcome="completed")
             records = [skill_eval.read_json(path / "measurements" / "candidate.json")]

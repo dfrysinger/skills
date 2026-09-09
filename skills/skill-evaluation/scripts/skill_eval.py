@@ -15,9 +15,10 @@ import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import BinaryIO
 
 import measurement
 
@@ -630,30 +631,15 @@ def parse_run(
 
 
 def parse_native_run(
-    content: bytes | None, *, session_id: str, expected_model: str, cwd: Path,
+    content: BinaryIO | bytes | None, *, session_id: str, expected_model: str, cwd: Path,
 ) -> dict:
     """Validate one fresh source-quality session; the caller owns process success."""
     measurement.session_uuid(session_id)
     if not content:
         raise ValueError("missing native session events")
 
-    def unique_fields(pairs):
-        result = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError("duplicate native event field")
-            result[key] = value
-        return result
-
-    def reject_constant(value):
-        raise ValueError("non-finite native event value")
-
-    try:
-        lines = content.decode("utf-8").split("\n")
-    except UnicodeError as error:
-        raise ValueError("native session events must be UTF-8") from error
-    if lines[-1] == "":
-        lines.pop()
+    event_digest = hashlib.sha256()
+    event_count = 0
     started = False
     shutdown = False
     answer = None
@@ -661,12 +647,10 @@ def parse_native_run(
     calls: set[str] = set()
     pending: dict[str, dict] = {}
     viewed_paths: list[str] = []
-    for index, line in enumerate(lines, 1):
-        try:
-            event = json.loads(line, object_pairs_hook=unique_fields, parse_constant=reject_constant)
-        except (ValueError, RecursionError) as error:
-            raise ValueError(f"invalid native event JSON at record {index}") from error
-        if not isinstance(event, dict):
+    for index, (raw, event) in enumerate(measurement.jsonl_records(content, grammar="native"), 1):
+        event_digest.update(raw)
+        event_count = index
+        if event is None:
             raise ValueError("native event must be an object")
         kind, data = event.get("type"), event.get("data")
         if not isinstance(kind, str) or not kind or not isinstance(data, dict):
@@ -732,8 +716,8 @@ def parse_native_run(
         raise ValueError("native session requires a nonempty final assistant message")
     return {
         "answer": answer, "models": sorted(models), "viewed_paths": viewed_paths,
-        "tool_calls": len(calls), "event_count": len(lines),
-        "event_sha256": hashlib.sha256(content).hexdigest(),
+        "tool_calls": len(calls), "event_count": event_count,
+        "event_sha256": event_digest.hexdigest(),
     }
 
 
@@ -881,15 +865,14 @@ def run_copilot(
     previous = None
     previous_error = None
 
+    @contextmanager
     def capture_events():
         if previous_error:
             raise measurement.MeasurementError(previous_error)
-        content = measurement.host_events(home, session_id)
-        if previous is not None:
-            if content is None or not content.startswith(previous):
-                raise measurement.MeasurementError("resumed session event prefix changed")
-            return content[len(previous):]
-        return content
+        with measurement.host_events(home, session_id) as content:
+            if previous is not None:
+                measurement.verify_prefix(content, previous)
+            yield content
 
     try:
         if home_mode == "isolated":
@@ -899,7 +882,8 @@ def run_copilot(
             env["COPILOT_HOME"] = str(run_home)
         if resume:
             try:
-                previous = measurement.host_events(home, session_id)
+                with measurement.host_events(home, session_id) as content:
+                    previous = measurement.snapshot_events(content)
             except measurement.MeasurementError as error:
                 previous_error = str(error)
         try:

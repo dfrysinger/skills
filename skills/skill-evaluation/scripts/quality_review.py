@@ -199,10 +199,10 @@ def review_repository(
                     role="quality_judge", phase=f"quality:{model}",
                     cli_version=read_json(run_root / "copilot-identity.json").get("version"),
                 )
-                parsed = parse_native_run(
-                    measurement.host_events(home, session_id), session_id=session_id,
-                    expected_model=model, cwd=packet,
-                )
+                with measurement.host_events(home, session_id) as content:
+                    parsed = parse_native_run(
+                        content, session_id=session_id, expected_model=model, cwd=packet,
+                    )
                 reviewer["validation"] = {
                     "source": "native_session_events", "sha256": parsed["event_sha256"],
                     "record_count": parsed["event_count"], "process_completed_successfully": True,

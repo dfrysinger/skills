@@ -11,7 +11,9 @@ import subprocess
 import tempfile
 import time
 import uuid
+from contextlib import AbstractContextManager
 from pathlib import Path
+from typing import BinaryIO
 
 import measurement
 
@@ -333,7 +335,7 @@ class Container:
         self.checked(["docker", "rm", "--force", self.name], "remove")
         self.stopped = True
 
-    def usage_events(self, session_id: str) -> bytes | None:
+    def usage_events(self, session_id: str) -> AbstractContextManager[BinaryIO | None]:
         return measurement.container_events(self.name, session_id, stopped=self.stopped)
 
     def __exit__(self, exc_type, exc, traceback) -> None:

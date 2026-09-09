@@ -676,7 +676,7 @@ class RepositoryTaskTests(unittest.TestCase):
 
             def usage_events(self, session_id):
                 owner.assertTrue(self.stopped)
-                return None
+                return evaluator.measurement.stdout_events(self.artifacts / "absent-events.jsonl")
 
             def execute(self, command, label, **kwargs):
                 log = self.artifacts / f"{label}.log"
