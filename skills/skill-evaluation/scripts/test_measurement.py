@@ -630,6 +630,12 @@ class QualityTests(unittest.TestCase):
         self.assertEqual(
             (packet / "requirements" / "task.md").read_bytes(),
             (packet / "requirements" / "evidence" / "task.md").read_bytes())
+        task_record = next(
+            item for item in manifest if item["path"] == "requirements/task.md")
+        self.assertEqual(task_record["source"], {
+            "kind": "evidence_task",
+            "path": "requirements/evidence/task.md",
+        })
         self.assertNotEqual(
             (packet / "requirements" / "task.md").read_bytes(),
             (self.frozen / self.definition["phases"][0]["prompt_file"]).read_bytes())
@@ -659,30 +665,45 @@ class QualityTests(unittest.TestCase):
             quality_review.validate_review(invalid, packet)
 
     def test_packet_uses_phase_prompt_when_evidence_task_is_missing(self):
-        original_copy_packet = quality_review.copy_packet
-
-        def copy_without_task(source, destination):
-            original_copy_packet(source, destination)
-            if destination.name == "evidence":
-                (destination / "task.md").unlink()
-
+        case = self.fixture.make_case("fallback")
+        (case / "evidence" / "candidate" / "task.md").unlink()
+        (case / "evidence" / "candidate" / "rubric.md").write_text(
+            "Assess the addition repair.\n")
+        frozen = skill_eval.freeze_case(self.root, "fallback", False)
+        self.assertGreater(skill_eval.verify_case(self.root, "fallback"), 0)
+        definition = skill_eval.read_json(frozen / "case.json")
         packet = self.run / "fallback-packet"
-        with mock.patch.object(quality_review, "copy_packet", side_effect=copy_without_task):
-            manifest = quality_review.prepare_packet(
-                self.frozen, self.definition, self.run / "candidate.patch", packet)
+        manifest = quality_review.prepare_packet(
+            frozen, definition, self.run / "candidate.patch", packet)
         self.assertEqual(
             (packet / "requirements" / "task.md").read_bytes(),
-            (self.frozen / self.definition["phases"][0]["prompt_file"]).read_bytes())
-        self.assertNotIn(
-            "requirements/evidence/task.md", {item["path"] for item in manifest})
-
-    def test_primary_task_source_does_not_follow_symlink(self):
-        evidence_task = self.root / "linked-task.md"
-        evidence_task.symlink_to(self.frozen / self.definition["phases"][0]["prompt_file"])
+            (frozen / definition["phases"][0]["prompt_file"]).read_bytes())
         self.assertEqual(
-            quality_review.primary_task_source(
-                self.frozen, self.definition["phases"][0], evidence_task),
-            self.frozen / self.definition["phases"][0]["prompt_file"])
+            (packet / "requirements" / "evidence" / "rubric.md").read_text(),
+            "Assess the addition repair.\n")
+        paths = {item["path"] for item in manifest}
+        self.assertIn("requirements/evidence/rubric.md", paths)
+        task_record = next(
+            item for item in manifest if item["path"] == "requirements/task.md")
+        self.assertEqual(task_record["source"], {
+            "kind": "phase_prompt",
+            "path": definition["phases"][0]["prompt_file"],
+        })
+
+    def test_read_primary_task_does_not_follow_symlink(self):
+        evidence = self.root / "linked-evidence"
+        evidence.mkdir()
+        fallback_relative = self.definition["phases"][0]["prompt_file"]
+        fallback = self.frozen / fallback_relative
+        (evidence / "task.md").symlink_to(fallback)
+        content, source = quality_review.read_primary_task(
+            evidence, fallback, fallback_relative)
+        self.assertEqual(
+            content, fallback.read_bytes())
+        self.assertEqual(source, {
+            "kind": "phase_prompt",
+            "path": fallback_relative,
+        })
 
     def test_citation_reconciliation_is_exact_or_unique_same_file_line_sequence(self):
         packet = self.root / "citation-packet"

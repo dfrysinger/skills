@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import errno
 import json
 import os
 import re
@@ -103,25 +104,60 @@ def prepare_packet(frozen: Path, definition: dict, patch: Path, destination: Pat
     })
     phase = definition["phases"][0]
     copy_packet(frozen / phase["id"], destination / "requirements" / "evidence")
-    evidence_task = destination / "requirements" / "evidence" / "task.md"
-    task_source = primary_task_source(frozen, phase, evidence_task)
-    (destination / "requirements" / "task.md").write_bytes(task_source.read_bytes())
-    manifest = [
-        {"path": path.relative_to(destination).as_posix(), "sha256": digest(path)}
-        for path in ordinary_files(destination)
-    ]
+    task_content, task_source = read_primary_task(
+        destination / "requirements" / "evidence",
+        frozen / phase["prompt_file"],
+        phase["prompt_file"],
+    )
+    (destination / "requirements" / "task.md").write_bytes(task_content)
+    manifest = []
+    for path in ordinary_files(destination):
+        relative = path.relative_to(destination).as_posix()
+        record = {"path": relative, "sha256": digest(path)}
+        if relative == "requirements/task.md":
+            record["source"] = task_source
+        manifest.append(record)
     for item in manifest:
         path = destination / item["path"]
         path.chmod(path.stat().st_mode & 0o555)
     return manifest
 
 
-def primary_task_source(frozen: Path, phase: dict, evidence_task: Path) -> Path:
+def read_primary_task(
+    evidence: Path, fallback: Path, fallback_relative: str,
+) -> tuple[bytes, dict]:
+    descriptors = []
     try:
-        use_evidence_task = stat.S_ISREG(evidence_task.lstat().st_mode)
-    except FileNotFoundError:
-        use_evidence_task = False
-    return evidence_task if use_evidence_task else frozen / phase["prompt_file"]
+        directory = os.open(
+            evidence, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        descriptors.append(directory)
+        try:
+            task = os.open(
+                "task.md", os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+                dir_fd=directory,
+            )
+        except FileNotFoundError:
+            task = None
+        except OSError as error:
+            if error.errno != errno.ELOOP:
+                raise
+            task = None
+        if task is not None:
+            descriptors.append(task)
+            info = os.fstat(task)
+            if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                with os.fdopen(os.dup(task), "rb") as stream:
+                    return stream.read(), {
+                        "kind": "evidence_task",
+                        "path": "requirements/evidence/task.md",
+                    }
+        return fallback.read_bytes(), {
+            "kind": "phase_prompt",
+            "path": fallback_relative,
+        }
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 def partition_review(value: dict) -> tuple[dict, list[list[str | int]]]:
