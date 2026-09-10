@@ -149,10 +149,12 @@ def read_primary_task(
                 with os.fdopen(os.dup(task), "rb") as stream:
                     return stream.read(), {
                         "kind": "evidence_task",
+                        "root": "packet",
                         "path": "requirements/evidence/task.md",
                     }
         return fallback.read_bytes(), {
             "kind": "phase_prompt",
+            "root": "frozen_case",
             "path": fallback_relative,
         }
     finally:

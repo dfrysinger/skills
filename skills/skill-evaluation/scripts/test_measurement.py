@@ -634,6 +634,7 @@ class QualityTests(unittest.TestCase):
             item for item in manifest if item["path"] == "requirements/task.md")
         self.assertEqual(task_record["source"], {
             "kind": "evidence_task",
+            "root": "packet",
             "path": "requirements/evidence/task.md",
         })
         self.assertNotEqual(
@@ -687,6 +688,7 @@ class QualityTests(unittest.TestCase):
             item for item in manifest if item["path"] == "requirements/task.md")
         self.assertEqual(task_record["source"], {
             "kind": "phase_prompt",
+            "root": "frozen_case",
             "path": definition["phases"][0]["prompt_file"],
         })
 
@@ -702,8 +704,34 @@ class QualityTests(unittest.TestCase):
             content, fallback.read_bytes())
         self.assertEqual(source, {
             "kind": "phase_prompt",
+            "root": "frozen_case",
             "path": fallback_relative,
         })
+
+    def test_read_primary_task_rejects_opened_non_regular_and_linked_files(self):
+        fallback_relative = self.definition["phases"][0]["prompt_file"]
+        fallback = self.frozen / fallback_relative
+        for kind in ("directory", "fifo", "hardlink"):
+            with self.subTest(kind=kind):
+                evidence = self.root / f"{kind}-evidence"
+                evidence.mkdir()
+                task = evidence / "task.md"
+                if kind == "directory":
+                    task.mkdir()
+                elif kind == "fifo":
+                    os.mkfifo(task)
+                else:
+                    original = evidence / "original.md"
+                    original.write_text("Do not use linked requirements.\n")
+                    os.link(original, task)
+                content, source = quality_review.read_primary_task(
+                    evidence, fallback, fallback_relative)
+                self.assertEqual(content, fallback.read_bytes())
+                self.assertEqual(source, {
+                    "kind": "phase_prompt",
+                    "root": "frozen_case",
+                    "path": fallback_relative,
+                })
 
     def test_citation_reconciliation_is_exact_or_unique_same_file_line_sequence(self):
         packet = self.root / "citation-packet"
