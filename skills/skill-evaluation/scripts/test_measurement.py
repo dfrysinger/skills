@@ -652,6 +652,96 @@ class QualityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             quality_review.validate_review(invalid, packet)
 
+    def test_citation_reconciliation_is_exact_or_unique_same_file_line_sequence(self):
+        packet = self.root / "citation-packet"
+        candidate = packet / "candidate"
+        baseline = packet / "baseline"
+        candidate.mkdir(parents=True)
+        baseline.mkdir()
+        (candidate / "source.py").write_text(
+            "header\n"
+            "\tif ready:\n"
+            "\t\tresult = build(\n"
+            "\t\t\tvalue,\n"
+            "\t\t)\n"
+            "\treturn result\n"
+            "footer\n",
+            encoding="utf-8",
+        )
+        (candidate / "duplicate.py").write_text(
+            "first\n"
+            "    repeated()\n"
+            "middle\n"
+            "\trepeated()\n"
+            "last\n",
+            encoding="utf-8",
+        )
+        (baseline / "source.py").write_text(
+            "header\n"
+            "if ready:\n"
+            "    result = changed(value)\n",
+            encoding="utf-8",
+        )
+
+        def finding(**changes):
+            value = {
+                "path": "candidate/source.py", "start_line": 1, "end_line": 1,
+                "quotation": "header", "severity": "medium",
+                "trigger": "A concrete input", "explanation": "A concrete risk",
+            }
+            value.update(changes)
+            return value
+
+        exact = finding(start_line=2, end_line=5, quotation="\tif ready:\n")
+        normalized = finding(
+            start_line=3,
+            end_line=4,
+            quotation="if ready:\n  result = build(\n    value,\n  )\nreturn result",
+        )
+        review = {
+            "judgment": "needs_revision",
+            "summary": "Source-linked concerns.",
+            "findings": [exact, normalized],
+        }
+        original = json.loads(json.dumps(review))
+        self.assertEqual(quality_review.validate_review(review, packet), [
+            {
+                "finding_index": 0,
+                "mode": "exact",
+                "declared_range": [2, 5],
+                "resolved_range": [2, 5],
+            },
+            {
+                "finding_index": 1,
+                "mode": "normalized_unique",
+                "declared_range": [3, 4],
+                "resolved_range": [2, 6],
+            },
+        ])
+        self.assertEqual(review, original)
+
+        invalid_findings = {
+            "absent": finding(quotation="missing()"),
+            "internally changed": finding(quotation="if ready:\nresult = other(value)"),
+            "wrong file": finding(
+                path="baseline/source.py",
+                quotation="if ready:\nresult = build(\nvalue,\n)\nreturn result",
+            ),
+            "ambiguous": finding(
+                path="candidate/duplicate.py", quotation="repeated()",
+            ),
+        }
+        for name, invalid_finding in invalid_findings.items():
+            invalid = {
+                "judgment": "needs_revision",
+                "summary": "An invalid citation.",
+                "findings": [invalid_finding],
+            }
+            with self.subTest(name=name), self.assertRaisesRegex(
+                ValueError, "quality finding quotation does not match source range",
+            ):
+                quality_review.validate_review(invalid, packet)
+
     def test_supplemental_fields_preserve_answer_and_caller_metadata(self):
         self.definition["judge"]["models"] = self.definition["judge"]["models"][:1]
         extras = {
@@ -664,6 +754,12 @@ class QualityTests(unittest.TestCase):
         }
         for index, additional in enumerate(({}, extras)):
             value = self.review()
+            value["findings"].append({
+                "path": "candidate/code.py", "start_line": 1, "end_line": 1,
+                "quotation": "  def add(a, b): return a + b  ", "severity": "low",
+                "trigger": "Another concrete input", "explanation": "Another concrete risk",
+            })
+            expected_review = json.loads(json.dumps(value))
             value.update(additional)
             expected_ignored = [[key] for key in additional]
             if additional:
@@ -684,7 +780,22 @@ class QualityTests(unittest.TestCase):
                 result = self.assess(run)
             self.assertTrue(result["complete"])
             reviewer = result["reviewers"][0]
-            self.assertEqual({key: reviewer[key] for key in quality_review.REVIEW_FIELDS}, self.review())
+            self.assertEqual(
+                {key: reviewer[key] for key in quality_review.REVIEW_FIELDS}, expected_review)
+            self.assertEqual(reviewer["citation_reconciliations"], [
+                {
+                    "finding_index": 0,
+                    "mode": "exact",
+                    "declared_range": [1, 1],
+                    "resolved_range": [1, 1],
+                },
+                {
+                    "finding_index": 1,
+                    "mode": "normalized_unique",
+                    "declared_range": [1, 1],
+                    "resolved_range": [1, 1],
+                },
+            ])
             self.assertEqual(reviewer["supplemental_fields_ignored"], expected_ignored)
             self.assertEqual(reviewer["model"], calls[0]["model"])
             self.assertEqual(reviewer["session_id"], calls[0]["session_id"])
@@ -699,8 +810,10 @@ class QualityTests(unittest.TestCase):
             self.assertEqual(skill_eval.digest(response), reviewer["selected_response"]["sha256"])
             self.assertEqual(skill_eval.read_json(response), {"answer": answer})
             parsed = skill_eval.parse_json_output(skill_eval.read_json(response)["answer"])
+            self.assertEqual(parsed["findings"], value["findings"])
             original = json.dumps(parsed)
-            self.assertEqual(quality_review.partition_review(parsed), (self.review(), expected_ignored))
+            self.assertEqual(
+                quality_review.partition_review(parsed), (expected_review, expected_ignored))
             self.assertEqual(json.dumps(parsed), original)
             skill_eval.write_json(run / "execution-result.json", {
                 "case_id": "example", "case_revision": result["case_revision"],

@@ -128,7 +128,7 @@ def partition_review(value: dict) -> tuple[dict, list[list[str | int]]]:
     return canonical, ignored
 
 
-def validate_review(value: dict, packet: Path) -> None:
+def validate_review(value: dict, packet: Path) -> list[dict]:
     if set(value) != REVIEW_FIELDS:
         raise ValueError("quality review has invalid fields")
     if not isinstance(value["judgment"], str) or value["judgment"] not in {
@@ -139,7 +139,8 @@ def validate_review(value: dict, packet: Path) -> None:
         raise ValueError("quality review requires a summary")
     if not isinstance(value["findings"], list):
         raise ValueError("quality findings must be an array")
-    for finding in value["findings"]:
+    reconciliations = []
+    for finding_index, finding in enumerate(value["findings"]):
         if not isinstance(finding, dict) or set(finding) != FINDING_FIELDS:
             raise ValueError("quality finding has invalid fields")
         relative = finding["path"]
@@ -165,12 +166,32 @@ def validate_review(value: dict, packet: Path) -> None:
         for field in ("quotation", "trigger", "explanation"):
             if not isinstance(finding[field], str) or not finding[field].strip():
                 raise ValueError(f"quality finding requires {field}")
-        if finding["quotation"] not in "".join(lines[start - 1:end]):
-            raise ValueError("quality finding quotation does not match source range")
+        if finding["quotation"] in "".join(lines[start - 1:end]):
+            mode = "exact"
+            resolved_range = [start, end]
+        else:
+            quotation_lines = [line.strip() for line in finding["quotation"].splitlines()]
+            source_lines = [line.strip() for line in lines]
+            width = len(quotation_lines)
+            matches = [
+                index for index in range(len(source_lines) - width + 1)
+                if source_lines[index:index + width] == quotation_lines
+            ]
+            if len(matches) != 1:
+                raise ValueError("quality finding quotation does not match source range")
+            mode = "normalized_unique"
+            resolved_range = [matches[0] + 1, matches[0] + width]
         if not isinstance(finding["severity"], str) or finding["severity"] not in {
             "blocking", "high", "medium", "low",
         }:
             raise ValueError("quality finding has invalid severity")
+        reconciliations.append({
+            "finding_index": finding_index,
+            "mode": mode,
+            "declared_range": [start, end],
+            "resolved_range": resolved_range,
+        })
+    return reconciliations
 
 
 def review_repository(
@@ -242,10 +263,11 @@ def review_repository(
                     "sha256": digest(response_path),
                 }
                 value, ignored = partition_review(parse_json_output(parsed["answer"]))
-                validate_review(value, packet)
+                citation_reconciliations = validate_review(value, packet)
                 reviewer.update(
                     status="completed", judgment=value["judgment"], summary=value["summary"],
                     findings=value["findings"], viewed_paths=parsed["viewed_paths"],
+                    citation_reconciliations=citation_reconciliations,
                     supplemental_fields_ignored=ignored,
                 )
             except (OSError, ValueError, subprocess.TimeoutExpired) as error:
