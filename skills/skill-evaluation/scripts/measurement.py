@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import math
 import os
+import re
 import selectors
 import stat
 import subprocess
 import tarfile
+import tempfile
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import BinaryIO, Iterator
 
 
 MAPPING = {
@@ -22,7 +27,6 @@ MAPPING = {
     "nano_aiu_per_credit": 1_000_000_000,
 }
 MAX_EVENT_BYTES = 32 * 1024 * 1024
-MAX_ARCHIVE_BYTES = MAX_EVENT_BYTES + 1024 * 1024
 NUMBERS = {
     "totalNanoAiu", "totalPremiumRequests", "premiumRequests",
     "totalApiDurationMs", "sessionDurationMs",
@@ -96,7 +100,8 @@ def session_uuid(value: str) -> str:
     return parsed
 
 
-def host_events(home: Path, session_id: str) -> bytes | None:
+@contextmanager
+def host_events(home: Path, session_id: str) -> Iterator[BinaryIO | None]:
     """Open the exact file beneath an anchored home without following child links."""
     session_uuid(session_id)
     if home.is_symlink():
@@ -104,25 +109,22 @@ def host_events(home: Path, session_id: str) -> bytes | None:
     root = home.resolve()
     descriptors = []
     try:
-        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        descriptors.append(fd)
-        for component in ("session-state", session_id):
-            fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+        try:
+            fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             descriptors.append(fd)
-        fd = os.open("events.jsonl", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
-        descriptors.append(fd)
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise MeasurementError("telemetry must be one regular, unlinked file")
-        if info.st_size > MAX_EVENT_BYTES:
-            raise MeasurementError("telemetry exceeds byte limit")
+            for component in ("session-state", session_id):
+                fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                descriptors.append(fd)
+            fd = os.open("events.jsonl", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+            descriptors.append(fd)
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise MeasurementError("telemetry must be one regular, unlinked file")
+        except FileNotFoundError:
+            yield None
+            return
         with os.fdopen(os.dup(fd), "rb") as stream:
-            content = stream.read(MAX_EVENT_BYTES + 1)
-        if len(content) > MAX_EVENT_BYTES:
-            raise MeasurementError("telemetry exceeds byte limit")
-        return content
-    except FileNotFoundError:
-        return None
+            yield stream
     except OSError as error:
         raise MeasurementError("telemetry containment/type/read check failed") from error
     finally:
@@ -130,77 +132,193 @@ def host_events(home: Path, session_id: str) -> bytes | None:
             os.close(fd)
 
 
-def archive_events(content: bytes) -> bytes:
-    if len(content) > MAX_ARCHIVE_BYTES:
-        raise MeasurementError("telemetry archive exceeds byte limit")
+@contextmanager
+def archive_events(content: BinaryIO | bytes) -> Iterator[BinaryIO]:
+    source = io.BytesIO(content) if isinstance(content, bytes) else content
     try:
-        with tarfile.open(fileobj=io.BytesIO(content), mode="r:") as archive:
+        with tarfile.open(fileobj=source, mode="r:") as archive:
             member = archive.next()
             if (member is None or member.name != "events.jsonl"
                     or member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE)
-                    or member.linkname or member.sparse
-                    or member.size < 0 or member.size > MAX_EVENT_BYTES):
-                raise MeasurementError("telemetry archive requires one bounded regular events.jsonl")
+                    or member.linkname or member.sparse is not None or member.size < 0):
+                raise MeasurementError("telemetry archive requires one regular events.jsonl")
+            if archive.next() is not None:
+                raise MeasurementError("telemetry archive has multiple entries")
+            end = member.offset_data + member.size
+            source.seek(0, os.SEEK_END)
+            size = source.tell()
+            padding = (-end) % tarfile.BLOCKSIZE
+            if size < end + padding + 2 * tarfile.BLOCKSIZE or size % tarfile.BLOCKSIZE:
+                raise MeasurementError("telemetry archive has truncated data or padding")
+            source.seek(end)
+            while chunk := source.read(65536):
+                if any(chunk):
+                    raise MeasurementError("telemetry archive has nonzero trailing data")
             stream = archive.extractfile(member)
             if stream is None:
                 raise MeasurementError("telemetry archive has no file data")
             with stream:
-                data = stream.read(MAX_EVENT_BYTES + 1)
-            if (len(data) != member.size or archive.next() is not None
-                    or any(content[archive.offset:])):
-                raise MeasurementError("telemetry archive has truncated data or multiple entries")
-            return data
+                yield stream
     except (tarfile.TarError, OSError) as error:
         raise MeasurementError("invalid telemetry archive") from error
 
 
-def bounded_command(command: list[str], *, timeout: float = 30) -> tuple[int, bytes, bytes]:
-    """Bound both pipes during collection, including failed docker cp output."""
-    output = bytearray()
+@contextmanager
+def bounded_command(
+    command: list[str], *, timeout: float = 30,
+) -> Iterator[tuple[int, BinaryIO, bytes]]:
+    """Spool stdout in an owned scope; bound stderr and the capture deadline."""
     errors = bytearray()
-    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
-        try:
-            with selectors.DefaultSelector() as selector:
-                selector.register(process.stdout, selectors.EVENT_READ, (output, MAX_ARCHIVE_BYTES))
-                selector.register(process.stderr, selectors.EVENT_READ, (errors, 64 * 1024))
-                deadline = time.monotonic() + timeout
-                while selector.get_map():
+    with tempfile.TemporaryFile(prefix="skill-eval-telemetry-", mode="w+b") as output:
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+            try:
+                with selectors.DefaultSelector() as selector:
+                    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+                    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+                    deadline = time.monotonic() + timeout
+                    while selector.get_map():
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise MeasurementError("telemetry copy timed out")
+                        for key, _ in selector.select(min(remaining, 0.25)):
+                            limit = 65536 if key.data == "stdout" else 65536 - len(errors) + 1
+                            chunk = os.read(key.fileobj.fileno(), min(65536, limit))
+                            if not chunk:
+                                selector.unregister(key.fileobj)
+                            elif key.data == "stdout":
+                                output.write(chunk)
+                            else:
+                                errors.extend(chunk)
+                                if len(errors) > 65536:
+                                    raise MeasurementError("telemetry copy stderr exceeds byte limit")
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise MeasurementError("telemetry copy timed out")
-                    for key, _ in selector.select(min(remaining, 0.25)):
-                        buffer, limit = key.data
-                        chunk = os.read(key.fileobj.fileno(), min(65536, limit - len(buffer) + 1))
-                        if not chunk:
-                            selector.unregister(key.fileobj)
-                        else:
-                            buffer.extend(chunk)
-                            if len(buffer) > limit:
-                                raise MeasurementError("telemetry copy exceeds byte limit")
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise MeasurementError("telemetry copy timed out")
-                code = process.wait(timeout=remaining)
-        except (MeasurementError, OSError, subprocess.TimeoutExpired):
-            process.kill()
-            process.wait()
-            raise
-    return code, bytes(output), bytes(errors)
+                    code = process.wait(timeout=remaining)
+            except (MeasurementError, OSError, subprocess.TimeoutExpired):
+                process.kill()
+                process.wait()
+                raise
+        output.seek(0)
+        yield code, output, bytes(errors)
 
 
-def container_events(container: str, session_id: str, *, stopped: bool) -> bytes | None:
+@contextmanager
+def container_events(
+    container: str, session_id: str, *, stopped: bool,
+) -> Iterator[BinaryIO | None]:
     session_uuid(session_id)
     if not stopped:
         raise MeasurementError("telemetry writer must be stopped before capture")
     path = f"/tmp/eval-home/session-state/{session_id}/events.jsonl"
-    code, output, errors = bounded_command(["docker", "cp", f"{container}:{path}", "-"])
-    if code:
-        # An absent eventfile is supported. Other Docker failures are measurement errors.
-        missing = f"Could not find the file {path} in container {container}".encode()
-        if not output and missing in errors:
-            return None
-        raise MeasurementError("owned telemetry docker cp failed")
-    return archive_events(output)
+    with bounded_command(["docker", "cp", f"{container}:{path}", "-"]) as (code, output, errors):
+        if code:
+            # An absent eventfile is supported. Other Docker failures are measurement errors.
+            missing = f"Could not find the file {path} in container {container}".encode()
+            if not output.read(1) and missing in errors:
+                yield None
+                return
+            raise MeasurementError("owned telemetry docker cp failed")
+        with archive_events(output) as stream:
+            yield stream
+
+
+def raw_records(stream: BinaryIO, *, grammar: str) -> Iterator[bytes]:
+    """Bound raw records before decoding, retaining the caller's line grammar."""
+    separators = re.compile(
+        b"\n" if grammar == "native" else b"\r\n|[\n\r\v\f\x1c-\x1e]|\xc2\x85|\xe2\x80[\xa8\xa9]"
+    )
+    pending = bytearray()
+    carry = b""
+    while True:
+        chunk = stream.read(65536)
+        data = carry + chunk
+        # A UTF-8 separator or CRLF may straddle two reads.
+        safe_end = max(0, len(data) - 3) if chunk else len(data)
+        start = 0
+        for match in separators.finditer(data):
+            if match.start() >= safe_end:
+                break
+            pending.extend(data[start:match.end()])
+            if len(pending) > MAX_EVENT_BYTES:
+                raise MeasurementError("telemetry record exceeds byte limit")
+            yield bytes(pending)
+            pending.clear()
+            start = match.end()
+        end = max(start, safe_end)
+        pending.extend(data[start:end])
+        if len(pending) > MAX_EVENT_BYTES:
+            raise MeasurementError("telemetry record exceeds byte limit")
+        carry = data[end:]
+        if not chunk:
+            if pending:
+                yield bytes(pending)
+            break
+
+
+def jsonl_records(
+    content: BinaryIO | bytes, *, grammar: str,
+) -> Iterator[tuple[bytes, dict | None]]:
+    if grammar not in {"native", "telemetry"}:
+        raise ValueError("unknown event grammar")
+
+    def unique_fields(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate native event field")
+            result[key] = value
+        return result
+
+    def reject_constant(value):
+        raise ValueError("non-finite native event value")
+
+    stream = io.BytesIO(content) if isinstance(content, bytes) else content
+    options = {"object_pairs_hook": unique_fields, "parse_constant": reject_constant} if grammar == "native" else {}
+    try:
+        for index, raw in enumerate(raw_records(stream, grammar=grammar), 1):
+            text = raw.decode("utf-8")
+            if grammar == "telemetry":
+                lines = text.splitlines()
+                text = lines[0] if lines else ""
+                if not text.strip():
+                    yield raw, None
+                    continue
+            try:
+                event = json.loads(text, **options)
+            except (ValueError, RecursionError) as error:
+                raise MeasurementError(f"invalid {grammar} event JSON at record {index}") from error
+            if not isinstance(event, dict):
+                raise MeasurementError(f"{grammar} event must be an object")
+            yield raw, event
+    except (UnicodeError, OSError) as error:
+        raise MeasurementError(f"corrupt or unreadable {grammar} JSONL") from error
+
+
+def snapshot_events(content: BinaryIO | None) -> tuple[int, str]:
+    if content is None:
+        raise MeasurementError("missing resumed session event prefix")
+    length = 0
+    digest = hashlib.sha256()
+    for raw, _ in jsonl_records(content, grammar="telemetry"):
+        length += len(raw)
+        digest.update(raw)
+    return length, digest.hexdigest()
+
+
+def verify_prefix(content: BinaryIO | None, snapshot: tuple[int, str]) -> None:
+    if content is None:
+        raise MeasurementError("missing resumed session event prefix")
+    remaining, expected = snapshot
+    digest = hashlib.sha256()
+    while remaining:
+        chunk = content.read(min(65536, remaining))
+        if not chunk:
+            raise MeasurementError("resumed session event prefix truncated")
+        digest.update(chunk)
+        remaining -= len(chunk)
+    if digest.hexdigest() != expected:
+        raise MeasurementError("resumed session event prefix changed")
 
 
 def filtered_metrics(value: object, *, agents: bool = False) -> dict:
@@ -222,20 +340,14 @@ def filtered_metrics(value: object, *, agents: bool = False) -> dict:
     return result
 
 
-def observations(content: bytes | None, source: str, *, terminal: bool) -> list[dict]:
+def observations(content: BinaryIO | bytes | None, source: str, *, terminal: bool) -> list[dict]:
     if content is None:
         return []
-    if len(content) > MAX_EVENT_BYTES:
-        raise MeasurementError("telemetry exceeds byte limit")
     result = []
     try:
-        lines = content.decode("utf-8").splitlines()
-        for line in lines:
-            if not line.strip():
+        for _, event in jsonl_records(content, grammar="telemetry"):
+            if event is None:
                 continue
-            event = json.loads(line)
-            if not isinstance(event, dict):
-                raise MeasurementError("telemetry event must be an object")
             kind = event.get("type")
             if not isinstance(kind, str):
                 raise MeasurementError("telemetry event type must be a string")
@@ -276,14 +388,11 @@ def collect(
     errors = []
     for name, reader, terminal in (
         (source, capture, True),
-        ("invocation_stdout", lambda: log.open("rb") if log.is_file() else None, False),
+        ("invocation_stdout", lambda: stdout_events(log), False),
     ):
         try:
-            content = reader()
-            if name == "invocation_stdout" and content is not None:
-                with content:
-                    content = content.read(MAX_EVENT_BYTES + 1)
-            observed.extend(observations(content, name, terminal=terminal))
+            with reader() as content:
+                observed.extend(observations(content, name, terminal=terminal))
         except (MeasurementError, OSError, subprocess.TimeoutExpired) as error:
             # Do not retain source bytes or Docker stderr in a measurement error.
             errors.append({"source": name, "type": type(error).__name__,
@@ -316,6 +425,15 @@ def collect(
     }
     write_once(destination, record)
     return record
+
+
+@contextmanager
+def stdout_events(log: Path) -> Iterator[BinaryIO | None]:
+    if not log.is_file():
+        yield None
+        return
+    with log.open("rb") as stream:
+        yield stream
 
 
 def accounting(records: list[dict]) -> dict:

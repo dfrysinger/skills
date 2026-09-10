@@ -38,11 +38,21 @@ The evaluator reads only the exact invocation-owned
 `session-state/UUID/events.jsonl`. Host capture rejects links, non-regular and
 multiply linked files and opens path components beneath the selected home
 without following links. Container capture stops the writer, then runs one
-exact `docker cp` into a bounded in-memory archive reader. It accepts one
-regular `events.jsonl`, never extracts to the host filesystem and rejects
-additional entries, links and special files. Event content is limited to
-32 MiB; archive transport allows another 1 MiB for headers and padding.
-Rejected source bytes are not persisted by the collector.
+exact `docker cp` into a scoped temporary spool. It accepts one regular
+`events.jsonl`, never extracts archive paths to the host filesystem and rejects
+additional entries, links, sparse and special files, truncation and nonzero
+padding or trailing data. Capture retains its deadline and bounded stderr;
+the spool is closed and removed on success or failure.
+
+Host events, invocation stdout and archive members share a streaming JSONL
+parser. Each raw record, including its line terminator, is limited to 32 MiB
+before UTF-8 decoding. There is no whole-eventfile or archive byte quota.
+Accounting retains its line and blank-record grammar; native quality validation
+requires LF-delimited records without blank records, duplicate keys or
+non-finite JSON constants. Only filtered observations and required native
+validation state survive record processing. Earlier CLI subprocess-output
+buffering is separate and is not made constant-memory by this collector.
+Rejected source bytes are not retained as measurement artifacts.
 
 Only allowlisted usage counters and model/agent breakdowns are retained.
 Authentication homes, configuration, tokens, databases and unrelated sessions
@@ -54,8 +64,11 @@ Terminal shutdown is preferred over a partial checkpoint; invocation stdout
 is fallback evidence. No successful answer or result parser is required to
 collect usage. A missing timeout eventfile is supported. Malformed numeric
 or structural evidence is an explicit measurement error, not zero spending.
-Resume capture reads only newly appended events, so an earlier shutdown cannot
-establish terminal coverage for a later failed invocation.
+Resume capture snapshots the prior byte length and SHA-256 digest without
+retaining the transcript. The successor must contain that identical prefix;
+missing, changed or truncated prefixes are errors. Phase observations start at
+the exact snapshot byte offset, so an earlier shutdown cannot establish terminal
+coverage for a later failed invocation.
 
 Documented `totalNanoAiu` fields use mapping `copilot-sdk-nano-aiu-1e9`, with
 SDK source revision `d3755535869e97d2bcf5aa6a5b8c35de79f5a7d8`: one AI credit is
@@ -112,11 +125,12 @@ session before its temporary home is deleted. It requires a matching fresh
 session, selected and observed assistant models, terminal shutdown, paired
 allowlisted tools, in-packet successful views and a final answer. A failed view
 does not count as a source read. Missing, corrupt or incomplete events fail the
-review without falling back to stdout; rejection by the unchanged 32 MiB reader
-limit also fails quality validation.
+review without falling back to stdout; an over-bound raw record also fails
+quality validation.
 
 The reviewer's `validation` record identifies native session events, their byte
-digest and record count, and successful process completion. The digest marks
+digest of all original file bytes and record count, and successful process completion.
+The digest is computed incrementally, without filtering or re-encoding. It marks
 bytes inspected in process, not independently re-verifiable durable integrity
 evidence. No separate native transcript or tool-payload copy is retained. The existing
 stdout artifact, its digest and measurement errors remain intact.
