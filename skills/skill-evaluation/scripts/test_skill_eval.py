@@ -309,6 +309,25 @@ class NativeRunTests(unittest.TestCase):
                 parse_run(stdout, skill="example-skill", expected_model=self.model,
                           cwd=self.packet, require_skill=False, allowed_tools={"view"})
 
+    def test_stdout_reader_bounds_records_without_materializing_the_complete_log(self):
+        stdout = self.root / "large-stdout.jsonl"
+        events = [
+            {"type": "system.message", "data": {"ignored": "x" * 40000}},
+            {"type": "system.message", "data": {"ignored": "y" * 40000}},
+            {"type": "assistant.message", "data": {"content": "answer", "model": self.model}},
+            {"type": "result", "exitCode": 0},
+        ]
+        stdout.write_bytes(self.encoded(events))
+        with mock.patch.object(measurement, "MAX_EVENT_BYTES", 50000), mock.patch.object(
+            Path, "read_text", side_effect=AssertionError("stdout parser materialized the complete log"),
+        ):
+            parsed = parse_run(
+                stdout, skill="example-skill", expected_model=self.model,
+                cwd=self.packet, require_skill=False, allowed_tools={"view"},
+            )
+        self.assertEqual(parsed["answer"], "answer")
+        self.assertEqual(parsed["models"], [self.model])
+
 
 class SkillEvalTests(unittest.TestCase):
     def setUp(self) -> None:

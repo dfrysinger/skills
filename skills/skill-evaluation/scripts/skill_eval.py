@@ -553,55 +553,53 @@ def parse_run(
     viewed_paths: list[str] = []
     pending_views: dict[str, tuple[str, str, bool]] = {}
     tool_calls = []
-    for line in log.read_text(encoding="utf-8").splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError as error:
-            raise ValueError(f"non-JSON output in structured log: {log}") from error
-        if not isinstance(event, dict):
-            raise ValueError("structured log event must be an object")
-        event_type = event.get("type")
-        data = event.get("data", {})
-        if not isinstance(data, dict):
-            raise ValueError(f"{event_type} data must be an object")
-        if isinstance(data.get("model"), str):
-            models.add(data["model"])
-        if event_type == "assistant.message":
-            content = data.get("content")
-            if isinstance(content, str) and content.strip():
-                messages.append(content)
-        elif event_type == "tool.execution_start":
-            validate_tool_allowlist(data, allowed_tools)
-            tool_calls.append(data)
-            arguments = data.get("arguments")
-            if (
-                data.get("toolName") == "skill"
-                and isinstance(arguments, dict)
-                and arguments.get("skill") == skill
-            ):
-                skill_attempted = True
-                if boundary == "prose":
-                    skill_loaded = True
-                elif isinstance(data.get("toolCallId"), str):
-                    pending_skills.add(data["toolCallId"])
-            if data.get("toolName") == "view" and isinstance(arguments, dict):
+    with log.open("rb") as stream:
+        records = measurement.jsonl_records(stream, grammar="telemetry")
+        for _, event in records:
+            if event is None:
+                raise ValueError("structured log event must be an object")
+            event_type = event.get("type")
+            data = event.get("data", {})
+            if not isinstance(data, dict):
+                raise ValueError(f"{event_type} data must be an object")
+            if isinstance(data.get("model"), str):
+                models.add(data["model"])
+            if event_type == "assistant.message":
+                content = data.get("content")
+                if isinstance(content, str) and content.strip():
+                    messages.append(content)
+            elif event_type == "tool.execution_start":
+                validate_tool_allowlist(data, allowed_tools)
+                tool_calls.append(data)
+                arguments = data.get("arguments")
+                if (
+                    data.get("toolName") == "skill"
+                    and isinstance(arguments, dict)
+                    and arguments.get("skill") == skill
+                ):
+                    skill_attempted = True
+                    if boundary == "prose":
+                        skill_loaded = True
+                    elif isinstance(data.get("toolCallId"), str):
+                        pending_skills.add(data["toolCallId"])
+                if data.get("toolName") == "view" and isinstance(arguments, dict):
+                    call_id = data.get("toolCallId")
+                    if isinstance(call_id, str):
+                        view = resolve_view(arguments, cwd)
+                        if view is not None:
+                            pending_views[call_id] = view
+            elif event_type == "tool.execution_complete":
                 call_id = data.get("toolCallId")
-                if isinstance(call_id, str):
-                    view = resolve_view(arguments, cwd)
-                    if view is not None:
-                        pending_views[call_id] = view
-        elif event_type == "tool.execution_complete":
-            call_id = data.get("toolCallId")
-            if isinstance(call_id, str) and call_id in pending_skills and data.get("success") is True:
-                skill_loaded = True
-            if (
-                isinstance(call_id, str)
-                and call_id in pending_views
-                and data.get("success") is True
-            ):
-                viewed_paths.append(successful_view_path(pending_views[call_id], cwd, boundary))
-        elif event_type == "result":
-            result_event = event
+                if isinstance(call_id, str) and call_id in pending_skills and data.get("success") is True:
+                    skill_loaded = True
+                if (
+                    isinstance(call_id, str)
+                    and call_id in pending_views
+                    and data.get("success") is True
+                ):
+                    viewed_paths.append(successful_view_path(pending_views[call_id], cwd, boundary))
+            elif event_type == "result":
+                result_event = event
     if result_event is None or result_event.get("exitCode") != 0:
         raise ValueError(f"missing successful result event in {log}")
     if not messages:
