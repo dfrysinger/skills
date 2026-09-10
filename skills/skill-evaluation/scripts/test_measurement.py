@@ -754,6 +754,12 @@ class QualityTests(unittest.TestCase):
         }
         for index, additional in enumerate(({}, extras)):
             value = self.review()
+            value["findings"].append({
+                "path": "candidate/code.py", "start_line": 1, "end_line": 1,
+                "quotation": "  def add(a, b): return a + b  ", "severity": "low",
+                "trigger": "Another concrete input", "explanation": "Another concrete risk",
+            })
+            expected_review = json.loads(json.dumps(value))
             value.update(additional)
             expected_ignored = [[key] for key in additional]
             if additional:
@@ -774,13 +780,22 @@ class QualityTests(unittest.TestCase):
                 result = self.assess(run)
             self.assertTrue(result["complete"])
             reviewer = result["reviewers"][0]
-            self.assertEqual({key: reviewer[key] for key in quality_review.REVIEW_FIELDS}, self.review())
-            self.assertEqual(reviewer["citation_reconciliations"], [{
-                "finding_index": 0,
-                "mode": "exact",
-                "declared_range": [1, 1],
-                "resolved_range": [1, 1],
-            }])
+            self.assertEqual(
+                {key: reviewer[key] for key in quality_review.REVIEW_FIELDS}, expected_review)
+            self.assertEqual(reviewer["citation_reconciliations"], [
+                {
+                    "finding_index": 0,
+                    "mode": "exact",
+                    "declared_range": [1, 1],
+                    "resolved_range": [1, 1],
+                },
+                {
+                    "finding_index": 1,
+                    "mode": "normalized_unique",
+                    "declared_range": [1, 1],
+                    "resolved_range": [1, 1],
+                },
+            ])
             self.assertEqual(reviewer["supplemental_fields_ignored"], expected_ignored)
             self.assertEqual(reviewer["model"], calls[0]["model"])
             self.assertEqual(reviewer["session_id"], calls[0]["session_id"])
@@ -795,8 +810,10 @@ class QualityTests(unittest.TestCase):
             self.assertEqual(skill_eval.digest(response), reviewer["selected_response"]["sha256"])
             self.assertEqual(skill_eval.read_json(response), {"answer": answer})
             parsed = skill_eval.parse_json_output(skill_eval.read_json(response)["answer"])
+            self.assertEqual(parsed["findings"], value["findings"])
             original = json.dumps(parsed)
-            self.assertEqual(quality_review.partition_review(parsed), (self.review(), expected_ignored))
+            self.assertEqual(
+                quality_review.partition_review(parsed), (expected_review, expected_ignored))
             self.assertEqual(json.dumps(parsed), original)
             skill_eval.write_json(run / "execution-result.json", {
                 "case_id": "example", "case_revision": result["case_revision"],
