@@ -103,8 +103,9 @@ def prepare_packet(frozen: Path, definition: dict, patch: Path, destination: Pat
     })
     phase = definition["phases"][0]
     copy_packet(frozen / phase["id"], destination / "requirements" / "evidence")
-    (destination / "requirements" / "task.md").write_bytes(
-        (frozen / phase["prompt_file"]).read_bytes())
+    evidence_task = destination / "requirements" / "evidence" / "task.md"
+    task_source = primary_task_source(frozen, phase, evidence_task)
+    (destination / "requirements" / "task.md").write_bytes(task_source.read_bytes())
     manifest = [
         {"path": path.relative_to(destination).as_posix(), "sha256": digest(path)}
         for path in ordinary_files(destination)
@@ -113,6 +114,14 @@ def prepare_packet(frozen: Path, definition: dict, patch: Path, destination: Pat
         path = destination / item["path"]
         path.chmod(path.stat().st_mode & 0o555)
     return manifest
+
+
+def primary_task_source(frozen: Path, phase: dict, evidence_task: Path) -> Path:
+    try:
+        use_evidence_task = stat.S_ISREG(evidence_task.lstat().st_mode)
+    except FileNotFoundError:
+        use_evidence_task = False
+    return evidence_task if use_evidence_task else frozen / phase["prompt_file"]
 
 
 def partition_review(value: dict) -> tuple[dict, list[list[str | int]]]:

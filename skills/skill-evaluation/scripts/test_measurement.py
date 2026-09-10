@@ -627,6 +627,12 @@ class QualityTests(unittest.TestCase):
         self.assertEqual({Path(item["path"]).parts[0] for item in manifest},
                          {"baseline", "candidate", "requirements", "source-nodes.json"})
         self.assertTrue(all((packet / item["path"]).stat().st_mode & 0o222 == 0 for item in manifest))
+        self.assertEqual(
+            (packet / "requirements" / "task.md").read_bytes(),
+            (packet / "requirements" / "evidence" / "task.md").read_bytes())
+        self.assertNotEqual(
+            (packet / "requirements" / "task.md").read_bytes(),
+            (self.frozen / self.definition["phases"][0]["prompt_file"]).read_bytes())
         content = "\n".join(path.read_text() for path in packet.rglob("*") if path.is_file())
         self.assertIn("return a - b", content)
         self.assertIn("return a + b", content)
@@ -651,6 +657,32 @@ class QualityTests(unittest.TestCase):
         invalid["judgment"] = []
         with self.assertRaises(ValueError):
             quality_review.validate_review(invalid, packet)
+
+    def test_packet_uses_phase_prompt_when_evidence_task_is_missing(self):
+        original_copy_packet = quality_review.copy_packet
+
+        def copy_without_task(source, destination):
+            original_copy_packet(source, destination)
+            if destination.name == "evidence":
+                (destination / "task.md").unlink()
+
+        packet = self.run / "fallback-packet"
+        with mock.patch.object(quality_review, "copy_packet", side_effect=copy_without_task):
+            manifest = quality_review.prepare_packet(
+                self.frozen, self.definition, self.run / "candidate.patch", packet)
+        self.assertEqual(
+            (packet / "requirements" / "task.md").read_bytes(),
+            (self.frozen / self.definition["phases"][0]["prompt_file"]).read_bytes())
+        self.assertNotIn(
+            "requirements/evidence/task.md", {item["path"] for item in manifest})
+
+    def test_primary_task_source_does_not_follow_symlink(self):
+        evidence_task = self.root / "linked-task.md"
+        evidence_task.symlink_to(self.frozen / self.definition["phases"][0]["prompt_file"])
+        self.assertEqual(
+            quality_review.primary_task_source(
+                self.frozen, self.definition["phases"][0], evidence_task),
+            self.frozen / self.definition["phases"][0]["prompt_file"])
 
     def test_citation_reconciliation_is_exact_or_unique_same_file_line_sequence(self):
         packet = self.root / "citation-packet"
