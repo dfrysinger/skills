@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 import measurement
-from skill_eval import digest, load_corpus, read_json, resolve_under
+from skill_eval import digest, directory_identity, load_corpus, read_json, resolve_under
 
 
 def object_file(path: Path) -> dict:
@@ -111,11 +111,49 @@ def run_row(root: Path, path: Path, owner: dict | None, suite: dict) -> dict:
            for item in receipts):
         behavioral = None
     status = execution.get("execution_status")
-    if execution and status not in {"PASS", "FAIL", "INVALID"}:
+    if execution and status not in {"PASS", "FAIL", "INVALID", "BLOCKED"}:
         raise ValueError(f"invalid execution status: {run_path}")
     if not status:
         status = "ERROR" if any(item.get("status") == "FAILED" for item in receipts) else behavioral or "ERROR"
     skill = optional(path / "skill-identity.json")
+    treatment = optional(path / "treatment-identity.json")
+    compatibility = optional(path / "compatibility.json")
+    if treatment:
+        if treatment.get("schema_version") != 1 or not isinstance(treatment.get("descriptor"), dict):
+            raise ValueError("malformed treatment identity")
+        if treatment.get("fingerprint") != fingerprint(treatment["descriptor"]):
+            raise ValueError("treatment fingerprint mismatch")
+        if attempt.get("treatment_fingerprint") not in {None, treatment["fingerprint"]}:
+            raise ValueError("attempt and treatment identity disagree")
+        if attempt.get("treatment_id") not in {None, treatment["descriptor"]["id"]}:
+            raise ValueError("attempt and treatment id disagree")
+        descriptor_path = path / "treatment.json"
+        if treatment.get("descriptor_sha256") is not None:
+            if not descriptor_path.is_file() or digest(descriptor_path) != treatment["descriptor_sha256"]:
+                raise ValueError("treatment descriptor artifact mismatch")
+        if treatment.get("source_identity") is not None:
+            if directory_identity(path / "sandcastle-treatment") != treatment["source_identity"]:
+                raise ValueError("Sandcastle treatment snapshot mismatch")
+        if treatment.get("adapter_identity") is not None:
+            if directory_identity(path / "sandcastle-adapter") != treatment["adapter_identity"]:
+                raise ValueError("Sandcastle adapter snapshot mismatch")
+    else:
+        legacy = {
+            "schema_version": 1,
+            "id": "legacy-baseline" if attempt.get("arm", execution.get("arm")) == "baseline"
+                  else "legacy-skill",
+            "runner": {"kind": "direct-copilot"},
+            "entry_skill": skill.get("name"),
+            "intervention_policy": "legacy-case-contract",
+            "compatibility": {},
+            "source": {"kind": "legacy-evaluator"},
+            "adapter": {"digest": None, "description": "legacy evaluator behavior"},
+        }
+        treatment = {"descriptor": legacy, "fingerprint": fingerprint(legacy)}
+    if compatibility and compatibility.get("status") not in {"ADMITTED", "BLOCKED"}:
+        raise ValueError("invalid compatibility result")
+    if compatibility and compatibility.get("treatment_id") != treatment["descriptor"]["id"]:
+        raise ValueError("compatibility and treatment identity disagree")
     harness = optional(path / "harness-identity.json")
     quality = optional(path / "quality" / "assessment.json")
     if quality:
@@ -153,8 +191,12 @@ def run_row(root: Path, path: Path, owner: dict | None, suite: dict) -> dict:
         if "error" in summary:
             raise ValueError(f"measurement error in {run_path}: {summary['error']}")
         calculated = measurement.accounting(records)
-        if calculated != summary:
+        comparable = json.loads(json.dumps(summary))
+        for session in comparable.get("sessions", []):
+            session.setdefault("subrole", session.get("role"))
+        if calculated != comparable:
             raise ValueError(f"accounting does not match invocation evidence: {run_path}")
+        summary = comparable
     elif records:
         summary = measurement.accounting(records)
     timing = optional(path / "timing.json")
@@ -168,6 +210,16 @@ def run_row(root: Path, path: Path, owner: dict | None, suite: dict) -> dict:
         "case_id": case_id, "case_revision": revision,
         "case_type": context.get("case_type", execution.get("case_type", "prose")),
         "arm": attempt.get("arm", execution.get("arm", suite.get("arm", "skill"))),
+        "treatment_id": treatment["descriptor"]["id"],
+        "treatment_identity": treatment["fingerprint"],
+        "runner_kind": treatment["descriptor"]["runner"]["kind"],
+        "adapter_digest": treatment["descriptor"].get("adapter", {}).get("digest"),
+        "entry_skill": treatment["descriptor"].get("entry_skill"),
+        "intervention_policy": treatment["descriptor"].get("intervention_policy"),
+        "compatibility_requirements": treatment["descriptor"].get("compatibility", {}),
+        "compatibility_status": compatibility.get(
+            "status", attempt.get("compatibility_status", "ADMITTED")
+        ),
         "skill_identity": fingerprint({"name": skill.get("name"), "files": skill["files"]})
                           if "files" in skill else None,
         "harness_identity": fingerprint(harness["modules"]) if "modules" in harness else harness.get("sha256"),
@@ -258,6 +310,21 @@ def _history(root: Path, *, case_id: str | None = None, arm: str | None = None,
             "population": {
                 "case_id": owner["case_id"], "case_revision": suite.get("case_revisions", {}).get(owner["case_id"]),
                 "case_type": "unknown", "arm": suite.get("arm"), "skill_identity": None,
+                "treatment_id": suite.get("treatment", {}).get("id", "unknown")
+                                if isinstance(suite.get("treatment"), dict) else "unknown",
+                "treatment_identity": fingerprint(suite["treatment"])
+                                      if isinstance(suite.get("treatment"), dict) else None,
+                "runner_kind": suite.get("treatment", {}).get("runner", {}).get("kind")
+                               if isinstance(suite.get("treatment"), dict) else None,
+                "adapter_digest": suite.get("treatment", {}).get("adapter", {}).get("digest")
+                                  if isinstance(suite.get("treatment"), dict) else None,
+                "entry_skill": suite.get("treatment", {}).get("entry_skill")
+                               if isinstance(suite.get("treatment"), dict) else None,
+                "intervention_policy": suite.get("treatment", {}).get("intervention_policy")
+                                       if isinstance(suite.get("treatment"), dict) else None,
+                "compatibility_requirements": suite.get("treatment", {}).get("compatibility", {})
+                                              if isinstance(suite.get("treatment"), dict) else {},
+                "compatibility_status": "unknown",
                 "harness_identity": None, "model": suite.get("model"), "effort": suite.get("effort"),
                 "timeout_seconds": suite.get("timeout_seconds"), "max_attempts": owner["max_attempts"],
                 "image": None, "quality_review": suite.get("quality_review", False), "evaluator_models": [],
@@ -299,10 +366,12 @@ def markdown(report: dict) -> str:
         return ("unknown" if value is None else str(value)).replace("|", "\\|").replace("\n", " ")
 
     lines = ["# Evaluation history", "", report["interpretation"], "",
-             "| Attempt | Result | Behavioral | Credits (exact / observed) | Wall seconds | Quality |",
-             "| --- | --- | --- | --- | --- | --- |"]
+             "| Attempt | Treatment | Result | Behavioral | Quality | Wall seconds | "
+             "Candidate credits | Evaluator credits | Intervention | Compatibility |",
+             "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for row in report["attempts"]:
-        cost = row["accounting"].get("total", {})
+        candidate = row["accounting"].get("candidate", {})
+        evaluator = row["accounting"].get("evaluation", {})
         quality = row["quality"]
         quality_label = (
             ("complete: " if quality["complete"] else "incomplete: ")
@@ -310,9 +379,12 @@ def markdown(report: dict) -> str:
             if quality else "unavailable")
         lines.append("| " + " | ".join(map(cell, (
             row["run_path"] or f"{row['experiment_id']} attempt {row['attempt']}",
-            row["correctness"], row["behavioral_verdict"],
-            f"{cell(cost.get('credits'))} / {cell(cost.get('observed_credits'))}",
-            row["elapsed_seconds"], quality_label,
+            row["population"]["treatment_id"], row["correctness"], row["behavioral_verdict"],
+            quality_label, row["elapsed_seconds"],
+            f"{cell(candidate.get('credits'))} / {cell(candidate.get('observed_credits'))}",
+            f"{cell(evaluator.get('credits'))} / {cell(evaluator.get('observed_credits'))}",
+            row["population"]["intervention_policy"],
+            row["population"]["compatibility_status"],
         ))) + " |")
     for group in report["populations"]:
         lines += ["", f"## Population `{group['identity']}`", "",

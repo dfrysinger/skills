@@ -9,7 +9,9 @@ different correctness result. Quality assessments do not change retry policy.
 Every run has evaluator-owned attempt metadata, a pinned case revision, plugin
 and harness identities, and requested model, effort and timeout. Model
 invocations have explicit session UUIDs and roles: `candidate`,
-`behavioral_judge` or `quality_judge`.
+`behavioral_judge` or `quality_judge`. Candidate measurements also retain an
+additive subrole. Direct runs use `candidate`; the bounded Sandcastle runner
+uses `candidate_implementer` and `candidate_reviewer`.
 
 | Artifact | Meaning |
 | --- | --- |
@@ -68,6 +70,15 @@ same candidate session are counted once, using the latest known cumulative
 total, not fabricated per-phase deltas. Nested candidate agents are already
 included in that total. Breakdowns are descriptive, never additional charges.
 Failed external judges remain external evaluation spending.
+
+For Sandcastle, the evaluator allocates the implementer and conditional
+reviewer UUIDs before the adapter starts. The retained treatment result must
+match those UUIDs, the fixed model, and the allowed subroles. Exact candidate
+credits require terminal event coverage for every expected allocated session.
+Missing expected events, malformed or duplicate declarations, a wrong model,
+or observed undeclared session files remain explicit incomplete or contaminated
+coverage. Candidate-authored declarations and the absence of another observed
+file never establish exhaustive accounting.
 
 `credits` in the accounting summary is an exact total only when every relevant
 session has known credits and terminal coverage. Otherwise it is null and
@@ -137,8 +148,11 @@ Malformed records and conflicting ownership fail visibly rather than being
 silently omitted.
 
 Reports show per-attempt correctness, behavioral verdict, accounting coverage,
-quality and duration. Aggregates keep exact task revision, arm/skill identity,
-harness, image, model/effort, timeout, retry budget and evaluation configuration
+quality and duration. Treatment-aware reports also project treatment,
+intervention policy, compatibility, candidate credits, and evaluator credits
+as separate fields. Aggregates keep exact task revision, treatment and adapter
+identity, compatibility predicates and result, arm/skill identity, harness,
+image, model/effort, timeout, retry budget and evaluation configuration
 separate. Do not treat changing task mixes or unknown configurations as a
 matched experiment.
 

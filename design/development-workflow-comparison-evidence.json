@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "revision": "workflow-comparison-evidence-r1",
+  "proposal_disclosed": false,
+  "decision_record": "design/development-workflow-comparison-decisions.json",
+  "user_outcome": "Run all approved development workflow comparisons without a budget ceiling while reducing wall time through safe per-VM parallelism.",
+  "boundaries": [
+    "Use the existing evaluator and preserve its correctness, quality, timing, credit, and immutable-history separation.",
+    "Use neutral executable tasks for cross-workflow comparison.",
+    "Freeze every treatment, adapter, model, case, image, and evaluator revision.",
+    "Treat unavailable human interaction as a compatibility result or a predeclared deterministic checkpoint response.",
+    "Keep provider-specific VM provisioning and private fixtures outside the public plugin repository."
+  ],
+  "existing_capabilities": [
+    {
+      "path": "skills/skill-evaluation/scripts/skill_eval.py",
+      "capability": "Frozen plugin snapshots, case revisions, suite attempts, candidate and independent judge sessions."
+    },
+    {
+      "path": "skills/skill-evaluation/scripts/repository_task.py",
+      "capability": "Editable repository candidates in Docker, exact patch export, fresh offline graders, candidate telemetry capture."
+    },
+    {
+      "path": "skills/skill-evaluation/scripts/measurement.py",
+      "capability": "Role-separated session accounting with explicit unknown and partial credit coverage."
+    },
+    {
+      "path": "skills/skill-evaluation/scripts/evaluation_history.py",
+      "capability": "Rebuildable local history grouped by exact task, arm, model, harness, image, and evaluation configuration."
+    }
+  ],
+  "external_frozen_inputs": [
+    {
+      "id": "superpowers-v6.3.0",
+      "repository": "https://github.com/obra/superpowers",
+      "revision": "b36e0829c6d0140e93cfef2ca599b1b07d4a7797",
+      "license": "MIT",
+      "entry": "skills/subagent-driven-development/SKILL.md",
+      "known_boundary": "Faithful unattended execution begins from an already approved implementation plan and green isolated branch."
+    },
+    {
+      "id": "compound-engineering-3.26.3",
+      "repository": "https://github.com/EveryInc/compound-engineering-plugin",
+      "revision": "082c83e0537c803ac1d927daafc2e6eb6962dedf",
+      "license": "MIT",
+      "entry": "skills/lfg/SKILL.md",
+      "known_boundary": "The complete plugin and genuine generic-subagent capability are required; remote shipping stages need bounded fake or private remotes."
+    },
+    {
+      "id": "sandcastle-sequential-reviewer-0.12.0",
+      "repository": "https://github.com/mattpocock/sandcastle",
+      "revision": "e99f832f26dc9d245c019a9ddd19fa5dee792427",
+      "package": "@ai-hero/sandcastle@0.12.0",
+      "license": "MIT",
+      "entry": "src/templates/sequential-reviewer/main.mts",
+      "known_boundary": "TypeScript/npm-only as shipped; Copilot provider substitution and authoritative child-session telemetry join must be disclosed."
+    },
+    {
+      "id": "mattpocock-skills-1.2.3",
+      "repository": "https://github.com/mattpocock/skills",
+      "revision": "959a8e9f1edc3adbe2f7e3054bb6fbefa6696260",
+      "license": "MIT",
+      "entries": [
+        "skills/engineering/tdd/SKILL.md",
+        "skills/engineering/diagnosing-bugs/SKILL.md"
+      ],
+      "known_boundary": "TDD requires deterministic seam confirmation; diagnosing-bugs permits a predeclared AFK hypothesis-checkpoint policy."
+    }
+  ],
+  "measured_prior_capacity": [
+    {
+      "observation": "Four concurrent hosted jobs were reliable while six concurrent jobs triggered release-asset instability.",
+      "source": "/Users/dfrysinger/.copilot/session-state/65ce1829-96b0-4936-8ae1-7f61ca54cfca/files/development-workflow-comparison-handoff.md",
+      "interpretation": "Start at four concurrent attempts and raise only after an admission wave proves the current dependencies tolerate it."
+    }
+  ],
+  "failures_to_prevent": [
+    "Treating a multi-agent orchestrator as a single skill session and undercounting candidate cost.",
+    "Comparing development-loop-specific process judgments as though they were neutral correctness.",
+    "Changing an upstream workflow to bypass a human gate without recording the adapter.",
+    "Running two mutating treatments in one VM or workspace.",
+    "Losing partial completed attempts when a VM, network, release asset, or judge fails.",
+    "Pooling TypeScript-only Sandcastle results with cross-language treatments as one homogeneous population."
+  ]
+}

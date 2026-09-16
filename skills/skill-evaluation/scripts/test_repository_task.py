@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -190,6 +191,293 @@ class RepositoryTaskTests(unittest.TestCase):
         self.assertNotIn("session_store_sql", tools)
         self.assertNotIn("web_fetch", tools)
         self.assertNotIn("skill", tools)
+
+    def test_baseline_execution_still_audits_target_skill_name(self):
+        with mock.patch("skill_eval.parse_run", wraps=evaluator.parse_run) as parser:
+            result, _, _ = self.fake_execution()
+        self.assertEqual(result["execution_status"], "PASS")
+        self.assertEqual(parser.call_args.kwargs["skill"], "example-skill")
+        self.assertFalse(parser.call_args.kwargs["require_skill"])
+
+    def test_sandcastle_result_schema_rejects_wrong_or_duplicate_sessions(self):
+        output = Path(self.temp.name) / "treatment-output"
+        output.mkdir()
+        (output / "final-output.md").write_text("done\n")
+        implementer = str(uuid.uuid4())
+        reviewer = str(uuid.uuid4())
+        value = {
+            "schema_version": 1,
+            "status": "completed",
+            "output_file": "final-output.md",
+            "implementation_commits": 1,
+            "sessions": [
+                {
+                    "session_id": implementer,
+                    "role": "candidate_implementer",
+                    "model": "gpt-5.6-sol-fast",
+                    "outcome": "completed",
+                },
+                {
+                    "session_id": reviewer,
+                    "role": "candidate_reviewer",
+                    "model": "gpt-5.6-sol-fast",
+                    "outcome": "completed",
+                },
+            ],
+        }
+        path = output / "treatment-result.json"
+        evaluator.write_json(path, value)
+        parsed, sessions = repository.validate_sandcastle_result(
+            path,
+            implementer_session_id=implementer,
+            reviewer_session_id=reviewer,
+            model="gpt-5.6-sol-fast",
+        )
+        self.assertEqual(parsed["implementation_commits"], 1)
+        self.assertEqual([item["role"] for item in sessions],
+                         ["candidate_implementer", "candidate_reviewer"])
+        (output / "linked-output.md").symlink_to(output / "final-output.md")
+        value["output_file"] = "linked-output.md"
+        evaluator.write_json(path, value)
+        with self.assertRaisesRegex(repository.CandidateStateError, "must not be a symlink"):
+            repository.validate_sandcastle_result(
+                path,
+                implementer_session_id=implementer,
+                reviewer_session_id=reviewer,
+                model="gpt-5.6-sol-fast",
+            )
+        value["output_file"] = "final-output.md"
+        value["sessions"][1]["session_id"] = implementer
+        evaluator.write_json(path, value)
+        with self.assertRaisesRegex(repository.CandidateStateError, "allocation"):
+            repository.validate_sandcastle_result(
+                path,
+                implementer_session_id=implementer,
+                reviewer_session_id=reviewer,
+                model="gpt-5.6-sol-fast",
+            )
+
+    def test_treatment_output_rejects_symlinks(self):
+        output = Path(self.temp.name) / "unsafe-output"
+        output.mkdir()
+        outside = Path(self.temp.name) / "outside"
+        outside.write_text("secret\n")
+        (output / "result").symlink_to(outside)
+        with self.assertRaisesRegex(repository.InfrastructureError, "unsupported"):
+            repository.validate_treatment_output(output)
+
+    def test_sandcastle_sessions_use_preallocated_ids_and_missing_telemetry_is_partial(self):
+        frozen = self.freeze()
+        run = self.root / "runs" / "sandcastle"
+        run.mkdir()
+        admission = self.root / "admission.json"
+        admission.write_text("{}")
+        treatment_snapshot = self.root / "treatment"
+        adapter_snapshot = self.root / "adapter"
+        output = self.root / "treatment-output"
+        for path in (treatment_snapshot, adapter_snapshot, output):
+            path.mkdir()
+        (treatment_snapshot / "package.json").write_text("{}")
+        (adapter_snapshot / "main.mjs").write_text("// frozen")
+        owner = self
+        unsafe_output = [False]
+
+        class FakeContainer:
+            def __init__(self, image, mounts, artifacts, **kwargs):
+                self.source = mounts[0][0]
+                self.artifacts = artifacts
+                self.created = True
+                self.stopped = False
+                artifacts.mkdir(parents=True)
+                owner.assertEqual(
+                    [item[1] for item in mounts],
+                    ["/workspace/repo", "/evidence", "/treatment",
+                     "/treatment-adapter", "/treatment-output"],
+                )
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.stopped = True
+
+            def execute(self, command, label, **kwargs):
+                log = self.artifacts / f"{label}.log"
+                if label == "cli-version":
+                    log.write_text("copilot test")
+                    return {"exit_code": 0, "log": log.name}
+                environment = kwargs["environment"]
+                implementer = environment["SKILL_EVAL_IMPLEMENTER_SESSION_ID"]
+                reviewer = environment["SKILL_EVAL_REVIEWER_SESSION_ID"]
+                (self.source / "code.py").write_text("def add(a, b): return a + b\n")
+                (output / "final-output.md").write_text("fixed\n")
+                evaluator.write_json(output / "treatment-result.json", {
+                    "schema_version": 1,
+                    "status": "completed",
+                    "output_file": "final-output.md",
+                    "implementation_commits": 1,
+                    "sessions": [
+                        {"session_id": implementer, "role": "candidate_implementer",
+                         "model": "gpt-5.6-sol-fast", "outcome": "completed"},
+                        {"session_id": reviewer, "role": "candidate_reviewer",
+                         "model": "gpt-5.6-sol-fast", "outcome": "completed"},
+                    ],
+                })
+                if unsafe_output[0]:
+                    outside = owner.root / "hidden-output"
+                    outside.write_text("not candidate output\n")
+                    (output / "unsafe-link").symlink_to(outside)
+                log.write_text("sandcastle completed\n")
+                self.implementer = implementer
+                return {"exit_code": 0, "timed_out": False, "log": log.name}
+
+            def session_ids(self):
+                return {self.implementer}, []
+
+            def stop(self):
+                self.stopped = True
+
+            def usage_events(self, session_id):
+                owner.assertTrue(self.stopped)
+                return (
+                    b'{"type":"session.shutdown","data":'
+                    b'{"totalNanoAiu":1000000000,"totalPremiumRequests":1}}\n'
+                    if session_id == self.implementer else None
+                )
+
+        treatment = {
+            "fingerprint": "f" * 64,
+            "descriptor": {
+                "id": evaluator.SANDCASTLE_ID,
+                "runner": evaluator.SANDCASTLE_RUNNER,
+                "entry_skill": None,
+                "intervention_policy": "fixture-local-one-issue",
+            },
+            "treatment_snapshot": str(treatment_snapshot),
+            "adapter_snapshot": str(adapter_snapshot),
+            "output_dir": str(output),
+        }
+        with (
+            mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "nonsecret-test"}),
+            mock.patch("repository_task.image_identity", return_value={"id": self.image}),
+            mock.patch("repository_task.require_admission", return_value=admission),
+            mock.patch("repository_task.Container", FakeContainer),
+            mock.patch("repository_task.grade", return_value={
+                "target": {"passed": True}, "regression": {"passed": True},
+            }),
+        ):
+            result = repository.execute_repository(
+                self.root, "example", frozen, run, run / "plugin",
+                "gpt-5.6-sol-fast", "high", 60, "skill", treatment=treatment,
+            )
+        self.assertEqual(result["execution_status"], "PASS", result)
+        coverage = evaluator.read_json(run / "candidate-session-coverage.json")
+        self.assertEqual(len(coverage["missing"]), 1)
+        records = [
+            evaluator.read_json(path)
+            for path in sorted((run / "measurements").glob("*.json"))
+        ]
+        self.assertEqual(
+            {item["subrole"] for item in records},
+            {"candidate_implementer", "candidate_reviewer"},
+        )
+        accounting = repository.measurement.accounting(records)
+        self.assertFalse(accounting["candidate"]["complete"])
+        self.assertEqual(accounting["candidate"]["observed_credits"], 1)
+        self.assertIsNone(accounting["candidate"]["credits"])
+        unsafe_output[0] = True
+        unsafe_run = self.root / "runs" / "sandcastle-unsafe"
+        unsafe_run.mkdir()
+        with (
+            mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "nonsecret-test"}),
+            mock.patch("repository_task.image_identity", return_value={"id": self.image}),
+            mock.patch("repository_task.require_admission", return_value=admission),
+            mock.patch("repository_task.Container", FakeContainer),
+            mock.patch("repository_task.grade") as grade,
+        ):
+            unsafe_result = repository.execute_repository(
+                self.root, "example", frozen, unsafe_run, unsafe_run / "plugin",
+                "gpt-5.6-sol-fast", "high", 60, "skill", treatment=treatment,
+            )
+        self.assertEqual(unsafe_result["execution_status"], "INVALID")
+        grade.assert_not_called()
+        self.assertTrue(all("treatment-output" not in item["path"]
+                            for item in unsafe_result["artifacts"]))
+
+    def test_incompatible_treatment_is_blocked_before_candidate_setup(self):
+        case = self.make_case()
+        definition = evaluator.read_json(case / "case.json")
+        definition["compatibility"] = {
+            "language": "python",
+            "package_system": "pip",
+            "remote_side_effects_allowed": False,
+        }
+        evaluator.write_json(case / "case.json", definition)
+        evaluator.freeze_case(self.root, "example", False)
+        plugin = self.root / "plugin"
+        (plugin / "skills" / "example-skill").mkdir(parents=True)
+        (plugin / "skills" / "example-skill" / "SKILL.md").write_text("# example\n")
+        treatment = self.root / "treatment.json"
+        evaluator.write_json(treatment, {
+            "schema_version": 1,
+            "id": "typescript-only",
+            "source": {
+                "repository": "https://example.invalid/workflow",
+                "revision": "fixed",
+                "license": "MIT",
+                "retrieved_at": "2026-09-16T00:00:00Z",
+            },
+            "runner": {"kind": "direct-copilot"},
+            "compatibility": {"language": ["typescript"], "package_system": ["npm"]},
+            "entry_skill": "example-skill",
+            "intervention_policy": "none",
+            "adapter": {"digest": "0" * 64, "description": "none"},
+        })
+        with mock.patch("skill_eval.snapshot_plugin") as snapshot:
+            run = evaluator.run_case(
+                self.root, "example", plugin, Path("/missing"), "fake", "high",
+                "existing", 60, treatment_file=treatment,
+            )
+        snapshot.assert_not_called()
+        result = evaluator.read_json(run / "execution-result.json")
+        self.assertEqual(result["execution_status"], "BLOCKED")
+        self.assertEqual(list((run / "measurements").glob("*.json")), [])
+
+    def test_reportable_treatment_requires_matching_admission(self):
+        case = self.make_case()
+        definition = evaluator.read_json(case / "case.json")
+        definition["compatibility"] = {"language": "python"}
+        evaluator.write_json(case / "case.json", definition)
+        evaluator.freeze_case(self.root, "example", False)
+        plugin = self.root / "plugin"
+        (plugin / "skills" / "example-skill").mkdir(parents=True)
+        (plugin / "skills" / "example-skill" / "SKILL.md").write_text("# example\n")
+        treatment = self.root / "treatment.json"
+        evaluator.write_json(treatment, {
+            "schema_version": 1,
+            "id": "admitted-workflow",
+            "source": {
+                "repository": "https://example.invalid/workflow",
+                "revision": "fixed",
+                "license": "MIT",
+                "retrieved_at": "2026-09-16T00:00:00Z",
+            },
+            "runner": {"kind": "direct-copilot"},
+            "compatibility": {"language": ["python"]},
+            "entry_skill": "example-skill",
+            "intervention_policy": "none",
+            "adapter": {"digest": "0" * 64, "description": "none"},
+        })
+        with mock.patch("skill_eval.copilot_identity", return_value={"version": "fake"}):
+            run = evaluator.run_case(
+                self.root, "example", plugin, Path("/missing"), "fake", "high",
+                "existing", 60, treatment_file=treatment,
+            )
+        result = evaluator.read_json(run / "execution-result.json")
+        self.assertEqual(result["execution_status"], "INVALID")
+        self.assertEqual(result["failure_kind"], "run_setup")
+        self.assertIn("treatment admission required", result["error"])
+        self.assertEqual(list((run / "measurements").glob("*.json")), [])
 
     def test_repository_parser_allows_toolchain_reads_without_prose_claim(self):
         log = Path(self.temp.name) / "trajectory.jsonl"

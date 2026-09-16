@@ -24,6 +24,29 @@ import measurement
 
 CASE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 DEFAULT_JUDGES = ["claude-opus-5", "gpt-5.6-terra"]
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+TREATMENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+COMPATIBILITY_FIELDS = {
+    "language",
+    "package_system",
+    "preapproved_plan",
+    "public_seam_approved",
+    "fast_deterministic_reproduction",
+    "remote_side_effects_allowed",
+}
+SANDCASTLE_ID = "sandcastle-sequential-reviewer-copilot-outer-isolated"
+SANDCASTLE_SOURCE = {
+    "package": "@ai-hero/sandcastle",
+    "revision": "e99f832f26dc9d245c019a9ddd19fa5dee792427",
+    "version": "0.12.0",
+    "license": "MIT",
+}
+SANDCASTLE_RUNNER = {
+    "kind": SANDCASTLE_ID,
+    "command": ["node", "/treatment-adapter/main.mjs"],
+    "model": "gpt-5.6-sol-fast",
+    "session_subroles": ["candidate_implementer", "candidate_reviewer"],
+}
 
 
 def digest(path: Path) -> str:
@@ -37,6 +60,315 @@ def write_json(path: Path, value: object) -> None:
 
 def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def strict_fields(value: object, required: set[str], optional: set[str], label: str) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be an object")
+    fields = set(value)
+    missing = required - fields
+    unknown = fields - required - optional
+    if missing:
+        raise ValueError(f"{label} missing fields: {sorted(missing)}")
+    if unknown:
+        raise ValueError(f"{label} has unknown fields: {sorted(unknown)}")
+    return value
+
+
+def json_fingerprint(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    ).hexdigest()
+
+
+def directory_identity(directory: Path) -> dict:
+    directory = directory.resolve()
+    if not directory.is_dir():
+        raise ValueError(f"snapshot directory does not exist: {directory}")
+    files = []
+    for root, directories, names in os.walk(directory):
+        directories[:] = sorted(
+            name for name in directories if name not in {".git", "__pycache__"}
+        )
+        for name in sorted(names):
+            if name in {".DS_Store"} or name.endswith(".pyc"):
+                continue
+            path = Path(root) / name
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(f"snapshot identity refuses non-regular file: {path}")
+            files.append({
+                "path": path.relative_to(directory).as_posix(),
+                "sha256": digest(path),
+                "mode": path.stat().st_mode & 0o777,
+            })
+    if not files:
+        raise ValueError(f"snapshot directory contains no files: {directory}")
+    return {"files": files, "sha256": json_fingerprint(files)}
+
+
+def validate_compatibility(value: object, label: str) -> dict:
+    compatibility = strict_fields(value, set(), COMPATIBILITY_FIELDS, label)
+    normalized = {}
+    for field, requirement in compatibility.items():
+        if field in {"language", "package_system"}:
+            if (
+                not isinstance(requirement, list)
+                or not requirement
+                or not all(isinstance(item, str) and item.strip() for item in requirement)
+                or len(requirement) != len(set(requirement))
+            ):
+                raise ValueError(f"{label}.{field} must be a unique nonempty string array")
+            normalized[field] = sorted(requirement)
+        elif type(requirement) is not bool:
+            raise ValueError(f"{label}.{field} must be a boolean")
+        else:
+            normalized[field] = requirement
+    return normalized
+
+
+def validate_source(value: object, *, sandcastle: bool = False) -> dict:
+    source = strict_fields(
+        value,
+        {"license", "retrieved_at"},
+        {"repository", "package", "revision", "version"},
+        "treatment source",
+    )
+    if not any(isinstance(source.get(field), str) and source[field] for field in ("repository", "package")):
+        raise ValueError("treatment source requires repository or package")
+    if not any(isinstance(source.get(field), str) and source[field] for field in ("revision", "version")):
+        raise ValueError("treatment source requires immutable revision or version")
+    for field, item in source.items():
+        if not isinstance(item, str) or not item.strip() or "\0" in item:
+            raise ValueError(f"treatment source {field} must be a nonempty string")
+    try:
+        datetime.fromisoformat(source["retrieved_at"].replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("treatment source retrieved_at must be an ISO timestamp") from error
+    if sandcastle and any(source.get(field) != expected for field, expected in SANDCASTLE_SOURCE.items()):
+        raise ValueError("Sandcastle source identity differs from the frozen treatment")
+    return source
+
+
+def validate_adapter(value: object) -> dict:
+    adapter = strict_fields(value, {"digest", "description"}, set(), "treatment adapter")
+    if not isinstance(adapter["digest"], str) or not SHA256_RE.fullmatch(adapter["digest"]):
+        raise ValueError("treatment adapter digest must be lowercase sha256")
+    if not isinstance(adapter["description"], str) or not adapter["description"].strip():
+        raise ValueError("treatment adapter description must be nonempty")
+    return adapter
+
+
+def load_treatment(
+    path: Path,
+    *,
+    sandcastle: bool = False,
+    adapter_dir: Path | None = None,
+) -> dict:
+    descriptor = strict_fields(
+        read_json(path),
+        {
+            "schema_version",
+            "id",
+            "source",
+            "runner",
+            "compatibility",
+            "entry_skill",
+            "intervention_policy",
+            "adapter",
+        },
+        set(),
+        "treatment descriptor",
+    )
+    if descriptor["schema_version"] != 1:
+        raise ValueError("unsupported treatment descriptor schema")
+    if not isinstance(descriptor["id"], str) or not TREATMENT_ID_RE.fullmatch(descriptor["id"]):
+        raise ValueError("treatment id must use lowercase letters, numbers, and hyphens")
+    descriptor["source"] = validate_source(descriptor["source"], sandcastle=sandcastle)
+    descriptor["compatibility"] = validate_compatibility(
+        descriptor["compatibility"], "treatment compatibility"
+    )
+    descriptor["adapter"] = validate_adapter(descriptor["adapter"])
+    if not isinstance(descriptor["intervention_policy"], str) or not descriptor[
+        "intervention_policy"
+    ].strip():
+        raise ValueError("treatment intervention_policy must be nonempty")
+    if sandcastle:
+        if descriptor["id"] != SANDCASTLE_ID:
+            raise ValueError("unsupported external treatment id")
+        if descriptor["runner"] != SANDCASTLE_RUNNER:
+            raise ValueError("Sandcastle runner contract differs from the frozen command")
+        if descriptor["entry_skill"] is not None:
+            raise ValueError("Sandcastle treatment cannot declare an entry skill")
+        if adapter_dir is None:
+            raise ValueError("Sandcastle treatment requires an adapter directory")
+        identity = directory_identity(adapter_dir)
+        if identity["sha256"] != descriptor["adapter"]["digest"]:
+            raise ValueError("Sandcastle adapter digest mismatch")
+        if not (adapter_dir / "main.mjs").is_file():
+            raise ValueError("Sandcastle adapter requires main.mjs")
+        source_identity = directory_identity(path.parent)
+    else:
+        runner = strict_fields(descriptor["runner"], {"kind"}, set(), "treatment runner")
+        if runner["kind"] != "direct-copilot":
+            raise ValueError("direct treatment runner must be direct-copilot")
+        if not isinstance(descriptor["entry_skill"], str) or not CASE_ID_RE.fullmatch(
+            descriptor["entry_skill"]
+        ):
+            raise ValueError("direct treatment requires a valid entry_skill")
+        identity = None
+        source_identity = None
+    return {
+        "descriptor": descriptor,
+        "descriptor_sha256": digest(path),
+        "fingerprint": json_fingerprint(descriptor),
+        "adapter_identity": identity,
+        "source_identity": source_identity,
+    }
+
+
+def legacy_treatment(arm: str, target_skill: str) -> dict:
+    descriptor = {
+        "schema_version": 1,
+        "id": "legacy-baseline" if arm == "baseline" else "legacy-skill",
+        "source": {"kind": "legacy-evaluator"},
+        "runner": {"kind": "direct-copilot"},
+        "compatibility": {},
+        "entry_skill": target_skill if arm == "skill" else None,
+        "intervention_policy": "legacy-case-contract",
+        "adapter": {"digest": None, "description": "legacy evaluator behavior"},
+    }
+    return {
+        "descriptor": descriptor,
+        "descriptor_sha256": None,
+        "fingerprint": json_fingerprint(descriptor),
+        "adapter_identity": None,
+        "source_identity": None,
+    }
+
+
+def compatibility_result(definition: dict, treatment: dict) -> dict:
+    requirements = treatment["descriptor"]["compatibility"]
+    case = definition.get("compatibility", {})
+    if not isinstance(case, dict) or set(case) - COMPATIBILITY_FIELDS:
+        raise ValueError("case compatibility contains unsupported predicates")
+    reasons = []
+    for field, expected in requirements.items():
+        actual = case.get(field)
+        if field in {"language", "package_system"}:
+            if actual not in expected:
+                reasons.append(f"{field}={actual!r} is not in {expected!r}")
+        elif actual is not expected:
+            reasons.append(f"{field}={actual!r} does not match required {expected!r}")
+    return {
+        "schema_version": 1,
+        "status": "BLOCKED" if reasons else "ADMITTED",
+        "treatment_id": treatment["descriptor"]["id"],
+        "requirements": requirements,
+        "case": {field: case.get(field) for field in sorted(requirements)},
+        "reasons": reasons,
+    }
+
+
+def resolve_treatment(
+    definition: dict,
+    arm: str,
+    *,
+    treatment_file: Path | None = None,
+    sandcastle_treatment_file: Path | None = None,
+    sandcastle_adapter_dir: Path | None = None,
+) -> tuple[dict, dict]:
+    if treatment_file and (sandcastle_treatment_file or sandcastle_adapter_dir):
+        raise ValueError("direct and Sandcastle treatment options are mutually exclusive")
+    if bool(sandcastle_treatment_file) != bool(sandcastle_adapter_dir):
+        raise ValueError("Sandcastle treatment file and adapter directory are required together")
+    if (treatment_file or sandcastle_treatment_file) and arm != "skill":
+        raise ValueError("treatment descriptors require --arm skill")
+    if sandcastle_treatment_file:
+        if definition.get("case_type") != "repository-task":
+            raise ValueError("Sandcastle treatments require a repository-task case")
+        treatment = load_treatment(
+            sandcastle_treatment_file, sandcastle=True, adapter_dir=sandcastle_adapter_dir
+        )
+        treatment["source_path"] = str(sandcastle_treatment_file.resolve())
+        treatment["adapter_path"] = str(sandcastle_adapter_dir.resolve())
+    elif treatment_file:
+        treatment = load_treatment(treatment_file)
+        treatment["source_path"] = str(treatment_file.resolve())
+    else:
+        treatment = legacy_treatment(arm, definition["target_skill"])
+    return treatment, compatibility_result(definition, treatment)
+
+
+def treatment_admission_binding(
+    *,
+    case_revision: str,
+    treatment: dict,
+    skill: dict,
+    harness: dict,
+    model: str,
+    effort: str,
+) -> dict:
+    return {
+        "case_revision": case_revision,
+        "treatment_fingerprint": treatment["fingerprint"],
+        "source_identity": treatment["source_identity"],
+        "adapter_identity": treatment["adapter_identity"],
+        "skill_identity": json_fingerprint({
+            "name": skill.get("name"),
+            "files": skill.get("files", []),
+        }),
+        "harness_identity": json_fingerprint(harness["modules"]),
+        "runner_kind": treatment["descriptor"]["runner"]["kind"],
+        "model": model,
+        "effort": effort,
+    }
+
+
+def require_treatment_admission(root: Path, binding: dict) -> Path:
+    required = {
+        "treatment-identity.json",
+        "skill-identity.json",
+        "harness-identity.json",
+        "compatibility.json",
+        "execution-result.json",
+        "repository-result.json",
+        "candidate.patch",
+    }
+    pattern = "treatment-admission-runs/*/*/treatment-admission-receipt.json"
+    for path in sorted(root.glob(pattern), reverse=True):
+        receipt = read_json(path)
+        if (
+            receipt.get("schema_version") != 1
+            or receipt.get("status") != "PASS"
+            or receipt.get("binding") != binding
+            or not isinstance(receipt.get("artifacts"), list)
+        ):
+            continue
+        artifacts = receipt["artifacts"]
+        names = [artifact.get("path") for artifact in artifacts if isinstance(artifact, dict)]
+        if len(names) != len(set(names)) or not required.issubset(names):
+            continue
+        for artifact in artifacts:
+            if set(artifact) != {"path", "sha256"} or not SHA256_RE.fullmatch(
+                str(artifact["sha256"])
+            ):
+                raise ValueError("malformed treatment admission artifact identity")
+            unresolved = path.parent / artifact["path"]
+            if unresolved.is_symlink():
+                raise ValueError("treatment admission artifact must not be a symlink")
+            source = resolve_under(path.parent, artifact["path"])
+            if not source.is_file() or digest(source) != artifact["sha256"]:
+                raise ValueError("treatment admission artifact digest mismatch")
+        execution = read_json(path.parent / "execution-result.json")
+        repository = read_json(path.parent / "repository-result.json")
+        if execution.get("execution_status") != "PASS" or repository.get(
+            "behavioral_verdict"
+        ) != "PASS":
+            raise ValueError("treatment admission result is not successful")
+        return path
+    raise ValueError(
+        "matching successful treatment admission required; rerun with --treatment-admission"
+    )
 
 
 def utc_stamp() -> str:
@@ -976,6 +1308,7 @@ def run_judges(
                 "judge_model": judge_model, "judge_family": model_family(judge_model),
                 "judge_packet_manifest_sha256": digest(frozen / "judge-reference" / "bundle-manifest.json"),
                 "skill_identity_sha256": digest(run_root / "skill-identity.json"),
+                "treatment_identity_sha256": digest(run_root / "treatment-identity.json"),
                 "copilot_identity_sha256": digest(run_root / "copilot-identity.json"),
                 "harness_identity_sha256": digest(run_root / "harness-identity.json"),
                 "prompt_sha256": digest(prompt_path), "raw_log_sha256": digest(log),
@@ -1005,6 +1338,9 @@ def _run_case(
     harness_identity_record: dict | None = None,
     *,
     arm: str = "skill",
+    treatment: dict,
+    compatibility: dict,
+    treatment_admission: bool,
     expected_revision: str | None = None,
     quality_review: bool = False,
     run_root: Path,
@@ -1022,12 +1358,50 @@ def _run_case(
         "schema_version": 1, "case_revision": digest(frozen / "case-manifest.json"),
         "case_type": definition.get("case_type", "prose"),
         "judge_models": definition["judge"].get("models", DEFAULT_JUDGES),
+        "treatment_fingerprint": treatment["fingerprint"],
+        "compatibility": compatibility,
     })
     repository = definition.get("case_type") == "repository-task"
     if quality_review and not repository:
         raise ValueError("--quality-review requires a repository-task case")
     if arm not in {"baseline", "skill"} or (arm == "baseline" and not repository):
         raise ValueError("baseline arm requires a repository-task case")
+    write_json(run_root / "treatment-identity.json", {
+        "schema_version": 1,
+        "descriptor": treatment["descriptor"],
+        "descriptor_sha256": treatment["descriptor_sha256"],
+        "fingerprint": treatment["fingerprint"],
+        "adapter_identity": treatment["adapter_identity"],
+        "source_identity": treatment["source_identity"],
+    })
+    write_json(run_root / "compatibility.json", compatibility)
+    if compatibility["status"] == "BLOCKED":
+        blocked = {
+            "schema_version": 1,
+            "case_id": case_id,
+            "case_revision": digest(frozen / "case-manifest.json"),
+            "case_type": definition.get("case_type", "prose"),
+            "arm": arm,
+            "execution_status": "BLOCKED",
+            "behavioral_verdict": None,
+            "failure_kind": "incompatible_treatment",
+            "treatment": {
+                "id": treatment["descriptor"]["id"],
+                "fingerprint": treatment["fingerprint"],
+                "runner_kind": treatment["descriptor"]["runner"]["kind"],
+                "entry_skill": treatment["descriptor"]["entry_skill"],
+                "intervention_policy": treatment["descriptor"]["intervention_policy"],
+            },
+            "compatibility": compatibility,
+        }
+        write_json(run_root / "execution-result.json", blocked)
+        write_json(run_root / "repository-result.json", blocked)
+        (run_root / "REPORT.md").write_text(
+            f"# Evaluation: {case_id}\n\n**Result: BLOCKED**\n\n"
+            "The treatment/case compatibility predicates did not admit model execution.\n",
+            encoding="utf-8",
+        )
+        return run_root
     judge = definition["judge"]
     judge_models = judge.get("models", DEFAULT_JUDGES)
     if not isinstance(judge_models, list) or not all(isinstance(value, str) for value in judge_models):
@@ -1044,8 +1418,35 @@ def _run_case(
     case_revision = digest(frozen / "case-manifest.json")
     try:
         snapshot_plugin(plugin_dir, pinned_plugin)
-        identity = skill_identity(pinned_plugin, definition["target_skill"])
+        runner_kind = treatment["descriptor"]["runner"]["kind"]
+        entry_skill = treatment["descriptor"]["entry_skill"]
+        identity = (
+            skill_identity(pinned_plugin, entry_skill or definition["target_skill"])
+            if runner_kind == "direct-copilot"
+            else {"name": None, "plugin_dir": str(pinned_plugin.resolve()), "files": []}
+        )
         write_json(run_root / "skill-identity.json", identity)
+        if treatment.get("source_path"):
+            shutil.copyfile(treatment["source_path"], run_root / "treatment.json")
+            if digest(run_root / "treatment.json") != treatment["descriptor_sha256"]:
+                raise ValueError("treatment descriptor changed while being copied")
+        if runner_kind == SANDCASTLE_ID:
+            treatment_snapshot = run_root / "sandcastle-treatment"
+            adapter_snapshot = run_root / "sandcastle-adapter"
+            snapshot_plugin(Path(treatment["source_path"]).parent, treatment_snapshot)
+            snapshot_plugin(Path(treatment["adapter_path"]), adapter_snapshot)
+            if directory_identity(treatment_snapshot) != treatment["source_identity"]:
+                raise ValueError("Sandcastle treatment changed while being snapshotted")
+            copied_adapter = directory_identity(adapter_snapshot)
+            if copied_adapter != treatment["adapter_identity"]:
+                raise ValueError("Sandcastle adapter changed while being snapshotted")
+            treatment = {
+                **treatment,
+                "treatment_snapshot": str(treatment_snapshot),
+                "adapter_snapshot": str(adapter_snapshot),
+                "output_dir": str(run_root / "treatment-output"),
+            }
+            Path(treatment["output_dir"]).mkdir()
         write_json(
             run_root / "copilot-identity.json",
             copilot_identity_record or copilot_identity(copilot),
@@ -1058,6 +1459,17 @@ def _run_case(
         recorded_harness = {**(harness_identity_record or running_harness),
                             "modules": running_harness["modules"]}
         write_json(run_root / "harness-identity.json", recorded_harness)
+        admission_binding = treatment_admission_binding(
+            case_revision=case_revision,
+            treatment=treatment,
+            skill=identity,
+            harness=recorded_harness,
+            model=model,
+            effort=effort,
+        )
+        if repository and treatment["descriptor_sha256"] is not None and not treatment_admission:
+            receipt = require_treatment_admission(root, admission_binding)
+            treatment["admission_receipt"] = str(receipt.relative_to(root))
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         timeline.end_stage("failed")
         if not repository:
@@ -1076,15 +1488,16 @@ def _run_case(
         )
         return run_root
     if repository:
-        from repository_task import execute_repository
+        from repository_task import artifact_files, execute_repository
         result = execute_repository(
             root, case_id, frozen, run_root, pinned_plugin, model, effort, timeout_seconds, arm,
-            timeline=timeline,
+            timeline=timeline, treatment=treatment,
         )
         if result["execution_status"] != "INVALID":
             artifacts = [
-                path for path in sorted(run_root.rglob("*"))
-                if path.is_file() and "target-plugin" not in path.relative_to(run_root).parts
+                path for path in artifact_files(
+                    run_root, excluded={"target-plugin", "treatment-output"}
+                )
             ]
             try:
                 timeline.switch("behavioral_judging")
@@ -1163,7 +1576,7 @@ def _run_case(
             )
             run_result = parse_run(
                 log,
-                skill=definition["target_skill"],
+                skill=treatment["descriptor"]["entry_skill"],
                 expected_model=model,
                 cwd=workdir,
                 require_skill=None if phase.get("resume") else True,
@@ -1195,6 +1608,7 @@ def _run_case(
                 frozen / phase_id / "bundle-manifest.json"
             ),
             "skill_identity_sha256": digest(run_root / "skill-identity.json"),
+            "treatment_identity_sha256": digest(run_root / "treatment-identity.json"),
             "copilot_identity_sha256": digest(run_root / "copilot-identity.json"),
             "harness_identity_sha256": digest(run_root / "harness-identity.json"),
             "model": model,
@@ -1240,6 +1654,7 @@ def _run_case(
         f"**Result: {overall}**",
         "",
         f"- Target skill: `{definition['target_skill']}`",
+        f"- Treatment: `{treatment['descriptor']['id']}`",
         f"- Case revision: `{case_revision}`",
         f"- Candidate model: `{model}` ({effort})",
         f"- Authentication home: `{home_mode}`",
@@ -1275,18 +1690,43 @@ def run_case(
     root: Path, case_id: str, plugin_dir: Path, copilot: Path, model: str, effort: str,
     home_mode: str, timeout_seconds: int, copilot_identity_record: dict | None = None,
     harness_identity_record: dict | None = None, *, arm: str = "skill",
+    treatment_file: Path | None = None,
+    sandcastle_treatment_file: Path | None = None,
+    sandcastle_adapter_dir: Path | None = None,
+    treatment_admission: bool = False,
     expected_revision: str | None = None, quality_review: bool = False,
     suite_owner: dict | None = None,
 ) -> Path:
     timeline = measurement.Timeline()
     ensure_case_id(case_id)
-    run_root = root / "runs" / f"{utc_stamp()}-{uuid.uuid4().hex[:8]}" / case_id
+    verify_case(root, case_id)
+    definition = read_json(frozen_case_path(root, case_id) / "case.json")
+    treatment, compatibility = resolve_treatment(
+        definition,
+        arm,
+        treatment_file=treatment_file,
+        sandcastle_treatment_file=sandcastle_treatment_file,
+        sandcastle_adapter_dir=sandcastle_adapter_dir,
+    )
+    if treatment["descriptor"]["runner"]["kind"] == SANDCASTLE_ID and model != SANDCASTLE_RUNNER["model"]:
+        raise ValueError("Sandcastle treatment requires gpt-5.6-sol-fast")
+    if treatment_admission and treatment["descriptor_sha256"] is None:
+        raise ValueError("--treatment-admission requires a treatment descriptor")
+    if treatment_admission and definition.get("case_type") != "repository-task":
+        raise ValueError("--treatment-admission requires a repository-task case")
+    run_parent = "treatment-admission-runs" if treatment_admission else "runs"
+    run_root = root / run_parent / f"{utc_stamp()}-{uuid.uuid4().hex[:8]}" / case_id
     run_root.mkdir(parents=True)
     attempt = {
         "schema_version": 1, "run_id": run_root.parent.name, "case_id": case_id,
         "model": model, "effort": effort, "timeout_seconds": timeout_seconds,
         "arm": arm, "home_mode": home_mode, "quality_review": quality_review,
         "suite_owner": suite_owner, "started_at": timeline.started_at,
+        "treatment_id": treatment["descriptor"]["id"],
+        "treatment_fingerprint": treatment["fingerprint"],
+        "runner_kind": treatment["descriptor"]["runner"]["kind"],
+        "intervention_policy": treatment["descriptor"]["intervention_policy"],
+        "compatibility_status": compatibility["status"],
     }
     measurement.write_once(run_root / "attempt.json", attempt)
     status = "failed"
@@ -1295,10 +1735,57 @@ def run_case(
         result = _run_case(
             root, case_id, plugin_dir, copilot, model, effort, home_mode, timeout_seconds,
             copilot_identity_record, harness_identity_record, arm=arm,
+            treatment=treatment, compatibility=compatibility,
+            treatment_admission=treatment_admission,
             expected_revision=expected_revision, quality_review=quality_review,
             run_root=run_root, timeline=timeline, resources=resources,
         )
         status = "completed"
+        if treatment_admission:
+            execution = read_json(run_root / "execution-result.json")
+            identity_path = run_root / "treatment-identity.json"
+            skill_path = run_root / "skill-identity.json"
+            harness_path = run_root / "harness-identity.json"
+            binding = None
+            if identity_path.is_file() and skill_path.is_file() and harness_path.is_file():
+                identity = read_json(identity_path)
+                binding = treatment_admission_binding(
+                    case_revision=execution["case_revision"],
+                    treatment={
+                        "fingerprint": identity["fingerprint"],
+                        "source_identity": identity["source_identity"],
+                        "adapter_identity": identity["adapter_identity"],
+                        "descriptor": identity["descriptor"],
+                    },
+                    skill=read_json(skill_path),
+                    harness=read_json(harness_path),
+                    model=model,
+                    effort=effort,
+                )
+            admitted = (
+                binding is not None
+                and execution.get("execution_status") == "PASS"
+                and read_json(run_root / "repository-result.json").get("behavioral_verdict") == "PASS"
+            )
+            artifacts = []
+            for name in (
+                "treatment-identity.json",
+                "skill-identity.json",
+                "harness-identity.json",
+                "compatibility.json",
+                "execution-result.json",
+                "repository-result.json",
+                "candidate.patch",
+            ):
+                path = run_root / name
+                if path.is_file():
+                    artifacts.append({"path": name, "sha256": digest(path)})
+            write_json(run_root / "treatment-admission-receipt.json", {
+                "schema_version": 1,
+                "status": "PASS" if admitted else "INVALID",
+                "binding": binding,
+                "artifacts": artifacts,
+            })
         return result
     except KeyboardInterrupt:
         status = "interrupted"
@@ -1375,6 +1862,9 @@ def run_suite(
     *,
     arm: str = "skill",
     quality_review: bool = False,
+    treatment_file: Path | None = None,
+    sandcastle_treatment_file: Path | None = None,
+    sandcastle_adapter_dir: Path | None = None,
 ) -> tuple[Path, bool]:
     if workers <= 0:
         raise ValueError("workers must be positive")
@@ -1389,6 +1879,14 @@ def run_suite(
     unknown = sorted(set(selected) - set(corpus["cases"]))
     if unknown:
         raise ValueError(f"unknown suite cases: {unknown}")
+    first_definition = read_json(frozen_case_path(root, selected[0]) / "case.json")
+    resolve_treatment(
+        first_definition,
+        arm,
+        treatment_file=treatment_file,
+        sandcastle_treatment_file=sandcastle_treatment_file,
+        sandcastle_adapter_dir=sandcastle_adapter_dir,
+    )
 
     started_at = utc_instant()
     started_clock = time.monotonic()
@@ -1397,6 +1895,18 @@ def run_suite(
     harness_identity_record = harness_identity(suite_root)
     suite_plugin = suite_root / "target-plugin"
     snapshot_plugin(plugin_dir, suite_plugin)
+    suite_treatment_file = None
+    suite_sandcastle_file = None
+    suite_adapter_dir = None
+    if treatment_file:
+        suite_treatment_file = suite_root / "treatment.json"
+        shutil.copyfile(treatment_file, suite_treatment_file)
+    if sandcastle_treatment_file:
+        suite_treatment_snapshot = suite_root / "sandcastle-treatment"
+        suite_adapter_dir = suite_root / "sandcastle-adapter"
+        snapshot_plugin(sandcastle_treatment_file.parent, suite_treatment_snapshot)
+        snapshot_plugin(sandcastle_adapter_dir, suite_adapter_dir)
+        suite_sandcastle_file = suite_treatment_snapshot / sandcastle_treatment_file.name
     revisions = {}
     for case_id in selected:
         try:
@@ -1431,6 +1941,9 @@ def run_suite(
                     copilot_identity_record,
                     harness_identity_record,
                     arm=arm,
+                    treatment_file=suite_treatment_file,
+                    sandcastle_treatment_file=suite_sandcastle_file,
+                    sandcastle_adapter_dir=suite_adapter_dir,
                     expected_revision=revisions[case_id],
                     quality_review=quality_review,
                     suite_owner={"suite_path": str(suite_root.relative_to(root)),
@@ -1561,6 +2074,17 @@ def run_suite(
             "max_attempts": max_attempts,
             "home_mode": home_mode,
             "arm": arm,
+            "treatment": (
+                read_json(next(
+                    path for path in (
+                        suite_treatment_file,
+                        suite_sandcastle_file,
+                    )
+                    if path is not None
+                ))
+                if suite_treatment_file or suite_sandcastle_file
+                else None
+            ),
             "quality_review": quality_review,
             "timeout_seconds": timeout_seconds,
             "repository_executable": executable_summary,
@@ -1676,6 +2200,10 @@ def parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--timeout-seconds", type=int, default=1200)
     run.add_argument("--arm", choices=("baseline", "skill"), default="skill")
+    run.add_argument("--treatment-file", type=Path)
+    run.add_argument("--sandcastle-treatment-file", type=Path)
+    run.add_argument("--sandcastle-adapter-dir", type=Path)
+    run.add_argument("--treatment-admission", action="store_true")
     run.add_argument("--quality-review", action="store_true")
 
     suite = sub.add_parser("run-suite")
@@ -1694,6 +2222,9 @@ def parser() -> argparse.ArgumentParser:
     suite.add_argument("--workers", type=int, default=3)
     suite.add_argument("--max-attempts", type=int, default=1)
     suite.add_argument("--arm", choices=("baseline", "skill"), default="skill")
+    suite.add_argument("--treatment-file", type=Path)
+    suite.add_argument("--sandcastle-treatment-file", type=Path)
+    suite.add_argument("--sandcastle-adapter-dir", type=Path)
     suite.add_argument("--quality-review", action="store_true")
     history = sub.add_parser("history")
     history.add_argument("corpus", type=Path)
@@ -1738,6 +2269,13 @@ def main(argv: list[str] | None = None) -> int:
                     args.home_mode,
                     args.timeout_seconds,
                     arm=args.arm,
+                    treatment_file=args.treatment_file.expanduser().resolve()
+                    if args.treatment_file else None,
+                    sandcastle_treatment_file=args.sandcastle_treatment_file.expanduser().resolve()
+                    if args.sandcastle_treatment_file else None,
+                    sandcastle_adapter_dir=args.sandcastle_adapter_dir.expanduser().resolve()
+                    if args.sandcastle_adapter_dir else None,
+                    treatment_admission=args.treatment_admission,
                     quality_review=args.quality_review,
                 )
             print(run_path)
@@ -1759,6 +2297,12 @@ def main(argv: list[str] | None = None) -> int:
                 args.case,
                 args.max_attempts,
                 arm=args.arm,
+                treatment_file=args.treatment_file.expanduser().resolve()
+                if args.treatment_file else None,
+                sandcastle_treatment_file=args.sandcastle_treatment_file.expanduser().resolve()
+                if args.sandcastle_treatment_file else None,
+                sandcastle_adapter_dir=args.sandcastle_adapter_dir.expanduser().resolve()
+                if args.sandcastle_adapter_dir else None,
                 quality_review=args.quality_review,
             )
             print(suite_root)

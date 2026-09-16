@@ -269,11 +269,15 @@ def collect(
     *, destination: Path, session_id: str, role: str, phase: str, model: str,
     effort: str, cli_version: str | None, log: Path, capture, source: str,
     started_at: str, started_clock: float, outcome: str,
+    subrole: str | None = None, coverage_errors: list[str] | None = None,
 ) -> dict:
     """Retain only usage; identity is supplied by the evaluator, never the source."""
     session_uuid(session_id)
     observed = []
-    errors = []
+    errors = [
+        {"source": "evaluator_session_coverage", "type": "CoverageError", "message": message}
+        for message in (coverage_errors or [])
+    ]
     for name, reader, terminal in (
         (source, capture, True),
         ("invocation_stdout", lambda: log.open("rb") if log.is_file() else None, False),
@@ -300,7 +304,7 @@ def collect(
     complete = bool(observation and observation["terminal"] and not errors)
     record = {
         "schema_version": 1, "invocation_id": destination.stem,
-        "session_id": session_id, "role": role, "phase": phase,
+        "session_id": session_id, "role": role, "subrole": subrole or role, "phase": phase,
         "requested_model": model, "effort": effort, "cli_version": cli_version,
         "source": source, "observed_at": instant(), "scope": "session_cumulative",
         "started_at": started_at, "completed_at": instant(),
@@ -344,6 +348,16 @@ def accounting(records: list[dict]) -> dict:
         roles = {item["role"] for item in items}
         if len(roles) != 1:
             raise MeasurementError("session assigned to multiple spending roles")
+        subroles = {item.get("subrole", item["role"]) for item in items}
+        if len(subroles) != 1:
+            raise MeasurementError("session assigned to multiple spending subroles")
+        allowed_subroles = {
+            "candidate": {"candidate", "candidate_implementer", "candidate_reviewer"},
+            "behavioral_judge": {"behavioral_judge"},
+            "quality_judge": {"quality_judge"},
+        }
+        if next(iter(subroles)) not in allowed_subroles[next(iter(roles))]:
+            raise MeasurementError("unknown invocation subrole")
         items.sort(key=lambda item: (item["started_at"], item["invocation_id"]))
         latest = items[-1]
         # A failed resumed phase may have no fresh counters. Older observed spend is
@@ -358,6 +372,7 @@ def accounting(records: list[dict]) -> dict:
             item["completeness"] != "error" for item in items)
         session_records.append({
             "session_id": session, "role": latest["role"],
+            "subrole": latest.get("subrole", latest["role"]),
             "invocations": [item["invocation_id"] for item in items],
             "credits": known[-1]["credits"] if known else None,
             "premium_requests": premiums[-1]["premium_requests"] if premiums else None,

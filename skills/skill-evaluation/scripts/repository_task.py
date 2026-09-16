@@ -36,6 +36,33 @@ class CandidateStateError(ValueError):
     """Candidate output cannot be represented as an ordinary source patch."""
 
 
+def artifact_files(root: Path, *, excluded: set[str] | None = None) -> list[Path]:
+    excluded = excluded or set()
+    files = []
+    for directory, names, filenames in os.walk(root, followlinks=False):
+        relative = Path(directory).relative_to(root)
+        if set(relative.parts) & excluded:
+            names[:] = []
+            continue
+        retained = []
+        for name in names:
+            path = Path(directory) / name
+            if name in excluded:
+                continue
+            if path.is_symlink():
+                raise InfrastructureError(f"unsafe run artifact entry: {path}")
+            retained.append(name)
+        names[:] = retained
+        for name in filenames:
+            path = Path(directory) / name
+            mode = path.lstat().st_mode
+            if stat.S_ISREG(mode):
+                files.append(path)
+            else:
+                raise InfrastructureError(f"unsafe run artifact entry: {path}")
+    return sorted(files)
+
+
 def scaffold_repository(case_dir: Path) -> None:
     definition = read_json(case_dir / "case.json")
     definition["case_type"] = "repository-task"
@@ -275,10 +302,21 @@ class Container:
             raise
         return self
 
-    def execute(self, command: dict, label: str, *, token: bool = False) -> dict:
+    def execute(
+        self,
+        command: dict,
+        label: str,
+        *,
+        token: bool = False,
+        environment: dict[str, str] | None = None,
+    ) -> dict:
         argv = ["docker", "exec"]
         if token:
             argv += ["--env", "COPILOT_GITHUB_TOKEN"]
+        for name, value in sorted((environment or {}).items()):
+            if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name) or "\0" in value:
+                raise ValueError("invalid candidate environment binding")
+            argv += ["--env", f"{name}={value}"]
         argv += [self.name, *command["argv"]]
         result = command_result(argv, self.artifacts / f"{label}.log", command["timeout_seconds"])
         if result["timed_out"]:
@@ -302,6 +340,30 @@ class Container:
 
     def usage_events(self, session_id: str) -> bytes | None:
         return measurement.container_events(self.name, session_id, stopped=self.stopped)
+
+    def session_ids(self) -> tuple[set[str], list[str]]:
+        record = self.execute({
+            "argv": [
+                "find", "/tmp/eval-home/session-state", "-mindepth", "2", "-maxdepth", "2",
+                "-type", "f", "-name", "events.jsonl", "-print",
+            ],
+            "timeout_seconds": 30,
+        }, "session-inventory")
+        if record["exit_code"] not in {0, 1}:
+            raise InfrastructureError("candidate session inventory failed")
+        ids = set()
+        malformed = []
+        log = self.artifacts / record["log"]
+        for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+            parts = Path(line).parts
+            if len(parts) < 2 or parts[-1] != "events.jsonl":
+                malformed.append(line)
+                continue
+            try:
+                ids.add(measurement.session_uuid(parts[-2]))
+            except measurement.MeasurementError:
+                malformed.append(line)
+        return ids, malformed
 
     def __exit__(self, exc_type, exc, traceback) -> None:
         self.close()
@@ -526,10 +588,90 @@ def candidate_command(model: str, effort: str, prompt: str, arm: str,
     return command
 
 
+def validate_sandcastle_result(
+    path: Path,
+    *,
+    implementer_session_id: str,
+    reviewer_session_id: str,
+    model: str,
+) -> tuple[dict, list[dict]]:
+    from skill_eval import strict_fields
+
+    if path.is_symlink() or not path.is_file():
+        raise CandidateStateError("Sandcastle treatment-result.json must be a regular file")
+    result = strict_fields(
+        read_json(path),
+        {"schema_version", "status", "output_file", "implementation_commits", "sessions"},
+        set(),
+        "Sandcastle treatment result",
+    )
+    if result["schema_version"] != 1 or result["status"] != "completed":
+        raise CandidateStateError("Sandcastle treatment did not report a completed schema-v1 result")
+    if type(result["implementation_commits"]) is not int or result["implementation_commits"] < 0:
+        raise CandidateStateError("Sandcastle implementation_commits must be a nonnegative integer")
+    unresolved_output = path.parent / result["output_file"]
+    if unresolved_output.is_symlink():
+        raise CandidateStateError("Sandcastle output_file must not be a symlink")
+    output = resolve_under(path.parent, result["output_file"])
+    if not output.is_file():
+        raise CandidateStateError("Sandcastle output_file is missing")
+    sessions = result["sessions"]
+    if not isinstance(sessions, list):
+        raise CandidateStateError("Sandcastle sessions must be an array")
+    expected = {
+        "candidate_implementer": implementer_session_id,
+        **(
+            {"candidate_reviewer": reviewer_session_id}
+            if result["implementation_commits"] > 0
+            else {}
+        ),
+    }
+    seen = {}
+    normalized = []
+    for session in sessions:
+        try:
+            session = strict_fields(
+                session, {"session_id", "role", "model", "outcome"}, set(),
+                "Sandcastle session",
+            )
+        except ValueError as error:
+            raise CandidateStateError(str(error)) from error
+        role = session["role"]
+        if role not in {"candidate_implementer", "candidate_reviewer"}:
+            raise CandidateStateError("Sandcastle session has an unsupported role")
+        if role in seen:
+            raise CandidateStateError("Sandcastle result declares a duplicate session role")
+        try:
+            session_id = measurement.session_uuid(session["session_id"])
+        except measurement.MeasurementError as error:
+            raise CandidateStateError("Sandcastle result contains an invalid session UUID") from error
+        if role not in expected or session_id != expected[role]:
+            raise CandidateStateError("Sandcastle result does not match evaluator session allocation")
+        if session["model"] != model:
+            raise CandidateStateError("Sandcastle result declares the wrong model")
+        if session["outcome"] not in {"completed", "failed", "timed_out"}:
+            raise CandidateStateError("Sandcastle session has an unsupported outcome")
+        seen[role] = session_id
+        normalized.append(session)
+    if seen != expected:
+        raise CandidateStateError("Sandcastle result is missing an expected session")
+    return result, normalized
+
+
+def validate_treatment_output(directory: Path) -> list[Path]:
+    try:
+        files = ordinary_files(directory)
+    except ValueError as error:
+        raise InfrastructureError(f"invalid treatment output boundary: {error}") from error
+    if not files:
+        raise InfrastructureError("treatment output contains no regular files")
+    return files
+
+
 def execute_repository(
     root: Path, case_id: str, frozen: Path, run_root: Path, plugin: Path,
     model: str, effort: str, timeout_seconds: int, arm: str,
-    *, timeline: measurement.Timeline | None = None,
+    *, timeline: measurement.Timeline | None = None, treatment: dict | None = None,
 ) -> dict:
     from skill_eval import parse_run, validate_candidate
 
@@ -538,6 +680,11 @@ def execute_repository(
     timeline = timeline or measurement.Timeline()
     task = read_json(frozen / "case.json")["repository_task"]
     definition = read_json(frozen / "case.json")
+    treatment = treatment or {}
+    treatment_descriptor = treatment.get("descriptor", {})
+    runner_kind = treatment_descriptor.get("runner", {}).get("kind", "direct-copilot")
+    entry_skill = treatment_descriptor.get("entry_skill")
+    parsed_skill = entry_skill or definition["target_skill"]
     result = {
         "schema_version": 1, "case_id": case_id, "case_type": "repository-task",
         "case_revision": digest(frozen / "case-manifest.json"),
@@ -548,6 +695,18 @@ def execute_repository(
         "remote_history_isolation": "not_enforced", "contamination": "not_assessed",
         "model": model, "effort": effort, "timeout_seconds": timeout_seconds,
         "home_mode": "isolated",
+        "treatment_identity_sha256": (
+            digest(run_root / "treatment-identity.json")
+            if (run_root / "treatment-identity.json").is_file() else None
+        ),
+        "treatment": {
+            "id": treatment_descriptor.get("id"),
+            "fingerprint": treatment.get("fingerprint"),
+            "runner_kind": runner_kind,
+            "entry_skill": entry_skill,
+            "intervention_policy": treatment_descriptor.get("intervention_policy"),
+            "admission_receipt": treatment.get("admission_receipt"),
+        },
     }
     stage = "admission"
     patch = run_root / "candidate.patch"
@@ -565,8 +724,8 @@ def execute_repository(
             + "\nRead the task and context in /evidence. Work in /workspace/repo.\n"
             + "Do not retrieve source-origin answers or historical solutions from the network.\n"
         )
-        if arm == "skill":
-            prompt = f"Invoke the `{definition['target_skill']}` skill unchanged.\n\n" + prompt
+        if arm == "skill" and runner_kind == "direct-copilot":
+            prompt = f"Invoke the `{entry_skill}` skill unchanged.\n\n" + prompt
         prompt_path = run_root / "candidate-prompt.md"
         prompt_path.write_text(prompt, encoding="utf-8")
         with tempfile.TemporaryDirectory(prefix=".candidate-", dir=run_root) as directory:
@@ -579,8 +738,14 @@ def execute_repository(
             git(repository, ["add", "--all", "--force"])
             git(repository, ["commit", "--quiet", "--allow-empty", "-m", "Frozen task source"])
             mounts = [(repository, "/workspace/repo", True), (evidence, "/evidence", False)]
-            if arm == "skill":
+            if arm == "skill" and runner_kind == "direct-copilot":
                 mounts.append((plugin, "/plugin", False))
+            if runner_kind != "direct-copilot":
+                mounts.extend([
+                    (Path(treatment["treatment_snapshot"]), "/treatment", False),
+                    (Path(treatment["adapter_snapshot"]), "/treatment-adapter", False),
+                    (Path(treatment["output_dir"]), "/treatment-output", True),
+                ])
             stage = "candidate_infrastructure"
             container = Container(task["image"], mounts, run_root / "candidate", network=True)
             try:
@@ -601,24 +766,75 @@ def execute_repository(
                     stage = "candidate"
                     timeline.switch("candidate")
                     session_id = str(uuid.uuid4())
+                    reviewer_session_id = str(uuid.uuid4()) if runner_kind != "direct-copilot" else None
                     result["candidate_session_id"] = session_id
-                    command = candidate_command(model, effort, prompt, arm, session_id)
+                    if reviewer_session_id:
+                        result["candidate_session_ids"] = {
+                            "candidate_implementer": session_id,
+                            "candidate_reviewer": reviewer_session_id,
+                        }
+                    command = (
+                        candidate_command(model, effort, prompt, arm, session_id)
+                        if runner_kind == "direct-copilot"
+                        else treatment_descriptor["runner"]["command"]
+                    )
                     invoked_at, invoked_clock = measurement.instant(), time.monotonic()
                     outcome = "failed"
+                    observed_session_ids: set[str] = set()
+                    malformed_session_paths: list[str] = []
+                    session_records = []
+                    session_validation_error = None
                     try:
                         record = container.execute(
-                            {"argv": command, "timeout_seconds": timeout_seconds}, "trajectory", token=True)
+                            {"argv": command, "timeout_seconds": timeout_seconds},
+                            "trajectory",
+                            token=True,
+                            environment=(
+                                {
+                                    "SKILL_EVAL_IMPLEMENTER_SESSION_ID": session_id,
+                                    "SKILL_EVAL_REVIEWER_SESSION_ID": reviewer_session_id,
+                                }
+                                if reviewer_session_id
+                                else None
+                            ),
+                        )
                         result["candidate"] = record
                         if record["timed_out"]:
                             outcome = "timed_out"
                             result.update(execution_status="FAIL", failure_kind="candidate_timeout")
                         elif record["exit_code"] != 0:
                             raise ValueError("candidate CLI failed; inspect retained trajectory")
+                        elif runner_kind != "direct-copilot":
+                            try:
+                                validate_treatment_output(Path(treatment["output_dir"]))
+                                treatment_result, session_records = validate_sandcastle_result(
+                                    Path(treatment["output_dir"]) / "treatment-result.json",
+                                    implementer_session_id=session_id,
+                                    reviewer_session_id=reviewer_session_id,
+                                    model=model,
+                                )
+                            except CandidateStateError as error:
+                                session_validation_error = str(error)
+                                raise
+                            output = resolve_under(
+                                Path(treatment["output_dir"]), treatment_result["output_file"]
+                            )
+                            shutil.copyfile(output, run_root / "candidate-output.md")
+                            shutil.copyfile(
+                                Path(treatment["output_dir"]) / "treatment-result.json",
+                                run_root / "treatment-result.json",
+                            )
+                            result["treatment_result"] = treatment_result
+                            result["usage"] = None
+                            result["tool_calls"] = None
+                            result["input_tokens"] = None
+                            result["output_tokens"] = None
+                            outcome = "completed"
                         else:
                             outcome = "completed"
                             parsed = parse_run(
                                 run_root / "candidate" / "trajectory.log",
-                                skill=definition["target_skill"], expected_model=model,
+                                skill=parsed_skill, expected_model=model,
                                 cwd=Path("/workspace/repo"), require_skill=arm == "skill",
                                 boundary="docker-local-packets",
                             )
@@ -632,23 +848,86 @@ def execute_repository(
                         outcome = "interrupted"
                         raise
                     finally:
+                        if runner_kind != "direct-copilot" and container.created and not container.stopped:
+                            observed_session_ids, malformed_session_paths = container.session_ids()
                         timeline.switch("cleanup", status=outcome)
                         try:
                             container.stop()
                         finally:
-                            measurement.collect(
-                                destination=run_root / "measurements" / "candidate.json",
-                                session_id=session_id, role="candidate", phase=phase["id"],
-                                model=model, effort=effort, cli_version=result["candidate_cli"]["version"],
-                                log=run_root / "candidate" / "trajectory.log",
-                                capture=lambda: container.usage_events(session_id),
-                                source="container_eventfile", started_at=invoked_at,
-                                started_clock=invoked_clock, outcome=outcome,
-                            )
+                            if runner_kind == "direct-copilot":
+                                measurement.collect(
+                                    destination=run_root / "measurements" / "candidate.json",
+                                    session_id=session_id, role="candidate", phase=phase["id"],
+                                    model=model, effort=effort,
+                                    cli_version=result["candidate_cli"]["version"],
+                                    log=run_root / "candidate" / "trajectory.log",
+                                    capture=lambda: container.usage_events(session_id),
+                                    source="container_eventfile", started_at=invoked_at,
+                                    started_clock=invoked_clock, outcome=outcome,
+                                )
+                            else:
+                                if not session_records:
+                                    session_records = [{
+                                        "session_id": session_id,
+                                        "role": "candidate_implementer",
+                                        "model": model,
+                                        "outcome": outcome,
+                                    }]
+                                    if reviewer_session_id in observed_session_ids:
+                                        session_records.append({
+                                            "session_id": reviewer_session_id,
+                                            "role": "candidate_reviewer",
+                                            "model": model,
+                                            "outcome": outcome,
+                                        })
+                                declared = {item["session_id"] for item in session_records}
+                                undeclared = sorted(observed_session_ids - declared)
+                                missing = sorted(declared - observed_session_ids)
+                                coverage_errors = [
+                                    *(
+                                        [f"invalid Sandcastle session result: {session_validation_error}"]
+                                        if session_validation_error else []
+                                    ),
+                                    *[f"undeclared candidate session observed: {value}" for value in undeclared],
+                                    *[f"expected candidate session telemetry missing: {value}" for value in missing],
+                                    *[f"malformed candidate session path observed: {value}"
+                                      for value in malformed_session_paths],
+                                ]
+                                write_json(run_root / "candidate-session-coverage.json", {
+                                    "schema_version": 1,
+                                    "allocated": result["candidate_session_ids"],
+                                    "declared": sorted(declared),
+                                    "observed": sorted(observed_session_ids),
+                                    "undeclared": undeclared,
+                                    "missing": missing,
+                                    "malformed_paths": malformed_session_paths,
+                                    "complete": not coverage_errors,
+                                })
+                                for item in session_records:
+                                    measurement.collect(
+                                        destination=run_root / "measurements" / f"{item['role']}.json",
+                                        session_id=item["session_id"], role="candidate",
+                                        subrole=item["role"], phase=item["role"], model=model,
+                                        effort=effort, cli_version=result["candidate_cli"]["version"],
+                                        log=run_root / "candidate" / "trajectory.log",
+                                        capture=lambda value=item["session_id"]: container.usage_events(value),
+                                        source="container_eventfile", started_at=invoked_at,
+                                        started_clock=invoked_clock, outcome=item["outcome"],
+                                        coverage_errors=coverage_errors,
+                                    )
             finally:
                 # Export only after the context has stopped/removed its sole writer.
                 if container.created and not container.stopped:
                     raise InfrastructureError("candidate stop could not be confirmed; patch not exported")
+                if runner_kind != "direct-copilot":
+                    try:
+                        validate_treatment_output(Path(treatment["output_dir"]))
+                    except InfrastructureError:
+                        for name in ("candidate-output.md", "treatment-result.json"):
+                            copied = run_root / name
+                            if copied.is_file() and not copied.is_symlink():
+                                copied.unlink()
+                        raise
                 export_patch(frozen, repository, patch)
                 result["patch_sha256"] = digest(patch)
             if result["failure_kind"] != "candidate_timeout":
@@ -680,8 +959,9 @@ def execute_repository(
             "failed" if result["execution_status"] == "INVALID" else "completed"))
     result["artifacts"] = [
         {"path": path.relative_to(run_root).as_posix(), "sha256": digest(path)}
-        for path in sorted(run_root.rglob("*"))
-        if path.is_file() and "target-plugin" not in path.relative_to(run_root).parts
+        for path in artifact_files(
+            run_root, excluded={"target-plugin", "treatment-output"}
+        )
     ]
     write_json(run_root / "execution-result.json", result)
     return result

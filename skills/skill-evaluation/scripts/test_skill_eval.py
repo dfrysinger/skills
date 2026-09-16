@@ -11,12 +11,17 @@ from unittest import mock
 
 from skill_eval import (
     add_case,
+    compatibility_result,
+    digest,
+    directory_identity,
     freeze_case,
     frozen_case_path,
     init_corpus,
+    load_treatment,
     parse_run,
     run_case,
     run_suite,
+    require_treatment_admission,
     validate_judgment,
     verify_case,
 )
@@ -57,6 +62,192 @@ class SkillEvalTests(unittest.TestCase):
             "candidate must react correctly\n", encoding="utf-8"
         )
         return case_dir
+
+    def make_treatment(self, entry_skill: str = "alternate-skill") -> Path:
+        path = Path(self.temp.name) / "treatment.json"
+        write = {
+            "schema_version": 1,
+            "id": "alternate-workflow",
+            "source": {
+                "repository": "https://example.invalid/workflow",
+                "revision": "a" * 40,
+                "license": "MIT",
+                "retrieved_at": "2026-09-16T00:00:00Z",
+            },
+            "runner": {"kind": "direct-copilot"},
+            "compatibility": {
+                "language": ["python"],
+                "preapproved_plan": True,
+            },
+            "entry_skill": entry_skill,
+            "intervention_policy": "approved-plan-v1",
+            "adapter": {"digest": "0" * 64, "description": "No upstream changes."},
+        }
+        path.write_text(json.dumps(write, indent=2) + "\n")
+        return path
+
+    def test_treatment_descriptor_is_strict_and_compatibility_is_explicit(self) -> None:
+        path = self.make_treatment()
+        treatment = load_treatment(path)
+        admitted = compatibility_result(
+            {"compatibility": {"language": "python", "preapproved_plan": True}},
+            treatment,
+        )
+        self.assertEqual(admitted["status"], "ADMITTED")
+        blocked = compatibility_result(
+            {"compatibility": {"language": "typescript", "preapproved_plan": True}},
+            treatment,
+        )
+        self.assertEqual(blocked["status"], "BLOCKED")
+        value = json.loads(path.read_text())
+        value["unexpected"] = True
+        path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "unknown fields"):
+            load_treatment(path)
+
+    def test_sandcastle_descriptor_accepts_only_frozen_runner(self) -> None:
+        adapter = Path(self.temp.name) / "sandcastle-adapter"
+        adapter.mkdir()
+        (adapter / "main.mjs").write_text("// frozen adapter\n")
+        (adapter / "__pycache__").mkdir()
+        (adapter / "__pycache__" / "ignored.pyc").write_bytes(b"ignored")
+        (adapter / ".git").mkdir()
+        (adapter / ".git" / "config").write_text("ignored\n")
+        treatment_dir = Path(self.temp.name) / "sandcastle-treatment"
+        treatment_dir.mkdir()
+        path = treatment_dir / "treatment.json"
+        value = {
+            "schema_version": 1,
+            "id": "sandcastle-sequential-reviewer-copilot-outer-isolated",
+            "source": {
+                "package": "@ai-hero/sandcastle",
+                "revision": "e99f832f26dc9d245c019a9ddd19fa5dee792427",
+                "version": "0.12.0",
+                "license": "MIT",
+                "retrieved_at": "2026-09-16T00:00:00Z",
+            },
+            "runner": {
+                "kind": "sandcastle-sequential-reviewer-copilot-outer-isolated",
+                "command": ["node", "/treatment-adapter/main.mjs"],
+                "model": "gpt-5.6-sol-fast",
+                "session_subroles": ["candidate_implementer", "candidate_reviewer"],
+            },
+            "compatibility": {
+                "language": ["typescript"],
+                "package_system": ["npm"],
+                "remote_side_effects_allowed": False,
+            },
+            "entry_skill": None,
+            "intervention_policy": "fixture-local-one-issue",
+            "adapter": {
+                "digest": directory_identity(adapter)["sha256"],
+                "description": "Copilot provider, outer isolation, one issue.",
+            },
+        }
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        treatment = load_treatment(path, sandcastle=True, adapter_dir=adapter)
+        self.assertEqual(treatment["descriptor"]["runner"]["command"],
+                         ["node", "/treatment-adapter/main.mjs"])
+        value["runner"]["command"] = ["node", "/treatment-adapter/other.mjs"]
+        path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "frozen command"):
+            load_treatment(path, sandcastle=True, adapter_dir=adapter)
+
+    def test_treatment_admission_binding_is_required_and_artifact_checked(self) -> None:
+        binding = {"treatment_fingerprint": "f" * 64}
+        run = self.root / "treatment-admission-runs" / "admission" / "example-case"
+        run.mkdir(parents=True)
+        receipt_path = run / "treatment-admission-receipt.json"
+        receipt_path.write_text(json.dumps({
+            "schema_version": 1, "status": "PASS", "binding": binding, "artifacts": [],
+        }))
+        with self.assertRaisesRegex(ValueError, "matching successful"):
+            require_treatment_admission(self.root, binding)
+        names = {
+            "treatment-identity.json": {},
+            "skill-identity.json": {},
+            "harness-identity.json": {},
+            "compatibility.json": {},
+            "execution-result.json": {"execution_status": "PASS"},
+            "repository-result.json": {"behavioral_verdict": "PASS"},
+        }
+        for name, value in names.items():
+            (run / name).write_text(json.dumps(value) + "\n")
+        (run / "candidate.patch").write_text("patch\n")
+        artifacts = [
+            {"path": path.name, "sha256": digest(path)}
+            for path in sorted(run.iterdir())
+            if path != receipt_path
+        ]
+        receipt_path.write_text(json.dumps({
+            "schema_version": 1,
+            "status": "PASS",
+            "binding": binding,
+            "artifacts": artifacts,
+        }))
+        self.assertEqual(require_treatment_admission(self.root, binding), receipt_path)
+        (run / "treatment-identity.json").write_text('{"changed":true}\n')
+        with self.assertRaisesRegex(ValueError, "artifact digest mismatch"):
+            require_treatment_admission(self.root, binding)
+        (run / "treatment-identity.json").unlink()
+        (run / "treatment-identity.json").symlink_to(run / "skill-identity.json")
+        with self.assertRaisesRegex(ValueError, "must not be a symlink"):
+            require_treatment_admission(self.root, binding)
+
+    def test_direct_treatment_entry_skill_overrides_case_target(self) -> None:
+        case_dir = self.make_case()
+        definition_path = case_dir / "case.json"
+        definition = json.loads(definition_path.read_text())
+        definition["compatibility"] = {"language": "python", "preapproved_plan": True}
+        for phase in definition["phases"]:
+            phase["must_include"] = ["candidate-result"]
+        definition_path.write_text(json.dumps(definition, indent=2) + "\n")
+        freeze_case(self.root, "example-case", replace=False)
+
+        plugin = Path(self.temp.name) / "entry-plugin"
+        for name in ("example-skill", "alternate-skill"):
+            skill = plugin / "skills" / name
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(f"# {name}\n")
+        fake = Path(self.temp.name) / "entry-copilot"
+        fake.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json,sys\n"
+            "if '--version' in sys.argv:\n print('fake-copilot 1.0'); raise SystemExit(0)\n"
+            "prompt=sys.argv[sys.argv.index('-p')+1]\n"
+            "model=sys.argv[sys.argv.index('--model')+1]\n"
+            "if 'independent behavioral judge' in prompt:\n"
+            " out=json.dumps({'verdict':'PASS','confidence':'HIGH','matched':['claim'],"
+            "'missed':[],'overcorrections':[],'generalized_skill_defect':None})\n"
+            "else:\n"
+            " print(json.dumps({'type':'tool.execution_start','data':{'toolName':'skill',"
+            "'arguments':{'skill':'alternate-skill'},'model':model}}))\n"
+            " out='candidate-result'\n"
+            "print(json.dumps({'type':'assistant.message','data':{'content':out,'model':model}}))\n"
+            "print(json.dumps({'type':'result','exitCode':0}))\n"
+        )
+        os.chmod(fake, 0o755)
+        run = run_case(
+            self.root,
+            "example-case",
+            plugin,
+            fake,
+            "fake-model",
+            "high",
+            "existing",
+            60,
+            treatment_file=self.make_treatment(),
+        )
+        receipt = json.loads((run / "candidate-pass-1-receipt.json").read_text())
+        self.assertTrue(receipt["skill_invoked"])
+        self.assertEqual(
+            json.loads((run / "skill-identity.json").read_text())["name"],
+            "alternate-skill",
+        )
+        self.assertEqual(
+            json.loads((run / "compatibility.json").read_text())["status"],
+            "ADMITTED",
+        )
 
     def test_freeze_and_verify(self) -> None:
         self.make_case()
