@@ -451,15 +451,7 @@ whether it copied reference wording. Identify overcorrection, unsupported
 claims, and any evidence-backed boundary the candidate weakened.
 {JUDGE_RUNTIME_CONTRACT}
 
-Return only JSON with:
-{{
-  "verdict": "PASS | FAIL | UNANSWERABLE",
-  "confidence": "LOW | MEDIUM | HIGH",
-  "matched": [],
-  "missed": [],
-  "overcorrections": [],
-  "generalized_skill_defect": null
-}}
+{JUDGE_OUTPUT_CONTRACT}
 """
 
 
@@ -473,6 +465,16 @@ Use `UNANSWERABLE` only when the hidden criteria's unanswerable condition is
 met, and name each decisive missing artifact or fact in `missed`; never return
 a bare `UNANSWERABLE`.
 """
+
+JUDGE_OUTPUT_CONTRACT = """Return only JSON with:
+{
+  "verdict": "PASS | FAIL | UNANSWERABLE",
+  "confidence": "LOW | MEDIUM | HIGH",
+  "matched": [],
+  "missed": [],
+  "overcorrections": [],
+  "generalized_skill_defect": null
+}"""
 
 
 def add_case(
@@ -1258,6 +1260,8 @@ def run_judges(
             prompt_body = (frozen / judge["prompt_file"]).read_text(encoding="utf-8")
             if JUDGE_RUNTIME_CONTRACT not in prompt_body:
                 prompt_body = f"{prompt_body.rstrip()}\n\n{JUDGE_RUNTIME_CONTRACT}"
+            if JUDGE_OUTPUT_CONTRACT not in prompt_body:
+                prompt_body = f"{prompt_body.rstrip()}\n\n{JUDGE_OUTPUT_CONTRACT}"
             repository_contract = ""
             if definition.get("case_type") == "repository-task":
                 repository_contract = (

@@ -105,6 +105,18 @@ class SkillEvalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown fields"):
             load_treatment(path)
 
+    def test_custom_judge_prompt_receives_required_json_contract(self) -> None:
+        from skill_eval import JUDGE_OUTPUT_CONTRACT, JUDGE_RUNTIME_CONTRACT
+
+        custom = "Judge the behavior and return PASS, FAIL, or UNANSWERABLE."
+        if JUDGE_RUNTIME_CONTRACT not in custom:
+            custom = f"{custom.rstrip()}\n\n{JUDGE_RUNTIME_CONTRACT}"
+        if JUDGE_OUTPUT_CONTRACT not in custom:
+            custom = f"{custom.rstrip()}\n\n{JUDGE_OUTPUT_CONTRACT}"
+
+        self.assertIn('"verdict": "PASS | FAIL | UNANSWERABLE"', custom)
+        self.assertIn('"confidence": "LOW | MEDIUM | HIGH"', custom)
+
     def test_sandcastle_descriptor_accepts_only_frozen_runner(self) -> None:
         adapter = Path(self.temp.name) / "sandcastle-adapter"
         adapter.mkdir()
