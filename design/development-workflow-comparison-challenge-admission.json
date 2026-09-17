@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "revision": "workflow-comparison-challenge-admission-r1",
+  "current_record": null,
+  "pending_action": "Authorize normal design review of the systemic work order before implementation.",
+  "changed_inputs": [
+    "The user approved every recommended complete-process and specialist treatment.",
+    "The user removed budget as a treatment-selection limit and prioritized per-VM parallelism.",
+    "Public source inspection established exact Superpowers, Compound Engineering, Sandcastle, and Matt Pocock skill revisions and execution boundaries.",
+    "The existing evaluator supports one direct baseline or target-skill candidate but not multi-step checkpoints or external multi-session orchestration."
+  ],
+  "named_trigger": [
+    "Add a reusable treatment-package protocol.",
+    "Add an external-command runner and child-session attribution contract.",
+    "Add resumed repository candidate steps for deterministic human checkpoints.",
+    "Establish a private distributed VM campaign boundary."
+  ],
+  "decision": "FULL",
+  "reason": "There is no current challenge record for this new systemic architecture, and the proposal adds reusable protocols and a new multi-agent execution boundary."
+}

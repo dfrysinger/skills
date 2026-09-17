@@ -15,12 +15,43 @@ import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
+
+import measurement
 
 
 CASE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 DEFAULT_JUDGES = ["claude-opus-5", "gpt-5.6-terra"]
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+SOURCE_REVISION_RE = re.compile(r"^[0-9a-f]{40,64}$")
+SOURCE_VERSION_RE = re.compile(
+    r"^[0-9]+(?:\.[0-9]+){2}(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?"
+    r"(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$"
+)
+TREATMENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+COMPATIBILITY_FIELDS = {
+    "language",
+    "package_system",
+    "preapproved_plan",
+    "public_seam_approved",
+    "fast_deterministic_reproduction",
+    "remote_side_effects_allowed",
+}
+SANDCASTLE_ID = "sandcastle-sequential-reviewer-copilot-outer-isolated"
+SANDCASTLE_SOURCE = {
+    "package": "@ai-hero/sandcastle",
+    "revision": "e99f832f26dc9d245c019a9ddd19fa5dee792427",
+    "version": "0.12.0",
+    "license": "MIT",
+}
+SANDCASTLE_RUNNER = {
+    "kind": SANDCASTLE_ID,
+    "command": ["node", "/treatment-adapter/main.mjs"],
+    "model": "gpt-5.6-sol-fast",
+    "session_subroles": ["candidate_implementer", "candidate_reviewer"],
+}
 
 
 def digest(path: Path) -> str:
@@ -34,6 +65,324 @@ def write_json(path: Path, value: object) -> None:
 
 def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def strict_fields(value: object, required: set[str], optional: set[str], label: str) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be an object")
+    fields = set(value)
+    missing = required - fields
+    unknown = fields - required - optional
+    if missing:
+        raise ValueError(f"{label} missing fields: {sorted(missing)}")
+    if unknown:
+        raise ValueError(f"{label} has unknown fields: {sorted(unknown)}")
+    return value
+
+
+def json_fingerprint(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    ).hexdigest()
+
+
+def directory_identity(directory: Path) -> dict:
+    directory = directory.resolve()
+    if not directory.is_dir():
+        raise ValueError(f"snapshot directory does not exist: {directory}")
+    files = []
+    for root, directories, names in os.walk(directory):
+        directories[:] = sorted(
+            name for name in directories if name not in {".git", "__pycache__"}
+        )
+        for name in sorted(names):
+            if name in {".DS_Store"} or name.endswith(".pyc"):
+                continue
+            path = Path(root) / name
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(f"snapshot identity refuses non-regular file: {path}")
+            files.append({
+                "path": path.relative_to(directory).as_posix(),
+                "sha256": digest(path),
+                "mode": path.stat().st_mode & 0o777,
+            })
+    if not files:
+        raise ValueError(f"snapshot directory contains no files: {directory}")
+    return {"files": files, "sha256": json_fingerprint(files)}
+
+
+def validate_compatibility(value: object, label: str) -> dict:
+    compatibility = strict_fields(value, set(), COMPATIBILITY_FIELDS, label)
+    normalized = {}
+    for field, requirement in compatibility.items():
+        if field in {"language", "package_system"}:
+            if (
+                not isinstance(requirement, list)
+                or not requirement
+                or not all(isinstance(item, str) and item.strip() for item in requirement)
+                or len(requirement) != len(set(requirement))
+            ):
+                raise ValueError(f"{label}.{field} must be a unique nonempty string array")
+            normalized[field] = sorted(requirement)
+        elif type(requirement) is not bool:
+            raise ValueError(f"{label}.{field} must be a boolean")
+        else:
+            normalized[field] = requirement
+    return normalized
+
+
+def validate_source(value: object, *, sandcastle: bool = False) -> dict:
+    source = strict_fields(
+        value,
+        {"license", "retrieved_at"},
+        {"repository", "package", "revision", "version"},
+        "treatment source",
+    )
+    if not any(isinstance(source.get(field), str) and source[field] for field in ("repository", "package")):
+        raise ValueError("treatment source requires repository or package")
+    if not any(isinstance(source.get(field), str) and source[field] for field in ("revision", "version")):
+        raise ValueError("treatment source requires immutable revision or version")
+    for field, item in source.items():
+        if not isinstance(item, str) or not item.strip() or "\0" in item:
+            raise ValueError(f"treatment source {field} must be a nonempty string")
+    revision = source.get("revision")
+    version = source.get("version")
+    if revision is not None and not SOURCE_REVISION_RE.fullmatch(revision):
+        raise ValueError("treatment source revision must be an immutable commit digest")
+    if version is not None and not SOURCE_VERSION_RE.fullmatch(version):
+        raise ValueError("treatment source version must be an exact semantic version")
+    try:
+        datetime.fromisoformat(source["retrieved_at"].replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("treatment source retrieved_at must be an ISO timestamp") from error
+    if sandcastle and any(source.get(field) != expected for field, expected in SANDCASTLE_SOURCE.items()):
+        raise ValueError("Sandcastle source identity differs from the frozen treatment")
+    return source
+
+
+def validate_adapter(value: object) -> dict:
+    adapter = strict_fields(value, {"digest", "description"}, set(), "treatment adapter")
+    if not isinstance(adapter["digest"], str) or not SHA256_RE.fullmatch(adapter["digest"]):
+        raise ValueError("treatment adapter digest must be lowercase sha256")
+    if not isinstance(adapter["description"], str) or not adapter["description"].strip():
+        raise ValueError("treatment adapter description must be nonempty")
+    return adapter
+
+
+def load_treatment(
+    path: Path,
+    *,
+    sandcastle: bool = False,
+    adapter_dir: Path | None = None,
+) -> dict:
+    descriptor = strict_fields(
+        read_json(path),
+        {
+            "schema_version",
+            "id",
+            "source",
+            "runner",
+            "compatibility",
+            "entry_skill",
+            "intervention_policy",
+            "adapter",
+        },
+        set(),
+        "treatment descriptor",
+    )
+    if descriptor["schema_version"] != 1:
+        raise ValueError("unsupported treatment descriptor schema")
+    if not isinstance(descriptor["id"], str) or not TREATMENT_ID_RE.fullmatch(descriptor["id"]):
+        raise ValueError("treatment id must use lowercase letters, numbers, and hyphens")
+    descriptor["source"] = validate_source(descriptor["source"], sandcastle=sandcastle)
+    descriptor["compatibility"] = validate_compatibility(
+        descriptor["compatibility"], "treatment compatibility"
+    )
+    descriptor["adapter"] = validate_adapter(descriptor["adapter"])
+    if not isinstance(descriptor["intervention_policy"], str) or not descriptor[
+        "intervention_policy"
+    ].strip():
+        raise ValueError("treatment intervention_policy must be nonempty")
+    if sandcastle:
+        if descriptor["id"] != SANDCASTLE_ID:
+            raise ValueError("unsupported external treatment id")
+        if descriptor["runner"] != SANDCASTLE_RUNNER:
+            raise ValueError("Sandcastle runner contract differs from the frozen command")
+        if descriptor["entry_skill"] is not None:
+            raise ValueError("Sandcastle treatment cannot declare an entry skill")
+        if adapter_dir is None:
+            raise ValueError("Sandcastle treatment requires an adapter directory")
+        identity = directory_identity(adapter_dir)
+        if identity["sha256"] != descriptor["adapter"]["digest"]:
+            raise ValueError("Sandcastle adapter digest mismatch")
+        if not (adapter_dir / "main.mjs").is_file():
+            raise ValueError("Sandcastle adapter requires main.mjs")
+        source_identity = directory_identity(path.parent)
+    else:
+        runner = strict_fields(descriptor["runner"], {"kind"}, set(), "treatment runner")
+        if runner["kind"] != "direct-copilot":
+            raise ValueError("direct treatment runner must be direct-copilot")
+        if not isinstance(descriptor["entry_skill"], str) or not CASE_ID_RE.fullmatch(
+            descriptor["entry_skill"]
+        ):
+            raise ValueError("direct treatment requires a valid entry_skill")
+        identity = None
+        source_identity = None
+    return {
+        "descriptor": descriptor,
+        "descriptor_sha256": digest(path),
+        "fingerprint": json_fingerprint(descriptor),
+        "adapter_identity": identity,
+        "source_identity": source_identity,
+    }
+
+
+def legacy_treatment(arm: str, target_skill: str) -> dict:
+    descriptor = {
+        "schema_version": 1,
+        "id": "legacy-baseline" if arm == "baseline" else "legacy-skill",
+        "source": {"kind": "legacy-evaluator"},
+        "runner": {"kind": "direct-copilot"},
+        "compatibility": {},
+        "entry_skill": target_skill if arm == "skill" else None,
+        "intervention_policy": "legacy-case-contract",
+        "adapter": {"digest": None, "description": "legacy evaluator behavior"},
+    }
+    return {
+        "descriptor": descriptor,
+        "descriptor_sha256": None,
+        "fingerprint": json_fingerprint(descriptor),
+        "adapter_identity": None,
+        "source_identity": None,
+    }
+
+
+def compatibility_result(definition: dict, treatment: dict) -> dict:
+    requirements = treatment["descriptor"]["compatibility"]
+    case = definition.get("compatibility", {})
+    if not isinstance(case, dict) or set(case) - COMPATIBILITY_FIELDS:
+        raise ValueError("case compatibility contains unsupported predicates")
+    reasons = []
+    for field, expected in requirements.items():
+        actual = case.get(field)
+        if field in {"language", "package_system"}:
+            if actual not in expected:
+                reasons.append(f"{field}={actual!r} is not in {expected!r}")
+        elif actual is not expected:
+            reasons.append(f"{field}={actual!r} does not match required {expected!r}")
+    return {
+        "schema_version": 1,
+        "status": "BLOCKED" if reasons else "ADMITTED",
+        "treatment_id": treatment["descriptor"]["id"],
+        "requirements": requirements,
+        "case": {field: case.get(field) for field in sorted(requirements)},
+        "reasons": reasons,
+    }
+
+
+def resolve_treatment(
+    definition: dict,
+    arm: str,
+    *,
+    treatment_file: Path | None = None,
+    sandcastle_treatment_file: Path | None = None,
+    sandcastle_adapter_dir: Path | None = None,
+) -> tuple[dict, dict]:
+    if treatment_file and (sandcastle_treatment_file or sandcastle_adapter_dir):
+        raise ValueError("direct and Sandcastle treatment options are mutually exclusive")
+    if bool(sandcastle_treatment_file) != bool(sandcastle_adapter_dir):
+        raise ValueError("Sandcastle treatment file and adapter directory are required together")
+    if (treatment_file or sandcastle_treatment_file) and arm != "skill":
+        raise ValueError("treatment descriptors require --arm skill")
+    if sandcastle_treatment_file:
+        if definition.get("case_type") != "repository-task":
+            raise ValueError("Sandcastle treatments require a repository-task case")
+        treatment = load_treatment(
+            sandcastle_treatment_file, sandcastle=True, adapter_dir=sandcastle_adapter_dir
+        )
+        treatment["source_path"] = str(sandcastle_treatment_file.resolve())
+        treatment["adapter_path"] = str(sandcastle_adapter_dir.resolve())
+    elif treatment_file:
+        treatment = load_treatment(treatment_file)
+        treatment["source_path"] = str(treatment_file.resolve())
+    else:
+        treatment = legacy_treatment(arm, definition["target_skill"])
+    return treatment, compatibility_result(definition, treatment)
+
+
+def treatment_admission_binding(
+    *,
+    case_revision: str,
+    treatment: dict,
+    skill: dict,
+    plugin: dict,
+    harness: dict,
+    model: str,
+    effort: str,
+) -> dict:
+    return {
+        "case_revision": case_revision,
+        "treatment_fingerprint": treatment["fingerprint"],
+        "source_identity": treatment["source_identity"],
+        "adapter_identity": treatment["adapter_identity"],
+        "skill_identity": json_fingerprint({
+            "name": skill.get("name"),
+            "files": skill.get("files", []),
+        }),
+        "plugin_identity": plugin["sha256"],
+        "harness_identity": json_fingerprint(harness["modules"]),
+        "runner_kind": treatment["descriptor"]["runner"]["kind"],
+        "model": model,
+        "effort": effort,
+    }
+
+
+def require_treatment_admission(root: Path, binding: dict) -> Path:
+    required = {
+        "treatment-identity.json",
+        "skill-identity.json",
+        "plugin-identity.json",
+        "harness-identity.json",
+        "compatibility.json",
+        "execution-result.json",
+        "repository-result.json",
+        "candidate.patch",
+    }
+    pattern = "treatment-admission-runs/*/*/treatment-admission-receipt.json"
+    for path in sorted(root.glob(pattern), reverse=True):
+        receipt = read_json(path)
+        if (
+            receipt.get("schema_version") != 1
+            or receipt.get("status") != "PASS"
+            or receipt.get("binding") != binding
+            or not isinstance(receipt.get("artifacts"), list)
+        ):
+            continue
+        artifacts = receipt["artifacts"]
+        names = [artifact.get("path") for artifact in artifacts if isinstance(artifact, dict)]
+        if len(names) != len(set(names)) or not required.issubset(names):
+            continue
+        for artifact in artifacts:
+            if set(artifact) != {"path", "sha256"} or not SHA256_RE.fullmatch(
+                str(artifact["sha256"])
+            ):
+                raise ValueError("malformed treatment admission artifact identity")
+            unresolved = path.parent / artifact["path"]
+            if unresolved.is_symlink():
+                raise ValueError("treatment admission artifact must not be a symlink")
+            source = resolve_under(path.parent, artifact["path"])
+            if not source.is_file() or digest(source) != artifact["sha256"]:
+                raise ValueError("treatment admission artifact digest mismatch")
+        execution = read_json(path.parent / "execution-result.json")
+        repository = read_json(path.parent / "repository-result.json")
+        if execution.get("execution_status") != "PASS" or repository.get(
+            "behavioral_verdict"
+        ) != "PASS":
+            raise ValueError("treatment admission result is not successful")
+        return path
+    raise ValueError(
+        "matching successful treatment admission required; rerun with --treatment-admission"
+    )
 
 
 def utc_stamp() -> str:
@@ -116,15 +465,7 @@ whether it copied reference wording. Identify overcorrection, unsupported
 claims, and any evidence-backed boundary the candidate weakened.
 {JUDGE_RUNTIME_CONTRACT}
 
-Return only JSON with:
-{{
-  "verdict": "PASS | FAIL | UNANSWERABLE",
-  "confidence": "LOW | MEDIUM | HIGH",
-  "matched": [],
-  "missed": [],
-  "overcorrections": [],
-  "generalized_skill_defect": null
-}}
+{JUDGE_OUTPUT_CONTRACT}
 """
 
 
@@ -139,9 +480,26 @@ met, and name each decisive missing artifact or fact in `missed`; never return
 a bare `UNANSWERABLE`.
 """
 
+JUDGE_OUTPUT_CONTRACT = """Return only JSON with:
+{
+  "verdict": "PASS | FAIL | UNANSWERABLE",
+  "confidence": "LOW | MEDIUM | HIGH",
+  "matched": [],
+  "missed": [],
+  "overcorrections": [],
+  "generalized_skill_defect": null
+}"""
 
-def add_case(root: Path, case_id: str, skill: str, phases: list[str]) -> None:
+
+def add_case(
+    root: Path, case_id: str, skill: str, phases: list[str], *,
+    case_type: str = "prose",
+) -> None:
     ensure_case_id(case_id)
+    if case_type not in {"prose", "repository-task"}:
+        raise ValueError(f"unsupported case type: {case_type}")
+    if case_type == "repository-task" and len(phases) != 1:
+        raise ValueError("repository tasks require exactly one candidate phase")
     if not phases or len(set(phases)) != len(phases):
         raise ValueError("provide one or more unique --phase values")
     for phase in phases:
@@ -202,6 +560,9 @@ def add_case(root: Path, case_id: str, skill: str, phases: list[str]) -> None:
             },
         },
     )
+    if case_type == "repository-task":
+        from repository_task import scaffold_repository
+        scaffold_repository(case_dir)
     corpus["cases"].append(case_id)
     corpus["cases"].sort()
     write_json(corpus_path(root), corpus)
@@ -223,6 +584,8 @@ def copy_with_manifest(
     label: str,
     case_id: str,
     case_dir: Path,
+    *,
+    preserve_modes: bool = False,
 ) -> dict:
     case_dir = case_dir.resolve()
     files = []
@@ -231,6 +594,8 @@ def copy_with_manifest(
         target = target_root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
+        if preserve_modes:
+            shutil.copymode(source, target)
         files.append(
             {
                 "path": relative.as_posix(),
@@ -242,6 +607,8 @@ def copy_with_manifest(
                 },
             }
         )
+        if preserve_modes:
+            files[-1]["mode"] = source.stat().st_mode & 0o777
     manifest = {
         "schema_version": 1,
         "case_id": case_id,
@@ -259,6 +626,13 @@ def freeze_case(root: Path, case_id: str, replace: bool) -> Path:
         raise ValueError(f"unknown case: {case_id}")
     case_dir = root / "cases" / case_id
     definition = read_json(case_dir / "case.json")
+    case_type = definition.get("case_type", "prose")
+    if case_type not in {"prose", "repository-task"}:
+        raise ValueError(f"unsupported case type: {case_type}")
+    repository = case_type == "repository-task"
+    if repository:
+        from repository_task import validate_definition
+        validate_definition(definition, case_dir)
     if definition.get("case_id") != case_id:
         raise ValueError("case.json ID does not match its directory")
     if definition.get("behavioral_claim", "").startswith("Replace "):
@@ -311,6 +685,7 @@ def freeze_case(root: Path, case_id: str, replace: bool) -> Path:
                 phase_id,
                 case_id,
                 case_dir,
+                preserve_modes=repository,
             )
             if not manifest["files"]:
                 raise ValueError(f"phase {phase_id} has no evidence files")
@@ -333,6 +708,7 @@ def freeze_case(root: Path, case_id: str, replace: bool) -> Path:
             "judge-reference",
             case_id,
             case_dir,
+            preserve_modes=repository,
         )
         if not judge_manifest["files"]:
             raise ValueError("judge-reference has no evidence files")
@@ -358,6 +734,16 @@ def freeze_case(root: Path, case_id: str, replace: bool) -> Path:
                 "file_count": len(judge_manifest["files"]),
             },
         }
+        if repository:
+            source = resolve_under(case_dir, definition["repository_task"]["snapshot_dir"])
+            manifest = copy_with_manifest(
+                source, stage / "repository", "repository", case_id, case_dir,
+                preserve_modes=True,
+            )
+            root_manifest["repository_packet"] = {
+                "manifest_sha256": digest(stage / "repository" / "bundle-manifest.json"),
+                "file_count": len(manifest["files"]),
+            }
         write_json(stage / "case-manifest.json", root_manifest)
 
         revision = digest(stage / "case-manifest.json")
@@ -408,6 +794,8 @@ def verify_bundle(bundle: Path) -> int:
         source = resolve_under(bundle, relative)
         if not source.is_file() or digest(source) != record["sha256"]:
             raise ValueError(f"bundle digest mismatch: {source}")
+        if "mode" in record and source.stat().st_mode & 0o777 != record["mode"]:
+            raise ValueError(f"bundle mode mismatch: {source}")
         allowed.add(Path(relative).as_posix())
         count += 1
     actual = {
@@ -446,6 +834,19 @@ def verify_case(root: Path, case_id: str) -> int:
     if digest(judge_manifest) != root_manifest["judge_packet"]["manifest_sha256"]:
         raise ValueError("judge manifest digest mismatch")
     count += verify_bundle(judge_bundle)
+    definition = read_json(target / "case.json")
+    case_type = definition.get("case_type", "prose")
+    if case_type not in {"prose", "repository-task"}:
+        raise ValueError(f"unsupported case type: {case_type}")
+    if case_type == "repository-task":
+        from repository_task import validate_definition
+        validate_definition(definition, target, frozen=True)
+        repository = target / "repository"
+        if digest(repository / "bundle-manifest.json") != root_manifest.get(
+            "repository_packet", {}
+        ).get("manifest_sha256"):
+            raise ValueError("repository manifest digest mismatch")
+        count += verify_bundle(repository)
     return count
 
 
@@ -456,18 +857,25 @@ def parse_run(
     expected_model: str,
     cwd: Path,
     require_skill: bool | None,
+    boundary: str = "prose",
+    allowed_tools: set[str] | None = None,
 ) -> dict:
     messages: list[str] = []
     result_event = None
     skill_loaded = False
+    skill_attempted = False
+    pending_skills: set[str] = set()
     models: set[str] = set()
     viewed_paths: list[str] = []
     pending_views: dict[str, tuple[str, str, bool]] = {}
+    tool_calls = []
     for line in log.read_text(encoding="utf-8").splitlines():
         try:
             event = json.loads(line)
         except json.JSONDecodeError as error:
             raise ValueError(f"non-JSON output in structured log: {log}") from error
+        if not isinstance(event, dict):
+            raise ValueError("structured log event must be an object")
         event_type = event.get("type")
         data = event.get("data", {})
         if not isinstance(data, dict):
@@ -479,13 +887,22 @@ def parse_run(
             if isinstance(content, str) and content.strip():
                 messages.append(content)
         elif event_type == "tool.execution_start":
+            if allowed_tools is not None and (
+                not isinstance(data.get("toolName"), str) or data["toolName"] not in allowed_tools
+            ):
+                raise ValueError("review invoked a tool outside its read-only allowlist")
+            tool_calls.append(data)
             arguments = data.get("arguments")
             if (
                 data.get("toolName") == "skill"
                 and isinstance(arguments, dict)
                 and arguments.get("skill") == skill
             ):
-                skill_loaded = True
+                skill_attempted = True
+                if boundary == "prose":
+                    skill_loaded = True
+                elif isinstance(data.get("toolCallId"), str):
+                    pending_skills.add(data["toolCallId"])
             if data.get("toolName") == "view" and isinstance(arguments, dict):
                 requested = arguments.get("path")
                 call_id = data.get("toolCallId")
@@ -502,18 +919,21 @@ def parse_run(
                     pending_views[call_id] = (requested, str(resolved), inside)
         elif event_type == "tool.execution_complete":
             call_id = data.get("toolCallId")
+            if isinstance(call_id, str) and call_id in pending_skills and data.get("success") is True:
+                skill_loaded = True
             if (
                 isinstance(call_id, str)
                 and call_id in pending_views
                 and data.get("success") is True
             ):
                 requested, resolved, inside = pending_views[call_id]
-                if not inside:
+                if not inside and boundary == "prose":
                     raise ValueError(
                         f"view escaped evaluation workdir: {requested}"
                     )
                 viewed_paths.append(
                     Path(resolved).relative_to(cwd.resolve()).as_posix()
+                    if inside else requested
                 )
         elif event_type == "result":
             result_event = event
@@ -521,7 +941,7 @@ def parse_run(
         raise ValueError(f"missing successful result event in {log}")
     if not messages:
         raise ValueError(f"no assistant.message output in {log}")
-    if models != {expected_model}:
+    if (boundary == "prose" and models != {expected_model}) or expected_model not in models:
         raise ValueError(
             f"run used model identities {sorted(models)!r}, "
             f"expected {expected_model!r}"
@@ -529,12 +949,19 @@ def parse_run(
     if require_skill is not None and skill_loaded != require_skill:
         action = "invoke" if require_skill else "not invoke"
         raise ValueError(f"run must {action} target skill {skill!r}")
+    if boundary != "prose" and require_skill is False and skill_attempted:
+        raise ValueError("baseline must not attempt target skill invocation")
     return {
         "answer": messages[-1],
         "skill_loaded": skill_loaded,
         "models": sorted(models),
         "result_exit_code": result_event["exitCode"],
         "viewed_paths": viewed_paths,
+        "tool_calls": len(tool_calls),
+        "usage": result_event.get("usage"),
+        "input_tokens": None,
+        "output_tokens": None,
+        "boundary": boundary,
     }
 
 
@@ -543,7 +970,10 @@ def parse_json_output(content: str) -> dict:
     fenced = re.search(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", candidate)
     if fenced:
         candidate = fenced.group(1)
-    value = json.loads(candidate)
+    try:
+        value = json.loads(candidate)
+    except RecursionError as error:
+        raise ValueError("JSON output nesting exceeds parser limits") from error
     if not isinstance(value, dict):
         raise ValueError("JSON output must be an object")
     return value
@@ -557,6 +987,8 @@ def copy_packet(bundle: Path, workdir: Path) -> dict:
         target = workdir / record["path"]
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
+        if "mode" in record:
+            target.chmod(record["mode"])
         if digest(target) != record["sha256"]:
             raise ValueError(f"staged packet digest mismatch: {target}")
     return manifest
@@ -628,7 +1060,13 @@ def run_copilot(
     run_home: Path,
     timeout_seconds: int,
     allow_skill: bool,
+    measurement_path: Path | None = None,
+    role: str = "candidate",
+    phase: str = "candidate",
+    cli_version: str | None = None,
 ) -> list[str]:
+    measurement.session_uuid(session_id)
+    started_at, started_clock = utc_instant(), time.monotonic()
     available_tools = "skill,view" if allow_skill else "view"
     command = [
         str(copilot),
@@ -658,34 +1096,60 @@ def run_copilot(
     else:
         command.extend(["--session-id", session_id])
     env = os.environ.copy()
-    if home_mode == "isolated":
-        if not env.get("COPILOT_GITHUB_TOKEN"):
-            raise ValueError(
-                "--home-mode isolated requires COPILOT_GITHUB_TOKEN"
-            )
-        run_home.mkdir(parents=True, exist_ok=True)
-        env["COPILOT_HOME"] = str(run_home)
+    home = run_home if home_mode == "isolated" else Path(
+        env.get("COPILOT_HOME", str(Path.home() / ".copilot")))
+    outcome = "failed"
+    previous = None
+    previous_error = None
+
+    def capture_events():
+        if previous_error:
+            raise measurement.MeasurementError(previous_error)
+        content = measurement.host_events(home, session_id)
+        if previous is not None:
+            if content is None or not content.startswith(previous):
+                raise measurement.MeasurementError("resumed session event prefix changed")
+            return content[len(previous):]
+        return content
+
     try:
-        completed = subprocess.run(
-            command,
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout_seconds,
-            check=False,
+        if home_mode == "isolated":
+            if not env.get("COPILOT_GITHUB_TOKEN"):
+                raise ValueError("--home-mode isolated requires COPILOT_GITHUB_TOKEN")
+            run_home.mkdir(parents=True, exist_ok=True)
+            env["COPILOT_HOME"] = str(run_home)
+        if resume:
+            try:
+                previous = measurement.host_events(home, session_id)
+            except measurement.MeasurementError as error:
+                previous_error = str(error)
+        try:
+            completed = subprocess.run(
+                command, env=env, text=True, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, timeout=timeout_seconds, check=False,
+            )
+        except subprocess.TimeoutExpired as error:
+            outcome = "timed_out"
+            output = error.output or ""
+            if isinstance(output, bytes):
+                output = output.decode("utf-8", errors="replace")
+            log.write_text(output, encoding="utf-8")
+            raise ValueError(f"copilot timed out after {timeout_seconds}s; see {log}") from error
+        log.write_text(completed.stdout, encoding="utf-8")
+        if completed.returncode != 0:
+            raise ValueError(f"copilot exited {completed.returncode}; see {log}")
+        outcome = "completed"
+    except KeyboardInterrupt:
+        outcome = "interrupted"
+        raise
+    finally:
+        measurement.collect(
+            destination=measurement_path or log.with_suffix(".measurement.json"),
+            session_id=session_id, role=role, phase=phase, model=model, effort=effort,
+            cli_version=cli_version, log=log,
+            capture=capture_events, source="host_eventfile",
+            started_at=started_at, started_clock=started_clock, outcome=outcome,
         )
-    except subprocess.TimeoutExpired as error:
-        output = error.output or ""
-        if isinstance(output, bytes):
-            output = output.decode("utf-8", errors="replace")
-        log.write_text(output, encoding="utf-8")
-        raise ValueError(
-            f"copilot timed out after {timeout_seconds}s; see {log}"
-        ) from error
-    log.write_text(completed.stdout, encoding="utf-8")
-    if completed.returncode != 0:
-        raise ValueError(f"copilot exited {completed.returncode}; see {log}")
     return command
 
 
@@ -722,9 +1186,9 @@ def validate_judgment(judgment: dict, model: str) -> None:
     }
     if set(judgment) != expected:
         raise ValueError(f"invalid judge fields from {model}: {sorted(judgment)}")
-    if judgment["verdict"] not in {"PASS", "FAIL", "UNANSWERABLE"}:
+    if not isinstance(judgment["verdict"], str) or judgment["verdict"] not in {"PASS", "FAIL", "UNANSWERABLE"}:
         raise ValueError(f"invalid judge verdict from {model}")
-    if judgment["confidence"] not in {"LOW", "MEDIUM", "HIGH"}:
+    if not isinstance(judgment["confidence"], str) or judgment["confidence"] not in {"LOW", "MEDIUM", "HIGH"}:
         raise ValueError(f"invalid judge confidence from {model}")
     for field in ("matched", "missed", "overcorrections"):
         if not isinstance(judgment[field], list) or not all(
@@ -771,7 +1235,115 @@ def write_failure_receipt(
     )
 
 
-def run_case(
+def harness_identity(destination: Path | None = None) -> dict:
+    from repository_task import harness_sources
+    directory = Path(__file__).resolve().parent
+    modules = harness_sources()
+    if destination:
+        destination.mkdir(parents=True, exist_ok=True)
+        for module in modules:
+            shutil.copyfile(directory / module["path"], destination / module["path"])
+        directory = destination
+    return {
+        "path": str(directory / "skill_eval.py"),
+        "sha256": digest(directory / "skill_eval.py"),
+        "modules": modules,
+    }
+
+
+def run_judges(
+    *, frozen: Path, definition: dict, run_root: Path, pinned_plugin: Path,
+    copilot: Path, home_mode: str, timeout_seconds: int,
+    candidate_artifacts: list[Path],
+) -> list[dict]:
+    judge = definition["judge"]
+    case_id = definition["case_id"]
+    case_revision = digest(frozen / "case-manifest.json")
+    judgments = []
+    with tempfile.TemporaryDirectory(prefix="skill-evaluation-judges-") as directory:
+        for judge_model in judge.get("models", DEFAULT_JUDGES):
+            slug = re.sub(r"[^a-z0-9]+", "-", judge_model.lower()).strip("-")
+            workdir = Path(directory) / f"judge-{slug}"
+            copy_packet(frozen / "judge-reference", workdir / "judge-reference")
+            for artifact in candidate_artifacts:
+                relative = artifact.relative_to(run_root)
+                destination = workdir / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(artifact, destination)
+            shutil.copyfile(frozen / judge["criteria_file"], workdir / "criteria.md")
+            prompt_body = (frozen / judge["prompt_file"]).read_text(encoding="utf-8")
+            if JUDGE_RUNTIME_CONTRACT not in prompt_body:
+                prompt_body = f"{prompt_body.rstrip()}\n\n{JUDGE_RUNTIME_CONTRACT}"
+            if JUDGE_OUTPUT_CONTRACT not in prompt_body:
+                prompt_body = f"{prompt_body.rstrip()}\n\n{JUDGE_OUTPUT_CONTRACT}"
+            repository_contract = ""
+            if definition.get("case_type") == "repository-task":
+                repository_contract = (
+                    "\nAssess supported scope and process from the candidate patch, "
+                    "trajectory and execution receipts. Do not replace executable correctness "
+                    "with your verdict or require similarity to the reference patch. "
+                    "Flag observed retrieval of historical/source-origin answers as contamination.\n"
+                )
+            prompt = (
+                f"{prompt_body}\n{repository_contract}\nCase revision: {case_revision}\n"
+                "Candidate outputs and receipts are in this working directory. "
+                "Hidden evidence is under judge-reference/. Use only relative paths "
+                "inside this working directory; do not inspect its parent or any absolute path.\n"
+                "Candidate artifacts:\n" + "\n".join(
+                    f"- {path.relative_to(run_root).as_posix()}" for path in candidate_artifacts
+                ) + "\n"
+            )
+            prompt_path = run_root / f"judge-{slug}-prompt.md"
+            prompt_path.write_text(prompt, encoding="utf-8")
+            log = run_root / f"judge-{slug}-raw.jsonl"
+            try:
+                command = run_copilot(
+                    copilot=copilot, plugin_dir=pinned_plugin, cwd=workdir, prompt=prompt,
+                    model=judge_model, effort="high", log=log, session_id=str(uuid.uuid4()),
+                    resume=False, home_mode=home_mode, run_home=run_root / f"judge-{slug}-home",
+                    timeout_seconds=timeout_seconds, allow_skill=False,
+                    measurement_path=run_root / "measurements" / f"behavioral-{slug}.json",
+                    role="behavioral_judge", phase=f"judge:{judge_model}",
+                    cli_version=read_json(run_root / "copilot-identity.json").get("version"),
+                )
+                parsed = parse_run(
+                    log, skill=definition["target_skill"], expected_model=judge_model,
+                    cwd=workdir, require_skill=False,
+                )
+                judgment = parse_json_output(parsed["answer"])
+                validate_judgment(judgment, judge_model)
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                write_failure_receipt(
+                    run_root / f"judge-{slug}-failure-receipt.json", case_id=case_id,
+                    case_revision=case_revision, stage=f"judge:{judge_model}", error=error, log=log,
+                )
+                raise
+            judgment["model"] = judge_model
+            path = run_root / f"judgment-{slug}.json"
+            write_json(path, judgment)
+            write_json(run_root / f"judge-{slug}-receipt.json", {
+                "schema_version": 1, "case_id": case_id, "case_revision": case_revision,
+                "judge_model": judge_model, "judge_family": model_family(judge_model),
+                "judge_packet_manifest_sha256": digest(frozen / "judge-reference" / "bundle-manifest.json"),
+                "skill_identity_sha256": digest(run_root / "skill-identity.json"),
+                "treatment_identity_sha256": digest(run_root / "treatment-identity.json"),
+                "copilot_identity_sha256": digest(run_root / "copilot-identity.json"),
+                "harness_identity_sha256": digest(run_root / "harness-identity.json"),
+                "prompt_sha256": digest(prompt_path), "raw_log_sha256": digest(log),
+                "judgment_sha256": digest(path), "home_mode": home_mode,
+                "timeout_seconds": timeout_seconds, "observed_models": parsed["models"],
+                "result_exit_code": parsed["result_exit_code"], "viewed_paths": parsed["viewed_paths"],
+                "command": command_record(command, digest(prompt_path)),
+                "candidate_artifacts": [
+                    {"path": artifact.relative_to(run_root).as_posix(), "sha256": digest(artifact)}
+                    for artifact in candidate_artifacts
+                ],
+            })
+            judgments.append(judgment)
+    return judgments
+
+
+def _run_case(
     root: Path,
     case_id: str,
     plugin_dir: Path,
@@ -782,46 +1354,215 @@ def run_case(
     timeout_seconds: int,
     copilot_identity_record: dict | None = None,
     harness_identity_record: dict | None = None,
+    *,
+    arm: str = "skill",
+    treatment: dict,
+    compatibility: dict,
+    treatment_admission: bool,
+    expected_revision: str | None = None,
+    quality_review: bool = False,
+    run_root: Path,
+    timeline: measurement.Timeline,
+    resources: ExitStack,
 ) -> Path:
     if timeout_seconds <= 0:
         raise ValueError("timeout-seconds must be positive")
     verify_case(root, case_id)
     frozen = frozen_case_path(root, case_id)
+    if expected_revision is not None and digest(frozen / "case-manifest.json") != expected_revision:
+        raise ValueError("frozen case changed during suite; refusing a different-byte retry")
     definition = read_json(frozen / "case.json")
+    measurement.write_once(run_root / "run-context.json", {
+        "schema_version": 1, "case_revision": digest(frozen / "case-manifest.json"),
+        "case_type": definition.get("case_type", "prose"),
+        "judge_models": definition["judge"].get("models", DEFAULT_JUDGES),
+        "treatment_fingerprint": treatment["fingerprint"],
+        "compatibility": compatibility,
+    })
+    repository = definition.get("case_type") == "repository-task"
+    if quality_review and not repository:
+        raise ValueError("--quality-review requires a repository-task case")
+    if arm not in {"baseline", "skill"} or (arm == "baseline" and not repository):
+        raise ValueError("baseline arm requires a repository-task case")
+    write_json(run_root / "treatment-identity.json", {
+        "schema_version": 1,
+        "descriptor": treatment["descriptor"],
+        "descriptor_sha256": treatment["descriptor_sha256"],
+        "fingerprint": treatment["fingerprint"],
+        "adapter_identity": treatment["adapter_identity"],
+        "source_identity": treatment["source_identity"],
+    })
+    write_json(run_root / "compatibility.json", compatibility)
+    if compatibility["status"] == "BLOCKED":
+        blocked = {
+            "schema_version": 1,
+            "case_id": case_id,
+            "case_revision": digest(frozen / "case-manifest.json"),
+            "case_type": definition.get("case_type", "prose"),
+            "arm": arm,
+            "execution_status": "BLOCKED",
+            "behavioral_verdict": None,
+            "failure_kind": "incompatible_treatment",
+            "treatment": {
+                "id": treatment["descriptor"]["id"],
+                "fingerprint": treatment["fingerprint"],
+                "runner_kind": treatment["descriptor"]["runner"]["kind"],
+                "entry_skill": treatment["descriptor"]["entry_skill"],
+                "intervention_policy": treatment["descriptor"]["intervention_policy"],
+            },
+            "compatibility": compatibility,
+        }
+        write_json(run_root / "execution-result.json", blocked)
+        write_json(run_root / "repository-result.json", blocked)
+        (run_root / "REPORT.md").write_text(
+            f"# Evaluation: {case_id}\n\n**Result: BLOCKED**\n\n"
+            "The treatment/case compatibility predicates did not admit model execution.\n",
+            encoding="utf-8",
+        )
+        return run_root
     judge = definition["judge"]
     judge_models = judge.get("models", DEFAULT_JUDGES)
+    if not isinstance(judge_models, list) or not all(isinstance(value, str) for value in judge_models):
+        raise ValueError("judge models must be a string array")
+    judge_slugs = [re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-") for value in judge_models]
+    if len(judge_slugs) != len(set(judge_slugs)):
+        raise ValueError("judge models must have distinct artifact names")
     judge_families = {model_family(value) for value in judge_models}
     if judge_families != {"claude", "gpt"}:
         raise ValueError(
             "an evaluation requires at least one Claude and one GPT judge"
         )
-    run_root = (
-        root
-        / "runs"
-        / f"{utc_stamp()}-{uuid.uuid4().hex[:8]}"
-        / case_id
-    )
-    run_root.mkdir(parents=True)
     pinned_plugin = run_root / "target-plugin"
-    snapshot_plugin(plugin_dir, pinned_plugin)
-    identity = skill_identity(pinned_plugin, definition["target_skill"])
-    write_json(run_root / "skill-identity.json", identity)
-    write_json(
-        run_root / "copilot-identity.json",
-        copilot_identity_record or copilot_identity(copilot),
-    )
-    harness_identity = harness_identity_record or {
-        "path": str(Path(__file__).resolve()),
-        "sha256": digest(Path(__file__).resolve()),
-    }
-    write_json(run_root / "harness-identity.json", harness_identity)
     case_revision = digest(frozen / "case-manifest.json")
+    try:
+        snapshot_plugin(plugin_dir, pinned_plugin)
+        plugin_identity = directory_identity(pinned_plugin)
+        write_json(run_root / "plugin-identity.json", plugin_identity)
+        runner_kind = treatment["descriptor"]["runner"]["kind"]
+        entry_skill = treatment["descriptor"]["entry_skill"]
+        identity = (
+            skill_identity(pinned_plugin, entry_skill or definition["target_skill"])
+            if runner_kind == "direct-copilot"
+            else {"name": None, "plugin_dir": str(pinned_plugin.resolve()), "files": []}
+        )
+        write_json(run_root / "skill-identity.json", identity)
+        if treatment.get("source_path"):
+            shutil.copyfile(treatment["source_path"], run_root / "treatment.json")
+            if digest(run_root / "treatment.json") != treatment["descriptor_sha256"]:
+                raise ValueError("treatment descriptor changed while being copied")
+        if runner_kind == SANDCASTLE_ID:
+            treatment_snapshot = run_root / "sandcastle-treatment"
+            adapter_snapshot = run_root / "sandcastle-adapter"
+            snapshot_plugin(Path(treatment["source_path"]).parent, treatment_snapshot)
+            snapshot_plugin(Path(treatment["adapter_path"]), adapter_snapshot)
+            if directory_identity(treatment_snapshot) != treatment["source_identity"]:
+                raise ValueError("Sandcastle treatment changed while being snapshotted")
+            copied_adapter = directory_identity(adapter_snapshot)
+            if copied_adapter != treatment["adapter_identity"]:
+                raise ValueError("Sandcastle adapter changed while being snapshotted")
+            treatment = {
+                **treatment,
+                "treatment_snapshot": str(treatment_snapshot),
+                "adapter_snapshot": str(adapter_snapshot),
+                "output_dir": str(run_root / "treatment-output"),
+            }
+            Path(treatment["output_dir"]).mkdir()
+        write_json(
+            run_root / "copilot-identity.json",
+            copilot_identity_record or copilot_identity(copilot),
+        )
+        running_harness = harness_identity()
+        if harness_identity_record and running_harness["modules"] != harness_identity_record.get(
+            "modules", running_harness["modules"]
+        ):
+            raise ValueError("harness changed after suite snapshot")
+        recorded_harness = {**(harness_identity_record or running_harness),
+                            "modules": running_harness["modules"]}
+        write_json(run_root / "harness-identity.json", recorded_harness)
+        admission_binding = treatment_admission_binding(
+            case_revision=case_revision,
+            treatment=treatment,
+            skill=identity,
+            plugin=plugin_identity,
+            harness=recorded_harness,
+            model=model,
+            effort=effort,
+        )
+        if repository and treatment["descriptor_sha256"] is not None and not treatment_admission:
+            receipt = require_treatment_admission(root, admission_binding)
+            treatment["admission_receipt"] = str(receipt.relative_to(root))
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        timeline.end_stage("failed")
+        if not repository:
+            raise
+        invalid = {
+            "schema_version": 1, "case_id": case_id, "case_revision": case_revision,
+            "case_type": "repository-task", "arm": arm,
+            "execution_status": "INVALID", "behavioral_verdict": None,
+            "failure_kind": "run_setup", "error_type": type(error).__name__, "error": str(error),
+        }
+        write_json(run_root / "execution-result.json", invalid)
+        write_json(run_root / "repository-result.json", invalid)
+        (run_root / "REPORT.md").write_text(
+            f"# Repository evaluation: {case_id}\n\n**Executable result: INVALID**\n\n"
+            "Run setup failed; see `execution-result.json`.\n", encoding="utf-8",
+        )
+        return run_root
+    if repository:
+        from repository_task import artifact_files, execute_repository
+        result = execute_repository(
+            root, case_id, frozen, run_root, pinned_plugin, model, effort, timeout_seconds, arm,
+            timeline=timeline, treatment=treatment,
+        )
+        if result["execution_status"] != "INVALID":
+            artifacts = [
+                path for path in artifact_files(
+                    run_root, excluded={"target-plugin", "treatment-output"}
+                )
+            ]
+            try:
+                timeline.switch("behavioral_judging")
+                run_judges(
+                    frozen=frozen, definition=definition, run_root=run_root,
+                    pinned_plugin=pinned_plugin, copilot=copilot, home_mode="isolated",
+                    timeout_seconds=timeout_seconds, candidate_artifacts=artifacts,
+                )
+                result["behavioral_verdict"] = result_from_run(run_root, behavioral_only=True)
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                timeline.end_stage("failed")
+                result["behavioral_error"] = {"type": type(error).__name__, "message": str(error)}
+        if quality_review:
+            from quality_review import review_repository
+            timeline.switch("quality_review")
+            assessment = review_repository(
+                frozen=frozen, run_root=run_root, definition=definition, copilot=copilot,
+                timeout_seconds=timeout_seconds,
+            )
+            result["quality_assessment"] = {
+                "path": "quality/assessment.json", "complete": assessment["complete"],
+                "judgments": [item.get("judgment") for item in assessment["reviewers"]],
+            }
+            if not assessment["complete"]:
+                timeline.end_stage("failed")
+        write_json(run_root / "repository-result.json", result)
+        (run_root / "REPORT.md").write_text(
+            f"# Repository evaluation: {case_id}\n\n"
+            f"**Executable result: {result['execution_status']}**\n\n"
+            f"- Behavioral verdict: {result['behavioral_verdict'] or 'UNAVAILABLE'}\n"
+            f"- Arm: `{arm}`\n- Case revision: `{case_revision}`\n"
+            f"- Failure kind: `{result['failure_kind']}`\n"
+            "- Candidate network: enabled; remote-history isolation: not enforced.\n"
+            "- Artifacts: `execution-result.json`, `candidate.patch`, `candidate/`, "
+            "`grading/`, and independent `judgment-*.json`.\n", encoding="utf-8",
+        )
+        return run_root
     session_id = str(uuid.uuid4())
     phase_outputs = []
-    runtime = tempfile.TemporaryDirectory(prefix="skill-evaluation-")
-    runtime_root = Path(runtime.name)
+    runtime = resources.enter_context(tempfile.TemporaryDirectory(prefix="skill-evaluation-"))
+    runtime_root = Path(runtime)
 
     for phase in definition["phases"]:
+        timeline.switch("preparation")
         phase_id = phase["id"]
         workdir = runtime_root / f"{phase_id}-workdir"
         manifest = copy_packet(frozen / phase_id, workdir)
@@ -835,6 +1576,7 @@ def run_case(
         prompt_path.write_text(prompt, encoding="utf-8")
         log = run_root / f"{phase_id}-raw.jsonl"
         try:
+            timeline.switch("candidate")
             command = run_copilot(
                 copilot=copilot,
                 plugin_dir=pinned_plugin,
@@ -849,10 +1591,13 @@ def run_case(
                 run_home=run_root / "candidate-home",
                 timeout_seconds=timeout_seconds,
                 allow_skill=True,
+                measurement_path=run_root / "measurements" / f"candidate-{phase_id}.json",
+                role="candidate", phase=phase_id,
+                cli_version=read_json(run_root / "copilot-identity.json").get("version"),
             )
             run_result = parse_run(
                 log,
-                skill=definition["target_skill"],
+                skill=treatment["descriptor"]["entry_skill"],
                 expected_model=model,
                 cwd=workdir,
                 require_skill=None if phase.get("resume") else True,
@@ -874,7 +1619,6 @@ def run_case(
                 error=error,
                 log=log,
             )
-            runtime.cleanup()
             raise
         receipt = {
             "schema_version": 1,
@@ -885,6 +1629,7 @@ def run_case(
                 frozen / phase_id / "bundle-manifest.json"
             ),
             "skill_identity_sha256": digest(run_root / "skill-identity.json"),
+            "treatment_identity_sha256": digest(run_root / "treatment-identity.json"),
             "copilot_identity_sha256": digest(run_root / "copilot-identity.json"),
             "harness_identity_sha256": digest(run_root / "harness-identity.json"),
             "model": model,
@@ -904,95 +1649,17 @@ def run_case(
         write_json(receipt_path, receipt)
         phase_outputs.append((phase_id, output_path, receipt_path))
 
+    timeline.switch("cleanup")
     for phase in definition["phases"]:
         remove_tree(runtime_root / f"{phase['id']}-workdir", runtime_root)
 
-    judgments = []
-    for judge_model in judge_models:
-        slug = re.sub(r"[^a-z0-9]+", "-", judge_model.lower()).strip("-")
-        workdir = runtime_root / f"judge-{slug}-workdir"
-        copy_packet(frozen / "judge-reference", workdir / "judge-reference")
-        for phase_id, output_path, receipt_path in phase_outputs:
-            shutil.copyfile(output_path, workdir / output_path.name)
-            shutil.copyfile(receipt_path, workdir / receipt_path.name)
-        criteria = frozen / judge["criteria_file"]
-        shutil.copyfile(criteria, workdir / "criteria.md")
-        prompt_body = (frozen / judge["prompt_file"]).read_text(encoding="utf-8")
-        if JUDGE_RUNTIME_CONTRACT not in prompt_body:
-            prompt_body = f"{prompt_body.rstrip()}\n\n{JUDGE_RUNTIME_CONTRACT}"
-        prompt = (
-            f"{prompt_body}\nCase revision: {case_revision}\n"
-            "Candidate outputs and receipts are in this working directory. "
-            "Hidden evidence is under judge-reference/. Use only relative paths "
-            "inside this working directory; do not inspect its parent or any "
-            "absolute path.\n"
-        )
-        prompt_path = run_root / f"judge-{slug}-prompt.md"
-        prompt_path.write_text(prompt, encoding="utf-8")
-        log = run_root / f"judge-{slug}-raw.jsonl"
-        try:
-            command = run_copilot(
-                copilot=copilot,
-                plugin_dir=pinned_plugin,
-                cwd=workdir,
-                prompt=prompt,
-                model=judge_model,
-                effort="high",
-                log=log,
-                session_id=str(uuid.uuid4()),
-                resume=False,
-                home_mode=home_mode,
-                run_home=run_root / f"judge-{slug}-home",
-                timeout_seconds=timeout_seconds,
-                allow_skill=False,
-            )
-            run_result = parse_run(
-                log,
-                skill=definition["target_skill"],
-                expected_model=judge_model,
-                cwd=workdir,
-                require_skill=False,
-            )
-            judgment = parse_json_output(run_result["answer"])
-            validate_judgment(judgment, judge_model)
-        except (OSError, ValueError, json.JSONDecodeError) as error:
-            write_failure_receipt(
-                run_root / f"judge-{slug}-failure-receipt.json",
-                case_id=case_id,
-                case_revision=case_revision,
-                stage=f"judge:{judge_model}",
-                error=error,
-                log=log,
-            )
-            runtime.cleanup()
-            raise
-        judgment["model"] = judge_model
-        path = run_root / f"judgment-{slug}.json"
-        write_json(path, judgment)
-        receipt = {
-            "schema_version": 1,
-            "case_id": case_id,
-            "case_revision": case_revision,
-            "judge_model": judge_model,
-            "judge_family": model_family(judge_model),
-            "judge_packet_manifest_sha256": digest(
-                frozen / "judge-reference" / "bundle-manifest.json"
-            ),
-            "skill_identity_sha256": digest(run_root / "skill-identity.json"),
-            "copilot_identity_sha256": digest(run_root / "copilot-identity.json"),
-            "harness_identity_sha256": digest(run_root / "harness-identity.json"),
-            "prompt_sha256": digest(prompt_path),
-            "raw_log_sha256": digest(log),
-            "judgment_sha256": digest(path),
-            "home_mode": home_mode,
-            "timeout_seconds": timeout_seconds,
-            "observed_models": run_result["models"],
-            "result_exit_code": run_result["result_exit_code"],
-            "viewed_paths": run_result["viewed_paths"],
-            "command": command_record(command, digest(prompt_path)),
-        }
-        write_json(run_root / f"judge-{slug}-receipt.json", receipt)
-        judgments.append(judgment)
+    timeline.switch("behavioral_judging")
+    judgments = run_judges(
+        frozen=frozen, definition=definition, run_root=run_root,
+        pinned_plugin=pinned_plugin, copilot=copilot, home_mode=home_mode,
+        timeout_seconds=timeout_seconds,
+        candidate_artifacts=[path for _, output, receipt in phase_outputs for path in (output, receipt)],
+    )
 
     verdicts = [judgment["verdict"] for judgment in judgments]
     overall = (
@@ -1008,6 +1675,7 @@ def run_case(
         f"**Result: {overall}**",
         "",
         f"- Target skill: `{definition['target_skill']}`",
+        f"- Treatment: `{treatment['descriptor']['id']}`",
         f"- Case revision: `{case_revision}`",
         f"- Candidate model: `{model}` ({effort})",
         f"- Authentication home: `{home_mode}`",
@@ -1036,11 +1704,165 @@ def run_case(
         ]
     )
     (run_root / "REPORT.md").write_text("\n".join(report) + "\n", encoding="utf-8")
-    runtime.cleanup()
     return run_root
 
 
-def result_from_run(run_root: Path) -> str:
+def run_case(
+    root: Path, case_id: str, plugin_dir: Path, copilot: Path, model: str, effort: str,
+    home_mode: str, timeout_seconds: int, copilot_identity_record: dict | None = None,
+    harness_identity_record: dict | None = None, *, arm: str = "skill",
+    treatment_file: Path | None = None,
+    sandcastle_treatment_file: Path | None = None,
+    sandcastle_adapter_dir: Path | None = None,
+    treatment_admission: bool = False,
+    expected_revision: str | None = None, quality_review: bool = False,
+    suite_owner: dict | None = None,
+) -> Path:
+    timeline = measurement.Timeline()
+    ensure_case_id(case_id)
+    verify_case(root, case_id)
+    definition = read_json(frozen_case_path(root, case_id) / "case.json")
+    treatment, compatibility = resolve_treatment(
+        definition,
+        arm,
+        treatment_file=treatment_file,
+        sandcastle_treatment_file=sandcastle_treatment_file,
+        sandcastle_adapter_dir=sandcastle_adapter_dir,
+    )
+    if treatment["descriptor"]["runner"]["kind"] == SANDCASTLE_ID and model != SANDCASTLE_RUNNER["model"]:
+        raise ValueError("Sandcastle treatment requires gpt-5.6-sol-fast")
+    if treatment_admission and treatment["descriptor_sha256"] is None:
+        raise ValueError("--treatment-admission requires a treatment descriptor")
+    if treatment_admission and definition.get("case_type") != "repository-task":
+        raise ValueError("--treatment-admission requires a repository-task case")
+    run_parent = "treatment-admission-runs" if treatment_admission else "runs"
+    run_root = root / run_parent / f"{utc_stamp()}-{uuid.uuid4().hex[:8]}" / case_id
+    run_root.mkdir(parents=True)
+    attempt = {
+        "schema_version": 1, "run_id": run_root.parent.name, "case_id": case_id,
+        "model": model, "effort": effort, "timeout_seconds": timeout_seconds,
+        "arm": arm, "home_mode": home_mode, "quality_review": quality_review,
+        "suite_owner": suite_owner, "started_at": timeline.started_at,
+        "treatment_id": treatment["descriptor"]["id"],
+        "treatment_fingerprint": treatment["fingerprint"],
+        "runner_kind": treatment["descriptor"]["runner"]["kind"],
+        "intervention_policy": treatment["descriptor"]["intervention_policy"],
+        "compatibility_status": compatibility["status"],
+    }
+    measurement.write_once(run_root / "attempt.json", attempt)
+    status = "failed"
+    resources = ExitStack()
+    try:
+        result = _run_case(
+            root, case_id, plugin_dir, copilot, model, effort, home_mode, timeout_seconds,
+            copilot_identity_record, harness_identity_record, arm=arm,
+            treatment=treatment, compatibility=compatibility,
+            treatment_admission=treatment_admission,
+            expected_revision=expected_revision, quality_review=quality_review,
+            run_root=run_root, timeline=timeline, resources=resources,
+        )
+        status = "completed"
+        if treatment_admission:
+            execution = read_json(run_root / "execution-result.json")
+            identity_path = run_root / "treatment-identity.json"
+            skill_path = run_root / "skill-identity.json"
+            plugin_path = run_root / "plugin-identity.json"
+            harness_path = run_root / "harness-identity.json"
+            binding = None
+            if all(path.is_file() for path in (
+                identity_path, skill_path, plugin_path, harness_path
+            )):
+                identity = read_json(identity_path)
+                binding = treatment_admission_binding(
+                    case_revision=execution["case_revision"],
+                    treatment={
+                        "fingerprint": identity["fingerprint"],
+                        "source_identity": identity["source_identity"],
+                        "adapter_identity": identity["adapter_identity"],
+                        "descriptor": identity["descriptor"],
+                    },
+                    skill=read_json(skill_path),
+                    plugin=read_json(plugin_path),
+                    harness=read_json(harness_path),
+                    model=model,
+                    effort=effort,
+                )
+            admitted = (
+                binding is not None
+                and execution.get("execution_status") == "PASS"
+                and read_json(run_root / "repository-result.json").get("behavioral_verdict") == "PASS"
+            )
+            artifacts = []
+            for name in (
+                "treatment-identity.json",
+                "skill-identity.json",
+                "plugin-identity.json",
+                "harness-identity.json",
+                "compatibility.json",
+                "execution-result.json",
+                "repository-result.json",
+                "candidate.patch",
+            ):
+                path = run_root / name
+                if path.is_file():
+                    artifacts.append({"path": name, "sha256": digest(path)})
+            write_json(run_root / "treatment-admission-receipt.json", {
+                "schema_version": 1,
+                "status": "PASS" if admitted else "INVALID",
+                "binding": binding,
+                "artifacts": artifacts,
+            })
+        return result
+    except KeyboardInterrupt:
+        status = "interrupted"
+        raise
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        write_failure_receipt(
+            run_root / "attempt-failure-receipt.json", case_id=case_id,
+            case_revision=expected_revision, stage="attempt", error=error,
+            log=run_root / "absent.log",
+        )
+        # A suite can retain ownership even when no Path is returned.
+        error.run_path = str(run_root.relative_to(root))
+        raise
+    finally:
+        timeline.switch("cleanup", status=status)
+        try:
+            resources.close()
+        finally:
+            measurement.write_once(run_root / "timing.json", timeline.finish(status))
+        reporting_started, reporting_clock = utc_instant(), time.monotonic()
+        records = [read_json(path) for path in sorted((run_root / "measurements").glob("*.json"))]
+        try:
+            summary = measurement.accounting(records)
+        except measurement.MeasurementError as error:
+            summary = {"schema_version": 1, "error": str(error)}
+        measurement.write_once(run_root / "accounting.json", summary)
+        report = run_root / "REPORT.md"
+        if report.is_file():
+            timing = read_json(run_root / "timing.json")
+            total = summary.get("total", {})
+            with report.open("a", encoding="utf-8") as stream:
+                stream.write(
+                    "\n## Measurement\n\n"
+                    f"- Total attempt wall time, including cleanup: {timing['elapsed_seconds']:.3f} seconds\n"
+                    f"- Exact total credits: {total.get('credits')}; "
+                    f"observed subtotal: {total.get('observed_credits')}\n"
+                    f"- Measurement errors: {summary.get('error') or len(summary.get('errors', []))}\n"
+                    "- Role-separated usage and coverage: `accounting.json`, `measurements/`.\n"
+                    "- Quality assessment, when requested: `quality/assessment.json`.\n"
+                )
+        measurement.write_once(run_root / "reporting-timing.json", {
+            "schema_version": 1, "started_at": reporting_started, "completed_at": utc_instant(),
+            "elapsed_seconds": time.monotonic() - reporting_clock,
+            "scope": "post-execution measurement aggregation and report rendering",
+        })
+
+
+def result_from_run(run_root: Path, *, behavioral_only: bool = False) -> str:
+    execution = run_root / "execution-result.json"
+    if execution.is_file() and not behavioral_only:
+        return read_json(execution)["execution_status"]
     judgments = [
         read_json(path)["verdict"]
         for path in sorted(run_root.glob("judgment-*.json"))
@@ -1063,6 +1885,12 @@ def run_suite(
     workers: int,
     case_ids: list[str] | None = None,
     max_attempts: int = 1,
+    *,
+    arm: str = "skill",
+    quality_review: bool = False,
+    treatment_file: Path | None = None,
+    sandcastle_treatment_file: Path | None = None,
+    sandcastle_adapter_dir: Path | None = None,
 ) -> tuple[Path, bool]:
     if workers <= 0:
         raise ValueError("workers must be positive")
@@ -1077,17 +1905,41 @@ def run_suite(
     unknown = sorted(set(selected) - set(corpus["cases"]))
     if unknown:
         raise ValueError(f"unknown suite cases: {unknown}")
+    first_definition = read_json(frozen_case_path(root, selected[0]) / "case.json")
+    resolve_treatment(
+        first_definition,
+        arm,
+        treatment_file=treatment_file,
+        sandcastle_treatment_file=sandcastle_treatment_file,
+        sandcastle_adapter_dir=sandcastle_adapter_dir,
+    )
 
     started_at = utc_instant()
     started_clock = time.monotonic()
     suite_root = root / "suite-runs" / f"{utc_stamp()}-{uuid.uuid4().hex[:8]}"
     suite_root.mkdir(parents=True)
-    harness_snapshot = suite_root / "skill_eval.py"
-    shutil.copyfile(Path(__file__).resolve(), harness_snapshot)
-    harness_identity_record = {
-        "path": str(harness_snapshot),
-        "sha256": digest(harness_snapshot),
-    }
+    harness_identity_record = harness_identity(suite_root)
+    suite_plugin = suite_root / "target-plugin"
+    snapshot_plugin(plugin_dir, suite_plugin)
+    suite_treatment_file = None
+    suite_sandcastle_file = None
+    suite_adapter_dir = None
+    if treatment_file:
+        suite_treatment_file = suite_root / "treatment.json"
+        shutil.copyfile(treatment_file, suite_treatment_file)
+    if sandcastle_treatment_file:
+        suite_treatment_snapshot = suite_root / "sandcastle-treatment"
+        suite_adapter_dir = suite_root / "sandcastle-adapter"
+        snapshot_plugin(sandcastle_treatment_file.parent, suite_treatment_snapshot)
+        snapshot_plugin(sandcastle_adapter_dir, suite_adapter_dir)
+        suite_sandcastle_file = suite_treatment_snapshot / sandcastle_treatment_file.name
+    revisions = {}
+    for case_id in selected:
+        try:
+            revisions[case_id] = digest(frozen_case_path(root, case_id) / "case-manifest.json")
+        except (OSError, ValueError, json.JSONDecodeError):
+            # Preserve per-case error handling for an unfrozen suite member.
+            revisions[case_id] = None
     suite_runtime = tempfile.TemporaryDirectory(prefix="skill-evaluation-suite-")
     frozen_copilot = Path(suite_runtime.name) / "copilot"
     shutil.copy2(copilot.resolve(), frozen_copilot)
@@ -1106,7 +1958,7 @@ def run_suite(
                     run_case,
                     root,
                     case_id,
-                    plugin_dir,
+                    suite_plugin,
                     frozen_copilot,
                     model,
                     effort,
@@ -1114,6 +1966,15 @@ def run_suite(
                     timeout_seconds,
                     copilot_identity_record,
                     harness_identity_record,
+                    arm=arm,
+                    treatment_file=suite_treatment_file,
+                    sandcastle_treatment_file=suite_sandcastle_file,
+                    sandcastle_adapter_dir=suite_adapter_dir,
+                    expected_revision=revisions[case_id],
+                    quality_review=quality_review,
+                    suite_owner={"suite_path": str(suite_root.relative_to(root)),
+                                 "case_id": case_id, "attempt": attempt_number,
+                                 "max_attempts": max_attempts},
                 ): case_id
                 for case_id in pending
             }
@@ -1126,8 +1987,21 @@ def run_suite(
                         "result": result_from_run(run_root),
                         "run_path": str(run_root.relative_to(root)),
                     }
+                    for name in ("accounting", "timing"):
+                        artifact = run_root / f"{name}.json"
+                        if artifact.is_file():
+                            attempt[name] = read_json(artifact)
+                    execution_path = run_root / "repository-result.json"
+                    if not execution_path.is_file():
+                        execution_path = run_root / "execution-result.json"
+                    if execution_path.is_file():
+                        execution = read_json(execution_path)
+                        attempt["execution_status"] = execution["execution_status"]
+                        attempt["behavioral_verdict"] = execution["behavioral_verdict"]
                     attempts_by_case[case_id].append(attempt)
-                    if attempt["result"] != "PASS":
+                    if attempt["result"] != "PASS" or (
+                        "behavioral_verdict" in attempt and attempt["behavioral_verdict"] != "PASS"
+                    ):
                         next_pending.append(case_id)
                 except Exception as error:
                     attempt = {
@@ -1136,6 +2010,12 @@ def run_suite(
                         "error_type": type(error).__name__,
                         "error": str(error),
                     }
+                    if getattr(error, "run_path", None):
+                        attempt["run_path"] = error.run_path
+                        for name in ("accounting", "timing"):
+                            artifact = root / error.run_path / f"{name}.json"
+                            if artifact.is_file():
+                                attempt[name] = read_json(artifact)
                     attempts_by_case[case_id].append(attempt)
                     if attempt_number < max_attempts:
                         next_pending.append(case_id)
@@ -1154,7 +2034,8 @@ def run_suite(
             except (OSError, ValueError, json.JSONDecodeError):
                 definition = {}
         successful = next(
-            (attempt for attempt in attempts if attempt["result"] == "PASS"),
+            (attempt for attempt in attempts if attempt["result"] == "PASS"
+             and ("behavioral_verdict" not in attempt or attempt["behavioral_verdict"] == "PASS")),
             None,
         )
         completed_attempts = [
@@ -1166,6 +2047,7 @@ def run_suite(
         results.append(
             {
                 "case_id": case_id,
+                "case_type": definition.get("case_type", "prose"),
                 "target_skill": definition.get("target_skill", "unknown"),
                 "cohort": definition.get("cohort", "default"),
                 "result": "PASS" if successful else (
@@ -1174,6 +2056,8 @@ def run_suite(
                     else "FAIL"
                 ),
                 "run_path": final_attempt.get("run_path") if final_attempt else None,
+                "behavioral_verdict": final_attempt.get("behavioral_verdict") if final_attempt else None,
+                "passed_after_retry": bool(successful and successful["attempt"] > 1),
                 "attempt_count": len(attempts),
                 "attempts": attempts,
             }
@@ -1181,9 +2065,28 @@ def run_suite(
 
     results.sort(key=lambda item: item["case_id"])
     failures.sort(key=lambda item: item["case_id"])
-    passed = not failures and all(item["result"] == "PASS" for item in results)
+    passed = not failures and all(
+        item["result"] == "PASS"
+        and (item["case_type"] != "repository-task" or item["behavioral_verdict"] == "PASS")
+        for item in results
+    )
     completed_at = utc_instant()
     duration_seconds = round(time.monotonic() - started_clock, 3)
+    repository_results = [item for item in results if item["case_type"] == "repository-task"]
+    first_attempts = [item["attempts"][0] for item in repository_results]
+    valid_first = [item for item in first_attempts if item["result"] in {"PASS", "FAIL"}]
+    first_passes = sum(item["result"] == "PASS" for item in valid_first)
+    executable_summary = {
+        "requested": len(first_attempts), "valid_first_attempts": len(valid_first),
+        "invalid_first_attempts": len(first_attempts) - len(valid_first),
+        "first_attempt_passes": first_passes,
+        "pass_at_1": first_passes / len(valid_first) if valid_first else None,
+        "coverage": len(valid_first) / len(first_attempts) if first_attempts else None,
+    }
+    from evaluation_history import cost_summary
+    cost_rows = [{"accounting": attempt.get("accounting", {})}
+                 for attempts in attempts_by_case.values() for attempt in attempts]
+    suite_accounting = {role: cost_summary(cost_rows, role) for role in ("candidate", "evaluation", "total")}
     write_json(
         suite_root / "suite-result.json",
         {
@@ -1196,7 +2099,26 @@ def run_suite(
             "effort": effort,
             "max_attempts": max_attempts,
             "home_mode": home_mode,
+            "arm": arm,
+            "treatment": (
+                read_json(next(
+                    path for path in (
+                        suite_treatment_file,
+                        suite_sandcastle_file,
+                    )
+                    if path is not None
+                ))
+                if suite_treatment_file or suite_sandcastle_file
+                else None
+            ),
+            "quality_review": quality_review,
+            "timeout_seconds": timeout_seconds,
+            "repository_executable": executable_summary,
+            "accounting": suite_accounting,
+            "harness_identity": harness_identity_record,
             "plugin_dir": str(plugin_dir),
+            "plugin_snapshot": str(suite_plugin),
+            "case_revisions": revisions,
             "cases": results,
             "failures": failures,
         },
@@ -1215,19 +2137,35 @@ def run_suite(
         f"- Candidate model: `{model}` ({effort})",
         f"- Maximum attempts per case: {max_attempts}",
         f"- Cases passing after retry: "
-        f"{sum(item['result'] == 'PASS' and item['attempt_count'] > 1 for item in results)}",
+        f"{sum(item['passed_after_retry'] for item in results)}",
         f"- Authentication home: `{home_mode}`",
+        f"- Exact total credits: {suite_accounting['total']['credits']}; "
+        f"observed subtotal: {suite_accounting['total']['observed_credits']}",
+        f"- Complete credit coverage: {suite_accounting['total']['complete_attempts']} / "
+        f"{suite_accounting['total']['attempts']} attempts",
         "",
         "## Cases",
         "",
-        "| Case | Cohort | Skill | Attempts | Result |",
-        "| --- | --- | --- | --- | --- |",
+        "| Case | Cohort | Skill | Attempts | Result | Behavioral |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
+    if repository_results:
+        report[4:4] = [
+            "## Repository first-attempt executable results",
+            "",
+            f"- Pass@1: {executable_summary['pass_at_1']}",
+            f"- Requested: {len(first_attempts)}; valid: {len(valid_first)}; "
+            f"invalid/error: {len(first_attempts) - len(valid_first)}",
+            f"- Coverage: {executable_summary['coverage']}",
+            "- Retries and behavioral judgments do not change pass@1.",
+            "- Repository rows show executable Result and independent Behavioral verdict.",
+            "",
+        ]
     for item in results:
         report.append(
             f"| `{item['case_id']}` | `{item['cohort']}` | "
             f"`{item['target_skill']}` | {item['attempt_count']} | "
-            f"**{item['result']}** |"
+            f"**{item['result']}** | {item['behavioral_verdict'] or '-'} |"
         )
     if failures:
         report.extend(["", "## Execution failures", ""])
@@ -1240,6 +2178,11 @@ def run_suite(
         "\n".join(report) + "\n", encoding="utf-8"
     )
     suite_runtime.cleanup()
+    measurement.write_once(suite_root / "suite-timing.json", {
+        "schema_version": 1, "started_at": started_at, "completed_at": utc_instant(),
+        "elapsed_seconds": time.monotonic() - started_clock,
+        "scope": "suite preparation, attempts, reporting and cleanup",
+    })
     return suite_root, passed
 
 
@@ -1255,6 +2198,7 @@ def parser() -> argparse.ArgumentParser:
     add.add_argument("case_id")
     add.add_argument("--skill", required=True)
     add.add_argument("--phase", action="append", required=True)
+    add.add_argument("--case-type", choices=("prose", "repository-task"), default="prose")
 
     freeze = sub.add_parser("freeze")
     freeze.add_argument("corpus", type=Path)
@@ -1264,6 +2208,9 @@ def parser() -> argparse.ArgumentParser:
     verify = sub.add_parser("verify")
     verify.add_argument("corpus", type=Path)
     verify.add_argument("--case")
+    validate = sub.add_parser("validate-case")
+    validate.add_argument("corpus", type=Path)
+    validate.add_argument("--case", required=True)
 
     run = sub.add_parser("run")
     run.add_argument("corpus", type=Path)
@@ -1278,6 +2225,12 @@ def parser() -> argparse.ArgumentParser:
         "--home-mode", choices=("existing", "isolated"), default="existing"
     )
     run.add_argument("--timeout-seconds", type=int, default=1200)
+    run.add_argument("--arm", choices=("baseline", "skill"), default="skill")
+    run.add_argument("--treatment-file", type=Path)
+    run.add_argument("--sandcastle-treatment-file", type=Path)
+    run.add_argument("--sandcastle-adapter-dir", type=Path)
+    run.add_argument("--treatment-admission", action="store_true")
+    run.add_argument("--quality-review", action="store_true")
 
     suite = sub.add_parser("run-suite")
     suite.add_argument("corpus", type=Path)
@@ -1294,6 +2247,17 @@ def parser() -> argparse.ArgumentParser:
     suite.add_argument("--timeout-seconds", type=int, default=1200)
     suite.add_argument("--workers", type=int, default=3)
     suite.add_argument("--max-attempts", type=int, default=1)
+    suite.add_argument("--arm", choices=("baseline", "skill"), default="skill")
+    suite.add_argument("--treatment-file", type=Path)
+    suite.add_argument("--sandcastle-treatment-file", type=Path)
+    suite.add_argument("--sandcastle-adapter-dir", type=Path)
+    suite.add_argument("--quality-review", action="store_true")
+    history = sub.add_parser("history")
+    history.add_argument("corpus", type=Path)
+    history.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    history.add_argument("--case")
+    history.add_argument("--arm", choices=("baseline", "skill"))
+    history.add_argument("--model")
     return result
 
 
@@ -1305,7 +2269,7 @@ def main(argv: list[str] | None = None) -> int:
             init_corpus(root)
             print(root)
         elif args.command == "add-case":
-            add_case(root, args.case_id, args.skill, args.phase)
+            add_case(root, args.case_id, args.skill, args.phase, case_type=args.case_type)
             print(root / "cases" / args.case_id)
         elif args.command == "freeze":
             print(freeze_case(root, args.case, args.replace))
@@ -1314,9 +2278,14 @@ def main(argv: list[str] | None = None) -> int:
             cases = [args.case] if args.case else corpus["cases"]
             count = sum(verify_case(root, case_id) for case_id in cases)
             print(f"verified {len(cases)} cases and {count} files")
+        elif args.command == "validate-case":
+            from repository_task import validate_repository_case
+            path = validate_repository_case(root, args.case)
+            print(path)
+            if read_json(path / "admission-receipt.json")["status"] != "PASS":
+                return 1
         elif args.command == "run":
-            print(
-                run_case(
+            run_path = run_case(
                     root,
                     args.case,
                     args.plugin_dir.expanduser().resolve(),
@@ -1325,8 +2294,22 @@ def main(argv: list[str] | None = None) -> int:
                     args.effort,
                     args.home_mode,
                     args.timeout_seconds,
+                    arm=args.arm,
+                    treatment_file=args.treatment_file.expanduser().resolve()
+                    if args.treatment_file else None,
+                    sandcastle_treatment_file=args.sandcastle_treatment_file.expanduser().resolve()
+                    if args.sandcastle_treatment_file else None,
+                    sandcastle_adapter_dir=args.sandcastle_adapter_dir.expanduser().resolve()
+                    if args.sandcastle_adapter_dir else None,
+                    treatment_admission=args.treatment_admission,
+                    quality_review=args.quality_review,
                 )
-            )
+            print(run_path)
+            repository_result = run_path / "repository-result.json"
+            if repository_result.is_file():
+                outcome = read_json(repository_result)
+                if outcome["execution_status"] != "PASS" or outcome["behavioral_verdict"] != "PASS":
+                    return 1
         elif args.command == "run-suite":
             suite_root, passed = run_suite(
                 root,
@@ -1339,10 +2322,22 @@ def main(argv: list[str] | None = None) -> int:
                 args.workers,
                 args.case,
                 args.max_attempts,
+                arm=args.arm,
+                treatment_file=args.treatment_file.expanduser().resolve()
+                if args.treatment_file else None,
+                sandcastle_treatment_file=args.sandcastle_treatment_file.expanduser().resolve()
+                if args.sandcastle_treatment_file else None,
+                sandcastle_adapter_dir=args.sandcastle_adapter_dir.expanduser().resolve()
+                if args.sandcastle_adapter_dir else None,
+                quality_review=args.quality_review,
             )
             print(suite_root)
             if not passed:
                 return 1
+        elif args.command == "history":
+            from evaluation_history import history, markdown
+            report = history(root, case_id=args.case, arm=args.arm, model=args.model)
+            print(json.dumps(report, indent=2, allow_nan=False) if args.format == "json" else markdown(report))
     except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as error:
         print(f"skill-evaluation: {error}", file=sys.stderr)
         return 1
