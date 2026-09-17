@@ -27,6 +27,20 @@ class RepositoryTaskTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_admission_binding_ignores_local_image_tag_metadata(self):
+        frozen = Path(self.temp.name) / "frozen"
+        frozen.mkdir()
+        (frozen / "case-manifest.json").write_text("{}")
+        binding = repository.admission_binding(frozen, {
+            "requested": self.image,
+            "id": self.image,
+            "repo_digests": ["local-name@" + self.image],
+        })
+        self.assertEqual(binding["image"], {
+            "requested": self.image,
+            "id": self.image,
+        })
+
     def make_case(self, name="example"):
         evaluator.add_case(self.root, name, "example-skill", ["candidate"],
                            case_type="repository-task")

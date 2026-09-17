@@ -499,7 +499,11 @@ def harness_sources() -> list[dict]:
 def admission_binding(frozen: Path, image: dict) -> dict:
     return {
         "case_revision": digest(frozen / "case-manifest.json"),
-        "image": image, "harness_modules": harness_sources(),
+        "image": {
+            "requested": image.get("requested", image["id"]),
+            "id": image["id"],
+        },
+        "harness_modules": harness_sources(),
     }
 
 
