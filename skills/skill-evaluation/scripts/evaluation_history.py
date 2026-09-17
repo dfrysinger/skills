@@ -118,6 +118,7 @@ def run_row(root: Path, path: Path, owner: dict | None, suite: dict) -> dict:
     skill = optional(path / "skill-identity.json")
     treatment = optional(path / "treatment-identity.json")
     compatibility = optional(path / "compatibility.json")
+    arm = attempt.get("arm", execution.get("arm", suite.get("arm", "skill")))
     if treatment:
         if treatment.get("schema_version") != 1 or not isinstance(treatment.get("descriptor"), dict):
             raise ValueError("malformed treatment identity")
@@ -140,10 +141,9 @@ def run_row(root: Path, path: Path, owner: dict | None, suite: dict) -> dict:
     else:
         legacy = {
             "schema_version": 1,
-            "id": "legacy-baseline" if attempt.get("arm", execution.get("arm")) == "baseline"
-                  else "legacy-skill",
+            "id": "legacy-baseline" if arm == "baseline" else "legacy-skill",
             "runner": {"kind": "direct-copilot"},
-            "entry_skill": skill.get("name"),
+            "entry_skill": skill.get("name") if arm == "skill" else None,
             "intervention_policy": "legacy-case-contract",
             "compatibility": {},
             "source": {"kind": "legacy-evaluator"},
@@ -155,6 +155,13 @@ def run_row(root: Path, path: Path, owner: dict | None, suite: dict) -> dict:
     if compatibility and compatibility.get("treatment_id") != treatment["descriptor"]["id"]:
         raise ValueError("compatibility and treatment identity disagree")
     harness = optional(path / "harness-identity.json")
+    plugin = optional(path / "plugin-identity.json")
+    if plugin and (
+        not isinstance(plugin.get("files"), list)
+        or not isinstance(plugin.get("sha256"), str)
+        or plugin["sha256"] != fingerprint(plugin["files"])
+    ):
+        raise ValueError("malformed plugin identity")
     quality = optional(path / "quality" / "assessment.json")
     if quality:
         from quality_review import validate_review
@@ -209,7 +216,7 @@ def run_row(root: Path, path: Path, owner: dict | None, suite: dict) -> dict:
     population = {
         "case_id": case_id, "case_revision": revision,
         "case_type": context.get("case_type", execution.get("case_type", "prose")),
-        "arm": attempt.get("arm", execution.get("arm", suite.get("arm", "skill"))),
+        "arm": arm,
         "treatment_id": treatment["descriptor"]["id"],
         "treatment_identity": treatment["fingerprint"],
         "runner_kind": treatment["descriptor"]["runner"]["kind"],
@@ -218,10 +225,11 @@ def run_row(root: Path, path: Path, owner: dict | None, suite: dict) -> dict:
         "intervention_policy": treatment["descriptor"].get("intervention_policy"),
         "compatibility_requirements": treatment["descriptor"].get("compatibility", {}),
         "compatibility_status": compatibility.get(
-            "status", attempt.get("compatibility_status", "ADMITTED")
+            "status", attempt.get("compatibility_status", "unknown")
         ),
         "skill_identity": fingerprint({"name": skill.get("name"), "files": skill["files"]})
                           if "files" in skill else None,
+        "plugin_identity": plugin.get("sha256"),
         "harness_identity": fingerprint(harness["modules"]) if "modules" in harness else harness.get("sha256"),
         "model": attempt.get("model", evidence.get("model", suite.get("model"))),
         "effort": attempt.get("effort", evidence.get("effort", suite.get("effort"))),
@@ -310,6 +318,7 @@ def _history(root: Path, *, case_id: str | None = None, arm: str | None = None,
             "population": {
                 "case_id": owner["case_id"], "case_revision": suite.get("case_revisions", {}).get(owner["case_id"]),
                 "case_type": "unknown", "arm": suite.get("arm"), "skill_identity": None,
+                "plugin_identity": None,
                 "treatment_id": suite.get("treatment", {}).get("id", "unknown")
                                 if isinstance(suite.get("treatment"), dict) else "unknown",
                 "treatment_identity": fingerprint(suite["treatment"])

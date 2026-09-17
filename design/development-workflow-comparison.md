@@ -184,9 +184,10 @@ No new service, daemon, database, package dependency, or cloud API is required.
 
 Legacy callers continue to use `--arm baseline` or
 `--arm skill --plugin-dir PATH`. New direct comparison callers may add one
-immutable `--treatment-file PATH`. The evaluator copies and fingerprints that
-JSON file into the run. Direct treatments continue to use the existing complete
-plugin snapshot.
+immutable `--treatment-file PATH`. The evaluator copies and fingerprints that JSON file into the run. Direct
+treatments continue to use the existing complete plugin snapshot, whose full
+directory identity is bound to treatment admission in addition to the selected
+entry-skill identity.
 
 External execution is not a general descriptor feature. The only admitted
 external variant is
@@ -200,7 +201,8 @@ external runner requires a new design and constraint challenge.
 The treatment descriptor schema version 1 contains only:
 
 - `id`: stable lowercase identifier;
-- `source`: repository/package, immutable revision/version, license, and
+- `source`: repository/package, immutable commit digest or exact semantic
+  version, license, and
   retrieval date;
 - `runner.kind`: `direct-copilot`;
 - `compatibility`: only the approved predicates consumed by a treatment;

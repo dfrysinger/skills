@@ -25,6 +25,11 @@ import measurement
 CASE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 DEFAULT_JUDGES = ["claude-opus-5", "gpt-5.6-terra"]
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+SOURCE_REVISION_RE = re.compile(r"^[0-9a-f]{40,64}$")
+SOURCE_VERSION_RE = re.compile(
+    r"^[0-9]+(?:\.[0-9]+){2}(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?"
+    r"(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$"
+)
 TREATMENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 COMPATIBILITY_FIELDS = {
     "language",
@@ -140,6 +145,12 @@ def validate_source(value: object, *, sandcastle: bool = False) -> dict:
     for field, item in source.items():
         if not isinstance(item, str) or not item.strip() or "\0" in item:
             raise ValueError(f"treatment source {field} must be a nonempty string")
+    revision = source.get("revision")
+    version = source.get("version")
+    if revision is not None and not SOURCE_REVISION_RE.fullmatch(revision):
+        raise ValueError("treatment source revision must be an immutable commit digest")
+    if version is not None and not SOURCE_VERSION_RE.fullmatch(version):
+        raise ValueError("treatment source version must be an exact semantic version")
     try:
         datetime.fromisoformat(source["retrieved_at"].replace("Z", "+00:00"))
     except ValueError as error:
@@ -304,6 +315,7 @@ def treatment_admission_binding(
     case_revision: str,
     treatment: dict,
     skill: dict,
+    plugin: dict,
     harness: dict,
     model: str,
     effort: str,
@@ -317,6 +329,7 @@ def treatment_admission_binding(
             "name": skill.get("name"),
             "files": skill.get("files", []),
         }),
+        "plugin_identity": plugin["sha256"],
         "harness_identity": json_fingerprint(harness["modules"]),
         "runner_kind": treatment["descriptor"]["runner"]["kind"],
         "model": model,
@@ -328,6 +341,7 @@ def require_treatment_admission(root: Path, binding: dict) -> Path:
     required = {
         "treatment-identity.json",
         "skill-identity.json",
+        "plugin-identity.json",
         "harness-identity.json",
         "compatibility.json",
         "execution-result.json",
@@ -1422,6 +1436,8 @@ def _run_case(
     case_revision = digest(frozen / "case-manifest.json")
     try:
         snapshot_plugin(plugin_dir, pinned_plugin)
+        plugin_identity = directory_identity(pinned_plugin)
+        write_json(run_root / "plugin-identity.json", plugin_identity)
         runner_kind = treatment["descriptor"]["runner"]["kind"]
         entry_skill = treatment["descriptor"]["entry_skill"]
         identity = (
@@ -1467,6 +1483,7 @@ def _run_case(
             case_revision=case_revision,
             treatment=treatment,
             skill=identity,
+            plugin=plugin_identity,
             harness=recorded_harness,
             model=model,
             effort=effort,
@@ -1749,9 +1766,12 @@ def run_case(
             execution = read_json(run_root / "execution-result.json")
             identity_path = run_root / "treatment-identity.json"
             skill_path = run_root / "skill-identity.json"
+            plugin_path = run_root / "plugin-identity.json"
             harness_path = run_root / "harness-identity.json"
             binding = None
-            if identity_path.is_file() and skill_path.is_file() and harness_path.is_file():
+            if all(path.is_file() for path in (
+                identity_path, skill_path, plugin_path, harness_path
+            )):
                 identity = read_json(identity_path)
                 binding = treatment_admission_binding(
                     case_revision=execution["case_revision"],
@@ -1762,6 +1782,7 @@ def run_case(
                         "descriptor": identity["descriptor"],
                     },
                     skill=read_json(skill_path),
+                    plugin=read_json(plugin_path),
                     harness=read_json(harness_path),
                     model=model,
                     effort=effort,
@@ -1775,6 +1796,7 @@ def run_case(
             for name in (
                 "treatment-identity.json",
                 "skill-identity.json",
+                "plugin-identity.json",
                 "harness-identity.json",
                 "compatibility.json",
                 "execution-result.json",

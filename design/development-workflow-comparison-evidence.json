@@ -70,7 +70,7 @@
   "measured_prior_capacity": [
     {
       "observation": "Four concurrent hosted jobs were reliable while six concurrent jobs triggered release-asset instability.",
-      "source": "/Users/dfrysinger/.copilot/session-state/65ce1829-96b0-4936-8ae1-7f61ca54cfca/files/development-workflow-comparison-handoff.md",
+      "source": "private retained campaign capacity evidence",
       "interpretation": "Start at four concurrent attempts and raise only after an admission wave proves the current dependencies tolerate it."
     }
   ],

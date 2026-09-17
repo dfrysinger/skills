@@ -22,6 +22,7 @@ from skill_eval import (
     run_case,
     run_suite,
     require_treatment_admission,
+    treatment_admission_binding,
     validate_judgment,
     verify_case,
 )
@@ -105,6 +106,19 @@ class SkillEvalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown fields"):
             load_treatment(path)
 
+    def test_treatment_source_rejects_moving_revisions_and_versions(self) -> None:
+        path = self.make_treatment()
+        value = json.loads(path.read_text())
+        value["source"]["revision"] = "main"
+        path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "immutable commit digest"):
+            load_treatment(path)
+        value["source"].pop("revision")
+        value["source"]["version"] = "latest"
+        path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "exact semantic version"):
+            load_treatment(path)
+
     def test_custom_judge_prompt_receives_required_json_contract(self) -> None:
         from skill_eval import JUDGE_OUTPUT_CONTRACT, JUDGE_RUNTIME_CONTRACT
 
@@ -178,6 +192,7 @@ class SkillEvalTests(unittest.TestCase):
         names = {
             "treatment-identity.json": {},
             "skill-identity.json": {},
+            "plugin-identity.json": {},
             "harness-identity.json": {},
             "compatibility.json": {},
             "execution-result.json": {"execution_status": "PASS"},
@@ -205,6 +220,28 @@ class SkillEvalTests(unittest.TestCase):
         (run / "treatment-identity.json").symlink_to(run / "skill-identity.json")
         with self.assertRaisesRegex(ValueError, "must not be a symlink"):
             require_treatment_admission(self.root, binding)
+
+    def test_treatment_admission_binds_complete_plugin_snapshot(self) -> None:
+        common = {
+            "case_revision": "case",
+            "treatment": {
+                "fingerprint": "f" * 64,
+                "source_identity": None,
+                "adapter_identity": None,
+                "descriptor": {"runner": {"kind": "direct-copilot"}},
+            },
+            "skill": {"name": "entry", "files": []},
+            "harness": {"modules": []},
+            "model": "model",
+            "effort": "high",
+        }
+        first = treatment_admission_binding(
+            **common, plugin={"sha256": "a" * 64}
+        )
+        second = treatment_admission_binding(
+            **common, plugin={"sha256": "b" * 64}
+        )
+        self.assertNotEqual(first, second)
 
     def test_direct_treatment_entry_skill_overrides_case_target(self) -> None:
         case_dir = self.make_case()
@@ -256,6 +293,8 @@ class SkillEvalTests(unittest.TestCase):
             json.loads((run / "skill-identity.json").read_text())["name"],
             "alternate-skill",
         )
+        plugin_identity = json.loads((run / "plugin-identity.json").read_text())
+        self.assertEqual(plugin_identity["sha256"], directory_identity(plugin)["sha256"])
         self.assertEqual(
             json.loads((run / "compatibility.json").read_text())["status"],
             "ADMITTED",

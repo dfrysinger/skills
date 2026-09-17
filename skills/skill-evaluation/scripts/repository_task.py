@@ -658,12 +658,12 @@ def validate_sandcastle_result(
     return result, normalized
 
 
-def validate_treatment_output(directory: Path) -> list[Path]:
+def validate_treatment_output(directory: Path, *, require_files: bool = True) -> list[Path]:
     try:
         files = ordinary_files(directory)
     except ValueError as error:
         raise InfrastructureError(f"invalid treatment output boundary: {error}") from error
-    if not files:
+    if require_files and not files:
         raise InfrastructureError("treatment output contains no regular files")
     return files
 
@@ -921,7 +921,14 @@ def execute_repository(
                     raise InfrastructureError("candidate stop could not be confirmed; patch not exported")
                 if runner_kind != "direct-copilot":
                     try:
-                        validate_treatment_output(Path(treatment["output_dir"]))
+                        candidate = result.get("candidate", {})
+                        require_files = not (
+                            result.get("failure_kind") == "candidate_timeout"
+                            or candidate.get("exit_code") not in {None, 0}
+                        )
+                        validate_treatment_output(
+                            Path(treatment["output_dir"]), require_files=require_files
+                        )
                     except InfrastructureError:
                         for name in ("candidate-output.md", "treatment-result.json"):
                             copied = run_root / name

@@ -476,13 +476,14 @@ class HistoryTests(unittest.TestCase):
     def run_fixture(
         self, name, status, credits=None, *, complete=True, old=False, owner=None,
         treatment_id=None, adapter_digest=None, compatibility_status="ADMITTED",
+        arm="skill",
     ):
         path = self.root / "runs" / name / "example"
         path.mkdir(parents=True)
         skill_eval.write_json(path / "execution-result.json", {
             "schema_version": 1, "case_id": "example", "case_type": "repository-task",
             "case_revision": "fixed", "execution_status": status, "behavioral_verdict": None,
-            "arm": "skill", "model": "gpt-example", "effort": "high",
+            "arm": arm, "model": "gpt-example", "effort": "high",
             "timeout_seconds": 10, "elapsed_seconds": 2,
         })
         skill_eval.write_json(path / "skill-identity.json", {"name": "example", "files": []})
@@ -557,6 +558,20 @@ class HistoryTests(unittest.TestCase):
         text = evaluation_history.markdown(first)
         self.assertIn("unknown", text)
         self.assertIn("invalid_spend", text)
+
+    def test_legacy_baseline_and_missing_compatibility_remain_honest(self):
+        path = self.run_fixture("legacy-baseline", "PASS", old=True, arm="baseline")
+        row = evaluation_history.run_row(self.root, path, None, {})
+        self.assertIsNone(row["population"]["entry_skill"])
+        self.assertEqual(row["population"]["compatibility_status"], "unknown")
+        execution = skill_eval.read_json(path / "execution-result.json")
+        execution.pop("arm")
+        skill_eval.write_json(path / "execution-result.json", execution)
+        suite_row = evaluation_history.run_row(
+            self.root, path, None, {"arm": "baseline"}
+        )
+        self.assertEqual(suite_row["population"]["treatment_id"], "legacy-baseline")
+        self.assertIsNone(suite_row["population"]["entry_skill"])
 
     def test_history_reads_pre_subrole_measurement_and_accounting(self):
         path = self.run_fixture("legacy-accounting", "PASS", 2)

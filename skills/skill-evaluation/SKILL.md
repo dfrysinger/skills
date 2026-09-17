@@ -162,9 +162,9 @@ incompatible case/treatment pairs fail before model execution.
 Before a reportable repository run, execute the same command once with
 `--treatment-admission`. Admission attempts are retained under
 `treatment-admission-runs/`, excluded from comparison history, and bind the
-case, treatment and adapter snapshots, plugin entry skill, harness, model, and
-effort. A later reportable run refuses to start without the matching successful
-admission receipt.
+case, treatment and adapter snapshots, complete plugin snapshot, plugin entry
+skill, harness, model, and effort. A later reportable run refuses to start
+without the matching successful admission receipt.
 
 The only external candidate runner is the reviewed Sandcastle sequential
 reviewer adapter:

@@ -281,6 +281,7 @@ class RepositoryTaskTests(unittest.TestCase):
         (adapter_snapshot / "main.mjs").write_text("// frozen")
         owner = self
         unsafe_output = [False]
+        timed_out = [False]
 
         class FakeContainer:
             def __init__(self, image, mounts, artifacts, **kwargs):
@@ -310,6 +311,10 @@ class RepositoryTaskTests(unittest.TestCase):
                 implementer = environment["SKILL_EVAL_IMPLEMENTER_SESSION_ID"]
                 reviewer = environment["SKILL_EVAL_REVIEWER_SESSION_ID"]
                 (self.source / "code.py").write_text("def add(a, b): return a + b\n")
+                self.implementer = implementer
+                if timed_out[0]:
+                    log.write_text("sandcastle timed out\n")
+                    return {"exit_code": None, "timed_out": True, "log": log.name}
                 (output / "final-output.md").write_text("fixed\n")
                 evaluator.write_json(output / "treatment-result.json", {
                     "schema_version": 1,
@@ -328,7 +333,6 @@ class RepositoryTaskTests(unittest.TestCase):
                     outside.write_text("not candidate output\n")
                     (output / "unsafe-link").symlink_to(outside)
                 log.write_text("sandcastle completed\n")
-                self.implementer = implementer
                 return {"exit_code": 0, "timed_out": False, "log": log.name}
 
             def session_ids(self):
@@ -403,6 +407,27 @@ class RepositoryTaskTests(unittest.TestCase):
         grade.assert_not_called()
         self.assertTrue(all("treatment-output" not in item["path"]
                             for item in unsafe_result["artifacts"]))
+        for path in output.iterdir():
+            path.unlink()
+        unsafe_output[0] = False
+        timed_out[0] = True
+        timeout_run = self.root / "runs" / "sandcastle-timeout"
+        timeout_run.mkdir()
+        with (
+            mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "nonsecret-test"}),
+            mock.patch("repository_task.image_identity", return_value={"id": self.image}),
+            mock.patch("repository_task.require_admission", return_value=admission),
+            mock.patch("repository_task.Container", FakeContainer),
+            mock.patch("repository_task.grade") as grade,
+        ):
+            timeout_result = repository.execute_repository(
+                self.root, "example", frozen, timeout_run, timeout_run / "plugin",
+                "gpt-5.6-sol-fast", "high", 60, "skill", treatment=treatment,
+            )
+        self.assertEqual(timeout_result["execution_status"], "FAIL", timeout_result)
+        self.assertEqual(timeout_result["failure_kind"], "candidate_timeout")
+        self.assertIn(b"return a + b", (timeout_run / "candidate.patch").read_bytes())
+        grade.assert_not_called()
 
     def test_incompatible_treatment_is_blocked_before_candidate_setup(self):
         case = self.make_case()
@@ -423,7 +448,7 @@ class RepositoryTaskTests(unittest.TestCase):
             "id": "typescript-only",
             "source": {
                 "repository": "https://example.invalid/workflow",
-                "revision": "fixed",
+                "revision": "a" * 40,
                 "license": "MIT",
                 "retrieved_at": "2026-09-16T00:00:00Z",
             },
@@ -458,7 +483,7 @@ class RepositoryTaskTests(unittest.TestCase):
             "id": "admitted-workflow",
             "source": {
                 "repository": "https://example.invalid/workflow",
-                "revision": "fixed",
+                "revision": "a" * 40,
                 "license": "MIT",
                 "retrieved_at": "2026-09-16T00:00:00Z",
             },
