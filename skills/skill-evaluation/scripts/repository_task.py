@@ -103,8 +103,10 @@ def scaffold_repository(case_dir: Path) -> None:
     write_json(case_dir / "case.json", definition)
 
 
-def ordinary_files(root: Path, *, skip_git: bool = False) -> list[Path]:
+def ordinary_files(root: Path, *, skip_git: bool = False,
+                   allowed_symlinks: dict[Path, str] | None = None) -> list[Path]:
     files = []
+    allowed_symlinks = allowed_symlinks or {}
     for directory, names, filenames in os.walk(root, followlinks=False):
         if skip_git:
             names[:] = [name for name in names if name != ".git"]
@@ -112,7 +114,14 @@ def ordinary_files(root: Path, *, skip_git: bool = False) -> list[Path]:
         for name in [*names, *filenames]:
             path = Path(directory) / name
             mode = path.lstat().st_mode
-            if stat.S_ISLNK(mode) or not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+            if stat.S_ISLNK(mode):
+                relative = path.relative_to(root)
+                if allowed_symlinks.get(relative) == os.readlink(path):
+                    if name in names:
+                        names.remove(name)
+                    continue
+                raise ValueError(f"unsupported repository filesystem entry: {path}")
+            if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
                 raise ValueError(f"unsupported repository filesystem entry: {path}")
             if name == ".git":
                 raise ValueError(f"Git metadata is not repository evidence: {path}")
@@ -389,15 +398,17 @@ def git(repository: Path, arguments: list[str], *, input_bytes: bytes | None = N
     return result.stdout
 
 
-def copy_source(source: Path, destination: Path) -> None:
+def copy_source(source: Path, destination: Path,
+                allowed_symlinks: dict[Path, str] | None = None) -> None:
     destination.mkdir(parents=True, exist_ok=True)
-    for path in ordinary_files(source, skip_git=True):
+    for path in ordinary_files(source, skip_git=True, allowed_symlinks=allowed_symlinks):
         target = destination / path.relative_to(source)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
 
 
-def export_patch(frozen: Path, candidate: Path, patch: Path) -> None:
+def export_patch(frozen: Path, candidate: Path, patch: Path,
+                 setup_symlinks: dict[Path, str] | None = None) -> None:
     with tempfile.TemporaryDirectory(prefix="skill-eval-export-") as directory:
         trusted = Path(directory) / "repository"
         copy_packet(frozen / "repository", trusted)
@@ -414,7 +425,7 @@ def export_patch(frozen: Path, candidate: Path, patch: Path) -> None:
                 else:
                     entry.unlink()
         try:
-            copy_source(candidate, trusted)
+            copy_source(candidate, trusted, setup_symlinks)
         except (PermissionError, ValueError) as error:
             raise CandidateStateError(f"candidate source export failed: {error}") from error
         git(trusted, ["add", "--all", "--force"])
@@ -499,7 +510,11 @@ def harness_sources() -> list[dict]:
 def admission_binding(frozen: Path, image: dict) -> dict:
     return {
         "case_revision": digest(frozen / "case-manifest.json"),
-        "image": image, "harness_modules": harness_sources(),
+        "image": {
+            "requested": image.get("requested", image["id"]),
+            "id": image["id"],
+        },
+        "harness_modules": harness_sources(),
     }
 
 
@@ -763,6 +778,11 @@ def execute_repository(
                         record = container.execute(command, f"setup-{index}")
                         if record["exit_code"] != 0:
                             raise ValueError("candidate setup failed before candidate execution")
+                    setup_symlinks = {
+                        path.relative_to(repository): os.readlink(path)
+                        for path in repository.rglob("*")
+                        if path.is_symlink()
+                    }
                     stage = "candidate"
                     timeline.switch("candidate")
                     session_id = str(uuid.uuid4())
@@ -935,7 +955,7 @@ def execute_repository(
                             if copied.is_file() and not copied.is_symlink():
                                 copied.unlink()
                         raise
-                export_patch(frozen, repository, patch)
+                export_patch(frozen, repository, patch, setup_symlinks)
                 result["patch_sha256"] = digest(patch)
             if result["failure_kind"] != "candidate_timeout":
                 stage = "grading"

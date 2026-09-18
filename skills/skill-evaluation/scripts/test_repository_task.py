@@ -27,6 +27,20 @@ class RepositoryTaskTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_admission_binding_ignores_local_image_tag_metadata(self):
+        frozen = Path(self.temp.name) / "frozen"
+        frozen.mkdir()
+        (frozen / "case-manifest.json").write_text("{}")
+        binding = repository.admission_binding(frozen, {
+            "requested": self.image,
+            "id": self.image,
+            "repo_digests": ["local-name@" + self.image],
+        })
+        self.assertEqual(binding["image"], {
+            "requested": self.image,
+            "id": self.image,
+        })
+
     def make_case(self, name="example"):
         evaluator.add_case(self.root, name, "example-skill", ["candidate"],
                            case_type="repository-task")
@@ -265,6 +279,22 @@ class RepositoryTaskTests(unittest.TestCase):
         (output / "result").symlink_to(outside)
         with self.assertRaisesRegex(repository.InfrastructureError, "unsupported"):
             repository.validate_treatment_output(output)
+
+    def test_export_omits_unchanged_setup_symlink_and_rejects_changed_target(self):
+        frozen = self.freeze()
+        candidate = Path(self.temp.name) / "candidate"
+        repository.copy_packet(frozen / "repository", candidate)
+        (candidate / "node_modules").symlink_to("/opt/runtime/node_modules")
+        patch = Path(self.temp.name) / "candidate.patch"
+        allowed = {Path("node_modules"): "/opt/runtime/node_modules"}
+
+        repository.export_patch(frozen, candidate, patch, allowed)
+        self.assertEqual(patch.read_bytes(), b"")
+
+        (candidate / "node_modules").unlink()
+        (candidate / "node_modules").symlink_to("/tmp/untrusted")
+        with self.assertRaisesRegex(repository.CandidateStateError, "unsupported"):
+            repository.export_patch(frozen, candidate, patch, allowed)
 
     def test_sandcastle_sessions_use_preallocated_ids_and_missing_telemetry_is_partial(self):
         frozen = self.freeze()
