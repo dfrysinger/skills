@@ -280,6 +280,22 @@ class RepositoryTaskTests(unittest.TestCase):
         with self.assertRaisesRegex(repository.InfrastructureError, "unsupported"):
             repository.validate_treatment_output(output)
 
+    def test_export_omits_unchanged_setup_symlink_and_rejects_changed_target(self):
+        frozen = self.freeze()
+        candidate = Path(self.temp.name) / "candidate"
+        repository.copy_packet(frozen / "repository", candidate)
+        (candidate / "node_modules").symlink_to("/opt/runtime/node_modules")
+        patch = Path(self.temp.name) / "candidate.patch"
+        allowed = {Path("node_modules"): "/opt/runtime/node_modules"}
+
+        repository.export_patch(frozen, candidate, patch, allowed)
+        self.assertEqual(patch.read_bytes(), b"")
+
+        (candidate / "node_modules").unlink()
+        (candidate / "node_modules").symlink_to("/tmp/untrusted")
+        with self.assertRaisesRegex(repository.CandidateStateError, "unsupported"):
+            repository.export_patch(frozen, candidate, patch, allowed)
+
     def test_sandcastle_sessions_use_preallocated_ids_and_missing_telemetry_is_partial(self):
         frozen = self.freeze()
         run = self.root / "runs" / "sandcastle"
