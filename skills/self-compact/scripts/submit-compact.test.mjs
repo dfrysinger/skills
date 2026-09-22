@@ -1863,6 +1863,17 @@ test("request classification separates publication, failure, and ambiguity", () 
           },
         },
       },
+      {
+        agentId: "nested-agent",
+        type: "assistant.message",
+        data: { content: "ignored nested event" },
+      },
+      { type: "assistant.turn_end" },
+      { type: "assistant.turn_start" },
+      {
+        type: "assistant.message",
+        data: { content: "automatic continuation", toolRequests: [] },
+      },
       { type: "assistant.turn_end" },
     ];
     const text = `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
@@ -1882,6 +1893,7 @@ test("request classification separates publication, failure, and ambiguity", () 
       },
     );
     assert.equal(classified.state, "ready");
+    assert.equal(classified.boundary, Buffer.byteLength(text));
 
     const quoted = text.replace(
       '"id":"accepted-sdk-message"',

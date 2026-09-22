@@ -803,15 +803,16 @@ export function classifyControlAuthorization(
     return { state: "failure", reason: "control authorization boundary exceeds event tail" };
   }
   if (tail.partial) return { state: "wait" };
-  let events;
+  let records;
   try {
-    events = decodeRootEvents(tail.text);
+    records = decodeRootEventRecords(tail.text);
   } catch (error) {
     if (error instanceof MalformedEventError) {
       return { state: "failure", reason: "malformed control authorization event JSON" };
     }
     throw error;
   }
+  const events = records.map(({ event }) => event);
   let observedCount = 0;
   let controlCount = 0;
   for (const event of events) {
@@ -911,11 +912,43 @@ export function classifyControlAuthorization(
     }
   }
   if (turnEnd < 0) return { state: "wait" };
-  const lines = tail.text.split("\n");
-  let boundary = tail.size - Buffer.byteLength(tail.text, "utf8");
-  for (let index = 0; index <= turnEnd; index += 1) {
-    boundary += Buffer.byteLength(`${lines[index]}\n`, "utf8");
+
+  let boundaryIndex = turnEnd;
+  if (events[turnEnd + 1]?.type === "assistant.turn_start") {
+    let continuationEnd = -1;
+    for (let index = turnEnd + 2; index < events.length; index += 1) {
+      const event = events[index];
+      if (event.type === "assistant.turn_end") {
+        continuationEnd = index;
+        break;
+      }
+      if (
+        event.type === "user.message" ||
+        event.type === "tool.execution_start" ||
+        event.type === "tool.execution_complete"
+      ) {
+        return {
+          state: "failure",
+          reason: "root activity occurred in the control continuation turn",
+        };
+      }
+      if (event.type === "assistant.message") {
+        const later = toolRequestsOf(event);
+        if (later && later.length > 0) {
+          return {
+            state: "failure",
+            reason: "a root tool request occurred in the control continuation turn",
+          };
+        }
+      }
+    }
+    if (continuationEnd < 0) return { state: "wait" };
+    boundaryIndex = continuationEnd;
   }
+  const boundary =
+    tail.size -
+    Buffer.byteLength(tail.text, "utf8") +
+    records[boundaryIndex].end;
   return { state: "ready", boundary };
 }
 
