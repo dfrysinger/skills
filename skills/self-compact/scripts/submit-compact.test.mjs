@@ -35,6 +35,7 @@ import {
   resolveFreshGenerations,
   runPaths,
   validateRun,
+  waitForFreshGenerations,
 } from "./resume-after-compact.mjs";
 import {
   autopilotObjectiveFrom,
@@ -1992,6 +1993,31 @@ test("fresh target generations honour the fifteen second heartbeat window", asyn
   );
   assert.deepEqual(await resolveFreshGenerations(context.inboxRoot, "other-session"), []);
   assert.deepEqual(await resolveFreshGenerations(join(context.root, "missing"), "target-session"), []);
+});
+
+test("verifier readiness waits through one heartbeat renewal", async (t) => {
+  const context = await createCase(t, "generation-renewal");
+  await writeInstance(context.inboxRoot, {
+    sessionId: "target-session",
+    generation: targetGeneration,
+    ageMs: 60_000,
+  });
+  const renewal = setTimeout(
+    () =>
+      void writeInstance(context.inboxRoot, {
+        sessionId: "target-session",
+        generation: targetGeneration,
+      }),
+    20,
+  );
+  t.after(() => clearTimeout(renewal));
+  assert.deepEqual(
+    await waitForFreshGenerations(context.inboxRoot, "target-session", {
+      polls: 20,
+      pollSeconds: 0.01,
+    }),
+    [targetGeneration],
+  );
 });
 
 test("no fresh target generation releases before the publishing marker", async (t) => {

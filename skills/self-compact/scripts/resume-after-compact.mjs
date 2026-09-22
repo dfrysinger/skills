@@ -348,6 +348,19 @@ export async function resolveFreshGenerations(inboxRoot, sessionId, now = Date.n
   return [...generations];
 }
 
+export async function waitForFreshGenerations(
+  inboxRoot,
+  sessionId,
+  { polls = 25, pollSeconds = 0.25 } = {},
+) {
+  for (let poll = 0; poll < polls; poll += 1) {
+    const generations = await resolveFreshGenerations(inboxRoot, sessionId);
+    if (generations.length > 0) return generations;
+    if (poll + 1 < polls) await sleep(pollSeconds);
+  }
+  return [];
+}
+
 export function parseJsonLines(text) {
   const values = [];
   for (const line of text.split("\n")) {
@@ -1468,7 +1481,7 @@ export async function verify(runFilePath) {
 
       let controlGenerations;
       try {
-        controlGenerations = await resolveFreshGenerations(
+        controlGenerations = await waitForFreshGenerations(
           run.inboxRoot,
           run.targetSession,
         );
@@ -1702,7 +1715,10 @@ export async function verify(runFilePath) {
     // the publication attempt: an unknown or ambiguous target releases.
     let generations;
     try {
-      generations = await resolveFreshGenerations(run.inboxRoot, run.targetSession);
+      generations = await waitForFreshGenerations(
+        run.inboxRoot,
+        run.targetSession,
+      );
     } catch {
       fail("could not read session-inbox instance heartbeats", { release: true });
     }
