@@ -198,6 +198,18 @@ product proof, judge agreement, runtime, and source kind. Paired comparisons
 against a baseline are more informative than raw totals when the same cases and
 repetitions are shared.
 
+For skill-change treatments, score two layers independently:
+
+- **Instruction uptake:** whether each applicable changed rule is observed,
+  partial, absent, or not applicable in candidate actions and artifacts.
+- **Product movement:** whether the known defect disappeared, preservation
+  held, and the earliest failure frontier moved later than the paired control.
+
+Keep useful uptake evidence even when the case remains red. Do not call it
+product improvement when the same defect recurs at the same frontier. Classify
+product movement as `Conquered`, `Strict improvement`, `Mixed`, `No signal`,
+or `Regression`, and retain the per-rule uptake rows beneath it.
+
 Inspect repeated failures by case. Separate:
 
 - skill defects;
@@ -222,6 +234,8 @@ The report states:
 - first-outcome and recovery rules;
 - execution-level outcomes;
 - target, regression, product, and judge outcomes separately;
+- instruction uptake for each applicable changed skill rule;
+- product-movement classification and earliest failure frontier;
 - paired treatment effects;
 - repeatability;
 - per-case concentration;

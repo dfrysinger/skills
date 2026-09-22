@@ -161,6 +161,25 @@ passes when one identical-byte attempt reaches unanimous `PASS`; otherwise its
 last completed attempt determines the case result. Never discard failed
 attempts or describe a retry-assisted pass as deterministic.
 
+For an experiment that changes a skill, compare two layers separately:
+
+1. **Instruction uptake:** for each changed rule that applies to the case,
+   record `OBSERVED`, `PARTIAL`, `ABSENT`, or `NOT_APPLICABLE`, citing candidate
+   actions or artifacts. This shows whether the skill changed the agent's
+   process even when the case remains red.
+2. **Product movement:** compare executable gates, recurrence of the known
+   defect, preserved behavior, and the earliest remaining failure frontier
+   against the unchanged control. Credit product improvement only when the
+   known defect disappears or the frontier moves later without an equal or
+   earlier regression.
+
+Keep both layers in the report. Instruction uptake does not turn an unchanged
+product failure into progress, and a product pass without evidence that the
+changed rule was used does not establish a reusable skill improvement. Use
+`Conquered`, `Strict improvement`, `Mixed`, `No signal`, or `Regression` for
+product movement; retain the per-rule uptake rows underneath that
+classification.
+
 Classify a failure before editing:
 
 - **Skill defect:** general instructions omit or misstate a reusable reasoning
@@ -184,7 +203,9 @@ then add back a rule only when a repeated corpus regression proves it is
 missing. Existing prose earns retention through behavior, not age.
 
 Complete when the result is labeled `PASS`, `FAIL`, or `UNANSWERABLE`, with the
-reason and any generalized skill defect stated separately.
+reason and any generalized skill defect stated separately. For a skill-change
+experiment, completion also requires the instruction-uptake rows and product-
+movement classification above.
 
 ## Verification
 
