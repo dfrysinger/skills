@@ -224,6 +224,7 @@ function decodeRootEventRecords(text) {
   const records = [];
   let end = 0;
   for (const line of lines) {
+    const start = end;
     end += Buffer.byteLength(`${line}\n`, "utf8");
     let event;
     try {
@@ -235,7 +236,7 @@ function decodeRootEventRecords(text) {
       throw new MalformedEventError("malformed event JSON");
     }
     if (event.agentId !== undefined && event.agentId !== null) continue;
-    records.push({ event, end });
+    records.push({ event, start, end });
   }
   return records;
 }
@@ -504,7 +505,12 @@ export function classifyAuthorization(tail, { toolCallId, receipt }) {
   if (completion <= start) {
     return { state: "cancel", reason: "helper completion preceded execution start" };
   }
+  let interruptionIndex = -1;
   for (let index = start + 1; index < completion; index += 1) {
+    if (events[index].type === "user.message") {
+      if (interruptionIndex < 0) interruptionIndex = index;
+      continue;
+    }
     if (ROOT_ACTIVITY_TYPES.has(events[index].type)) {
       return {
         state: "cancel",
@@ -532,8 +538,11 @@ export function classifyAuthorization(tail, { toolCallId, receipt }) {
       turnEnd = index;
       break;
     }
+    if (type === "user.message") {
+      if (interruptionIndex < 0) interruptionIndex = index;
+      continue;
+    }
     if (
-      type === "user.message" ||
       type === "tool.execution_start" ||
       type === "tool.execution_complete"
     ) {
@@ -553,8 +562,12 @@ export function classifyAuthorization(tail, { toolCallId, receipt }) {
     }
   }
   if (turnEnd < 0) return { state: "wait" };
+  const relativeBoundary =
+    interruptionIndex >= 0
+      ? records[interruptionIndex].start
+      : records[turnEnd].end;
   const boundary =
-    tail.size - Buffer.byteLength(tail.text, "utf8") + records[turnEnd].end;
+    tail.size - Buffer.byteLength(tail.text, "utf8") + relativeBoundary;
   return { state: "ready", boundary };
 }
 

@@ -824,7 +824,6 @@ test("one user interruption resumes the same verifier and publishes once", async
   const context = await createCase(t, "interrupt-resume");
   authorizingEvents(context);
   const armed = await arm(context);
-  completeAuthorizingTurn(context, armed.stdout, { continuationStart: true });
   appendEvents(context, [
     {
       id: "native-user-interruption",
@@ -832,6 +831,7 @@ test("one user interruption resumes the same verifier and publishes once", async
       data: { content: "Please answer this before compacting.", delivery: "idle" },
     },
   ]);
+  completeAuthorizingTurn(context, armed.stdout, { continuationStart: true });
   await waitFor(async () => (await lockState(context)) === "interrupted", {
     label: "interrupted state",
   });
