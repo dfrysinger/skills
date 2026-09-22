@@ -180,10 +180,21 @@ changed rule was used does not establish a reusable skill improvement. Use
 product movement; retain the per-rule uptake rows underneath that
 classification.
 
+Before attributing a repeated behavior to the target skill, audit the complete
+candidate-visible instruction stack: task wording, repository and custom
+instructions, every invoked skill, design or work-order documents, source
+comments, existing tests and fixtures, and validation guidance. Record which
+sources reinforce or oppose the observed choice. Hidden judge criteria are not
+candidate context. When another visible source plausibly selects the same
+behavior, classify the interaction or packet bias and isolate it before
+strengthening one skill against another instruction.
+
 Classify a failure before editing:
 
 - **Skill defect:** general instructions omit or misstate a reusable reasoning
   step.
+- **Instruction interaction:** another candidate-visible instruction or
+  fixture reinforces, narrows, or contradicts the target skill.
 - **Execution variance:** the skill already requires the missed behavior.
 - **Packet defect:** decisive evidence is missing, leaked, or assigned to the
   wrong phase.
