@@ -575,10 +575,45 @@ export function classifyAuthorization(tail, { toolCallId, receipt }) {
     }
   }
   if (turnEnd < 0) return { state: "wait" };
+  let boundaryIndex = turnEnd;
+  if (events[turnEnd + 1]?.type === "assistant.turn_start") {
+    let continuationEnd = -1;
+    for (let index = turnEnd + 2; index < events.length; index += 1) {
+      const event = events[index];
+      if (event.type === "assistant.turn_end") {
+        continuationEnd = index;
+        break;
+      }
+      if (event.type === "user.message") {
+        if (interruptionIndex < 0) interruptionIndex = index;
+        continue;
+      }
+      if (
+        event.type === "tool.execution_start" ||
+        event.type === "tool.execution_complete"
+      ) {
+        return {
+          state: "cancel",
+          reason: "root tool activity occurred in the helper continuation turn",
+        };
+      }
+      if (event.type === "assistant.message") {
+        const later = toolRequestsOf(event);
+        if (later && later.length > 0) {
+          return {
+            state: "cancel",
+            reason: "a root tool request occurred in the helper continuation turn",
+          };
+        }
+      }
+    }
+    if (continuationEnd < 0) return { state: "wait" };
+    boundaryIndex = continuationEnd;
+  }
   const relativeBoundary =
     interruptionIndex >= 0
       ? records[interruptionIndex].start
-      : records[turnEnd].end;
+      : records[boundaryIndex].end;
   const boundary =
     tail.size - Buffer.byteLength(tail.text, "utf8") + relativeBoundary;
   return { state: "ready", boundary };
@@ -1491,6 +1526,7 @@ export async function verify(runFilePath) {
       fail("could not preserve the authorization event boundary");
     }
 
+    await sleep(run.pollSeconds);
     let interruption;
     try {
       interruption = await probeInterruption(run.events, boundary);
@@ -1723,6 +1759,7 @@ export async function verify(runFilePath) {
           attempt: 1,
         },
       );
+      await sleep(run.pollSeconds);
       const second = await probeInterruption(run.events, boundary);
       if (second.state !== "clear") {
         const reason =

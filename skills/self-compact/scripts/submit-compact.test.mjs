@@ -1643,10 +1643,15 @@ test("authorization classification refuses malformed and unaligned event windows
     },
     { type: "assistant.turn_end" },
     { type: "assistant.turn_start" },
+    {
+      type: "assistant.message",
+      data: { content: "", toolRequests: [] },
+    },
+    { type: "assistant.turn_end" },
   ].map((event) => JSON.stringify(event));
   const authorizationText = `${authorizationLines.join("\n")}\n`;
   const expectedBoundary = Buffer.byteLength(
-    `${authorizationLines.slice(0, 4).join("\n")}\n`,
+    authorizationText,
     "utf8",
   );
   assert.deepEqual(
