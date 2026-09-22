@@ -181,6 +181,9 @@ export async function joinSession() {
     rpc: {
       metadata: {
         async snapshot() {
+          if (state().sessionNameSnapshotNeverResolves) {
+            return new Promise(() => {});
+          }
           return {workspace: {id: "test-session", name: state().sessionName}};
         },
         async isProcessing() {
@@ -463,13 +466,16 @@ export async function joinSession() {
     child.on("exit", (code, signal) => resolve({ code, signal, stderr }));
   });
 
+  let heartbeatPath;
   const heartbeat = initialState.rejectJoin
     ? undefined
     : await waitFor(async () => {
         const instances = join(inbox, "instances");
         const names = await readdir(instances);
         const name = names.find((entry) => entry.endsWith(".json"));
-        return name ? readJson(join(instances, name)) : undefined;
+        if (!name) return undefined;
+        heartbeatPath = join(instances, name);
+        return readJson(heartbeatPath);
       }, "extension heartbeat");
 
   async function setState(patch) {
@@ -544,6 +550,7 @@ export async function joinSession() {
     child,
     exit,
     heartbeat,
+    currentHeartbeat: () => readJson(heartbeatPath),
     request,
     receipt,
     calls,
@@ -552,6 +559,20 @@ export async function joinSession() {
     stop,
   };
 }
+
+test("heartbeat renewal does not wait for session-name refresh", async () => {
+  const harness = await createHarness();
+  try {
+    const first = harness.heartbeat.updatedAt;
+    await harness.setState({ sessionNameSnapshotNeverResolves: true });
+    await new Promise((resolve) => setTimeout(resolve, 6_200));
+    const refreshed = await harness.currentHeartbeat();
+    assert.ok(Date.parse(refreshed.updatedAt) > Date.parse(first));
+    assert.equal(refreshed.sessionName, harness.heartbeat.sessionName);
+  } finally {
+    await harness.stop();
+  }
+});
 
 test("extension startup failures are persisted before session join", async () => {
   const harness = await createHarness({ rejectJoin: true });

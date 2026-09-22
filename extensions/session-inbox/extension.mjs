@@ -70,6 +70,7 @@ const rotationBarrier =
   join(activeSessionStateDir, "rotation.barrier");
 const deliveryLock = join(activeSessionStateDir, "delivery.lock");
 let heartbeatRefreshing = false;
+let identityRefreshing = false;
 let initialTmuxSessionError;
 let initialSessionNameError;
 try {
@@ -205,9 +206,9 @@ async function writeJson(path, value) {
   await rename(temporaryPath, path);
 }
 
-async function writeHeartbeat() {
-  if (heartbeatRefreshing) return;
-  heartbeatRefreshing = true;
+async function refreshIdentity() {
+  if (identityRefreshing) return;
+  identityRefreshing = true;
   try {
     let refreshedTmuxSession = tmuxSession;
     try {
@@ -236,6 +237,15 @@ async function writeHeartbeat() {
       diagnostics.setContext({ tmuxSession, sessionName });
       diagnostics.log("session.identity_changed", { tmuxSession, sessionName });
     }
+  } finally {
+    identityRefreshing = false;
+  }
+}
+
+async function writeHeartbeat() {
+  if (heartbeatRefreshing) return;
+  heartbeatRefreshing = true;
+  try {
     await writeJson(join(instancesDir, `${session.sessionId}-${generation}.json`), {
       sessionId: session.sessionId,
       tmuxSession,
@@ -246,6 +256,7 @@ async function writeHeartbeat() {
       pluginVersion,
       updatedAt: new Date().toISOString(),
     });
+    void refreshIdentity();
   } finally {
     heartbeatRefreshing = false;
   }
