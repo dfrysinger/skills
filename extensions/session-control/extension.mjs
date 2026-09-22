@@ -136,6 +136,7 @@ diagnostics.log("extension.started", {
   extensionPath: import.meta.url,
   pluginVersion,
   confirmationTimeoutMs,
+  autopilotConfirmationTimeoutMs,
 });
 if (initialSessionNameError) {
   diagnostics.log("session.identity_lookup_failed", {

@@ -118,6 +118,8 @@ start_rotation() {
   local extra_new_message="${5:-}"
   local setup_user_message="${6:-}"
   local inbox_inflight="${7:-}"
+  local marker_root="${8:-}"
+  local control_root="${marker_root:-$ROOT/home/.copilot/session-control}"
   local state="$ROOT/home/.copilot/session-state/$old"
   local input="$ROOT/$label-input.txt"
   local log="$ROOT/$label.log"
@@ -130,10 +132,14 @@ start_rotation() {
       >>"$state/events.jsonl"
   fi
   touch "$state/inuse.$$.lock"
+  if [ -n "$marker_root" ]; then
+    printf '{"root":"%s","generation":"test-generation"}\n' "$marker_root" \
+      >"$state/session-control-root.json"
+  fi
   if [ -n "$inbox_inflight" ]; then
-    mkdir -p "$ROOT/home/.copilot/session-control/processing"
+    mkdir -p "$control_root/processing"
     printf '{"id":"inflight","target":{"sessionId":"%s"}}\n' "$old" \
-      >"$ROOT/home/.copilot/session-control/processing/inflight-$old.json"
+      >"$control_root/processing/inflight-$old.json"
   fi
   printf '%s' "$prompt" >"$input"
 
@@ -206,6 +212,19 @@ inbox_recovery="$(
 )"
 [ -f "$inbox_recovery" ]
 [ ! -e "$inbox_state/rotation.barrier" ]
+
+marker_root="$ROOT/marker-selected-control"
+mkdir -p "$ROOT/home/.copilot/session-inbox"
+IFS=$'\t' read -r marker_state marker_log < <(
+  start_rotation old-marker-root marker-root \
+    'continue retired session old-marker-root' "" "" "" "yes" "$marker_root"
+)
+printf '%s\n' '{"type":"assistant.turn_end","data":{}}' \
+  >>"$marker_state/events.jsonl"
+wait_for_result "$marker_log"
+grep -Fq 'session-control work is in flight' "$marker_log"
+[ -f "$marker_root/processing/inflight-old-marker-root.json" ]
+[ ! -e "$marker_state/rotation.barrier" ]
 
 concurrent_state="$ROOT/home/.copilot/session-state/old-concurrent"
 IFS=$'\t' read -r concurrent_state concurrent_log < <(

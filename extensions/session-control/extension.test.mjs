@@ -452,16 +452,33 @@ export async function joinSession() {
 }
 `,
   );
+  const legacyRotationBarrier = join(root, "legacy-rotation.barrier");
   const child = spawn(process.execPath, [extensionPath], {
-    env: {
+    env: Object.fromEntries(
+      Object.entries({
       ...process.env,
-      COPILOT_SESSION_CONTROL_DIR: inbox,
+      COPILOT_SESSION_CONTROL_DIR: initialState.useDeprecatedConfiguration
+        ? undefined
+        : inbox,
+      COPILOT_SESSION_INBOX_DIR: initialState.useDeprecatedConfiguration
+        ? inbox
+        : undefined,
       MOCK_STATE: statePath,
       MOCK_CALLS: callsPath,
       MOCK_DEDUPE_DIR: join(inbox, "dedupe"),
       COPILOT_SESSION_STATE_ROOT: join(root, "session-state"),
-      COPILOT_SESSION_CONTROL_CONFIRM_TIMEOUT_MS: "500",
-    },
+      COPILOT_SESSION_CONTROL_CONFIRM_TIMEOUT_MS:
+        initialState.useDeprecatedConfiguration ? undefined : "500",
+      COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS:
+        initialState.useDeprecatedConfiguration ? "500" : undefined,
+      COPILOT_SESSION_INBOX_AUTOPILOT_CONFIRM_TIMEOUT_MS:
+        initialState.useDeprecatedConfiguration ? "500" : undefined,
+      COPILOT_SESSION_INBOX_ROTATION_BARRIER:
+        initialState.useDeprecatedConfiguration
+          ? legacyRotationBarrier
+          : undefined,
+      }).filter(([, value]) => value !== undefined),
+    ),
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stderr = "";
@@ -553,6 +570,7 @@ export async function joinSession() {
   return {
     root,
     inbox,
+    legacyRotationBarrier,
     child,
     exit,
     heartbeat,
@@ -1220,6 +1238,7 @@ test("a rotation barrier leaves prepublished inbox work pending", async () => {
       mode: "immediate",
       prompt: "must not be sent",
     });
+
     await new Promise((resolve) => setTimeout(resolve, 300));
     assert.equal(
       JSON.parse(
@@ -1229,6 +1248,59 @@ test("a rotation barrier leaves prepublished inbox work pending", async () => {
         ),
       ).id,
       "rotation-barrier-send",
+    );
+    assert.equal(
+      (await harness.calls()).some((call) => call.kind === "send"),
+      false,
+    );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("deprecated extension configuration remains operational", async () => {
+  const harness = await createHarness({ useDeprecatedConfiguration: true });
+  try {
+    const rootMarker = await readJson(
+      join(
+        harness.root,
+        "session-state",
+        harness.heartbeat.sessionId,
+        "session-control-root.json",
+      ),
+    );
+    assert.equal(rootMarker.root, harness.inbox);
+    const diagnostics = await harness.diagnosticEntries();
+    assert.match(
+      diagnostics
+        .filter((entry) => entry.event === "storage.deprecated")
+        .map((entry) => entry.message)
+        .join("\n"),
+      /COPILOT_SESSION_INBOX_DIR is deprecated/,
+    );
+    const started = diagnostics.find((entry) => entry.event === "extension.started");
+    assert.equal(started.confirmationTimeoutMs, 500);
+    assert.equal(started.autopilotConfirmationTimeoutMs, 500);
+
+    await writeFile(harness.legacyRotationBarrier, "rotating\n");
+    await harness.request("legacy-rotation-barrier-send", {
+      kind: "send",
+      mode: "immediate",
+      prompt: "must not be sent",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(
+      JSON.parse(
+        await readFile(
+          join(
+            harness.inbox,
+            "pending",
+            "legacy-rotation-barrier-send.json",
+          ),
+          "utf8",
+        ),
+      ).id,
+      "legacy-rotation-barrier-send",
     );
     assert.equal(
       (await harness.calls()).some((call) => call.kind === "send"),

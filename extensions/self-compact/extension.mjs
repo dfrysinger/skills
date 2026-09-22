@@ -345,6 +345,7 @@ const selfCompactTool = {
             env: {
               ...process.env,
               COPILOT_AGENT_SESSION_ID: invocation.sessionId,
+              COPILOT_SESSION_CONTROL_DIR: sessionControlRoot,
             },
             maxBuffer: 1024 * 1024,
           },
@@ -382,6 +383,7 @@ const selfCompactTool = {
           env: {
             ...process.env,
             COPILOT_AGENT_SESSION_ID: invocation.sessionId,
+            COPILOT_SESSION_CONTROL_DIR: sessionControlRoot,
             ...(preparedObjective
               ? {
                   SELF_COMPACT_AUTOPILOT_OBJECTIVE_BASE64:

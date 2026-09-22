@@ -190,6 +190,7 @@ writeFileSync(process.env.MOCK_CAPTURE, JSON.stringify({
   script: process.argv[1],
   runtime: process.execPath,
   session: process.env.COPILOT_AGENT_SESSION_ID,
+  controlRoot: process.env.COPILOT_SESSION_CONTROL_DIR,
   objectiveBase64: process.env.SELF_COMPACT_AUTOPILOT_OBJECTIVE_BASE64 ?? null,
 }));
 if (process.env.MOCK_SUBMITTER_FAILURE === "true") {
@@ -257,6 +258,7 @@ test("arms the portable submitter through the current Node runtime", async () =>
   assert.equal(outcome.invocation.session, "session-123");
   assert.equal(outcome.invocation.runtime, process.execPath);
   assert.equal(outcome.invocation.script, outcome.submitter);
+  assert.match(outcome.invocation.controlRoot, /session-control$/);
 });
 
 test("rejects malformed briefs before launching the submitter", async () => {
