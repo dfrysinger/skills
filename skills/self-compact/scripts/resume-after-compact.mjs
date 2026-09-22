@@ -144,6 +144,7 @@ export function runPaths(filesDir, runId) {
     handoff: `${base}.handoff`,
     instructions: `${base}.instructions`,
     continuation: `${base}.continuation`,
+    autopilotObjective: `${base}.autopilot-objective`,
     candidate: `${base}.candidate.json`,
     runFile: `${base}.run.json`,
     log: `${base}.log`,
@@ -811,6 +812,9 @@ export function validateRun(run) {
   ]) {
     requiredString(run, key);
   }
+  if (run.autopilotObjective !== undefined) {
+    requiredString(run, "autopilotObjective");
+  }
   if (!/^[0-9a-f]{32}$/.test(run.continuationNonce)) {
     throw new VerifierError("run metadata field continuationNonce is invalid", {
       release: false,
@@ -836,23 +840,18 @@ async function recordState(lock, name) {
   logLine(`${STATE_PREFIX}${name}`);
 }
 
-async function runRequest(run) {
-  const args = [
+async function runRequest(run, kind, args) {
+  const requestArgs = [
     run.requestCli,
-    "compact",
+    kind,
     "--target-session",
     run.targetSession,
-    "--instructions-file",
-    run.instructions,
-    "--continuation-file",
-    run.continuation,
-    "--dedupe-key",
-    `self-compact:${run.targetSession}:${run.lockToken}`,
+    ...args,
     "--timeout",
     String(run.requestTimeoutSeconds),
   ];
   return await new Promise((done, failed) => {
-    const child = spawn(run.nodeBin, args, {
+    const child = spawn(run.nodeBin, requestArgs, {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -872,6 +871,35 @@ async function runRequest(run) {
       });
     });
   });
+}
+
+async function runCompactRequest(run) {
+  return await runRequest(run, "compact", [
+    "--instructions-file",
+    run.instructions,
+    "--continuation-file",
+    run.continuation,
+    "--dedupe-key",
+    `self-compact:${run.targetSession}:${run.lockToken}`,
+  ]);
+}
+
+async function restoreAutopilotObjective(run) {
+  if (!run.autopilotObjective) return;
+  const { status, output } = await runRequest(run, "autopilot", [
+    "--prompt-file",
+    run.autopilotObjective,
+    "--dedupe-key",
+    `self-compact-autopilot:${run.targetSession}:${run.lockToken}`,
+  ]);
+  process.stdout.write(output.endsWith("\n") || output === "" ? output : `${output}\n`);
+  if (status !== 0 || !/"objectiveSet":true/.test(output)) {
+    throw new VerifierError(
+      "compaction completed but native autopilot objective was not restored",
+      { release: true },
+    );
+  }
+  logLine("self-compact restored the native autopilot objective");
 }
 
 export async function verify(runFilePath) {
@@ -1023,7 +1051,7 @@ export async function verify(runFilePath) {
     }
 
     logLine(`submitting one session-inbox compact request for session ${run.targetSession}`);
-    const { status, output } = await runRequest(run);
+    const { status, output } = await runCompactRequest(run);
     process.stdout.write(output.endsWith("\n") || output === "" ? output : `${output}\n`);
 
     const publishedMatch = /^request: (.+)$/m.exec(output);
@@ -1179,6 +1207,7 @@ export async function verify(runFilePath) {
       );
     }
     await recordState(lock, "continuation-observed");
+    await restoreAutopilotObjective(run);
     await recordState(lock, "completed");
 
     await releaseRun(run, lock, { release: true });
@@ -1187,8 +1216,18 @@ export async function verify(runFilePath) {
     );
     return { ok: true, checkpointNumber: completion.checkpointNumber };
   } catch (error) {
-    const release = error instanceof VerifierError ? error.release : failures.release;
-    const message = error?.message ?? String(error);
+    let release = error instanceof VerifierError ? error.release : failures.release;
+    let message = error?.message ?? String(error);
+    if (release && run.autopilotObjective) {
+      try {
+        await restoreAutopilotObjective(run);
+      } catch (restoreError) {
+        release = false;
+        message = `${message}; native autopilot restore failed: ${
+          restoreError?.message ?? String(restoreError)
+        }`;
+      }
+    }
     process.stderr.write(`self-compact cancelled: ${message}\n`);
     try {
       if (!release && (await lockTokenMatches(lock, run.lockToken))) {
@@ -1222,6 +1261,9 @@ async function releaseRun(run, lock, { release }) {
   if (!release) return;
   await rm(run.instructions, { force: true });
   await rm(run.continuation, { force: true });
+  if (run.autopilotObjective) {
+    await rm(run.autopilotObjective, { force: true });
+  }
   await rm(run.candidate, { force: true });
   await rm(run.runFile, { force: true });
   if (await lockTokenMatches(lock, run.lockToken)) {

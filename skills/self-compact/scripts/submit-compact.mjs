@@ -69,6 +69,27 @@ function secondsSetting(name, raw, fallback, { maximum, label }) {
   return value;
 }
 
+export function autopilotObjectiveFrom(env = process.env) {
+  const encoded = env.SELF_COMPACT_AUTOPILOT_OBJECTIVE_BASE64;
+  if (encoded === undefined || encoded === "") return null;
+  if (
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+      encoded,
+    )
+  ) {
+    refuse("paused autopilot objective is malformed");
+  }
+  const objective = Buffer.from(encoded, "base64").toString("utf8");
+  if (
+    !objective ||
+    objective.length > 65_536 ||
+    Buffer.from(objective, "utf8").toString("base64") !== encoded
+  ) {
+    refuse("paused autopilot objective is malformed");
+  }
+  return objective;
+}
+
 export function readSettings(env = process.env) {
   return {
     authScanBytes: integerSetting(
@@ -268,6 +289,7 @@ async function reclaimLock(lockDir, filesDir) {
     artifacts.handoff,
     artifacts.instructions,
     artifacts.continuation,
+    artifacts.autopilotObjective,
     artifacts.candidate,
     artifacts.runFile,
   ]) {
@@ -313,6 +335,7 @@ export async function submit({ argv = process.argv.slice(2), env = process.env }
   }
 
   const settings = readSettings(env);
+  const autopilotObjective = autopilotObjectiveFrom(env);
   const verifier = env.SELF_COMPACT_VERIFIER ?? join(scriptDirectory, "resume-after-compact.mjs");
   const requestCli =
     env.SELF_COMPACT_REQUEST_CLI ??
@@ -398,6 +421,9 @@ export async function submit({ argv = process.argv.slice(2), env = process.env }
       `${candidate.brief}\n\nSELF_COMPACT_RUN_TOKEN: ${token}`,
     );
     await writePrivate(artifacts.continuation, continuationPrompt);
+    if (autopilotObjective) {
+      await writePrivate(artifacts.autopilotObjective, autopilotObjective);
+    }
     await writePrivate(
       artifacts.runFile,
       `${JSON.stringify(
@@ -419,6 +445,9 @@ export async function submit({ argv = process.argv.slice(2), env = process.env }
           handoff: artifacts.handoff,
           instructions: artifacts.instructions,
           continuation: artifacts.continuation,
+          ...(autopilotObjective
+            ? { autopilotObjective: artifacts.autopilotObjective }
+            : {}),
           candidate: artifacts.candidate,
           runFile: artifacts.runFile,
           log: artifacts.log,
@@ -492,6 +521,7 @@ export async function submit({ argv = process.argv.slice(2), env = process.env }
         artifacts.handoff,
         artifacts.instructions,
         artifacts.continuation,
+        artifacts.autopilotObjective,
         artifacts.candidate,
         artifacts.runFile,
       ]) {

@@ -71,8 +71,11 @@ private session event record for debugging.
 
 ### 3. Submit as the final action
 
-Call `self_compact` with exactly one argument, `brief`, containing the string
-from step 2. Make it the only tool request in the final root assistant turn.
+When native autopilot is active, call `self_compact` with
+`{"action":"prepare"}` first and wait for its result. Then call
+`self_compact` with the `brief` argument containing the string from step 2.
+Make the brief-bearing `self_compact` call the only tool request in that final
+assistant message.
 After it reports that the SDK verifier is armed, end the turn immediately:
 write no closing narration and make no other tool call.
 
@@ -123,6 +126,19 @@ request:
 
 The detached verifier requires the same tool-call identity, the exact handoff
 receipt, and the end of that authorizing turn before creating the SDK request.
+
+If the native autopilot objective is active, call `self_compact` with
+`{"action":"prepare"}` in a separate assistant message first. It pauses
+autopilot and privately stages the exact objective. After that tool returns,
+call `self_compact` with the brief as the only and final tool request in the
+next assistant message. This separation is required: pausing inside the final
+tool handler is too late to prevent the runtime's already-scheduled autopilot
+continuation from racing authorization.
+
+The strict root-activity checks remain unchanged. After the compact,
+checkpoint, and fixed continuation are all verified, the verifier reactivates
+the exact staged objective through session-inbox. If arming fails before
+handoff, the extension restores the objective immediately.
 
 The verifier preserves the exact successful authorization-tail byte boundary,
 resolves the target generation, writes its `publishing` marker, and then scans

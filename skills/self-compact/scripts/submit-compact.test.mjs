@@ -24,7 +24,12 @@ import {
   runPaths,
   validateRun,
 } from "./resume-after-compact.mjs";
-import { inspectLockForReclaim, runTokenFrom, scanCandidate } from "./submit-compact.mjs";
+import {
+  autopilotObjectiveFrom,
+  inspectLockForReclaim,
+  runTokenFrom,
+  scanCandidate,
+} from "./submit-compact.mjs";
 
 const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
 const submitter = join(scriptsDirectory, "submit-compact.mjs");
@@ -50,12 +55,37 @@ import { dirname, join } from "node:path";
 
 const mode = process.env.FAKE_REQUEST_MODE ?? "success";
 const argv = process.argv.slice(2);
-if (argv[0] !== "compact") process.exit(64);
+if (argv[0] !== "compact" && argv[0] !== "autopilot") process.exit(64);
 const options = {};
 for (let index = 1; index < argv.length; index += 2) {
   options[argv[index]] = argv[index + 1];
 }
 const target = options["--target-session"];
+
+if (argv[0] === "autopilot") {
+  let count = 0;
+  try {
+    count = Number(readFileSync(process.env.FAKE_AUTOPILOT_COUNT, "utf8").trim() || "0");
+  } catch {}
+  writeFileSync(process.env.FAKE_AUTOPILOT_COUNT, String(count + 1));
+  copyFileSync(options["--prompt-file"], process.env.FAKE_CAPTURED_OBJECTIVE);
+  console.log("request: fake-autopilot");
+  console.log("receipt: fake-autopilot");
+  console.log(JSON.stringify({
+    id: "fake-autopilot",
+    status: "completed",
+    sessionId: target,
+    result: {
+      commandInvoked: true,
+      objectiveSet: true,
+      objectiveStatus: "active",
+      delivery: "steering",
+      objectiveUpdatedInPlace: true,
+    },
+  }));
+  process.exit(0);
+}
+
 const instructionsPath = options["--instructions-file"];
 const continuationPath = options["--continuation-file"];
 
@@ -256,8 +286,10 @@ async function createCase(t, name) {
     inboxRoot,
     lockDir: join(filesDir, "self-compact.lock"),
     requestCount: join(root, "request-count"),
+    autopilotCount: join(root, "autopilot-count"),
     capturedInstructions: join(root, "captured-instructions"),
     capturedContinuation: join(root, "captured-continuation"),
+    capturedObjective: join(root, "captured-objective"),
     capturedArguments: join(root, "captured-arguments.json"),
     requestPid: join(root, "request-pid"),
     toolCallId: `call-self-compact-${name}`,
@@ -298,8 +330,10 @@ function caseEnvironment(context, overrides = {}) {
     FAKE_EVENTS: context.events,
     FAKE_WORKSPACE: context.workspace,
     FAKE_REQUEST_COUNT: context.requestCount,
+    FAKE_AUTOPILOT_COUNT: context.autopilotCount,
     FAKE_CAPTURED_INSTRUCTIONS: context.capturedInstructions,
     FAKE_CAPTURED_CONTINUATION: context.capturedContinuation,
+    FAKE_CAPTURED_OBJECTIVE: context.capturedObjective,
     FAKE_CAPTURED_ARGUMENTS: context.capturedArguments,
     FAKE_REQUEST_PID: context.requestPid,
     ...overrides,
@@ -454,6 +488,23 @@ test("verified compaction preserves the exact brief, token, checkpoint, and one 
 
   const trace = [...log.matchAll(/^self-compact state: (.+)$/gm)].map(([, name]) => name);
   assert.deepEqual(trace, LOCK_STATES);
+  await waitFor(async () => !(await lockExists(context)), { label: "lock release" });
+});
+
+test("verified compaction restores the exact paused autopilot objective", async (t) => {
+  const context = await createCase(t, "autopilot-restore");
+  const objective = "Complete the durable objective after compaction.";
+  authorizingEvents(context);
+  const armed = await arm(context, {
+    env: {
+      SELF_COMPACT_AUTOPILOT_OBJECTIVE_BASE64:
+        Buffer.from(objective, "utf8").toString("base64"),
+    },
+  });
+  completeAuthorizingTurn(context, armed.stdout);
+  await waitForLog(armed.log, /restored the native autopilot objective/);
+  assert.equal(await readFile(context.capturedObjective, "utf8"), objective);
+  assert.equal(await readFile(context.autopilotCount, "utf8"), "1");
   await waitFor(async () => !(await lockExists(context)), { label: "lock release" });
 });
 
@@ -973,6 +1024,24 @@ test("a pre-publication rejection releases the lock", async (t) => {
   assert.equal(await requestCount(context), 1);
 });
 
+test("a definitive pre-publication failure restores paused autopilot", async (t) => {
+  const context = await createCase(t, "preflight-autopilot-restore");
+  const objective = "Resume after definitive compact rejection.";
+  authorizingEvents(context);
+  const armed = await arm(context, {
+    env: {
+      FAKE_REQUEST_MODE: "preflight",
+      SELF_COMPACT_AUTOPILOT_OBJECTIVE_BASE64:
+        Buffer.from(objective, "utf8").toString("base64"),
+    },
+  });
+  completeAuthorizingTurn(context, armed.stdout);
+  await waitForLog(armed.log, /restored the native autopilot objective/);
+  assert.equal(await readFile(context.capturedObjective, "utf8"), objective);
+  assert.equal(await readFile(context.autopilotCount, "utf8"), "1");
+  await waitFor(async () => !(await lockExists(context)), { label: "lock release" });
+});
+
 test("an ambiguous side effect retains the lock", async (t) => {
   const context = await createCase(t, "ambiguous-side-effect");
   authorizingEvents(context);
@@ -1377,6 +1446,24 @@ test("the run token is deterministic and always eight lowercase hex characters",
   assert.match(first, /^[0-9a-f]{8}$/);
   assert.equal(runTokenFrom({ SELF_COMPACT_RUN_TOKEN: "0123abcd" }), "0123abcd");
   assert.throws(() => runTokenFrom({ SELF_COMPACT_RUN_TOKEN: "NOTHEX" }), /eight lowercase hex/);
+});
+
+test("paused autopilot objective metadata is exact and bounded", () => {
+  const objective = "Keep working after compaction.";
+  assert.equal(
+    autopilotObjectiveFrom({
+      SELF_COMPACT_AUTOPILOT_OBJECTIVE_BASE64:
+        Buffer.from(objective, "utf8").toString("base64"),
+    }),
+    objective,
+  );
+  assert.throws(
+    () =>
+      autopilotObjectiveFrom({
+        SELF_COMPACT_AUTOPILOT_OBJECTIVE_BASE64: "not base64",
+      }),
+    /paused autopilot objective is malformed/,
+  );
 });
 
 test("event tails drop partial leading lines and refuse partial trailing lines", async (t) => {
