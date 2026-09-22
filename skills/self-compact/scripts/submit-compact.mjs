@@ -309,20 +309,43 @@ async function submitControl({
     action,
     operationId,
     toolCallId,
+    env,
     settings,
     sessionStateDir,
     targetSession,
   }) {
-    const filesDir = join(sessionStateDir, targetSession, "files");
-    const statusFile = statusPath(filesDir, operationId);
-    const statusText = await readTextOrNull(statusFile);
-    if (statusText === null) refuse(`operation ${operationId} has no durable status`);
-    let status;
-    try {
-      status = JSON.parse(statusText);
-    } catch {
-      refuse(`operation ${operationId} has malformed durable status`);
+    const workspaces = await candidateWorkspaces(
+      env,
+      sessionStateDir,
+      targetSession,
+    );
+    const statusCandidates = [];
+    for (const workspace of workspaces) {
+      const candidateFilesDir = join(dirname(workspace), "files");
+      const candidateStatusFile = statusPath(candidateFilesDir, operationId);
+      const candidateStatusText = await readTextOrNull(candidateStatusFile);
+      if (candidateStatusText === null) continue;
+      let candidateStatus;
+      try {
+        candidateStatus = JSON.parse(candidateStatusText);
+      } catch {
+        refuse(`operation ${operationId} has malformed durable status`);
+      }
+      if (candidateStatus?.operationId === operationId) {
+        statusCandidates.push({
+          filesDir: candidateFilesDir,
+          statusFile: candidateStatusFile,
+          status: candidateStatus,
+        });
+      }
     }
+    if (statusCandidates.length === 0) {
+      refuse(`operation ${operationId} has no durable status`);
+    }
+    if (statusCandidates.length !== 1) {
+      refuse(`operation ${operationId} has ambiguous durable status`);
+    }
+    const { filesDir, statusFile, status } = statusCandidates[0];
     if (
       status?.operationId !== operationId ||
       status?.state !== "interrupted" ||
@@ -352,18 +375,64 @@ async function submitControl({
     ) {
       refuse(`operation ${operationId} does not own the live verifier`);
     }
-    const tail = await readEventTail(run.events, settings.submitScanBytes);
-    if (tail.boundaryExceeded || tail.partial) {
-      refuse("current control-turn authorization is incomplete");
+    const control =
+      typeof status.controlPrompt === "string" &&
+      status.controlPrompt &&
+      typeof status.controlMessageId === "string" &&
+      status.controlMessageId &&
+      (status.controlDelivery === "idle" ||
+        status.controlDelivery === "steering" ||
+        status.controlDelivery === "unconfirmed")
+        ? {
+            prompt: status.controlPrompt,
+            messageId: status.controlMessageId,
+            delivery: status.controlDelivery,
+          }
+        : null;
+    let matches = null;
+    let lastReason = "could not bind one running self-compact control helper";
+    for (let poll = 0; poll < settings.submitPolls; poll += 1) {
+      try {
+        const tail = await readEventTail(run.events, settings.submitScanBytes);
+        if (tail.boundaryExceeded || tail.partial) {
+          throw new Error("current control-turn authorization is incomplete");
+        }
+        const events = decodeRootEvents(tail.text);
+        const candidates = collectControlCandidates(events, {
+          action,
+          operationId,
+          expectedCallId: toolCallId,
+          control,
+        });
+        if (candidates.length === 1) {
+          matches = candidates;
+          break;
+        }
+      } catch (error) {
+        lastReason = error?.message ?? String(error);
+      }
+      await sleep(settings.submitPollSeconds);
     }
-    const events = decodeRootEvents(tail.text);
-    const matches = collectControlCandidates(events, {
-      action,
-      operationId,
-      expectedCallId: toolCallId,
-    });
-    if (matches.length !== 1) {
-      refuse("could not bind one running self-compact control helper");
+    if (!matches) {
+      refuse(lastReason);
+    }
+    const latestStatusText = await readTextOrNull(statusFile);
+    const latestLockToken = await readTrimmedOrNull(lock.token);
+    const latestRunId = await readTrimmedOrNull(lock.runId);
+    let latestStatus = null;
+    try {
+      latestStatus = latestStatusText ? JSON.parse(latestStatusText) : null;
+    } catch {
+      refuse(`operation ${operationId} durable status changed while authorizing`);
+    }
+    if (
+      latestStatus?.state !== "interrupted" ||
+      latestStatus?.attempt !== 1 ||
+      latestLockToken !== lockToken ||
+      latestRunId !== runId ||
+      !(await exists(artifacts.runFile))
+    ) {
+      refuse(`operation ${operationId} no longer has a live interrupted owner`);
     }
     try {
       await writeExclusive(
@@ -460,6 +529,7 @@ export async function submit({ argv = process.argv.slice(2), env = process.env }
       action: controlAction,
       operationId: controlOperationId,
       toolCallId: requestedCallId,
+      env,
       settings,
       sessionStateDir,
       targetSession,

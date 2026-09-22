@@ -19,6 +19,7 @@ import {
   LOCK_STATES,
   classifyAuthorization,
   classifyControlAuthorization,
+  classifyControlSend,
   classifyRequestOutcome,
   collectControlCandidates,
   controlPromptFor,
@@ -1728,6 +1729,33 @@ test("request classification separates publication, failure, and ambiguity", () 
       }).length,
       1,
     );
+    const controlPrompt = controlPromptFor(operationId);
+    const steering = [
+      canonical[0],
+      {
+        id: "generated-control",
+        type: "user.message",
+        data: {
+          messageId: "generated-control",
+          content: controlPrompt,
+          delivery: "steering",
+        },
+      },
+      ...canonical.slice(1),
+    ];
+    assert.equal(
+      collectControlCandidates(steering, {
+        action: "resume",
+        operationId,
+        expectedCallId: toolCallId,
+        control: {
+          prompt: controlPrompt,
+          messageId: "generated-control",
+          delivery: "steering",
+        },
+      }).length,
+      1,
+    );
     assert.throws(
       () =>
         collectControlCandidates(
@@ -1829,6 +1857,31 @@ test("request classification separates publication, failure, and ambiguity", () 
         ),
       /root activity followed/,
     );
+  });
+
+  test("accepted unconfirmed control delivery remains pending", () => {
+    const generation = "generation-a";
+    const result = classifyControlSend({
+      status: 1,
+      output: `${JSON.stringify({
+        status: "failed",
+        sessionId: "session-a",
+        generation,
+        ambiguousSideEffect: true,
+        result: {
+          messageId: "late-control-message",
+          messageAccepted: true,
+          delivery: "unconfirmed",
+        },
+      })}\n`,
+      targetSession: "session-a",
+      targetGeneration: generation,
+    });
+    assert.deepEqual(result, {
+      ok: true,
+      messageId: "late-control-message",
+      delivery: "unconfirmed",
+    });
   });
 
   test("control authorization exempts only the accepted SDK message identity", () => {

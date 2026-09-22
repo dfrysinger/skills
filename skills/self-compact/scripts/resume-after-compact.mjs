@@ -63,6 +63,8 @@ export const RECLAIMABLE_STATES = new Set([
   "verifier-starting",
   "verifier-owned",
   "authorized",
+  "interrupted",
+  "resuming",
 ]);
 
 export class MalformedEventError extends Error {}
@@ -692,7 +694,7 @@ function matchesControlEvent(event, control) {
     eventIdentity(event) === control.messageId &&
     data?.content === control.prompt &&
     (data.delivery === "idle" || data.delivery === "steering") &&
-    data.delivery === control.delivery
+    (control.delivery === "unconfirmed" || data.delivery === control.delivery)
   );
 }
 
@@ -746,7 +748,7 @@ export async function probeSecondInterruption(
 
 export function collectControlCandidates(
   events,
-  { action, operationId, expectedCallId },
+  { action, operationId, expectedCallId, control = null },
 ) {
   const matches = [];
   for (let index = 0; index < events.length; index += 1) {
@@ -789,6 +791,7 @@ export function collectControlCandidates(
     }
     for (let prior = turnStart + 1; prior < index; prior += 1) {
       const priorEvent = events[prior];
+      if (matchesControlEvent(priorEvent, control)) continue;
       if (
         priorEvent.type === "user.message" ||
         priorEvent.type === "tool.execution_start" ||
@@ -1213,32 +1216,45 @@ export function classifyControlSend({
   targetSession,
   targetGeneration,
 }) {
-  if (status !== 0) {
-    return {
-      ok: false,
-      reason: "generated self-compact control prompt was not delivered",
-    };
-  }
   for (const receipt of parseJsonLines(output)) {
     const result =
       receipt?.result && typeof receipt.result === "object"
         ? receipt.result
         : null;
     if (
-      receipt.status === "completed" &&
       receipt.sessionId === targetSession &&
       receipt.generation === targetGeneration &&
       typeof result?.messageId === "string" &&
       result.messageId &&
-      (result.delivery === "idle" || result.delivery === "steering") &&
       result.messageAccepted === true
     ) {
-      return {
-        ok: true,
-        messageId: result.messageId,
-        delivery: result.delivery,
-      };
+      if (
+        receipt.status === "completed" &&
+        (result.delivery === "idle" || result.delivery === "steering")
+      ) {
+        return {
+          ok: true,
+          messageId: result.messageId,
+          delivery: result.delivery,
+        };
+      }
+      if (
+        receipt.ambiguousSideEffect === true &&
+        result.delivery === "unconfirmed"
+      ) {
+        return {
+          ok: true,
+          messageId: result.messageId,
+          delivery: "unconfirmed",
+        };
+      }
     }
+  }
+  if (status !== 0) {
+    return {
+      ok: false,
+      reason: "generated self-compact control prompt was not delivered",
+    };
   }
   return {
     ok: false,
@@ -1440,7 +1456,7 @@ async function restoreAutopilotObjective(run) {
   if (status !== 0 || !/"objectiveSet":true/.test(output)) {
     throw new VerifierError(
       "compaction completed but native autopilot objective was not restored",
-      { release: true },
+      { release: false },
     );
   }
   logLine("self-compact restored the native autopilot objective");

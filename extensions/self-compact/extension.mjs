@@ -124,21 +124,22 @@ async function unreadTerminalStatus(sessionId) {
 async function readObjective() {
   const saved = await session.rpc.workspaces.readAutopilotObjective();
   if (!saved.content) return null;
+  let state;
   try {
-    const state = JSON.parse(saved.content);
-    const current = state?.current;
-    if (
-      current &&
-      typeof current.objective === "string" &&
-      current.objective &&
-      typeof current.status === "string"
-    ) {
-      return current;
-    }
+    state = JSON.parse(saved.content);
   } catch {
-    // A concurrently replaced objective is not stable enough to pause.
+    throw new Error("native autopilot objective state is unreadable");
   }
-  return null;
+  const current = state?.current;
+  if (current === null || current === undefined) return null;
+  if (
+    typeof current.objective !== "string" ||
+    !current.objective ||
+    typeof current.status !== "string"
+  ) {
+    throw new Error("native autopilot objective state is invalid");
+  }
+  return current;
 }
 
 async function waitForObjectiveStatus(expected, objective) {
@@ -192,25 +193,27 @@ async function readPreparedObjective(sessionId) {
     if (error?.code === "ENOENT") return null;
     throw error;
   }
+  let prepared;
   try {
-    const prepared = JSON.parse(text);
-    const age = Date.now() - Date.parse(prepared.preparedAt);
-    if (
-      prepared?.version === 1 &&
-      prepared.sessionId === sessionId &&
-      typeof prepared.objective === "string" &&
-      prepared.objective &&
-      Number.isFinite(age) &&
-      age >= 0 &&
-      age <= 5 * 60_000
-    ) {
-      return prepared.objective;
-    }
+    prepared = JSON.parse(text);
   } catch {
-    // Malformed or expired state cannot authorize an objective restore.
+    throw new Error("staged native autopilot objective is malformed");
   }
-  await rm(path, { force: true });
-  return null;
+  const age = Date.now() - Date.parse(prepared?.preparedAt);
+  if (
+    prepared?.version !== 1 ||
+    prepared.sessionId !== sessionId ||
+    typeof prepared.objective !== "string" ||
+    !prepared.objective ||
+    !Number.isFinite(age) ||
+    age < 0
+  ) {
+    throw new Error("staged native autopilot objective is invalid");
+  }
+  return {
+    objective: prepared.objective,
+    expired: age > 5 * 60_000,
+  };
 }
 
 async function removePreparedObjective(sessionId) {
@@ -219,20 +222,48 @@ async function removePreparedObjective(sessionId) {
 
 async function pauseActiveObjective(sessionId) {
   const current = await readObjective();
+  if (current?.status === "paused") {
+    const prepared = await readPreparedObjective(sessionId);
+    if (!prepared || prepared.objective !== current.objective) {
+      throw new Error(
+        "native autopilot is paused without its matching staged objective",
+      );
+    }
+    await writePreparedObjective(sessionId, current.objective);
+    return current.objective;
+  }
   if (current?.status !== "active") {
     await removePreparedObjective(sessionId);
     return null;
   }
-  const invocation = await session.rpc.commands.invoke({
-    name: "autopilot",
-    input: "",
-  });
-  if (invocation.kind !== "text" && invocation.kind !== "completed") {
-    throw new Error(`autopilot pause returned unsupported result ${invocation.kind}`);
+  try {
+    const invocation = await session.rpc.commands.invoke({
+      name: "autopilot",
+      input: "",
+    });
+    if (invocation.kind !== "text" && invocation.kind !== "completed") {
+      throw new Error(
+        `autopilot pause returned unsupported result ${invocation.kind}`,
+      );
+    }
+    await waitForObjectiveStatus(["paused"], current.objective);
+    await writePreparedObjective(sessionId, current.objective);
+    return current.objective;
+  } catch (error) {
+    const paused = await readObjective().catch(() => null);
+    if (paused?.status === "paused" && paused.objective === current.objective) {
+      try {
+        await restoreObjective(current.objective);
+      } catch (restoreError) {
+        throw new Error(
+          `${error?.message ?? String(error)}; native autopilot rollback also failed: ${
+            restoreError?.message ?? String(restoreError)
+          }`,
+        );
+      }
+    }
+    throw error;
   }
-  await waitForObjectiveStatus(["paused"], current.objective);
-  await writePreparedObjective(sessionId, current.objective);
-  return current.objective;
 }
 
 async function restoreObjective(objective) {
@@ -367,15 +398,35 @@ const selfCompactTool = {
       };
     }
     let preparedObjective = null;
+    let preparedObjectiveMatchesPaused = false;
     try {
-      preparedObjective = await readPreparedObjective(invocation.sessionId);
-      await requireReady(invocation.sessionId);
+      const prepared = await readPreparedObjective(invocation.sessionId);
+      preparedObjective = prepared?.objective ?? null;
       const current = await readObjective();
-      if (current?.status === "active") {
+      preparedObjectiveMatchesPaused =
+        current?.status === "paused" &&
+        current.objective === preparedObjective;
+      if (prepared?.expired) {
         throw new Error(
-          "native autopilot is active; call self_compact_prepare first, then invoke self_compact as the only and final tool request",
+          "staged native autopilot objective expired before compact arming",
         );
       }
+      if (current?.status === "active") {
+        throw new Error(
+          "native autopilot is active; call self_compact with action 'prepare' first, then invoke self_compact as the only and final tool request",
+        );
+      }
+      if (current?.status === "paused" && !preparedObjectiveMatchesPaused) {
+        throw new Error(
+          "native autopilot is paused without its matching staged objective; call self_compact with action 'prepare' before compacting",
+        );
+      }
+      if (preparedObjective && !preparedObjectiveMatchesPaused) {
+        throw new Error(
+          "staged native autopilot objective no longer matches the current objective",
+        );
+      }
+      await requireReady(invocation.sessionId);
       const { stdout } = await execFileAsync(
         nodeBin,
         [submitter, "--tool-call-id", invocation.toolCallId],
@@ -394,11 +445,17 @@ const selfCompactTool = {
           maxBuffer: 1024 * 1024,
         },
       );
-      await removePreparedObjective(invocation.sessionId);
-      return stdout.trim();
+      try {
+        await removePreparedObjective(invocation.sessionId);
+        return stdout.trim();
+      } catch (cleanupError) {
+        return `${stdout.trim()}\nSelf-compact was armed, but staged objective cleanup failed: ${
+          cleanupError?.message ?? String(cleanupError)
+        }`;
+      }
     } catch (error) {
       let detail = (error.stderr || error.message || String(error)).trim();
-      if (preparedObjective) {
+      if (preparedObjectiveMatchesPaused) {
         try {
           await restoreObjective(preparedObjective);
           await removePreparedObjective(invocation.sessionId);
@@ -410,6 +467,8 @@ const selfCompactTool = {
           ).trim();
           detail = `${detail}; native autopilot restore also failed: ${restoreDetail}`;
         }
+      } else if (preparedObjective) {
+        await removePreparedObjective(invocation.sessionId);
       }
       return {
         textResultForLlm: `Self-compact was not armed: ${detail}`,

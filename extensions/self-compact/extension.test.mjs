@@ -51,9 +51,10 @@ const session = {
     workspaces: {
       async readAutopilotObjective() {
         return {
-          content: objective
+          content: process.env.MOCK_OBJECTIVE_RAW ??
+            (objective
             ? JSON.stringify({current: objective})
-            : null,
+            : null),
         };
       },
     },
@@ -127,6 +128,9 @@ async function runExtension(
     terminalStatus,
     mutateControlRootAfterJoin = false,
     preparedObjective,
+    preparedAt,
+    objectiveRaw,
+    stagingFailure = false,
   } = {},
 ) {
   const { root, extensionPath } = await stageExtension();
@@ -174,6 +178,10 @@ async function runExtension(
     );
   }
   if (preparedObjective) {
+    const objective =
+      typeof preparedObjective === "string"
+        ? preparedObjective
+        : preparedObjective.objective;
     const filesDir = join(root, "session-123", "files");
     await mkdir(filesDir, { recursive: true });
     await writeFile(
@@ -181,10 +189,15 @@ async function runExtension(
       `${JSON.stringify({
         version: 1,
         sessionId: "session-123",
-        objective: preparedObjective,
-        preparedAt: new Date().toISOString(),
+        objective,
+        preparedAt: preparedAt ?? new Date().toISOString(),
       })}\n`,
     );
+  }
+  if (stagingFailure) {
+    const sessionDir = join(root, "session-123");
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(join(sessionDir, "files"), "blocks staged objective directory");
   }
   await writeFile(input, brief);
   await writeFile(
@@ -213,6 +226,7 @@ process.stdout.write("self-compact handoff receipt: proof-token\\nwatcher log: r
       MOCK_CAPTURE: capture,
       ...(objective ? { MOCK_OBJECTIVE: objective } : {}),
       ...(objectiveStatus ? { MOCK_OBJECTIVE_STATUS: objectiveStatus } : {}),
+      ...(objectiveRaw ? { MOCK_OBJECTIVE_RAW: objectiveRaw } : {}),
       ...(prepareFirst ? { MOCK_PREPARE_FIRST: "true" } : {}),
       ...(submitterFailure ? { MOCK_SUBMITTER_FAILURE: "true" } : {}),
       ...(action ? { MOCK_ACTION: action } : {}),
@@ -316,21 +330,51 @@ test("restores a paused objective when arming fails", async () => {
     submitterFailure: true,
   });
 
-  test("refuses a final self_compact call while autopilot is still active", async () => {
-    const outcome = await runExtension(goodBrief, {
-      objective: "Active objective that was not prepared.",
-    });
-    assert.equal(outcome.code, 0, outcome.stderr);
-    const registered = JSON.parse(outcome.stdout);
-    assert.equal(registered.result.resultType, "failure");
-    assert.match(registered.result.textResultForLlm, /self_compact_prepare first/);
-    assert.deepEqual(registered.commands, []);
-    assert.equal(outcome.invocation, null);
-  });
   assert.equal(outcome.code, 0, outcome.stderr);
   const registered = JSON.parse(outcome.stdout);
   assert.equal(registered.result.resultType, "failure");
   assert.match(registered.result.textResultForLlm, /forced submitter failure/);
+  assert.deepEqual(registered.commands, [
+    { name: "autopilot", input: "" },
+    { name: "autopilot", input: objective },
+  ]);
+});
+
+test("refuses a final self_compact call while autopilot is still active", async () => {
+  const outcome = await runExtension(goodBrief, {
+    objective: "Active objective that was not prepared.",
+  });
+  assert.equal(outcome.code, 0, outcome.stderr);
+  const registered = JSON.parse(outcome.stdout);
+  assert.equal(registered.result.resultType, "failure");
+  assert.match(registered.result.textResultForLlm, /action 'prepare'/);
+  assert.deepEqual(registered.commands, []);
+  assert.equal(outcome.invocation, null);
+});
+
+test("unreadable autopilot state fails closed", async () => {
+  const outcome = await runExtension(goodBrief, {
+    objectiveRaw: "{not-json",
+  });
+  assert.equal(outcome.code, 0, outcome.stderr);
+  const registered = JSON.parse(outcome.stdout);
+  assert.equal(registered.result.resultType, "failure");
+  assert.match(registered.result.textResultForLlm, /state is unreadable/);
+  assert.deepEqual(registered.commands, []);
+  assert.equal(outcome.invocation, null);
+});
+
+test("a staging failure rolls the paused objective back", async () => {
+  const objective = "Restore after staged objective persistence fails.";
+  const outcome = await runExtension(goodBrief, {
+    objective,
+    prepareFirst: true,
+    stagingFailure: true,
+  });
+  assert.equal(outcome.code, 0, outcome.stderr);
+  const registered = JSON.parse(outcome.stdout);
+  assert.equal(registered.prepareResult.resultType, "failure");
+  assert.match(registered.prepareResult.textResultForLlm, /EEXIST|not a directory/i);
   assert.deepEqual(registered.commands, [
     { name: "autopilot", input: "" },
     { name: "autopilot", input: objective },
@@ -431,4 +475,71 @@ test("a readiness loss after preparation restores the staged objective", async (
     { name: "autopilot", input: objective },
   ]);
   assert.equal(outcome.invocation, null);
+});
+
+test("an expired preparation restores autopilot and refuses compact arming", async () => {
+  const objective = "Restore the objective after preparation expires.";
+  const outcome = await runExtension(goodBrief, {
+    objective,
+    objectiveStatus: "paused",
+    preparedObjective: objective,
+    preparedAt: new Date(Date.now() - 6 * 60_000).toISOString(),
+  });
+  assert.equal(outcome.code, 0, outcome.stderr);
+  const registered = JSON.parse(outcome.stdout);
+  assert.equal(registered.result.resultType, "failure");
+  assert.match(registered.result.textResultForLlm, /expired before compact arming/);
+  assert.deepEqual(registered.commands, [
+    { name: "autopilot", input: objective },
+  ]);
+  assert.equal(outcome.invocation, null);
+});
+
+test("a paused objective without staged metadata refuses compact arming", async () => {
+  const outcome = await runExtension(goodBrief, {
+    objective: "Paused without a staged objective.",
+    objectiveStatus: "paused",
+  });
+  assert.equal(outcome.code, 0, outcome.stderr);
+  const registered = JSON.parse(outcome.stdout);
+  assert.equal(registered.result.resultType, "failure");
+  assert.match(
+    registered.result.textResultForLlm,
+    /paused without its matching staged objective/,
+  );
+  assert.deepEqual(registered.commands, []);
+  assert.equal(outcome.invocation, null);
+});
+
+test("mismatched staged metadata refuses compact arming", async () => {
+  const outcome = await runExtension(goodBrief, {
+    objective: "Current paused objective.",
+    objectiveStatus: "paused",
+    preparedObjective: "Stale staged objective.",
+  });
+  assert.equal(outcome.code, 0, outcome.stderr);
+  const registered = JSON.parse(outcome.stdout);
+  assert.equal(registered.result.resultType, "failure");
+  assert.match(
+    registered.result.textResultForLlm,
+    /paused without its matching staged objective/,
+  );
+  assert.deepEqual(registered.commands, []);
+  assert.equal(outcome.invocation, null);
+});
+
+test("preparation refreshes a matching paused objective", async () => {
+  const objective = "Refresh the staged objective before compacting.";
+  const outcome = await runExtension(goodBrief, {
+    objective,
+    objectiveStatus: "paused",
+    preparedObjective: objective,
+    preparedAt: new Date(Date.now() - 6 * 60_000).toISOString(),
+    prepareFirst: true,
+  });
+  assert.equal(outcome.code, 0, outcome.stderr);
+  const registered = JSON.parse(outcome.stdout);
+  assert.match(registered.prepareResult, /exact objective is staged/);
+  assert.deepEqual(registered.commands, []);
+  assert.notEqual(outcome.invocation, null);
 });

@@ -230,7 +230,7 @@ async function writeJson(path, value) {
 }
 
 async function refreshIdentity() {
-  if (identityRefreshing) return;
+  if (identityRefreshing) return false;
   identityRefreshing = true;
   try {
     let refreshedTmuxSession = tmuxSession;
@@ -259,27 +259,41 @@ async function refreshIdentity() {
       sessionName = refreshedSessionName;
       diagnostics.setContext({ tmuxSession, sessionName });
       diagnostics.log("session.identity_changed", { tmuxSession, sessionName });
+      return true;
     }
+    return false;
   } finally {
     identityRefreshing = false;
   }
+}
+
+async function writeHeartbeatSnapshot() {
+  await writeJson(join(instancesDir, `${session.sessionId}-${generation}.json`), {
+    sessionId: session.sessionId,
+    tmuxSession,
+    sessionName,
+    generation,
+    hostPid: process.ppid,
+    pid: process.pid,
+    pluginVersion,
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 async function writeHeartbeat() {
   if (heartbeatRefreshing) return;
   heartbeatRefreshing = true;
   try {
-    await writeJson(join(instancesDir, `${session.sessionId}-${generation}.json`), {
-      sessionId: session.sessionId,
-      tmuxSession,
-      sessionName,
-      generation,
-      hostPid: process.ppid,
-      pid: process.pid,
-      pluginVersion,
-      updatedAt: new Date().toISOString(),
-    });
-    void refreshIdentity();
+    await writeHeartbeatSnapshot();
+    void refreshIdentity()
+      .then(async (changed) => {
+        if (changed) await writeHeartbeatSnapshot();
+      })
+      .catch((error) => {
+        diagnostics.log("session.identity_publish_failed", {
+          error: errorDetails(error),
+        });
+      });
   } finally {
     heartbeatRefreshing = false;
   }

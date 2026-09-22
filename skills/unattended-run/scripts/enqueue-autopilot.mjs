@@ -241,6 +241,7 @@ async function main() {
   );
   const requestCli =
     process.env.SESSION_CONTROL_REQUEST_CLI ||
+    process.env.SESSION_INBOX_REQUEST_CLI ||
     join(scriptDirectory, "../../../extensions/session-control/request.mjs");
   try {
     await access(objectiveFile, fsConstants.R_OK);
