@@ -1,28 +1,48 @@
 #!/usr/bin/env node
 
-import { existsSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const SESSION_CONTROL_DIR_ENV = "COPILOT_SESSION_CONTROL_DIR";
 export const DEPRECATED_SESSION_INBOX_DIR_ENV =
   "COPILOT_SESSION_INBOX_DIR";
 
+function pathEntryExists(path) {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return false;
+    throw error;
+  }
+}
+
+function explicitRoot(value, environmentName) {
+  if (!value || !isAbsolute(value)) {
+    throw new Error(`${environmentName} must be a non-empty absolute path`);
+  }
+  return value;
+}
+
 export function resolveSessionControlRoot({
   env = process.env,
   home = homedir(),
-  exists = existsSync,
+  exists = pathEntryExists,
 } = {}) {
   if (env[SESSION_CONTROL_DIR_ENV] !== undefined) {
     return {
-      root: env[SESSION_CONTROL_DIR_ENV],
+      root: explicitRoot(env[SESSION_CONTROL_DIR_ENV], SESSION_CONTROL_DIR_ENV),
       source: "explicit",
     };
   }
   if (env[DEPRECATED_SESSION_INBOX_DIR_ENV] !== undefined) {
     return {
-      root: env[DEPRECATED_SESSION_INBOX_DIR_ENV],
+      root: explicitRoot(
+        env[DEPRECATED_SESSION_INBOX_DIR_ENV],
+        DEPRECATED_SESSION_INBOX_DIR_ENV,
+      ),
       source: "deprecated-env",
       deprecation:
         "COPILOT_SESSION_INBOX_DIR is deprecated; use COPILOT_SESSION_CONTROL_DIR",
@@ -53,7 +73,13 @@ export function emitSessionControlDeprecation(
 }
 
 function isEntrypoint() {
-  return process.argv[1] === fileURLToPath(import.meta.url);
+  if (!process.argv[1]) return false;
+  const modulePath = fileURLToPath(import.meta.url);
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(modulePath);
+  } catch {
+    return resolve(process.argv[1]) === resolve(modulePath);
+  }
 }
 
 if (isEntrypoint()) {

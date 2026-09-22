@@ -27,6 +27,9 @@ cat >"$FAKE_BIN/node" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FAKE_NODE_CALLS"
 if [[ "$1" == */storage-root.mjs ]]; then
+  if [[ "${FAKE_STORAGE_ROOT_STATUS:-0}" -ne 0 ]]; then
+    exit "$FAKE_STORAGE_ROOT_STATUS"
+  fi
   printf '%s\n' "$FAKE_SESSION_CONTROL_ROOT"
   exit 0
 fi
@@ -183,6 +186,24 @@ fi
   fail "stale Copilot fallback identity sent tmux keys"
 FAKE_IDENTITY_VALID=0
 export FAKE_IDENTITY_VALID
+
+FAKE_STORAGE_ROOT_STATUS=9
+export FAKE_STORAGE_ROOT_STATUS
+printf empty >"$FAKE_PANE_STATE"
+make_mail lima 20260827T000002Z-rootfailure
+if "$SCRIPT" lima --terminal-only \
+  --expected-session-id lima-session \
+  --expected-generation lima-generation \
+  --expected-host-pid 101 >"$ROOT/root-failure.out" 2>&1; then
+  fail "storage-root failure was reported as delivered"
+fi
+grep -Fq 'session-control storage root could not be resolved' \
+  "$ROOT/root-failure.out" ||
+  fail "storage-root failure was misreported as identity drift"
+[ ! -s "$FAKE_TMUX_CALLS" ] ||
+  fail "storage-root failure sent tmux keys"
+FAKE_STORAGE_ROOT_STATUS=0
+export FAKE_STORAGE_ROOT_STATUS
 
 FAKE_RECIPIENT=hotel
 FAKE_BACKEND=copilot

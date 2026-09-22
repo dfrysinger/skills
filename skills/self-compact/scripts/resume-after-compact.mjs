@@ -299,10 +299,14 @@ export function workspaceCwdOf(workspaceText) {
   return match ? match[1] : null;
 }
 
+let cachedSessionControlRoot;
+
 export function sessionControlRoot() {
+  if (cachedSessionControlRoot !== undefined) return cachedSessionControlRoot;
   const selection = resolveSessionControlRoot();
   emitSessionControlDeprecation(selection);
-  return selection.root;
+  cachedSessionControlRoot = selection.root;
+  return cachedSessionControlRoot;
 }
 
 export function receiptPathsFor(root, id) {
@@ -1377,6 +1381,10 @@ async function runRequest(run, kind, args) {
   ];
   return await new Promise((done, failed) => {
     const child = spawn(run.nodeBin, requestArgs, {
+      env: {
+        ...process.env,
+        COPILOT_SESSION_CONTROL_DIR: run.inboxRoot,
+      },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });

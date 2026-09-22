@@ -342,5 +342,27 @@ grep -Fq 'current Copilot launch option cannot be preserved safely: --deny-tool'
   "$ROOT/options.out"
 [ -f "$options_input" ]
 
+root_failure_input="$ROOT/root-failure-input.txt"
+root_failure_state="$ROOT/home/.copilot/session-state/old-root-failure"
+mkdir -p "$root_failure_state"
+printf '%s\n' '{"type":"assistant.turn_start","data":{}}' \
+  >"$root_failure_state/events.jsonl"
+touch "$root_failure_state/inuse.$$.lock"
+printf 'continue old-root-failure' >"$root_failure_input"
+if HOME="$ROOT/home" PATH="$ROOT/bin:$PATH" ROTATE_TMUX_BIN="$ROOT/bin/tmux" \
+  ROTATE_STATE_ROOT="$ROOT/home/.copilot/session-state" \
+  COPILOT_SESSION_CONTROL_DIR="" MOCK_TMUX_CWD="$ROOT" TMUX_PANE="%test" \
+  TMPDIR="$ROOT/tmp" \
+  "$SCRIPT" old-root-failure "$root_failure_input" --consume-prompt \
+  >"$ROOT/root-failure.out" 2>&1; then
+  exit 1
+fi
+grep -Fq 'session-control storage root could not be resolved' \
+  "$ROOT/root-failure.out"
+find "$ROOT/tmp" -maxdepth 1 -name 'copilot-rotate-recovery-old-root-failure.*' \
+  ! -name '*.launch.sh' | grep -q .
+! find "$ROOT/tmp" -maxdepth 1 \
+  -name 'copilot-rotate-recovery-old-root-failure.*.launch.sh' | grep -q .
+
 ! grep -Eq 'send-keys|capture-pane|paste-buffer|load-buffer' "$SCRIPT" "$HELPER"
 echo "rotate-session tests: pass"

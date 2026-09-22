@@ -128,6 +128,39 @@ test("writes an immediate send request and accepts its receipt", async () => {
   }
 });
 
+test("deprecated root selection is used and recorded by the request process", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-control-legacy-request-"));
+  try {
+    const child = spawn(process.execPath, [requestCli, "send"], {
+      env: Object.fromEntries(
+        Object.entries({
+          ...process.env,
+          COPILOT_SESSION_CONTROL_DIR: undefined,
+          COPILOT_SESSION_INBOX_DIR: root,
+        }).filter(([, value]) => value !== undefined),
+      ),
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const code = await new Promise((resolve) => child.on("exit", resolve));
+
+    assert.equal(code, 64);
+    assert.match(stderr, /COPILOT_SESSION_INBOX_DIR is deprecated/);
+    const entries = await diagnosticEntries(root);
+    assert.ok(
+      entries.some(
+        (entry) =>
+          entry.event === "storage.deprecated" &&
+          entry.source === "deprecated-env",
+      ),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("writes a native autopilot objective request", async () => {
   const root = await mkdtemp(join(tmpdir(), "session-control-request-"));
   try {

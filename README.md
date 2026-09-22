@@ -37,7 +37,7 @@ The plugin is registered as `dfrysinger-skills`. Installing from this GitHub rep
 The Copilot plugin also packages the recipient-local
 [`session-control`](./extensions/session-control/) SDK extension and a portable
 [`mailbox-watcher`](./extensions/mailbox-watcher/) extension. Session-control is a runtime
-dependency of `mailbox`, `unattended-run`, and `self-compact`. The extension
+dependency of `mailbox`, `rotate-session`, `unattended-run`, and `self-compact`. The extension
 performs the final immediate `session.send()` or native compaction from inside
 the recipient session; filesystem requests and receipts provide durable
 machine-local IPC. macOS rotation separately replaces the verified tmux pane

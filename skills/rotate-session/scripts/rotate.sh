@@ -202,7 +202,21 @@ chmod 700 "$LAUNCHER"
 HELPER_SESSION="rotate-$(printf '%s' "$NEW" | cut -c1-8)"
 LOCK_FILE="$STATE/$OLD/rotation.lock"
 LOCK_READY="$RECOVERY_FILE.helper-ready"
-if ! CONTROL_ROOT="$(node "$STORAGE_ROOT_CLI")"; then
+ROOT_MARKER="$STATE/$OLD/session-control-root.json"
+if [[ -r "$ROOT_MARKER" ]]; then
+  CONTROL_ROOT="$(
+    node -e '
+      const fs = require("node:fs");
+      const path = require("node:path");
+      const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).root;
+      if (typeof value !== "string" || !path.isAbsolute(value)) process.exit(1);
+      process.stdout.write(value);
+    ' "$ROOT_MARKER"
+  )" || CONTROL_ROOT=""
+else
+  CONTROL_ROOT="$(node "$STORAGE_ROOT_CLI")" || CONTROL_ROOT=""
+fi
+if [[ -z "$CONTROL_ROOT" || "$CONTROL_ROOT" != /* ]]; then
   exec 3>&-
   rm -f -- "$LAUNCHER"
   echo "rotate.sh: session-control storage root could not be resolved; recovery copy preserved at $RECOVERY_FILE" >&2

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   DEPRECATED_SESSION_INBOX_DIR_ENV,
@@ -39,6 +43,25 @@ test("deprecated explicit root overrides default roots", () => {
   assert.equal(selection.root, "/explicit/inbox");
   assert.equal(selection.source, "deprecated-env");
   assert.match(selection.deprecation, /deprecated/);
+});
+
+test("explicit roots must be non-empty absolute paths", () => {
+  for (const environmentName of [
+    SESSION_CONTROL_DIR_ENV,
+    DEPRECATED_SESSION_INBOX_DIR_ENV,
+  ]) {
+    for (const value of ["", "relative/root"]) {
+      assert.throws(
+        () =>
+          resolveSessionControlRoot({
+            env: { [environmentName]: value },
+            home,
+            exists: () => false,
+          }),
+        new RegExp(`${environmentName} must be a non-empty absolute path`),
+      );
+    }
+  }
 });
 
 test("existing legacy default root remains authoritative", () => {
@@ -106,4 +129,47 @@ test("non-deprecated selections do not emit diagnostics", () => {
   );
 
   assert.deepEqual(messages, []);
+});
+
+test("legacy symlink entry remains authoritative when its target is unavailable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-control-root-"));
+  try {
+    const testHome = join(root, "home");
+    const copilotHome = join(testHome, ".copilot");
+    await mkdir(copilotHome, { recursive: true });
+    await symlink(join(root, "missing-target"), join(copilotHome, "session-inbox"));
+
+    const selection = resolveSessionControlRoot({ env: {}, home: testHome });
+
+    assert.equal(selection.source, "deprecated-default");
+    assert.equal(selection.root, join(copilotHome, "session-inbox"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("CLI works through a symlink and keeps diagnostics off stdout", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-control-cli-"));
+  try {
+    const cli = join(root, "storage-root.mjs");
+    const selectedRoot = join(root, "selected");
+    await symlink(fileURLToPath(new URL("./storage-root.mjs", import.meta.url)), cli);
+
+    const result = spawnSync(process.execPath, [cli], {
+      encoding: "utf8",
+      env: Object.fromEntries(
+        Object.entries({
+          ...process.env,
+          [SESSION_CONTROL_DIR_ENV]: undefined,
+          [DEPRECATED_SESSION_INBOX_DIR_ENV]: selectedRoot,
+        }).filter(([, value]) => value !== undefined),
+      ),
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, `${selectedRoot}\n`);
+    assert.match(result.stderr, /COPILOT_SESSION_INBOX_DIR is deprecated/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

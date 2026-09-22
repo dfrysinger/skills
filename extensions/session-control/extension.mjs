@@ -33,7 +33,9 @@ try {
   // Development harnesses and project-local copies may not have a plugin manifest.
 }
 const configuredConfirmationTimeoutMs = Number.parseInt(
-  process.env.COPILOT_SESSION_CONTROL_CONFIRM_TIMEOUT_MS ?? "10000",
+  process.env.COPILOT_SESSION_CONTROL_CONFIRM_TIMEOUT_MS ??
+    process.env.COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS ??
+    "10000",
   10,
 );
 const confirmationTimeoutMs =
@@ -43,7 +45,9 @@ const confirmationTimeoutMs =
     : 10_000;
 const configuredAutopilotConfirmationTimeoutMs = Number.parseInt(
   process.env.COPILOT_SESSION_CONTROL_AUTOPILOT_CONFIRM_TIMEOUT_MS ??
+    process.env.COPILOT_SESSION_INBOX_AUTOPILOT_CONFIRM_TIMEOUT_MS ??
     process.env.COPILOT_SESSION_CONTROL_CONFIRM_TIMEOUT_MS ??
+    process.env.COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS ??
     "300000",
   10,
 );
@@ -79,6 +83,7 @@ let sessionName;
 const activeSessionStateDir = join(sessionStateRoot, session.sessionId);
 const rotationBarrier =
   process.env.COPILOT_SESSION_CONTROL_ROTATION_BARRIER ??
+  process.env.COPILOT_SESSION_INBOX_ROTATION_BARRIER ??
   join(activeSessionStateDir, "rotation.barrier");
 const deliveryLock = join(activeSessionStateDir, "delivery.lock");
 let heartbeatRefreshing = false;
@@ -122,6 +127,11 @@ await Promise.all(
     activeSessionStateDir,
   ].map((dir) => mkdir(dir, { recursive: true, mode: 0o700 })),
 );
+await writeJson(join(activeSessionStateDir, "session-control-root.json"), {
+  root,
+  generation,
+  updatedAt: new Date().toISOString(),
+});
 diagnostics.log("extension.started", {
   extensionPath: import.meta.url,
   pluginVersion,

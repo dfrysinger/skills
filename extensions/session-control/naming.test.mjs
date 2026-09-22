@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { readFile, readdir } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { dirname, extname, join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
+const execFileAsync = promisify(execFile);
 const repositoryRoot = dirname(
   dirname(dirname(fileURLToPath(import.meta.url))),
 );
@@ -31,19 +34,18 @@ const textExtensions = new Set([
 ]);
 const deprecatedName = ["session", "inbox"].join("-");
 
-async function collectUnexpectedReferences(directory, matches = []) {
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    if (entry.name === ".git") continue;
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) {
-      await collectUnexpectedReferences(path, matches);
-      continue;
-    }
-    const extension = entry.name.slice(entry.name.lastIndexOf("."));
+async function collectUnexpectedReferences() {
+  const { stdout } = await execFileAsync("git", ["ls-files", "-z"], {
+    cwd: repositoryRoot,
+    encoding: "buffer",
+  });
+  const matches = [];
+  for (const repositoryPath of stdout.toString("utf8").split("\0")) {
+    if (!repositoryPath) continue;
+    const extension = extname(repositoryPath);
     if (!textExtensions.has(extension)) continue;
-    const repositoryPath = relative(repositoryRoot, path);
     if (compatibilityAndHistoricalFiles.has(repositoryPath)) continue;
-    const content = await readFile(path, "utf8");
+    const content = await readFile(join(repositoryRoot, repositoryPath), "utf8");
     if (content.toLowerCase().includes(deprecatedName)) {
       matches.push(repositoryPath);
     }
@@ -52,5 +54,5 @@ async function collectUnexpectedReferences(directory, matches = []) {
 }
 
 test("current product surfaces use session-control naming", async () => {
-  assert.deepEqual(await collectUnexpectedReferences(repositoryRoot), []);
+  assert.deepEqual(await collectUnexpectedReferences(), []);
 });

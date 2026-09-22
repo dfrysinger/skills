@@ -154,7 +154,8 @@ fi
 verify_copilot_fallback_identity() {
   local control_root
   local session_state_root="${COPILOT_SESSION_STATE_ROOT:-$HOME/.copilot/session-state}"
-  control_root="$(node "$STORAGE_ROOT_CLI")" || return 1
+  control_root="$(node "$STORAGE_ROOT_CLI")" || return 2
+  [[ -n "$control_root" && "$control_root" == /* ]] || return 2
   [[ -n "$EXPECTED_SESSION_ID" && -n "$EXPECTED_GENERATION" ]] || return 1
   [[ "$EXPECTED_HOST_PID" =~ ^[0-9]+$ ]] || return 1
   ap_pane_contains_pid "$PANE" "$EXPECTED_HOST_PID" || return 1
@@ -202,8 +203,15 @@ verify_copilot_fallback_identity() {
 }
 
 if [[ "$BACKEND" == "copilot" && "$TERMINAL_ONLY" -eq 1 ]]; then
-  if ! verify_copilot_fallback_identity; then
-    echo "UNVERIFIED: '$NAME' no longer matches the session authorized for terminal fallback; no keys were sent." >&2
+  if verify_copilot_fallback_identity; then
+    :
+  else
+    identity_status=$?
+    if [[ "$identity_status" -eq 2 ]]; then
+      echo "UNVERIFIED: session-control storage root could not be resolved; no keys were sent." >&2
+    else
+      echo "UNVERIFIED: '$NAME' no longer matches the session authorized for terminal fallback; no keys were sent." >&2
+    fi
     exit 3
   fi
 fi
@@ -222,10 +230,18 @@ if ! agent_ready; then
   exit 3
 fi
 
-if [[ "$BACKEND" == "copilot" && "$TERMINAL_ONLY" -eq 1 ]] &&
-  ! verify_copilot_fallback_identity; then
-  echo "UNVERIFIED: '$NAME' changed before terminal fallback input; no keys were sent." >&2
-  exit 3
+if [[ "$BACKEND" == "copilot" && "$TERMINAL_ONLY" -eq 1 ]]; then
+  if verify_copilot_fallback_identity; then
+    :
+  else
+    identity_status=$?
+    if [[ "$identity_status" -eq 2 ]]; then
+      echo "UNVERIFIED: session-control storage root could not be resolved; no keys were sent." >&2
+    else
+      echo "UNVERIFIED: '$NAME' changed before terminal fallback input; no keys were sent." >&2
+    fi
+    exit 3
+  fi
 fi
 
 PROMPT_SIGNATURE="$(ap_input_signature <<<"$PROMPT")"

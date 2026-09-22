@@ -13,9 +13,6 @@ test("extension discovery exposes only session-control", async () => {
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name);
 
-  assert.equal(
-    extensionNames.filter((name) => name === "session-control").length,
-    1,
-  );
+  assert.equal(extensionNames.includes("session-control"), true);
   assert.equal(extensionNames.includes("session-inbox"), false);
 });
