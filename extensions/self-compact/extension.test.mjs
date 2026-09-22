@@ -360,7 +360,7 @@ test("healthy inactive preparation does not pause autopilot", async () => {
   assert.deepEqual(registered.commands, []);
 });
 
-test("the next tool entry synchronously surfaces an unread terminal status", async () => {
+test("the next tool entry surfaces an unread terminal status and still runs", async () => {
   const outcome = await runExtension(goodBrief, {
     terminalStatus: {
       operationId: "89abcdef",
@@ -370,11 +370,29 @@ test("the next tool entry synchronously surfaces an unread terminal status", asy
   });
   assert.equal(outcome.code, 0, outcome.stderr);
   const registered = JSON.parse(outcome.stdout);
-  assert.equal(registered.result.resultType, "failure");
-  assert.match(registered.result.textResultForLlm, /89abcdef/);
-  assert.match(registered.result.textResultForLlm, /terminal-failure/);
-  assert.match(registered.result.textResultForLlm, /could not be delivered/);
-  assert.equal(outcome.invocation, null);
+  assert.match(registered.result, /89abcdef/);
+  assert.match(registered.result, /terminal-failure/);
+  assert.match(registered.result, /could not be delivered/);
+  assert.notEqual(outcome.invocation, null);
+});
+
+test("an unread terminal success does not consume autopilot preparation", async () => {
+  const objective = "Prepare after the prior terminal receipt.";
+  const outcome = await runExtension(goodBrief, {
+    objective,
+    prepareFirst: true,
+    terminalStatus: {
+      operationId: "89abcdef",
+      state: "terminal-success",
+      reason: "verified checkpoint 7 and one continuation",
+    },
+  });
+  assert.equal(outcome.code, 0, outcome.stderr);
+  const registered = JSON.parse(outcome.stdout);
+  assert.match(registered.prepareResult, /Prior self-compact operation 89abcdef/);
+  assert.match(registered.prepareResult, /exact objective is staged/);
+  assert.deepEqual(registered.commands, [{ name: "autopilot", input: "" }]);
+  assert.notEqual(outcome.invocation, null);
 });
 
 test("a readiness loss after preparation restores the staged objective", async () => {

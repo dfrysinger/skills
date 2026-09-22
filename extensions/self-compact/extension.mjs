@@ -288,14 +288,11 @@ const selfCompactTool = {
   },
   defer: "never",
   handler: async ({ action = "compact", brief, operationId }, invocation) => {
+    let terminalNotice = null;
     try {
       const terminal = await unreadTerminalStatus(invocation.sessionId);
       if (terminal) {
-        return {
-          textResultForLlm: `Prior self-compact operation ${terminal.operationId} reached ${terminal.state}: ${terminal.reason}`,
-          resultType:
-            terminal.state === "terminal-success" ? "success" : "failure",
-        };
+        terminalNotice = `Prior self-compact operation ${terminal.operationId} reached ${terminal.state}: ${terminal.reason}`;
       }
     } catch (error) {
       return {
@@ -305,6 +302,7 @@ const selfCompactTool = {
         resultType: "failure",
       };
     }
+    const result = await (async () => {
     if (action === "prepare") {
       try {
         await requireReady(invocation.sessionId);
@@ -412,6 +410,15 @@ const selfCompactTool = {
         resultType: "failure",
       };
     }
+    })();
+    if (!terminalNotice) return result;
+    if (typeof result === "string") {
+      return `${terminalNotice}\n\n${result}`;
+    }
+    return {
+      ...result,
+      textResultForLlm: `${terminalNotice}\n\n${result.textResultForLlm}`,
+    };
   },
 };
 
