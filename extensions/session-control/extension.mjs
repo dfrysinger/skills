@@ -7,8 +7,14 @@ import { dirname, join } from "node:path";
 import { joinSession } from "@github/copilot-sdk/extension";
 import { createDiagnosticLogger, errorDetails } from "./diagnostics.mjs";
 import { currentSessionName, currentTmuxSession } from "./session-identity.mjs";
+import {
+  emitSessionControlDeprecation,
+  resolveSessionControlRoot,
+} from "./storage-root.mjs";
 
-const root = process.env.COPILOT_SESSION_INBOX_DIR ?? join(homedir(), ".copilot", "session-inbox");
+const rootSelection = resolveSessionControlRoot();
+const root = rootSelection.root;
+emitSessionControlDeprecation(rootSelection);
 const pendingDir = join(root, "pending");
 const processingDir = join(root, "processing");
 const completedDir = join(root, "completed");
@@ -27,7 +33,9 @@ try {
   // Development harnesses and project-local copies may not have a plugin manifest.
 }
 const configuredConfirmationTimeoutMs = Number.parseInt(
-  process.env.COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS ?? "10000",
+  process.env.COPILOT_SESSION_CONTROL_CONFIRM_TIMEOUT_MS ??
+    process.env.COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS ??
+    "10000",
   10,
 );
 const confirmationTimeoutMs =
@@ -36,7 +44,9 @@ const confirmationTimeoutMs =
     ? configuredConfirmationTimeoutMs
     : 10_000;
 const configuredAutopilotConfirmationTimeoutMs = Number.parseInt(
-  process.env.COPILOT_SESSION_INBOX_AUTOPILOT_CONFIRM_TIMEOUT_MS ??
+  process.env.COPILOT_SESSION_CONTROL_AUTOPILOT_CONFIRM_TIMEOUT_MS ??
+    process.env.COPILOT_SESSION_INBOX_AUTOPILOT_CONFIRM_TIMEOUT_MS ??
+    process.env.COPILOT_SESSION_CONTROL_CONFIRM_TIMEOUT_MS ??
     process.env.COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS ??
     "300000",
   10,
@@ -52,6 +62,12 @@ const startupDiagnostics = createDiagnosticLogger(
   `extension-bootstrap-${process.pid}.jsonl`,
   { component: "extension", hostPid: process.ppid, pid: process.pid },
 );
+if (rootSelection.deprecation) {
+  startupDiagnostics.log("storage.deprecated", {
+    source: rootSelection.source,
+    message: rootSelection.deprecation,
+  });
+}
 let session;
 try {
   session = await joinSession();
@@ -66,10 +82,12 @@ let tmuxSession;
 let sessionName;
 const activeSessionStateDir = join(sessionStateRoot, session.sessionId);
 const rotationBarrier =
+  process.env.COPILOT_SESSION_CONTROL_ROTATION_BARRIER ??
   process.env.COPILOT_SESSION_INBOX_ROTATION_BARRIER ??
   join(activeSessionStateDir, "rotation.barrier");
 const deliveryLock = join(activeSessionStateDir, "delivery.lock");
 let heartbeatRefreshing = false;
+let identityRefreshing = false;
 let initialTmuxSessionError;
 let initialSessionNameError;
 try {
@@ -109,10 +127,16 @@ await Promise.all(
     activeSessionStateDir,
   ].map((dir) => mkdir(dir, { recursive: true, mode: 0o700 })),
 );
+await writeJson(join(activeSessionStateDir, "session-control-root.json"), {
+  root,
+  generation,
+  updatedAt: new Date().toISOString(),
+});
 diagnostics.log("extension.started", {
   extensionPath: import.meta.url,
   pluginVersion,
   confirmationTimeoutMs,
+  autopilotConfirmationTimeoutMs,
 });
 if (initialSessionNameError) {
   diagnostics.log("session.identity_lookup_failed", {
@@ -169,7 +193,7 @@ async function lockedMove(from, to, { rejectBarrier = false } = {}) {
         "/bin/sh",
         "-c",
         command,
-        "session-inbox-locked-move",
+        "session-control-locked-move",
         ...args,
       ],
       { stdio: "ignore" },
@@ -205,9 +229,9 @@ async function writeJson(path, value) {
   await rename(temporaryPath, path);
 }
 
-async function writeHeartbeat() {
-  if (heartbeatRefreshing) return;
-  heartbeatRefreshing = true;
+async function refreshIdentity() {
+  if (identityRefreshing) return;
+  identityRefreshing = true;
   try {
     let refreshedTmuxSession = tmuxSession;
     try {
@@ -236,6 +260,15 @@ async function writeHeartbeat() {
       diagnostics.setContext({ tmuxSession, sessionName });
       diagnostics.log("session.identity_changed", { tmuxSession, sessionName });
     }
+  } finally {
+    identityRefreshing = false;
+  }
+}
+
+async function writeHeartbeat() {
+  if (heartbeatRefreshing) return;
+  heartbeatRefreshing = true;
+  try {
     await writeJson(join(instancesDir, `${session.sessionId}-${generation}.json`), {
       sessionId: session.sessionId,
       tmuxSession,
@@ -246,6 +279,7 @@ async function writeHeartbeat() {
       pluginVersion,
       updatedAt: new Date().toISOString(),
     });
+    void refreshIdentity();
   } finally {
     heartbeatRefreshing = false;
   }
@@ -1204,7 +1238,7 @@ async function recoverStaleClaims() {
   } catch (error) {
     diagnostics.log("recovery.crashed", { error: errorDetails(error) });
     console.error(
-      `session-inbox recovery failed: ${error instanceof Error ? error.message : String(error)}`,
+      `session-control recovery failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   } finally {
     recovering = false;
@@ -1463,7 +1497,7 @@ async function pump() {
   } catch (error) {
     diagnostics.log("pump.crashed", { error: errorDetails(error) });
     console.error(
-      `session-inbox pump failed: ${error instanceof Error ? error.message : String(error)}`,
+      `session-control pump failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   } finally {
     pumping = false;

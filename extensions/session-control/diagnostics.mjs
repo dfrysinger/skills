@@ -39,7 +39,7 @@ export function createDiagnosticLogger(root, filename, initialContext = {}) {
     }
   } catch (error) {
     console.error(
-      `session-inbox could not initialize diagnostic logs: ${errorDetails(error).message}`,
+      `session-control could not initialize diagnostic logs: ${errorDetails(error).message}`,
     );
   }
 
@@ -62,7 +62,7 @@ export function createDiagnosticLogger(root, filename, initialContext = {}) {
         );
       } catch (error) {
         console.error(
-          `session-inbox could not write diagnostic log ${path}: ${errorDetails(error).message}`,
+          `session-control could not write diagnostic log ${path}: ${errorDetails(error).message}`,
         );
       }
     },

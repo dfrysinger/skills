@@ -1,17 +1,41 @@
 #!/usr/bin/env node
-// Submit and verify one session-inbox compaction after the authorizing turn ends.
+// Submit and verify one session-control compaction after the authorizing turn ends.
 // This module owns the durable self-compact state machine and the shared
 // portable primitives used by the foreground submitter.
 
 import { spawn } from "node:child_process";
 import { open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  emitSessionControlDeprecation,
+  resolveSessionControlRoot,
+} from "../../../extensions/session-control/storage-root.mjs";
+
 export const CONTINUATION_TEXT = "Compaction done; resume, do not compact.";
 export const RECEIPT_PREFIX = "self-compact handoff receipt: ";
+export const CONTROL_RECEIPT_PREFIX = "self-compact control receipt: ";
 export const STATE_PREFIX = "self-compact state: ";
+export const CONTROL_MARKER_PREFIX = "[self-compact-control:";
+
+export function controlPromptFor(operationId) {
+  if (!/^[0-9a-f]{8}$/.test(operationId)) {
+    throw new VerifierError("self-compact operation ID is invalid", {
+      release: false,
+    });
+  }
+  return `${CONTROL_MARKER_PREFIX}${operationId}] Generated control input, not user-authored text. Answer the user's message normally, then make exactly one final self_compact tool call with action "resume" and operationId "${operationId}" if compaction is still allowed, or action "cancel" with the same operationId if it is cancelled or superseded. Do not include a brief.`;
+}
+
+export function terminalPromptFor(operationId, state) {
+  if (!/^[0-9a-f]{8}$/.test(operationId)) {
+    throw new VerifierError("self-compact operation ID is invalid", {
+      release: false,
+    });
+  }
+  return `${CONTROL_MARKER_PREFIX}${operationId}] Generated self-compact terminal notice: operation ${operationId} reached ${state}. Start a new compact request if one is still wanted.`;
+}
 
 export function continuationTextFor(nonce) {
   if (!/^[0-9a-f]{32}$/.test(nonce)) {
@@ -142,12 +166,20 @@ export function runPaths(filesDir, runId) {
   return {
     ready: `${base}.ready`,
     handoff: `${base}.handoff`,
+    controlHandoff: `${base}.control-handoff`,
+    controlPrompt: `${base}.control-prompt`,
+    terminalPrompt: `${base}.terminal-prompt`,
     instructions: `${base}.instructions`,
     continuation: `${base}.continuation`,
+    autopilotObjective: `${base}.autopilot-objective`,
     candidate: `${base}.candidate.json`,
     runFile: `${base}.run.json`,
     log: `${base}.log`,
   };
+}
+
+export function statusPath(filesDir, operationId) {
+  return join(filesDir, `self-compact-${operationId}.status.json`);
 }
 
 export async function readPid(path) {
@@ -190,11 +222,14 @@ export async function readEventTail(path, maxBytes) {
   }
 }
 
-export function decodeRootEvents(text) {
+function decodeRootEventRecords(text) {
   const lines = text.split("\n");
   if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-  const events = [];
+  const records = [];
+  let end = 0;
   for (const line of lines) {
+    const start = end;
+    end += Buffer.byteLength(`${line}\n`, "utf8");
     let event;
     try {
       event = JSON.parse(line);
@@ -205,14 +240,39 @@ export function decodeRootEvents(text) {
       throw new MalformedEventError("malformed event JSON");
     }
     if (event.agentId !== undefined && event.agentId !== null) continue;
-    events.push(event);
+    records.push({ event, start, end });
   }
-  return events;
+  return records;
+}
+
+export function decodeRootEvents(text) {
+  return decodeRootEventRecords(text).map(({ event }) => event);
 }
 
 export function eventData(event) {
   const data = event?.data;
   return data && typeof data === "object" && !Array.isArray(data) ? data : null;
+}
+
+export function eventIdentity(event) {
+  const data = eventData(event);
+  if (
+    event?.type === "user.message" &&
+    typeof data?.messageId === "string" &&
+    data.messageId
+  ) {
+    return data.messageId;
+  }
+  for (const value of [
+    event?.id,
+    event?.eventId,
+    data?.id,
+    data?.eventId,
+    data?.messageId,
+  ]) {
+    if (typeof value === "string" && value) return value;
+  }
+  return null;
 }
 
 export function toolRequestsOf(event) {
@@ -239,11 +299,14 @@ export function workspaceCwdOf(workspaceText) {
   return match ? match[1] : null;
 }
 
-export function sessionInboxRoot() {
-  return (
-    process.env.COPILOT_SESSION_INBOX_DIR ??
-    join(homedir(), ".copilot", "session-inbox")
-  );
+let cachedSessionControlRoot;
+
+export function sessionControlRoot() {
+  if (cachedSessionControlRoot !== undefined) return cachedSessionControlRoot;
+  const selection = resolveSessionControlRoot();
+  emitSessionControlDeprecation(selection);
+  cachedSessionControlRoot = selection.root;
+  return cachedSessionControlRoot;
 }
 
 export function receiptPathsFor(root, id) {
@@ -255,7 +318,7 @@ export function receiptPathsFor(root, id) {
   };
 }
 
-// Mirrors the freshness contract in extensions/session-inbox/request.mjs: an
+// Mirrors the freshness contract in extensions/session-control/request.mjs: an
 // instance heartbeat only proves a live generation for fifteen seconds.
 export const INSTANCE_FRESHNESS_MS = 15_000;
 
@@ -290,6 +353,19 @@ export async function resolveFreshGenerations(inboxRoot, sessionId, now = Date.n
     }
   }
   return [...generations];
+}
+
+export async function waitForFreshGenerations(
+  inboxRoot,
+  sessionId,
+  { polls = 25, pollSeconds = 0.25 } = {},
+) {
+  for (let poll = 0; poll < polls; poll += 1) {
+    const generations = await resolveFreshGenerations(inboxRoot, sessionId);
+    if (generations.length > 0) return generations;
+    if (poll + 1 < polls) await sleep(pollSeconds);
+  }
+  return [];
 }
 
 export function parseJsonLines(text) {
@@ -421,15 +497,16 @@ export function classifyAuthorization(tail, { toolCallId, receipt }) {
     return { state: "cancel", reason: "authorization boundary exceeds event tail" };
   }
   if (tail.partial) return { state: "wait" };
-  let events;
+  let records;
   try {
-    events = decodeRootEvents(tail.text);
+    records = decodeRootEventRecords(tail.text);
   } catch (error) {
     if (error instanceof MalformedEventError) {
       return { state: "cancel", reason: "malformed authorization event JSON" };
     }
     throw error;
   }
+  const events = records.map(({ event }) => event);
 
   const starts = [];
   const completions = [];
@@ -448,7 +525,12 @@ export function classifyAuthorization(tail, { toolCallId, receipt }) {
   if (completion <= start) {
     return { state: "cancel", reason: "helper completion preceded execution start" };
   }
+  let interruptionIndex = -1;
   for (let index = start + 1; index < completion; index += 1) {
+    if (events[index].type === "user.message") {
+      if (interruptionIndex < 0) interruptionIndex = index;
+      continue;
+    }
     if (ROOT_ACTIVITY_TYPES.has(events[index].type)) {
       return {
         state: "cancel",
@@ -469,21 +551,18 @@ export function classifyAuthorization(tail, { toolCallId, receipt }) {
     };
   }
 
-  let sawTurnEnd = false;
-  let turnOpen = false;
+  let turnEnd = -1;
   for (let index = completion + 1; index < events.length; index += 1) {
     const type = events[index].type;
-    if (type === "assistant.turn_start") {
-      turnOpen = true;
-      continue;
-    }
     if (type === "assistant.turn_end") {
-      turnOpen = false;
-      sawTurnEnd = true;
+      turnEnd = index;
+      break;
+    }
+    if (type === "user.message") {
+      if (interruptionIndex < 0) interruptionIndex = index;
       continue;
     }
     if (
-      type === "user.message" ||
       type === "tool.execution_start" ||
       type === "tool.execution_complete"
     ) {
@@ -502,8 +581,49 @@ export function classifyAuthorization(tail, { toolCallId, receipt }) {
       }
     }
   }
-  if (!sawTurnEnd || turnOpen) return { state: "wait" };
-  return { state: "ready", boundary: tail.size };
+  if (turnEnd < 0) return { state: "wait" };
+  let boundaryIndex = turnEnd;
+  if (events[turnEnd + 1]?.type === "assistant.turn_start") {
+    let continuationEnd = -1;
+    for (let index = turnEnd + 2; index < events.length; index += 1) {
+      const event = events[index];
+      if (event.type === "assistant.turn_end") {
+        continuationEnd = index;
+        break;
+      }
+      if (event.type === "user.message") {
+        if (interruptionIndex < 0) interruptionIndex = index;
+        continue;
+      }
+      if (
+        event.type === "tool.execution_start" ||
+        event.type === "tool.execution_complete"
+      ) {
+        return {
+          state: "cancel",
+          reason: "root tool activity occurred in the helper continuation turn",
+        };
+      }
+      if (event.type === "assistant.message") {
+        const later = toolRequestsOf(event);
+        if (later && later.length > 0) {
+          return {
+            state: "cancel",
+            reason: "a root tool request occurred in the helper continuation turn",
+          };
+        }
+      }
+    }
+    if (continuationEnd < 0) return { state: "wait" };
+    boundaryIndex = continuationEnd;
+  }
+  const relativeBoundary =
+    interruptionIndex >= 0
+      ? records[interruptionIndex].start
+      : records[boundaryIndex].end;
+  const boundary =
+    tail.size - Buffer.byteLength(tail.text, "utf8") + relativeBoundary;
+  return { state: "ready", boundary };
 }
 
 async function readEventRange(path, offset) {
@@ -554,6 +674,326 @@ function decodeRootEvent(line) {
   return event;
 }
 
+async function rootEventsAfter(path, offset) {
+  const buffer = await readEventRange(path, offset);
+  const events = [];
+  for (const { line, end } of completeLines(buffer, offset)) {
+    const event = decodeRootEvent(line);
+    if (event) events.push({ event, end });
+  }
+  return events;
+}
+
+function matchesControlEvent(event, control) {
+  if (!control) return false;
+  const data = eventData(event);
+  return (
+    event.type === "user.message" &&
+    eventIdentity(event) === control.messageId &&
+    data?.content === control.prompt &&
+    (data.delivery === "idle" || data.delivery === "steering") &&
+    data.delivery === control.delivery
+  );
+}
+
+export async function probeInterruption(eventsPath, offset, control = null) {
+  for (const { event } of await rootEventsAfter(eventsPath, offset)) {
+    if (matchesControlEvent(event, control)) continue;
+    if (event.type === "user.message") {
+      const id = eventIdentity(event);
+      return id
+        ? { state: "interrupted", eventId: id }
+        : { state: "invalid", reason: "interrupting user event has no identity" };
+    }
+
+    if (
+      event.type === "tool.execution_start" ||
+      event.type === "tool.execution_complete"
+    ) {
+      return { state: "activity" };
+    }
+    if (event.type === "assistant.message") {
+      const requests = toolRequestsOf(event);
+      if (requests && requests.length > 0) return { state: "activity" };
+    }
+  }
+  return { state: "clear" };
+}
+
+export async function probeSecondInterruption(
+  eventsPath,
+  offset,
+  observedRootEventId,
+  control,
+) {
+  let observed = 0;
+  let generated = 0;
+  for (const { event } of await rootEventsAfter(eventsPath, offset)) {
+    if (event.type !== "user.message") continue;
+    if (eventIdentity(event) === observedRootEventId) {
+      observed += 1;
+      continue;
+    }
+    if (matchesControlEvent(event, control)) {
+      generated += 1;
+      continue;
+    }
+    return { state: "second-interruption" };
+  }
+  if (observed > 1 || generated > 1) return { state: "second-interruption" };
+  return { state: "clear" };
+}
+
+export function collectControlCandidates(
+  events,
+  { action, operationId, expectedCallId },
+) {
+  const matches = [];
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
+    if (event.type !== "assistant.message") continue;
+    const requests = toolRequestsOf(event);
+    if (!requests) continue;
+    const request = requests.find(
+      (candidate) =>
+        candidate?.name === "self_compact" &&
+        candidate.toolCallId === expectedCallId,
+    );
+    if (!request) continue;
+    if (requests.length !== 1) {
+      throw new Error("self-compact control request was batched with another tool");
+    }
+    const args = request.arguments;
+    if (
+      !args ||
+      typeof args !== "object" ||
+      Array.isArray(args) ||
+      args.action !== action ||
+      args.operationId !== operationId ||
+      Object.hasOwn(args, "brief") ||
+      Object.keys(args).some(
+        (key) => key !== "action" && key !== "operationId",
+      )
+    ) {
+      throw new Error("self-compact control request arguments are invalid");
+    }
+    let turnStart = -1;
+    for (let back = index; back >= 0; back -= 1) {
+      if (events[back].type === "assistant.turn_start") {
+        turnStart = back;
+        break;
+      }
+    }
+    if (turnStart < 0) {
+      throw new Error("self-compact control request has no containing turn");
+    }
+    for (let prior = turnStart + 1; prior < index; prior += 1) {
+      const priorEvent = events[prior];
+      if (
+        priorEvent.type === "user.message" ||
+        priorEvent.type === "tool.execution_start" ||
+        priorEvent.type === "tool.execution_complete"
+      ) {
+        throw new Error("conflicting activity preceded the control request");
+      }
+      if (priorEvent.type === "assistant.message") {
+        const priorRequests = toolRequestsOf(priorEvent);
+        if (priorRequests && priorRequests.length > 0) {
+          throw new Error("another tool request preceded the control request");
+        }
+      }
+    }
+    const starts = [];
+    const completions = [];
+    for (let scan = 0; scan < events.length; scan += 1) {
+      const data = eventData(events[scan]);
+      if (!data || data.toolCallId !== expectedCallId) continue;
+      if (events[scan].type === "tool.execution_start") starts.push(scan);
+      if (events[scan].type === "tool.execution_complete") completions.push(scan);
+    }
+    if (starts.length !== 1 || completions.length > 0) continue;
+    if (starts[0] <= index) continue;
+    if (eventData(events[starts[0]])?.toolName !== "self_compact") continue;
+    for (let later = starts[0] + 1; later < events.length; later += 1) {
+      if (ROOT_ACTIVITY_TYPES.has(events[later].type)) {
+        throw new Error("root activity followed the running control helper");
+      }
+      if (events[later].type === "assistant.message") {
+        const laterRequests = toolRequestsOf(events[later]);
+        if (laterRequests && laterRequests.length > 0) {
+          throw new Error("root tool request followed the running control helper");
+        }
+      }
+    }
+    matches.push({ callId: expectedCallId });
+  }
+  return matches;
+}
+
+export function classifyControlAuthorization(
+  tail,
+  {
+    toolCallId,
+    receipt,
+    action,
+    operationId,
+    observedRootEventId,
+    control,
+  },
+) {
+  if (tail.boundaryExceeded) {
+    return { state: "failure", reason: "control authorization boundary exceeds event tail" };
+  }
+  if (tail.partial) return { state: "wait" };
+  let records;
+  try {
+    records = decodeRootEventRecords(tail.text);
+  } catch (error) {
+    if (error instanceof MalformedEventError) {
+      return { state: "failure", reason: "malformed control authorization event JSON" };
+    }
+    throw error;
+  }
+  const events = records.map(({ event }) => event);
+  let observedCount = 0;
+  let controlCount = 0;
+  for (const event of events) {
+    if (event.type !== "user.message") continue;
+    if (eventIdentity(event) === observedRootEventId) {
+      observedCount += 1;
+      continue;
+    }
+    if (matchesControlEvent(event, control)) {
+      controlCount += 1;
+      continue;
+    }
+    const data = eventData(event);
+    if (
+      typeof data?.content === "string" &&
+      data.content.includes(`${CONTROL_MARKER_PREFIX}${operationId}]`)
+    ) {
+      return {
+        state: "second-interruption",
+        reason: "a user-authored control-marker quote is not generated control input",
+      };
+    }
+    return {
+      state: "second-interruption",
+      reason: "a second user interruption occurred before compact publication",
+    };
+  }
+  if (observedCount !== 1 || controlCount !== 1) return { state: "wait" };
+
+  let requestIndex = -1;
+  for (let index = 0; index < events.length; index += 1) {
+    const requests = toolRequestsOf(events[index]);
+    if (
+      events[index].type === "assistant.message" &&
+      requests?.some(
+        (request) =>
+          request?.name === "self_compact" &&
+          request.toolCallId === toolCallId &&
+          request.arguments?.action === action &&
+          request.arguments?.operationId === operationId,
+      )
+    ) {
+      requestIndex = index;
+      break;
+    }
+  }
+  if (requestIndex < 0) return { state: "wait" };
+  const requests = toolRequestsOf(events[requestIndex]);
+  if (
+    requests.length !== 1 ||
+    Object.hasOwn(requests[0].arguments ?? {}, "brief")
+  ) {
+    return { state: "failure", reason: "control tool request was not the sole final request" };
+  }
+  const starts = [];
+  const completions = [];
+  for (let index = 0; index < events.length; index += 1) {
+    const data = eventData(events[index]);
+    if (data?.toolCallId !== toolCallId) continue;
+    if (events[index].type === "tool.execution_start") starts.push(index);
+    if (events[index].type === "tool.execution_complete") completions.push(index);
+  }
+  if (starts.length > 1 || completions.length > 1) {
+    return { state: "failure", reason: "duplicate control helper execution identity" };
+  }
+  if (starts.length !== 1 || completions.length !== 1) return { state: "wait" };
+  if (starts[0] <= requestIndex || completions[0] <= starts[0]) {
+    return { state: "failure", reason: "control helper event order is invalid" };
+  }
+  const result = eventData(events[completions[0]])?.result;
+  const content =
+    result && typeof result === "object" && !Array.isArray(result)
+      ? result.content
+      : undefined;
+  if (typeof content !== "string") return { state: "wait" };
+  if (!content.split("\n").includes(receipt)) {
+    return { state: "failure", reason: "control completion carried no matching receipt" };
+  }
+  let turnEnd = -1;
+  for (let index = completions[0] + 1; index < events.length; index += 1) {
+    if (events[index].type === "assistant.turn_end") {
+      turnEnd = index;
+      break;
+    }
+    if (
+      events[index].type === "user.message" ||
+      events[index].type === "tool.execution_start" ||
+      events[index].type === "tool.execution_complete"
+    ) {
+      return { state: "failure", reason: "new root activity followed control completion" };
+    }
+    if (events[index].type === "assistant.message") {
+      const later = toolRequestsOf(events[index]);
+      if (later && later.length > 0) {
+        return { state: "failure", reason: "new root tool request followed control completion" };
+      }
+    }
+  }
+  if (turnEnd < 0) return { state: "wait" };
+
+  let boundaryIndex = turnEnd;
+  if (events[turnEnd + 1]?.type === "assistant.turn_start") {
+    let continuationEnd = -1;
+    for (let index = turnEnd + 2; index < events.length; index += 1) {
+      const event = events[index];
+      if (event.type === "assistant.turn_end") {
+        continuationEnd = index;
+        break;
+      }
+      if (
+        event.type === "user.message" ||
+        event.type === "tool.execution_start" ||
+        event.type === "tool.execution_complete"
+      ) {
+        return {
+          state: "failure",
+          reason: "root activity occurred in the control continuation turn",
+        };
+      }
+      if (event.type === "assistant.message") {
+        const later = toolRequestsOf(event);
+        if (later && later.length > 0) {
+          return {
+            state: "failure",
+            reason: "a root tool request occurred in the control continuation turn",
+          };
+        }
+      }
+    }
+    if (continuationEnd < 0) return { state: "wait" };
+    boundaryIndex = continuationEnd;
+  }
+  const boundary =
+    tail.size -
+    Buffer.byteLength(tail.text, "utf8") +
+    records[boundaryIndex].end;
+  return { state: "ready", boundary };
+}
+
 // Only a completion whose custom instructions carry this run's exact brief and
 // token proves that this run's compact landed.
 export async function probeCompletion(eventsPath, offset, instructions) {
@@ -597,8 +1037,14 @@ export async function probeRootActivity(eventsPath, offset) {
   return false;
 }
 
-export async function preparePublication(lock, eventsPath, boundary) {
+export async function preparePublication(
+  lock,
+  eventsPath,
+  boundary,
+  { beforeScan } = {},
+) {
   await recordState(lock, "publishing");
+  if (beforeScan) await beforeScan();
   if (await probeRootActivity(eventsPath, boundary)) {
     throw new VerifierError(
       "new root activity followed authorization; request not published",
@@ -655,10 +1101,11 @@ export function classifyRequestOutcome({ status, output, targetSession, targetGe
     return {
       outcome: "rejected",
       published: false,
-      reason: "session-inbox rejected the compact request before publication",
+      reason: "session-control rejected the compact request before publication",
       release: true,
     };
   }
+
   const receipts = parseJsonLines(output);
   // A receipt only speaks for this run when it names the exact session and the
   // generation resolved before the publication attempt.
@@ -691,14 +1138,14 @@ export function classifyRequestOutcome({ status, output, targetSession, targetGe
         outcome: "failed",
         published,
         reason:
-          "session-inbox reported failure after the compact side effect completed",
+          "session-control reported failure after the compact side effect completed",
         release: false,
       };
     }
     return {
       outcome: "failed",
       published,
-      reason: "session-inbox reported a failed compact request",
+      reason: "session-control reported a failed compact request",
       release: false,
     };
   }
@@ -706,7 +1153,7 @@ export function classifyRequestOutcome({ status, output, targetSession, targetGe
     return {
       outcome: "ambiguous",
       published,
-      reason: `session-inbox compact request outcome is ambiguous (status ${status})`,
+      reason: `session-control compact request outcome is ambiguous (status ${status})`,
       release: false,
     };
   }
@@ -746,8 +1193,8 @@ export function classifyRequestOutcome({ status, output, targetSession, targetGe
       outcome: "unmatched",
       published,
       reason: foreignGeneration
-        ? `session-inbox handled the compact under a different target generation than ${targetGeneration}`
-        : "session-inbox returned no matching completed receipt",
+        ? `session-control handled the compact under a different target generation than ${targetGeneration}`
+        : "session-control returned no matching completed receipt",
       release: false,
     };
   }
@@ -757,6 +1204,46 @@ export function classifyRequestOutcome({ status, output, targetSession, targetGe
     continuation,
     ...(continuationDelivery ? { continuationDelivery } : {}),
     release: false,
+  };
+}
+
+export function classifyControlSend({
+  status,
+  output,
+  targetSession,
+  targetGeneration,
+}) {
+  if (status !== 0) {
+    return {
+      ok: false,
+      reason: "generated self-compact control prompt was not delivered",
+    };
+  }
+  for (const receipt of parseJsonLines(output)) {
+    const result =
+      receipt?.result && typeof receipt.result === "object"
+        ? receipt.result
+        : null;
+    if (
+      receipt.status === "completed" &&
+      receipt.sessionId === targetSession &&
+      receipt.generation === targetGeneration &&
+      typeof result?.messageId === "string" &&
+      result.messageId &&
+      (result.delivery === "idle" || result.delivery === "steering") &&
+      result.messageAccepted === true
+    ) {
+      return {
+        ok: true,
+        messageId: result.messageId,
+        delivery: result.delivery,
+      };
+    }
+  }
+  return {
+    ok: false,
+    reason:
+      "generated self-compact control prompt had no matching accepted SDK message identity",
   };
 }
 
@@ -789,6 +1276,7 @@ export function validateRun(run) {
   for (const key of [
     "runId",
     "runToken",
+    "operationId",
     "lockToken",
     "continuationNonce",
     "toolCallId",
@@ -800,6 +1288,10 @@ export function validateRun(run) {
     "lockDir",
     "ready",
     "handoff",
+    "controlHandoff",
+    "controlPrompt",
+    "terminalPrompt",
+    "status",
     "instructions",
     "continuation",
     "candidate",
@@ -811,8 +1303,16 @@ export function validateRun(run) {
   ]) {
     requiredString(run, key);
   }
+  if (run.autopilotObjective !== undefined) {
+    requiredString(run, "autopilotObjective");
+  }
   if (!/^[0-9a-f]{32}$/.test(run.continuationNonce)) {
     throw new VerifierError("run metadata field continuationNonce is invalid", {
+      release: false,
+    });
+  }
+  if (!/^[0-9a-f]{8}$/.test(run.operationId)) {
+    throw new VerifierError("run metadata field operationId is invalid", {
       release: false,
     });
   }
@@ -836,23 +1336,55 @@ async function recordState(lock, name) {
   logLine(`${STATE_PREFIX}${name}`);
 }
 
-async function runRequest(run) {
-  const args = [
+async function recordStatus(run, state, reason, extra = {}) {
+  const currentText = await readTextOrNull(run.status);
+  let current = {};
+  if (currentText !== null) {
+    try {
+      current = JSON.parse(currentText);
+    } catch {
+      throw new VerifierError("self-compact status artifact is malformed", {
+        release: false,
+      });
+    }
+  }
+  await writeAtomic(
+    run.status,
+    `${JSON.stringify(
+      {
+        ...current,
+        version: 1,
+        operationId: run.operationId,
+        runId: run.runId,
+        observedRootEventId: current.observedRootEventId ?? null,
+        attempt: current.attempt ?? 0,
+        ...extra,
+        state,
+        reason,
+        updatedAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+async function runRequest(run, kind, args) {
+  const requestArgs = [
     run.requestCli,
-    "compact",
+    kind,
     "--target-session",
     run.targetSession,
-    "--instructions-file",
-    run.instructions,
-    "--continuation-file",
-    run.continuation,
-    "--dedupe-key",
-    `self-compact:${run.targetSession}:${run.lockToken}`,
+    ...args,
     "--timeout",
     String(run.requestTimeoutSeconds),
   ];
   return await new Promise((done, failed) => {
-    const child = spawn(run.nodeBin, args, {
+    const child = spawn(run.nodeBin, requestArgs, {
+      env: {
+        ...process.env,
+        COPILOT_SESSION_CONTROL_DIR: run.inboxRoot,
+      },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -872,6 +1404,46 @@ async function runRequest(run) {
       });
     });
   });
+}
+
+async function runCompactRequest(run) {
+  return await runRequest(run, "compact", [
+    "--instructions-file",
+    run.instructions,
+    "--continuation-file",
+    run.continuation,
+    "--dedupe-key",
+    `self-compact:${run.targetSession}:${run.lockToken}`,
+  ]);
+}
+
+async function runSendRequest(run, promptFile, dedupeKey) {
+  return await runRequest(run, "send", [
+    "--prompt-file",
+    promptFile,
+    "--mode",
+    "immediate",
+    "--dedupe-key",
+    dedupeKey,
+  ]);
+}
+
+async function restoreAutopilotObjective(run) {
+  if (!run.autopilotObjective) return;
+  const { status, output } = await runRequest(run, "autopilot", [
+    "--prompt-file",
+    run.autopilotObjective,
+    "--dedupe-key",
+    `self-compact-autopilot:${run.targetSession}:${run.lockToken}`,
+  ]);
+  process.stdout.write(output.endsWith("\n") || output === "" ? output : `${output}\n`);
+  if (status !== 0 || !/"objectiveSet":true/.test(output)) {
+    throw new VerifierError(
+      "compaction completed but native autopilot objective was not restored",
+      { release: true },
+    );
+  }
+  logLine("self-compact restored the native autopilot objective");
 }
 
 export async function verify(runFilePath) {
@@ -904,7 +1476,7 @@ export async function verify(runFilePath) {
     if (!(await exists(run.continuation))) fail("continuation prompt is unavailable");
     if (!(await exists(run.nodeBin))) fail("node is unavailable");
     if (!(await exists(run.requestCli))) {
-      fail("session-inbox request CLI is unavailable");
+      fail("session-control request CLI is unavailable");
     }
 
     await writePrivate(lock.watcherPid, `${process.pid}\n`);
@@ -965,6 +1537,254 @@ export async function verify(runFilePath) {
       fail("could not preserve the authorization event boundary");
     }
 
+    await sleep(run.pollSeconds);
+    let interruption;
+    try {
+      interruption = await probeInterruption(run.events, boundary);
+    } catch {
+      fail("could not inspect post-authorization root activity");
+    }
+    if (interruption.state === "invalid" || interruption.state === "activity") {
+      fail(interruption.reason ?? "unsupported root activity followed authorization");
+    }
+    if (interruption.state === "interrupted") {
+      await recordState(lock, "interrupted");
+      await recordStatus(
+        run,
+        "interrupted",
+        "user activity arrived before compact publication",
+        {
+          observedRootEventId: interruption.eventId,
+          attempt: 1,
+        },
+      );
+
+      let controlGenerations;
+      try {
+        controlGenerations = await waitForFreshGenerations(
+          run.inboxRoot,
+          run.targetSession,
+        );
+      } catch {
+        fail("could not read session-control readiness for interruption control");
+      }
+      if (controlGenerations.length !== 1) {
+        fail(
+          controlGenerations.length === 0
+            ? `no fresh session-control instance for ${run.targetSession}`
+            : `multiple fresh session-control instances for ${run.targetSession}`,
+        );
+      }
+      const controlPrompt = controlPromptFor(run.operationId);
+      await writePrivate(run.controlPrompt, controlPrompt);
+      const controlResult = await runSendRequest(
+        run,
+        run.controlPrompt,
+        `self-compact-control:${run.targetSession}:${run.lockToken}`,
+      );
+      process.stdout.write(
+        controlResult.output.endsWith("\n") || controlResult.output === ""
+          ? controlResult.output
+          : `${controlResult.output}\n`,
+      );
+      const control = classifyControlSend({
+        ...controlResult,
+        targetSession: run.targetSession,
+        targetGeneration: controlGenerations[0],
+      });
+      if (!control.ok) fail(control.reason);
+      await recordStatus(
+        run,
+        "interrupted",
+        "user activity arrived before compact publication",
+        {
+          observedRootEventId: interruption.eventId,
+          attempt: 1,
+          controlPrompt,
+          controlMessageId: control.messageId,
+          controlDelivery: control.delivery,
+        },
+      );
+      const deliverTerminalNotice = async () => {
+        try {
+          const terminalPrompt = terminalPromptFor(
+            run.operationId,
+            "terminal-failure",
+          );
+          await writePrivate(run.terminalPrompt, terminalPrompt);
+          const terminalResult = await runSendRequest(
+            run,
+            run.terminalPrompt,
+            `self-compact-terminal:${run.targetSession}:${run.lockToken}`,
+          );
+          process.stdout.write(
+            terminalResult.output.endsWith("\n") ||
+              terminalResult.output === ""
+              ? terminalResult.output
+              : `${terminalResult.output}\n`,
+          );
+        } catch (error) {
+          process.stderr.write(
+            `self-compact terminal notice unavailable: ${
+              error?.message ?? String(error)
+            }\n`,
+          );
+        }
+      };
+
+      const readControlHandoff = async () => {
+        const text = await readTextOrNull(run.controlHandoff);
+        if (text === null) return null;
+        try {
+          const handoff = JSON.parse(text);
+          return handoff?.lockToken === run.lockToken &&
+            handoff?.operationId === run.operationId &&
+            (handoff?.action === "resume" || handoff?.action === "cancel") &&
+            typeof handoff.toolCallId === "string" &&
+            handoff.toolCallId
+            ? handoff
+            : null;
+        } catch {
+          return null;
+        }
+      };
+
+      let controlAuthorization = null;
+      const controlPolls = Math.floor(run.authWaitSeconds / run.pollSeconds) + 1;
+      for (let poll = 0; poll < controlPolls; poll += 1) {
+        const secondInterruption = await probeSecondInterruption(
+          run.events,
+          boundary,
+          interruption.eventId,
+          {
+            prompt: controlPrompt,
+            messageId: control.messageId,
+            delivery: control.delivery,
+          },
+        );
+        if (secondInterruption.state === "second-interruption") {
+          const reason =
+            "a second user interruption occurred before compact publication";
+          await recordStatus(run, "terminal-failure", reason, {
+            observedRootEventId: interruption.eventId,
+            attempt: 1,
+          });
+          await deliverTerminalNotice();
+          fail(reason);
+        }
+        const handoff = await readControlHandoff();
+        if (handoff) {
+          const controlBuffer = await readEventRange(run.events, boundary);
+          const controlText = controlBuffer.toString("utf8");
+          const tail =
+            controlBuffer.length > run.authScanBytes
+              ? { boundaryExceeded: true }
+              : {
+                  text: controlText,
+                  size: boundary + controlBuffer.length,
+                  partial:
+                    controlText.length > 0 && !controlText.endsWith("\n"),
+                };
+          const receipt = `${CONTROL_RECEIPT_PREFIX}${run.lockToken}:${handoff.action}`;
+          const classifiedControl = classifyControlAuthorization(tail, {
+            toolCallId: handoff.toolCallId,
+            receipt,
+            action: handoff.action,
+            operationId: run.operationId,
+            observedRootEventId: interruption.eventId,
+            control: {
+              prompt: controlPrompt,
+              messageId: control.messageId,
+              delivery: control.delivery,
+            },
+          });
+          if (classifiedControl.state === "ready") {
+            controlAuthorization = {
+              ...classifiedControl,
+              action: handoff.action,
+            };
+            break;
+          }
+          if (classifiedControl.state === "failure") {
+            await recordStatus(
+              run,
+              "terminal-failure",
+              classifiedControl.reason,
+              {
+                observedRootEventId: interruption.eventId,
+                attempt: 1,
+              },
+            );
+            await deliverTerminalNotice();
+            fail(classifiedControl.reason);
+          }
+          if (classifiedControl.state === "second-interruption") {
+            await recordStatus(
+              run,
+              "terminal-failure",
+              classifiedControl.reason,
+              {
+                observedRootEventId: interruption.eventId,
+                attempt: 1,
+              },
+            );
+            await deliverTerminalNotice();
+            fail(classifiedControl.reason);
+          }
+        }
+        await sleep(run.pollSeconds);
+      }
+      if (!controlAuthorization) {
+        await recordStatus(
+          run,
+          "terminal-failure",
+          "timed out waiting for resume or cancel authorization",
+          {
+            observedRootEventId: interruption.eventId,
+            attempt: 1,
+          },
+        );
+        await deliverTerminalNotice();
+        fail("timed out waiting for resume or cancel authorization");
+      }
+      if (controlAuthorization.action === "cancel") {
+        await recordStatus(
+          run,
+          "terminal-cancelled",
+          "user cancelled the interrupted compact operation",
+          {
+            observedRootEventId: interruption.eventId,
+            attempt: 1,
+          },
+        );
+        fail("user cancelled the interrupted compact operation");
+      }
+      boundary = controlAuthorization.boundary;
+      await recordState(lock, "resuming");
+      await recordStatus(
+        run,
+        "resuming",
+        "resume authorization completed for the interrupted operation",
+        {
+          observedRootEventId: interruption.eventId,
+          attempt: 1,
+        },
+      );
+      await sleep(run.pollSeconds);
+      const second = await probeInterruption(run.events, boundary);
+      if (second.state !== "clear") {
+        const reason =
+          second.state === "interrupted"
+            ? "a second user interruption occurred before compact publication"
+            : second.reason ?? "root activity followed resume authorization";
+        await recordStatus(run, "terminal-failure", reason, {
+          observedRootEventId: interruption.eventId,
+          attempt: 1,
+        });
+        fail(reason);
+      }
+    }
+
     const continuationText = await readFile(run.continuation, "utf8");
     const expectedContinuation = continuationTextFor(run.continuationNonce);
     if (continuationText !== expectedContinuation) {
@@ -976,17 +1796,20 @@ export async function verify(runFilePath) {
     // the publication attempt: an unknown or ambiguous target releases.
     let generations;
     try {
-      generations = await resolveFreshGenerations(run.inboxRoot, run.targetSession);
+      generations = await waitForFreshGenerations(
+        run.inboxRoot,
+        run.targetSession,
+      );
     } catch {
-      fail("could not read session-inbox instance heartbeats", { release: true });
+      fail("could not read session-control instance heartbeats", { release: true });
     }
     if (generations.length === 0) {
-      fail(`no fresh session-inbox instance for ${run.targetSession}`, {
+      fail(`no fresh session-control instance for ${run.targetSession}`, {
         release: true,
       });
     }
     if (generations.length > 1) {
-      fail(`multiple fresh session-inbox instances for ${run.targetSession}`, {
+      fail(`multiple fresh session-control instances for ${run.targetSession}`, {
         release: true,
       });
     }
@@ -1022,8 +1845,8 @@ export async function verify(runFilePath) {
       fail("could not perform the final root-activity check", { release: false });
     }
 
-    logLine(`submitting one session-inbox compact request for session ${run.targetSession}`);
-    const { status, output } = await runRequest(run);
+    logLine(`submitting one session-control compact request for session ${run.targetSession}`);
+    const { status, output } = await runCompactRequest(run);
     process.stdout.write(output.endsWith("\n") || output === "" ? output : `${output}\n`);
 
     const publishedMatch = /^request: (.+)$/m.exec(output);
@@ -1160,7 +1983,7 @@ export async function verify(runFilePath) {
       }
       if (continuationState.state === "success") break;
       if (continuationState.state === "duplicate") {
-        fail("session-inbox delivered the continuation more than once", {
+        fail("session-control delivered the continuation more than once", {
           release: false,
         });
       }
@@ -1179,7 +2002,14 @@ export async function verify(runFilePath) {
       );
     }
     await recordState(lock, "continuation-observed");
+    await restoreAutopilotObjective(run);
     await recordState(lock, "completed");
+    await recordStatus(
+      run,
+      "terminal-success",
+      `verified checkpoint ${completion.checkpointNumber} and one continuation`,
+      { attempt: 1 },
+    );
 
     await releaseRun(run, lock, { release: true });
     logLine(
@@ -1187,8 +2017,37 @@ export async function verify(runFilePath) {
     );
     return { ok: true, checkpointNumber: completion.checkpointNumber };
   } catch (error) {
-    const release = error instanceof VerifierError ? error.release : failures.release;
-    const message = error?.message ?? String(error);
+    let release = error instanceof VerifierError ? error.release : failures.release;
+    let message = error?.message ?? String(error);
+    if (release && run.autopilotObjective) {
+      try {
+        await restoreAutopilotObjective(run);
+      } catch (restoreError) {
+        release = false;
+        message = `${message}; native autopilot restore failed: ${
+          restoreError?.message ?? String(restoreError)
+        }`;
+      }
+    }
+    try {
+      const currentText = await readTextOrNull(run.status);
+      let currentState = null;
+      if (currentText !== null) {
+        currentState = JSON.parse(currentText)?.state ?? null;
+      }
+      if (
+        currentState !== "terminal-cancelled" &&
+        currentState !== "terminal-failure" &&
+        currentState !== "terminal-success"
+      ) {
+        await recordStatus(run, "terminal-failure", message);
+      }
+    } catch (statusError) {
+      release = false;
+      message = `${message}; terminal status write failed: ${
+        statusError?.message ?? String(statusError)
+      }`;
+    }
     process.stderr.write(`self-compact cancelled: ${message}\n`);
     try {
       if (!release && (await lockTokenMatches(lock, run.lockToken))) {
@@ -1219,9 +2078,15 @@ export async function verify(runFilePath) {
 async function releaseRun(run, lock, { release }) {
   await rm(run.ready, { force: true });
   await rm(run.handoff, { force: true });
+  await rm(run.controlHandoff, { force: true });
   if (!release) return;
   await rm(run.instructions, { force: true });
   await rm(run.continuation, { force: true });
+  await rm(run.controlPrompt, { force: true });
+  await rm(run.terminalPrompt, { force: true });
+  if (run.autopilotObjective) {
+    await rm(run.autopilotObjective, { force: true });
+  }
   await rm(run.candidate, { force: true });
   await rm(run.runFile, { force: true });
   if (await lockTokenMatches(lock, run.lockToken)) {

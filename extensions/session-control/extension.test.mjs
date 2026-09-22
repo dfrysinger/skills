@@ -25,6 +25,10 @@ const sourceIdentity = join(
   dirname(fileURLToPath(import.meta.url)),
   "session-identity.mjs",
 );
+const sourceStorageRoot = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "storage-root.mjs",
+);
 
 async function waitFor(read, label, attempts = 300) {
   let lastError;
@@ -66,18 +70,20 @@ function fingerprint(request) {
 }
 
 async function createHarness(initialState = {}) {
-  const root = await mkdtemp(join(tmpdir(), "session-inbox-extension-"));
+  const root = await mkdtemp(join(tmpdir(), "session-control-extension-"));
   const inbox = join(root, "inbox");
   const statePath = join(root, "state.json");
   const callsPath = join(root, "calls.jsonl");
   const extensionPath = join(root, "extension.mjs");
   const diagnosticsPath = join(root, "diagnostics.mjs");
   const identityPath = join(root, "session-identity.mjs");
+  const storageRootPath = join(root, "storage-root.mjs");
   const sdkDir = join(root, "node_modules", "@github", "copilot-sdk");
   await mkdir(sdkDir, { recursive: true });
   await cp(sourceExtension, extensionPath);
   await cp(sourceDiagnostics, diagnosticsPath);
   await cp(sourceIdentity, identityPath);
+  await cp(sourceStorageRoot, storageRootPath);
   await writeState(statePath, {
     processing: false,
     active: false,
@@ -181,6 +187,9 @@ export async function joinSession() {
     rpc: {
       metadata: {
         async snapshot() {
+          if (state().sessionNameSnapshotNeverResolves) {
+            return new Promise(() => {});
+          }
           return {workspace: {id: "test-session", name: state().sessionName}};
         },
         async isProcessing() {
@@ -443,16 +452,33 @@ export async function joinSession() {
 }
 `,
   );
+  const legacyRotationBarrier = join(root, "legacy-rotation.barrier");
   const child = spawn(process.execPath, [extensionPath], {
-    env: {
+    env: Object.fromEntries(
+      Object.entries({
       ...process.env,
-      COPILOT_SESSION_INBOX_DIR: inbox,
+      COPILOT_SESSION_CONTROL_DIR: initialState.useDeprecatedConfiguration
+        ? undefined
+        : inbox,
+      COPILOT_SESSION_INBOX_DIR: initialState.useDeprecatedConfiguration
+        ? inbox
+        : undefined,
       MOCK_STATE: statePath,
       MOCK_CALLS: callsPath,
       MOCK_DEDUPE_DIR: join(inbox, "dedupe"),
       COPILOT_SESSION_STATE_ROOT: join(root, "session-state"),
-      COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS: "500",
-    },
+      COPILOT_SESSION_CONTROL_CONFIRM_TIMEOUT_MS:
+        initialState.useDeprecatedConfiguration ? undefined : "500",
+      COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS:
+        initialState.useDeprecatedConfiguration ? "500" : undefined,
+      COPILOT_SESSION_INBOX_AUTOPILOT_CONFIRM_TIMEOUT_MS:
+        initialState.useDeprecatedConfiguration ? "700" : undefined,
+      COPILOT_SESSION_INBOX_ROTATION_BARRIER:
+        initialState.useDeprecatedConfiguration
+          ? legacyRotationBarrier
+          : undefined,
+      }).filter(([, value]) => value !== undefined),
+    ),
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stderr = "";
@@ -463,13 +489,16 @@ export async function joinSession() {
     child.on("exit", (code, signal) => resolve({ code, signal, stderr }));
   });
 
+  let heartbeatPath;
   const heartbeat = initialState.rejectJoin
     ? undefined
     : await waitFor(async () => {
         const instances = join(inbox, "instances");
         const names = await readdir(instances);
         const name = names.find((entry) => entry.endsWith(".json"));
-        return name ? readJson(join(instances, name)) : undefined;
+        if (!name) return undefined;
+        heartbeatPath = join(instances, name);
+        return readJson(heartbeatPath);
       }, "extension heartbeat");
 
   async function setState(patch) {
@@ -541,9 +570,11 @@ export async function joinSession() {
   return {
     root,
     inbox,
+    legacyRotationBarrier,
     child,
     exit,
     heartbeat,
+    currentHeartbeat: () => readJson(heartbeatPath),
     request,
     receipt,
     calls,
@@ -552,6 +583,20 @@ export async function joinSession() {
     stop,
   };
 }
+
+test("heartbeat renewal does not wait for session-name refresh", async () => {
+  const harness = await createHarness();
+  try {
+    const first = harness.heartbeat.updatedAt;
+    await harness.setState({ sessionNameSnapshotNeverResolves: true });
+    await new Promise((resolve) => setTimeout(resolve, 6_200));
+    const refreshed = await harness.currentHeartbeat();
+    assert.ok(Date.parse(refreshed.updatedAt) > Date.parse(first));
+    assert.equal(refreshed.sessionName, harness.heartbeat.sessionName);
+  } finally {
+    await harness.stop();
+  }
+});
 
 test("extension startup failures are persisted before session join", async () => {
   const harness = await createHarness({ rejectJoin: true });
@@ -1193,6 +1238,7 @@ test("a rotation barrier leaves prepublished inbox work pending", async () => {
       mode: "immediate",
       prompt: "must not be sent",
     });
+
     await new Promise((resolve) => setTimeout(resolve, 300));
     assert.equal(
       JSON.parse(
@@ -1202,6 +1248,59 @@ test("a rotation barrier leaves prepublished inbox work pending", async () => {
         ),
       ).id,
       "rotation-barrier-send",
+    );
+    assert.equal(
+      (await harness.calls()).some((call) => call.kind === "send"),
+      false,
+    );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("deprecated extension configuration remains operational", async () => {
+  const harness = await createHarness({ useDeprecatedConfiguration: true });
+  try {
+    const rootMarker = await readJson(
+      join(
+        harness.root,
+        "session-state",
+        harness.heartbeat.sessionId,
+        "session-control-root.json",
+      ),
+    );
+    assert.equal(rootMarker.root, harness.inbox);
+    const diagnostics = await harness.diagnosticEntries();
+    assert.match(
+      diagnostics
+        .filter((entry) => entry.event === "storage.deprecated")
+        .map((entry) => entry.message)
+        .join("\n"),
+      /COPILOT_SESSION_INBOX_DIR is deprecated/,
+    );
+    const started = diagnostics.find((entry) => entry.event === "extension.started");
+    assert.equal(started.confirmationTimeoutMs, 500);
+    assert.equal(started.autopilotConfirmationTimeoutMs, 700);
+
+    await writeFile(harness.legacyRotationBarrier, "rotating\n");
+    await harness.request("legacy-rotation-barrier-send", {
+      kind: "send",
+      mode: "immediate",
+      prompt: "must not be sent",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(
+      JSON.parse(
+        await readFile(
+          join(
+            harness.inbox,
+            "pending",
+            "legacy-rotation-barrier-send.json",
+          ),
+          "utf8",
+        ),
+      ).id,
+      "legacy-rotation-barrier-send",
     );
     assert.equal(
       (await harness.calls()).some((call) => call.kind === "send"),

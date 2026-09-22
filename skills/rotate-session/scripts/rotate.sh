@@ -8,6 +8,7 @@ umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELPER="$SCRIPT_DIR/rotate-after-turn.sh"
+STORAGE_ROOT_CLI="$SCRIPT_DIR/../../../extensions/session-control/storage-root.mjs"
 USAGE="usage: rotate.sh <old-session-id> <prompt-file> [--consume-prompt]"
 OLD="${1:?$USAGE}"
 PROMPT_FILE="${2:?$USAGE}"
@@ -201,12 +202,31 @@ chmod 700 "$LAUNCHER"
 HELPER_SESSION="rotate-$(printf '%s' "$NEW" | cut -c1-8)"
 LOCK_FILE="$STATE/$OLD/rotation.lock"
 LOCK_READY="$RECOVERY_FILE.helper-ready"
-INBOX_ROOT="${COPILOT_SESSION_INBOX_DIR:-$HOME/.copilot/session-inbox}"
+ROOT_MARKER="$STATE/$OLD/session-control-root.json"
+if [[ -r "$ROOT_MARKER" ]]; then
+  CONTROL_ROOT="$(
+    node -e '
+      const fs = require("node:fs");
+      const path = require("node:path");
+      const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).root;
+      if (typeof value !== "string" || !path.isAbsolute(value)) process.exit(1);
+      process.stdout.write(value);
+    ' "$ROOT_MARKER"
+  )" || CONTROL_ROOT=""
+else
+  CONTROL_ROOT="$(node "$STORAGE_ROOT_CLI")" || CONTROL_ROOT=""
+fi
+if [[ -z "$CONTROL_ROOT" || "$CONTROL_ROOT" != /* ]]; then
+  exec 3>&-
+  rm -f -- "$LAUNCHER"
+  echo "rotate.sh: session-control storage root could not be resolved; recovery copy preserved at $RECOVERY_FILE" >&2
+  exit 1
+fi
 printf -v HELPER_COMMAND '%q ' \
   /usr/bin/lockf -k -t 0 "$LOCK_FILE" \
   "$HELPER" "$STATE/$OLD/events.jsonl" "$EVENT_OFFSET" "$OLD" "$NEW" \
   "$TMUX_PANE" "$PANE_CWD" "$RECOVERY_FILE" "$LAUNCHER" "$LOG" \
-  "$TMUX_BIN" "$STATE" "$LOCK_READY" "$INBOX_ROOT"
+  "$TMUX_BIN" "$STATE" "$LOCK_READY" "$CONTROL_ROOT"
 
 if ! "$TMUX_BIN" new-session -d -s "$HELPER_SESSION" "$HELPER_COMMAND"; then
   exec 3>&-

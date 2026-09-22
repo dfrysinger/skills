@@ -2,16 +2,21 @@
 
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  emitSessionControlDeprecation,
+  resolveSessionControlRoot,
+} from "./storage-root.mjs";
+
 const extensionDirectory = dirname(fileURLToPath(import.meta.url));
 const requestCli = join(extensionDirectory, "request.mjs");
-const inboxRoot =
-  process.env.COPILOT_SESSION_INBOX_DIR ??
-  join(homedir(), ".copilot", "session-inbox");
-const instancesDirectory = join(inboxRoot, "instances");
+const rootSelection = resolveSessionControlRoot();
+const controlRoot = rootSelection.root;
+emitSessionControlDeprecation(rootSelection);
+const instancesDirectory = join(controlRoot, "instances");
 const pluginPath = join(extensionDirectory, "..", "..", "plugin.json");
 const expectedVersion = JSON.parse(await readFile(pluginPath, "utf8")).version;
 const requestedNames = new Set(process.argv.slice(2));
@@ -171,15 +176,15 @@ if (requestedNames.size > 0) {
       ok: false,
       restartRequired: true,
       error: lastInstance
-        ? `session-inbox heartbeat is stale since ${lastInstance.updatedAt}`
-        : "no session-inbox heartbeat was found",
+        ? `session-control heartbeat is stale since ${lastInstance.updatedAt}`
+        : "no session-control heartbeat was found",
     });
   }
 }
 
 const targets = [...bySession.values()];
 if (targets.length === 0 && unavailable.length === 0) {
-  console.error("No fresh named session-inbox instances found");
+  console.error("No fresh named session-control instances found");
   process.exit(1);
 }
 

@@ -1,0 +1,64 @@
+{
+  "revision": "evidence-v2",
+  "objective": "Make self-compaction reliable and understandable when session readiness is stale or a user message interrupts the final authorization window.",
+  "end_user_job": "Request one compaction, continue interacting if needed, and receive one clear terminal result without losing the request, the user message, the active autopilot objective, or private compaction instructions.",
+  "exact_user_decisions": [
+    {
+      "event_id": "user-name-20260921T223216-0600",
+      "quote": "im confused when you say session inbox, is that the extension name? its awfully specific to one feature and confusing",
+      "classification": "top-level product direction"
+    },
+    {
+      "event_id": "user-reliability-20260921T223535-0600",
+      "quote": "great agreed then make the suggested improvements and if a user interrupts dont then skip the compaction event forever, it seems like maybe you could capture the users question and answer it after compaction or something like that",
+      "classification": "top-level product direction"
+    }
+  ],
+  "observed_failures": [
+    {
+      "run": "98170713-20260922T035035Z-68918",
+      "result": "The detached verifier canceled before publication because no fresh session request-extension heartbeat existed.",
+      "user_effect": "The tool had appeared armed, but no compaction occurred and the terminal transcript did not clearly expose the terminal status."
+    },
+    {
+      "run": "06a0c04e-20260922T035109Z-70258",
+      "result": "The detached verifier canceled before publication because a new root user message followed helper completion.",
+      "user_effect": "The interruption was preserved, but the compact operation had no durable user-visible pending or retry state."
+    },
+    {
+      "run": "771aefa2-20260922T035206Z-72402",
+      "result": "The two-phase active-autopilot path completed one token-bound compaction, checkpoint, continuation, and objective restoration.",
+      "user_effect": "The safe path works, but the preceding failed attempts were indistinguishable from the final success until logs were inspected."
+    }
+  ],
+  "existing_capabilities": [
+    "The self-compact extension can pause and privately stage an active autopilot objective.",
+    "The detached verifier binds one private brief to one tool-call identity and deduplicated compact request.",
+    "The shared session request extension exposes generation-bound heartbeats and transports send, autopilot, compact, and reload requests.",
+    "The verifier can restore the exact autopilot objective after verified success or a definitive pre-publication failure.",
+    "The session request extension can deliver a fixed immediate prompt and confirm its native delivery event."
+  ],
+  "deciding_runtime_facts": [
+    {
+      "fact": "The foreground self_compact tool returns its handoff receipt and its assistant turn ends before the detached verifier classifies later root activity.",
+      "evidence": "skills/self-compact/scripts/submit-compact.mjs returns after writing the handoff; resume-after-compact.mjs performs authorization and cancellation in the detached verifier."
+    },
+    {
+      "fact": "A user interruption can therefore arrive after the requesting agent turn has ended, and the resulting user turn does not receive the detached cancellation status as tool output.",
+      "evidence": "Run 06a0c04e-20260922T035109Z-70258 canceled on the user.message event after helper completion; the user observed only the prior armed handoff."
+    },
+    {
+      "fact": "Without active autopilot or a later control prompt, no deterministic mechanism schedules the same private brief for another final tool call.",
+      "evidence": "The successful third demonstration occurred only after a new active autopilot objective caused another prepare/final-call sequence."
+    }
+  ],
+  "hard_boundaries": [
+    "A new user message must never be dropped, rewritten, or submitted by terminal automation.",
+    "Private compact instructions must not be copied into visible assistant or user prose.",
+    "A changed user instruction must be able to cancel or supersede a pending compact.",
+    "No ambiguous or post-publication outcome may be retried automatically.",
+    "At most one compact request and one continuation may be accepted for one operation.",
+    "Autopilot may be paused temporarily but its exact objective must be restored or an explicit terminal failure retained."
+  ],
+  "challenge_question": "What is the minimum design that gives one clear, durable compact operation across stale readiness and user interruption while preserving the existing fail-closed publication boundary?"
+}

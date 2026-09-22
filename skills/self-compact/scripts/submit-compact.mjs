@@ -11,10 +11,12 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  CONTROL_RECEIPT_PREFIX,
   RECEIPT_PREFIX,
   RECLAIMABLE_STATES,
   STATE_PREFIX,
   collectCandidates,
+  collectControlCandidates,
   continuationTextFor,
   decodeRootEvents,
   exists,
@@ -27,8 +29,9 @@ import {
   readTextOrNull,
   readTrimmedOrNull,
   runPaths,
-  sessionInboxRoot,
+  sessionControlRoot,
   sleep,
+  statusPath,
   summaryCountOf,
   workspaceCwdOf,
   writeAtomic,
@@ -67,6 +70,27 @@ function secondsSetting(name, raw, fallback, { maximum, label }) {
     refuse(`${label} must be between 0 and ${maximum} seconds`);
   }
   return value;
+}
+
+export function autopilotObjectiveFrom(env = process.env) {
+  const encoded = env.SELF_COMPACT_AUTOPILOT_OBJECTIVE_BASE64;
+  if (encoded === undefined || encoded === "") return null;
+  if (
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+      encoded,
+    )
+  ) {
+    refuse("paused autopilot objective is malformed");
+  }
+  const objective = Buffer.from(encoded, "base64").toString("utf8");
+  if (
+    !objective ||
+    objective.length > 65_536 ||
+    Buffer.from(objective, "utf8").toString("base64") !== encoded
+  ) {
+    refuse("paused autopilot objective is malformed");
+  }
+  return objective;
 }
 
 export function readSettings(env = process.env) {
@@ -266,8 +290,12 @@ async function reclaimLock(lockDir, filesDir) {
   for (const path of [
     artifacts.ready,
     artifacts.handoff,
+    artifacts.controlHandoff,
+    artifacts.controlPrompt,
+    artifacts.terminalPrompt,
     artifacts.instructions,
     artifacts.continuation,
+    artifacts.autopilotObjective,
     artifacts.candidate,
     artifacts.runFile,
   ]) {
@@ -275,6 +303,93 @@ async function reclaimLock(lockDir, filesDir) {
   }
   await rm(lockDir, { recursive: true, force: true });
   return { reclaimable: true, reclaimed: true };
+}
+
+async function submitControl({
+    action,
+    operationId,
+    toolCallId,
+    settings,
+    sessionStateDir,
+    targetSession,
+  }) {
+    const filesDir = join(sessionStateDir, targetSession, "files");
+    const statusFile = statusPath(filesDir, operationId);
+    const statusText = await readTextOrNull(statusFile);
+    if (statusText === null) refuse(`operation ${operationId} has no durable status`);
+    let status;
+    try {
+      status = JSON.parse(statusText);
+    } catch {
+      refuse(`operation ${operationId} has malformed durable status`);
+    }
+    if (
+      status?.operationId !== operationId ||
+      status?.state !== "interrupted" ||
+      status?.attempt !== 1
+    ) {
+      refuse(`operation ${operationId} is not awaiting one control action`);
+    }
+    const lockDir = join(filesDir, "self-compact.lock");
+    const lock = lockPaths(lockDir);
+    const lockToken = await readTrimmedOrNull(lock.token);
+    const runId = await readTrimmedOrNull(lock.runId);
+    if (!lockToken || !runId) refuse(`operation ${operationId} has no live owner`);
+    const artifacts = runPaths(filesDir, runId);
+    const runText = await readTextOrNull(artifacts.runFile);
+    if (runText === null) refuse(`operation ${operationId} has no run metadata`);
+    let run;
+    try {
+      run = JSON.parse(runText);
+    } catch {
+      refuse(`operation ${operationId} has malformed run metadata`);
+    }
+    if (
+      run.operationId !== operationId ||
+      run.lockToken !== lockToken ||
+      run.targetSession !== targetSession ||
+      run.controlHandoff !== artifacts.controlHandoff
+    ) {
+      refuse(`operation ${operationId} does not own the live verifier`);
+    }
+    const tail = await readEventTail(run.events, settings.submitScanBytes);
+    if (tail.boundaryExceeded || tail.partial) {
+      refuse("current control-turn authorization is incomplete");
+    }
+    const events = decodeRootEvents(tail.text);
+    const matches = collectControlCandidates(events, {
+      action,
+      operationId,
+      expectedCallId: toolCallId,
+    });
+    if (matches.length !== 1) {
+      refuse("could not bind one running self-compact control helper");
+    }
+    try {
+      await writeExclusive(
+        artifacts.controlHandoff,
+        `${JSON.stringify(
+          {
+            version: 1,
+            lockToken,
+            operationId,
+            action,
+            toolCallId,
+            writtenAt: new Date().toISOString(),
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    } catch (error) {
+      if (error?.code === "EEXIST") {
+        refuse(`operation ${operationId} already received its control action`);
+      }
+      throw error;
+    }
+    return {
+      stdout: `${CONTROL_RECEIPT_PREFIX}${lockToken}:${action}`,
+    };
 }
 
 async function acquireLock(lockDir, filesDir) {
@@ -298,13 +413,24 @@ async function acquireLock(lockDir, filesDir) {
 }
 
 export async function submit({ argv = process.argv.slice(2), env = process.env } = {}) {
-  if (argv.length !== 2 || argv[0] !== "--tool-call-id") {
+  const controlAction =
+    argv[0] === "--resume" ? "resume" : argv[0] === "--cancel" ? "cancel" : null;
+  const controlOperationId = controlAction ? argv[1] : null;
+  const controlToolFlag = controlAction ? argv[2] : null;
+  const requestedCallId = controlAction ? argv[3] : argv[1];
+  if (
+    (!controlAction &&
+      (argv.length !== 2 || argv[0] !== "--tool-call-id")) ||
+    (controlAction &&
+      (argv.length !== 4 ||
+        !/^[0-9a-f]{8}$/.test(controlOperationId ?? "") ||
+        controlToolFlag !== "--tool-call-id"))
+  ) {
     throw new SubmitError(
-      "usage: submit-compact.mjs --tool-call-id ID\nsubmit-compact: invoke through the self_compact extension tool",
+      "usage: submit-compact.mjs --tool-call-id ID | (--resume|--cancel) OPERATION_ID --tool-call-id ID\nsubmit-compact: invoke through the self_compact extension tool",
       2,
     );
   }
-  const requestedCallId = argv[1];
   if (typeof requestedCallId !== "string" || requestedCallId === "" || requestedCallId.includes("\n")) {
     throw new SubmitError(
       "submit-compact: tool-call identity is invalid; compact not submitted",
@@ -313,20 +439,32 @@ export async function submit({ argv = process.argv.slice(2), env = process.env }
   }
 
   const settings = readSettings(env);
+  const autopilotObjective = autopilotObjectiveFrom(env);
   const verifier = env.SELF_COMPACT_VERIFIER ?? join(scriptDirectory, "resume-after-compact.mjs");
   const requestCli =
     env.SELF_COMPACT_REQUEST_CLI ??
-    join(scriptDirectory, "..", "..", "..", "extensions", "session-inbox", "request.mjs");
+    join(scriptDirectory, "..", "..", "..", "extensions", "session-control", "request.mjs");
   const sessionStateDir =
     env.SELF_COMPACT_SESSION_STATE_DIR ?? join(homedir(), ".copilot", "session-state");
   const targetSession = env.SELF_COMPACT_TARGET_SESSION ?? env.COPILOT_AGENT_SESSION_ID ?? "";
   const nodeBin = env.SELF_COMPACT_NODE_BIN ?? process.execPath;
 
   if (!(await exists(verifier))) refuse("detached verifier is unavailable");
-  if (!(await exists(requestCli))) refuse("session-inbox request CLI is unavailable");
+  if (!(await exists(requestCli))) refuse("session-control request CLI is unavailable");
   if (!targetSession) refuse("COPILOT_AGENT_SESSION_ID is unavailable");
   if (targetSession.includes("\n")) refuse("target session ID is invalid");
   if (!(await exists(nodeBin))) refuse("node is unavailable");
+
+  if (controlAction) {
+    return await submitControl({
+      action: controlAction,
+      operationId: controlOperationId,
+      toolCallId: requestedCallId,
+      settings,
+      sessionStateDir,
+      targetSession,
+    });
+  }
 
   const stamp = runStamp();
   const token = runTokenFrom(env, Date.now(), process.pid, stamp);
@@ -369,11 +507,14 @@ export async function submit({ argv = process.argv.slice(2), env = process.env }
   const continuationNonce = randomBytes(16).toString("hex");
   const continuationPrompt = continuationTextFor(continuationNonce);
   const artifacts = runPaths(filesDir, runId);
+  const operationId = randomBytes(4).toString("hex");
+  const durableStatus = statusPath(filesDir, operationId);
 
   await acquireLock(lockDir, filesDir);
 
   let verifierLaunched = false;
   let handoffComplete = false;
+  let statusCreated = false;
   const appendLog = async (line) => {
     await appendFile(artifacts.log, `${line}\n`, { mode: 0o600 });
   };
@@ -384,6 +525,24 @@ export async function submit({ argv = process.argv.slice(2), env = process.env }
     await writeExclusive(lock.runId, `${runId}\n`);
     await writeAtomic(lock.state, "foreground\n");
     await appendLog(`${STATE_PREFIX}foreground`);
+    await writeExclusive(
+      durableStatus,
+      `${JSON.stringify(
+        {
+          version: 1,
+          operationId,
+          runId,
+          state: "armed",
+          reason: "waiting for the authorizing compact turn to finish",
+          observedRootEventId: null,
+          attempt: 0,
+          updatedAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    statusCreated = true;
 
     await writePrivate(
       artifacts.candidate,
@@ -398,6 +557,9 @@ export async function submit({ argv = process.argv.slice(2), env = process.env }
       `${candidate.brief}\n\nSELF_COMPACT_RUN_TOKEN: ${token}`,
     );
     await writePrivate(artifacts.continuation, continuationPrompt);
+    if (autopilotObjective) {
+      await writePrivate(artifacts.autopilotObjective, autopilotObjective);
+    }
     await writePrivate(
       artifacts.runFile,
       `${JSON.stringify(
@@ -405,6 +567,7 @@ export async function submit({ argv = process.argv.slice(2), env = process.env }
           version: 1,
           runId,
           runToken: token,
+          operationId,
           lockToken,
           continuationNonce,
           toolCallId: candidate.callId,
@@ -417,14 +580,21 @@ export async function submit({ argv = process.argv.slice(2), env = process.env }
           baselineSummaryCount,
           ready: artifacts.ready,
           handoff: artifacts.handoff,
+          controlHandoff: artifacts.controlHandoff,
+          controlPrompt: artifacts.controlPrompt,
+          terminalPrompt: artifacts.terminalPrompt,
+          status: durableStatus,
           instructions: artifacts.instructions,
           continuation: artifacts.continuation,
+          ...(autopilotObjective
+            ? { autopilotObjective: artifacts.autopilotObjective }
+            : {}),
           candidate: artifacts.candidate,
           runFile: artifacts.runFile,
           log: artifacts.log,
           nodeBin,
           requestCli,
-          inboxRoot: sessionInboxRoot(),
+          inboxRoot: sessionControlRoot(),
           requestTimeoutSeconds: settings.requestTimeoutSeconds,
           pollSeconds: settings.pollSeconds,
           maxPolls: settings.maxPolls,
@@ -490,13 +660,18 @@ export async function submit({ argv = process.argv.slice(2), env = process.env }
       for (const path of [
         artifacts.ready,
         artifacts.handoff,
+        artifacts.controlHandoff,
+        artifacts.controlPrompt,
+        artifacts.terminalPrompt,
         artifacts.instructions,
         artifacts.continuation,
+        artifacts.autopilotObjective,
         artifacts.candidate,
         artifacts.runFile,
       ]) {
         await rm(path, { force: true });
       }
+      if (statusCreated) await rm(durableStatus, { force: true });
       const state = await readTrimmedOrNull(lock.state);
       if (
         (state === "foreground" || state === "verifier-starting" || state === null) &&

@@ -6,14 +6,14 @@ description: Keep Copilot CLI working context lean while preserving decisions, a
 # self-compact
 
 Compact a Copilot CLI conversation through the private `self_compact` extension
-tool and the session-inbox SDK extension. The complete compaction payload stays
+tool and the session-control SDK extension. The complete compaction payload stays
 in the structured tool call instead of visible assistant prose. A detached
 verifier binds that exact tool invocation to one run token, waits for the turn
 to become idle, requests native compaction, and sends one fixed continuation.
 
 ## Prerequisites
 
-- Copilot CLI with the plugin's `self-compact` and `session-inbox` extensions
+- Copilot CLI with the plugin's `self-compact` and `session-control` extensions
   loaded.
 - A durable plan, design, issue, handoff, or charter for any state that must
   survive independently of the conversation.
@@ -71,8 +71,11 @@ private session event record for debugging.
 
 ### 3. Submit as the final action
 
-Call `self_compact` with exactly one argument, `brief`, containing the string
-from step 2. Make it the only tool request in the final root assistant turn.
+When native autopilot is active, call `self_compact` with
+`{"action":"prepare"}` first and wait for its result. Then call
+`self_compact` with the `brief` argument containing the string from step 2.
+Make the brief-bearing `self_compact` call the only tool request in that final
+assistant message.
 After it reports that the SDK verifier is armed, end the turn immediately:
 write no closing narration and make no other tool call.
 
@@ -86,7 +89,7 @@ The verifier waits for that exact tool call and its assistant turn to finish,
 then invokes:
 
 ```text
-extensions/session-inbox/request.mjs compact
+extensions/session-control/request.mjs compact
   --target-session <current session>
   --instructions-file <bound instructions>
   --continuation-file <fixed continuation>
@@ -124,6 +127,19 @@ request:
 The detached verifier requires the same tool-call identity, the exact handoff
 receipt, and the end of that authorizing turn before creating the SDK request.
 
+If the native autopilot objective is active, call `self_compact` with
+`{"action":"prepare"}` in a separate assistant message first. It pauses
+autopilot and privately stages the exact objective. After that tool returns,
+call `self_compact` with the brief as the only and final tool request in the
+next assistant message. This separation is required: pausing inside the final
+tool handler is too late to prevent the runtime's already-scheduled autopilot
+continuation from racing authorization.
+
+The strict root-activity checks remain unchanged. After the compact,
+checkpoint, and fixed continuation are all verified, the verifier reactivates
+the exact staged objective through session-control. If arming fails before
+handoff, the extension restores the objective immediately.
+
 The verifier preserves the exact successful authorization-tail byte boundary,
 resolves the target generation, writes its `publishing` marker, and then scans
 from that boundary before creating the SDK request. Any later unrelated root
@@ -139,7 +155,7 @@ it.
 A definitive failure before `publishing` may release the lock. Every failure
 at or after `publishing`, including a definitive continuation failure, retains
 the lock so another run cannot silently duplicate a compact. Do not delete a
-retained lock until its per-run log and session-inbox receipt establish the
+retained lock until its per-run log and session-control receipt establish the
 outcome.
 
 ### Completion and checkpoint identity
@@ -156,7 +172,7 @@ Checkpoint prose is not searched for a marker.
 
 ### Continuation
 
-Each run generates a fresh 128-bit nonce. The session-inbox extension submits
+Each run generates a fresh 128-bit nonce. The session-control extension submits
 the fixed continuation prefix plus that nonce through immediate SDK delivery:
 
 ```text
@@ -177,7 +193,7 @@ event, an event while the item remains, or disappearance without an event is
 ambiguous. No-event failure is definitive only after result-checked removal
 and a final event rescan.
 
-The authoritative session-inbox receipt must report continuation acceptance
+The authoritative session-control receipt must report continuation acceptance
 with native `idle` or `steering` delivery. The verifier then requires exactly
 one corroborating nonce-bearing root `user.message` after the matching
 completion. Event logs cannot upgrade a failed, ambiguous, or version-skewed
@@ -196,10 +212,11 @@ continuation.
   `self_compact` once more as the final action.
 - Existing or ambiguous session lock: inspect the exact lock and log paths
   reported by the tool; do not delete a live or outcome-ambiguous lock.
-- Failed session-inbox receipt: inspect the per-run log. No compact was
+- Failed session-control receipt: inspect the per-run log. No compact was
   accepted, and the lock is released.
 - Ambiguous request result or missing token-bound completion: inspect the
-  per-run log plus `~/.copilot/session-inbox/{processing,completed,failed}`.
+  per-run log plus the selected session-control root's
+  `{processing,completed,failed}` directories.
   Do not rerun while the lock remains.
 - Successful compact with failed checkpoint or continuation verification:
   do not compact again. The exclusion lock remains. If continuation is absent,
@@ -212,7 +229,7 @@ directory.
 
 - The final assistant message does not expose the brief.
 - `self_compact` was the only and final tool request, with one `brief` argument.
-- The per-run log contains one completed session-inbox receipt.
+- The per-run log contains one completed session-control receipt.
 - The compact event records the exact brief and run token.
 - The checkpoint number advances and exactly one numbered file exists.
 - The fixed continuation occurs exactly once.

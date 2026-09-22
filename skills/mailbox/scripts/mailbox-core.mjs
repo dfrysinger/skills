@@ -33,7 +33,7 @@ import { fileURLToPath } from "node:url";
 import {
   createDiagnosticLogger,
   errorDetails,
-} from "../../../extensions/session-inbox/diagnostics.mjs";
+} from "../../../extensions/session-control/diagnostics.mjs";
 
 const execFileAsync = promisify(execFile);
 const RETRYABLE_FILE_ERRORS = new Set(["EACCES", "EBUSY", "EPERM"]);
@@ -349,7 +349,7 @@ export function createMailbox(options = {}) {
     options.requestCli ??
     join(
       dirname(fileURLToPath(import.meta.url)),
-      "../../../extensions/session-inbox/request.mjs",
+      "../../../extensions/session-control/request.mjs",
     );
   const terminalPokeCli =
     options.terminalPokeCli === null
@@ -1309,7 +1309,7 @@ export function createMailbox(options = {}) {
       }
       const targetUnavailable =
         result.code === 64 &&
-        result.stderr.includes("no fresh session-inbox instance");
+        result.stderr.includes("no fresh session-control instance");
       diagnostics.log(targetUnavailable ? "wakeup.no_active_session" : "wakeup.unverified", {
         mailbox: mailboxAddress,
         targetName,

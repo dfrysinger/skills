@@ -2,7 +2,7 @@
 
 Two artifacts: the **charter** you persist and re-feed through the `/every`
 schedules you arm yourself, and the **optional objective** you best-effort send
-through the session-inbox SDK extension or print as a fallback for
+through the session-control SDK extension or print as a fallback for
 `/autopilot`. Fill every `<SLOT>`; delete any clause that doesn't apply rather
 than leaving a placeholder.
 

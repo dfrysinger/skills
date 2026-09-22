@@ -240,8 +240,8 @@ async function main() {
     process.env.AUTOPILOT_HANDOFF_TIMEOUT_SECONDS || "360",
   );
   const requestCli =
-    process.env.SESSION_INBOX_REQUEST_CLI ||
-    join(scriptDirectory, "../../../extensions/session-inbox/request.mjs");
+    process.env.SESSION_CONTROL_REQUEST_CLI ||
+    join(scriptDirectory, "../../../extensions/session-control/request.mjs");
   try {
     await access(objectiveFile, fsConstants.R_OK);
   } catch {
@@ -250,7 +250,7 @@ async function main() {
   try {
     await access(requestCli, fsConstants.R_OK);
   } catch {
-    throw new InputError("session-inbox request helper is unavailable", 2);
+    throw new InputError("session-control request helper is unavailable", 2);
   }
 
   const temporaryDirectory = await mkdtemp(
@@ -284,7 +284,7 @@ async function main() {
       try {
         auditPath = await writeAudit({
           outcome: "failed",
-          detail: `session-inbox request failed with exit status ${request.exitCode}`,
+          detail: `session-control request failed with exit status ${request.exitCode}`,
           targetFlag,
           target,
           snapshot,
