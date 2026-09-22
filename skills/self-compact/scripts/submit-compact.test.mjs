@@ -24,6 +24,7 @@ import {
   controlPromptFor,
   continuationTextFor,
   decodeRootEvents,
+  eventIdentity,
   lockPaths,
   pidIsLive,
   preparePublication,
@@ -54,6 +55,25 @@ const continuationText = "Compaction done; resume, do not compact.";
 const runToken = "0123abcd";
 const targetGeneration = "gen-alpha";
 const testContinuationNonce = "0123456789abcdef0123456789abcdef";
+
+test("user-message identity prefers the SDK message ID over the outer event ID", () => {
+  assert.equal(
+    eventIdentity({
+      id: "outer-event-id",
+      type: "user.message",
+      data: { messageId: "sdk-message-id", content: "generated control" },
+    }),
+    "sdk-message-id",
+  );
+  assert.equal(
+    eventIdentity({
+      id: "outer-tool-event-id",
+      type: "tool.execution_start",
+      data: { messageId: "unrelated-message-id" },
+    }),
+    "outer-tool-event-id",
+  );
+});
 
 const fakeRequestSource = `import {
   appendFileSync,

@@ -244,12 +244,20 @@ export function eventData(event) {
 }
 
 export function eventIdentity(event) {
+  const data = eventData(event);
+  if (
+    event?.type === "user.message" &&
+    typeof data?.messageId === "string" &&
+    data.messageId
+  ) {
+    return data.messageId;
+  }
   for (const value of [
     event?.id,
     event?.eventId,
-    eventData(event)?.id,
-    eventData(event)?.eventId,
-    eventData(event)?.messageId,
+    data?.id,
+    data?.eventId,
+    data?.messageId,
   ]) {
     if (typeof value === "string" && value) return value;
   }
