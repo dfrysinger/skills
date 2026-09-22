@@ -79,7 +79,12 @@ export async function joinSession({tools}) {
       ? await compact.handler({action: "prepare"}, invocation)
       : null;
     const result = await compact.handler(
-      {brief: readFileSync(process.env.MOCK_INPUT, "utf8")},
+      process.env.MOCK_ACTION
+        ? {
+            action: process.env.MOCK_ACTION,
+            operationId: process.env.MOCK_OPERATION_ID,
+          }
+        : {brief: readFileSync(process.env.MOCK_INPUT, "utf8")},
       invocation,
     );
     process.stdout.write(JSON.stringify({
@@ -105,12 +110,70 @@ async function runExtension(
     objectiveStatus,
     prepareFirst = false,
     submitterFailure = false,
+    readiness = "one",
+    action,
+    operationId,
+    terminalStatus,
+    preparedObjective,
   } = {},
 ) {
   const { root, extensionPath } = await stageExtension();
   const submitter = join(root, "mock-submitter.mjs");
   const capture = join(root, "capture.json");
   const input = join(root, "input.txt");
+  const inboxRoot = join(root, "session-inbox");
+  const instances = join(inboxRoot, "instances");
+  await mkdir(instances, { recursive: true });
+  if (readiness !== "zero") {
+    await writeFile(
+      join(instances, "session-123-gen-a.json"),
+      `${JSON.stringify({
+        sessionId: "session-123",
+        generation: "gen-a",
+        updatedAt: new Date(
+          Date.now() - (readiness === "stale" ? 60_000 : 0),
+        ).toISOString(),
+      })}\n`,
+    );
+  }
+  if (readiness === "multiple") {
+    await writeFile(
+      join(instances, "session-123-gen-b.json"),
+      `${JSON.stringify({
+        sessionId: "session-123",
+        generation: "gen-b",
+        updatedAt: new Date().toISOString(),
+      })}\n`,
+    );
+  }
+  if (terminalStatus) {
+    const filesDir = join(root, "session-123", "files");
+    await mkdir(filesDir, { recursive: true });
+    await writeFile(
+      join(filesDir, `self-compact-${terminalStatus.operationId}.status.json`),
+      `${JSON.stringify({
+        version: 1,
+        runId: "terminal-run",
+        observedRootEventId: null,
+        attempt: 1,
+        updatedAt: new Date().toISOString(),
+        ...terminalStatus,
+      })}\n`,
+    );
+  }
+  if (preparedObjective) {
+    const filesDir = join(root, "session-123", "files");
+    await mkdir(filesDir, { recursive: true });
+    await writeFile(
+      join(filesDir, "self-compact.autopilot-objective.json"),
+      `${JSON.stringify({
+        version: 1,
+        sessionId: "session-123",
+        objective: preparedObjective,
+        preparedAt: new Date().toISOString(),
+      })}\n`,
+    );
+  }
   await writeFile(input, brief);
   await writeFile(
     submitter,
@@ -139,7 +202,10 @@ process.stdout.write("self-compact handoff receipt: proof-token\\nwatcher log: r
       ...(objectiveStatus ? { MOCK_OBJECTIVE_STATUS: objectiveStatus } : {}),
       ...(prepareFirst ? { MOCK_PREPARE_FIRST: "true" } : {}),
       ...(submitterFailure ? { MOCK_SUBMITTER_FAILURE: "true" } : {}),
+      ...(action ? { MOCK_ACTION: action } : {}),
+      ...(operationId ? { MOCK_OPERATION_ID: operationId } : {}),
       SELF_COMPACT_SESSION_STATE_DIR: root,
+      COPILOT_SESSION_INBOX_DIR: inboxRoot,
       ...(withSubmitter ? { SELF_COMPACT_SUBMITTER: submitter } : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -174,7 +240,11 @@ test("arms the portable submitter through the current Node runtime", async () =>
   assert.equal(registered.defer, "never");
   assert.equal(registered.schema.required, undefined);
   assert.equal(registered.schema.additionalProperties, false);
-  assert.deepEqual(Object.keys(registered.schema.properties), ["action", "brief"]);
+  assert.deepEqual(Object.keys(registered.schema.properties), [
+    "action",
+    "brief",
+    "operationId",
+  ]);
   assert.notEqual(outcome.invocation, null, "submitter was never launched");
   assert.deepEqual(outcome.invocation.args, ["--tool-call-id", "call-456"]);
   assert.equal(outcome.invocation.session, "session-123");
@@ -254,4 +324,73 @@ test("does not treat the embedded extension host as the Node child runtime", asy
     /const nodeBin = process\.env\.SELF_COMPACT_NODE_BIN \?\? "node";/,
   );
   assert.doesNotMatch(source, /execFileAsync\(\s*process\.execPath,/);
+});
+
+for (const readiness of ["zero", "stale", "multiple"]) {
+  test(`${readiness} readiness fails before direct compact arming`, async () => {
+    const outcome = await runExtension(goodBrief, { readiness });
+    assert.equal(outcome.code, 0, outcome.stderr);
+    const registered = JSON.parse(outcome.stdout);
+    assert.equal(registered.result.resultType, "failure");
+    assert.match(
+      registered.result.textResultForLlm,
+      readiness === "multiple" ? /multiple fresh/ : /no fresh/,
+    );
+    assert.equal(outcome.invocation, null);
+  });
+
+  test(`${readiness} readiness fails before autopilot preparation`, async () => {
+    const outcome = await runExtension(goodBrief, {
+      readiness,
+      objective: "Objective remains active.",
+      prepareFirst: true,
+    });
+    assert.equal(outcome.code, 0, outcome.stderr);
+    const registered = JSON.parse(outcome.stdout);
+    assert.equal(registered.prepareResult.resultType, "failure");
+    assert.deepEqual(registered.commands, []);
+  });
+}
+
+test("healthy inactive preparation does not pause autopilot", async () => {
+  const outcome = await runExtension(goodBrief, { prepareFirst: true });
+  assert.equal(outcome.code, 0, outcome.stderr);
+  const registered = JSON.parse(outcome.stdout);
+  assert.match(registered.prepareResult, /No active native autopilot objective/);
+  assert.deepEqual(registered.commands, []);
+});
+
+test("the next tool entry synchronously surfaces an unread terminal status", async () => {
+  const outcome = await runExtension(goodBrief, {
+    terminalStatus: {
+      operationId: "89abcdef",
+      state: "terminal-failure",
+      reason: "generated terminal notice could not be delivered",
+    },
+  });
+  assert.equal(outcome.code, 0, outcome.stderr);
+  const registered = JSON.parse(outcome.stdout);
+  assert.equal(registered.result.resultType, "failure");
+  assert.match(registered.result.textResultForLlm, /89abcdef/);
+  assert.match(registered.result.textResultForLlm, /terminal-failure/);
+  assert.match(registered.result.textResultForLlm, /could not be delivered/);
+  assert.equal(outcome.invocation, null);
+});
+
+test("a readiness loss after preparation restores the staged objective", async () => {
+  const objective = "Restore after readiness disappears.";
+  const outcome = await runExtension(goodBrief, {
+    readiness: "stale",
+    objective,
+    objectiveStatus: "paused",
+    preparedObjective: objective,
+  });
+  assert.equal(outcome.code, 0, outcome.stderr);
+  const registered = JSON.parse(outcome.stdout);
+  assert.equal(registered.result.resultType, "failure");
+  assert.match(registered.result.textResultForLlm, /no fresh/);
+  assert.deepEqual(registered.commands, [
+    { name: "autopilot", input: objective },
+  ]);
+  assert.equal(outcome.invocation, null);
 });

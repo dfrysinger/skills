@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -10,7 +18,10 @@ import { fileURLToPath } from "node:url";
 import {
   LOCK_STATES,
   classifyAuthorization,
+  classifyControlAuthorization,
   classifyRequestOutcome,
+  collectControlCandidates,
+  controlPromptFor,
   continuationTextFor,
   decodeRootEvents,
   lockPaths,
@@ -55,7 +66,7 @@ import { dirname, join } from "node:path";
 
 const mode = process.env.FAKE_REQUEST_MODE ?? "success";
 const argv = process.argv.slice(2);
-if (argv[0] !== "compact" && argv[0] !== "autopilot") process.exit(64);
+if (argv[0] !== "compact" && argv[0] !== "autopilot" && argv[0] !== "send") process.exit(64);
 const options = {};
 for (let index = 1; index < argv.length; index += 2) {
   options[argv[index]] = argv[index + 1];
@@ -81,6 +92,47 @@ if (argv[0] === "autopilot") {
       objectiveStatus: "active",
       delivery: "steering",
       objectiveUpdatedInPlace: true,
+    },
+  }));
+  process.exit(0);
+}
+
+if (argv[0] === "send") {
+  if (mode === "control-failed") {
+    console.log("request: fake-send");
+    console.log(JSON.stringify({
+      id: "fake-send",
+      status: "failed",
+      sessionId: target,
+      generation: process.env.FAKE_RECEIPT_GENERATION,
+      error: "forced control delivery failure",
+    }));
+    process.exit(1);
+  }
+  const prompt = readFileSync(options["--prompt-file"], "utf8");
+  const messageId = "control-message-" + Date.now();
+  appendFileSync(
+    process.env.FAKE_EVENTS,
+    JSON.stringify({
+      agentId: null,
+      id: messageId,
+      type: "user.message",
+      data: { content: prompt, delivery: "steering" },
+    }) + "\\n",
+  );
+  console.log("request: fake-send");
+  console.log("receipt: fake-send");
+  console.log(JSON.stringify({
+    id: "fake-send",
+    status: "completed",
+    sessionId: target,
+    generation: process.env.FAKE_RECEIPT_GENERATION,
+    result: {
+      messageId,
+      messageAccepted: true,
+      delivery: "steering",
+      idleDelivery: false,
+      queuedDelivery: false,
     },
   }));
   process.exit(0);
@@ -261,7 +313,7 @@ async function writeInstance(inboxRoot, { sessionId, generation, ageMs = 0 }) {
 
 async function createCase(t, name) {
   const root = await mkdtemp(join(tmpdir(), "self compact port "));
-  const sessionDir = join(root, "session");
+  const sessionDir = join(root, "target-session");
   const filesDir = join(sessionDir, "files");
   await mkdir(filesDir, { recursive: true });
   const workspace = join(sessionDir, "workspace.yaml");
@@ -314,6 +366,7 @@ function caseEnvironment(context, overrides = {}) {
     ...process.env,
     COPILOT_AGENT_SESSION_ID: "target-session",
     SELF_COMPACT_WORKSPACE: context.workspace,
+    SELF_COMPACT_SESSION_STATE_DIR: context.root,
     SELF_COMPACT_REQUEST_CLI: context.requestCli,
     COPILOT_SESSION_INBOX_DIR: context.inboxRoot,
     FAKE_RECEIPT_GENERATION: targetGeneration,
@@ -325,6 +378,7 @@ function caseEnvironment(context, overrides = {}) {
     SELF_COMPACT_POLL_SECONDS: "0.01",
     SELF_COMPACT_MAX_POLLS: "2000",
     SELF_COMPACT_REQUEST_TIMEOUT_SECONDS: "3",
+    SELF_COMPACT_READY_POLLS: "200",
     SELF_COMPACT_READY_POLL_SECONDS: "0.02",
     SELF_COMPACT_HANDOFF_POLL_SECONDS: "0.02",
     FAKE_EVENTS: context.events,
@@ -415,6 +469,39 @@ function runSubmit(context, { callId = context.toolCallId, env = {} } = {}) {
   });
 }
 
+function runControl(
+  context,
+  { action, operationId, callId, env = {} },
+) {
+  return new Promise((done, failed) => {
+    const child = spawn(
+      process.execPath,
+      [
+        submitter,
+        `--${action}`,
+        operationId,
+        "--tool-call-id",
+        callId,
+      ],
+      {
+        env: caseEnvironment(context, env),
+        stdio: ["ignore", "pipe", "pipe"],
+        cwd: context.root,
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", failed);
+    child.on("close", (code) => done({ code, stdout, stderr }));
+  });
+}
+
 function receiptOf(stdout) {
   const match = /^self-compact handoff receipt: (.+)$/m.exec(stdout);
   return match ? match[1] : null;
@@ -451,6 +538,48 @@ async function lockExists(context) {
 
 async function lockState(context) {
   return await readTrimmedOrNull(join(context.lockDir, "state"));
+}
+
+async function activeRun(context) {
+  const runId = await readTrimmedOrNull(join(context.lockDir, "run-id"));
+  assert.ok(runId, "missing active run ID");
+  return JSON.parse(
+    await readFile(runPaths(context.filesDir, runId).runFile, "utf8"),
+  );
+}
+
+function controlTurn(context, { action, operationId, callId, prose = "The user message has been answered." }) {
+  appendEvents(context, [
+    { type: "assistant.turn_start" },
+    { type: "assistant.message", data: { content: prose, toolRequests: [] } },
+    {
+      type: "assistant.message",
+      data: {
+        content: "",
+        toolRequests: [
+          {
+            toolCallId: callId,
+            name: "self_compact",
+            arguments: { action, operationId },
+          },
+        ],
+      },
+    },
+    {
+      type: "tool.execution_start",
+      data: { toolCallId: callId, toolName: "self_compact" },
+    },
+  ]);
+}
+
+function completeControlTurn(context, callId, receipt) {
+  appendEvents(context, [
+    {
+      type: "tool.execution_complete",
+      data: { toolCallId: callId, result: { content: receipt } },
+    },
+    { type: "assistant.turn_end" },
+  ]);
 }
 
 test("verified compaction preserves the exact brief, token, checkpoint, and one continuation", async (t) => {
@@ -660,14 +789,181 @@ test("a different tool-call identity is never bound", async (t) => {
   assert.equal(await lockExists(context), false);
 });
 
-test("root activity after the authorizing turn cancels before publication", async (t) => {
-  const context = await createCase(t, "post-turn-activity");
+test("one user interruption resumes the same verifier and publishes once", async (t) => {
+  const context = await createCase(t, "interrupt-resume");
   authorizingEvents(context);
   const armed = await arm(context);
-  completeAuthorizingTurn(context, armed.stdout, { trailingActivity: true });
-  await waitForLog(armed.log, /new root activity followed helper completion/);
-  assert.equal(await requestCount(context), 0);
+  completeAuthorizingTurn(context, armed.stdout);
+  appendEvents(context, [
+    {
+      id: "native-user-interruption",
+      type: "user.message",
+      data: { content: "Please answer this before compacting.", delivery: "idle" },
+    },
+  ]);
+  await waitFor(async () => (await lockState(context)) === "interrupted", {
+    label: "interrupted state",
+  });
+  const run = await activeRun(context);
+  const status = await waitFor(
+    async () => {
+      const value = JSON.parse(await readFile(run.status, "utf8"));
+      return value.controlMessageId ? value : null;
+    },
+    { label: "accepted control message identity" },
+  );
+  assert.deepEqual(
+    (await readdir(context.filesDir)).filter((name) =>
+      /^self-compact-[0-9a-f]{8}\.status\.json$/.test(name),
+    ),
+    [`self-compact-${run.operationId}.status.json`],
+  );
+  assert.equal(status.state, "interrupted");
+  assert.equal(status.observedRootEventId, "native-user-interruption");
+  assert.equal(status.attempt, 1);
+  assert.match(status.controlPrompt, new RegExp(`^\\[self-compact-control:${run.operationId}\\]`));
+  assert.doesNotMatch(status.controlPrompt, /Please answer this/);
+  assert.doesNotMatch(status.controlPrompt, /active baton/);
+  assert.equal(status.controlMessageId.startsWith("control-message-"), true);
+  assert.equal(status.controlDelivery, "steering");
+
+  const controlCallId = "call-control-resume";
+  controlTurn(context, {
+    action: "resume",
+    operationId: run.operationId,
+    callId: controlCallId,
+  });
+  const resumed = await runControl(context, {
+    action: "resume",
+    operationId: run.operationId,
+    callId: controlCallId,
+  });
+  assert.equal(resumed.code, 0, resumed.stderr);
+  completeControlTurn(context, controlCallId, resumed.stdout.trim());
+  await waitForLog(
+    armed.log,
+    /verified token-bound compaction checkpoint 2 and one SDK continuation/,
+  );
+  assert.equal(await requestCount(context), 1);
   await waitFor(async () => !(await lockExists(context)), { label: "lock release" });
+  const terminal = JSON.parse(await readFile(run.status, "utf8"));
+  assert.equal(terminal.state, "terminal-success");
+});
+
+test("an explicit cancel releases without publishing and restores autopilot", async (t) => {
+  const context = await createCase(t, "interrupt-cancel");
+  const objective = "Restore this objective after cancellation.";
+  authorizingEvents(context);
+  const armed = await arm(context, {
+    env: {
+      SELF_COMPACT_AUTOPILOT_OBJECTIVE_BASE64:
+        Buffer.from(objective, "utf8").toString("base64"),
+    },
+  });
+  completeAuthorizingTurn(context, armed.stdout);
+  appendEvents(context, [
+    {
+      id: "cancel-interruption",
+      type: "user.message",
+      data: { content: "Do not compact now.", delivery: "idle" },
+    },
+  ]);
+  await waitFor(async () => (await lockState(context)) === "interrupted", {
+    label: "interrupted state",
+  });
+  const run = await activeRun(context);
+  await waitFor(
+    async () => {
+      const value = JSON.parse(await readFile(run.status, "utf8"));
+      return value.controlMessageId ? value : null;
+    },
+    { label: "accepted control message identity" },
+  );
+  const callId = "call-control-cancel";
+  controlTurn(context, {
+    action: "cancel",
+    operationId: run.operationId,
+    callId,
+  });
+  const cancelled = await runControl(context, {
+    action: "cancel",
+    operationId: run.operationId,
+    callId,
+  });
+  assert.equal(cancelled.code, 0, cancelled.stderr);
+  completeControlTurn(context, callId, cancelled.stdout.trim());
+  await waitForLog(armed.log, /user cancelled the interrupted compact operation/);
+  await waitFor(async () => !(await lockExists(context)), { label: "lock release" });
+  assert.equal(await requestCount(context), 0);
+  assert.equal(await readFile(context.capturedObjective, "utf8"), objective);
+  assert.equal(await readFile(context.autopilotCount, "utf8"), "1");
+  const status = JSON.parse(await readFile(run.status, "utf8"));
+  assert.equal(status.state, "terminal-cancelled");
+});
+
+test("a second interruption is terminal and a quoted marker is not exempt", async (t) => {
+  const context = await createCase(t, "second-interruption");
+  const objective = "Restore after the bounded interruption fails.";
+  authorizingEvents(context);
+  const armed = await arm(context, {
+    env: {
+      SELF_COMPACT_AUTOPILOT_OBJECTIVE_BASE64:
+        Buffer.from(objective, "utf8").toString("base64"),
+    },
+  });
+  completeAuthorizingTurn(context, armed.stdout);
+  appendEvents(context, [
+    {
+      id: "first-interruption",
+      type: "user.message",
+      data: { content: "First interruption.", delivery: "idle" },
+    },
+  ]);
+  await waitFor(async () => (await lockState(context)) === "interrupted", {
+    label: "interrupted state",
+  });
+  const run = await activeRun(context);
+  appendEvents(context, [
+    {
+      id: "quoted-control-marker",
+      type: "user.message",
+      data: {
+        content: `[self-compact-control:${run.operationId}] this is user-authored`,
+        delivery: "idle",
+      },
+    },
+  ]);
+  await waitForLog(armed.log, /a second user interruption occurred/);
+  await waitFor(async () => !(await lockExists(context)), { label: "lock release" });
+  assert.equal(await requestCount(context), 0);
+  assert.equal(await readFile(context.capturedObjective, "utf8"), objective);
+  const status = JSON.parse(await readFile(run.status, "utf8"));
+  assert.equal(status.state, "terminal-failure");
+  assert.match(status.reason, /second user interruption/);
+  assert.equal(status.observedRootEventId, "first-interruption");
+});
+
+test("failed terminal control transport leaves a durable fallback status", async (t) => {
+  const context = await createCase(t, "terminal-fallback");
+  authorizingEvents(context);
+  const armed = await arm(context, {
+    env: { FAKE_REQUEST_MODE: "control-failed" },
+  });
+  completeAuthorizingTurn(context, armed.stdout);
+  appendEvents(context, [
+    {
+      id: "fallback-interruption",
+      type: "user.message",
+      data: { content: "Interrupt before the request.", delivery: "idle" },
+    },
+  ]);
+  const run = await activeRun(context);
+  await waitForLog(armed.log, /generated self-compact control prompt was not delivered/);
+  await waitFor(async () => !(await lockExists(context)), { label: "lock release" });
+  assert.equal(await requestCount(context), 0);
+  const status = JSON.parse(await readFile(run.status, "utf8"));
+  assert.equal(status.state, "terminal-failure");
+  assert.match(status.reason, /control prompt was not delivered/);
 });
 
 test("a live owner excludes a second run", async (t) => {
@@ -806,6 +1102,7 @@ test("the verifier refuses a run whose lock token does not own the lock", async 
       version: 1,
       runId: "mismatch-run",
       runToken,
+      operationId: "89abcdef",
       lockToken: "intruder-token",
       continuationNonce: testContinuationNonce,
       toolCallId: context.toolCallId,
@@ -818,6 +1115,10 @@ test("the verifier refuses a run whose lock token does not own the lock", async 
       baselineSummaryCount: 1,
       ready: artifacts.ready,
       handoff: artifacts.handoff,
+      controlHandoff: artifacts.controlHandoff,
+      controlPrompt: artifacts.controlPrompt,
+      terminalPrompt: artifacts.terminalPrompt,
+      status: join(context.filesDir, "self-compact-89abcdef.status.json"),
       instructions: artifacts.instructions,
       continuation: artifacts.continuation,
       candidate: artifacts.candidate,
@@ -874,6 +1175,7 @@ test("the verifier refuses to run without a positive handoff", async (t) => {
       version: 1,
       runId: "no-handoff-run",
       runToken,
+      operationId: "89abcdef",
       lockToken: "handoff-token",
       continuationNonce: testContinuationNonce,
       toolCallId: context.toolCallId,
@@ -886,6 +1188,10 @@ test("the verifier refuses to run without a positive handoff", async (t) => {
       baselineSummaryCount: 1,
       ready: artifacts.ready,
       handoff: artifacts.handoff,
+      controlHandoff: artifacts.controlHandoff,
+      controlPrompt: artifacts.controlPrompt,
+      terminalPrompt: artifacts.terminalPrompt,
+      status: join(context.filesDir, "self-compact-89abcdef.status.json"),
       instructions: artifacts.instructions,
       continuation: artifacts.continuation,
       candidate: artifacts.candidate,
@@ -1004,7 +1310,13 @@ test("an ambiguous request timeout retains the lock", async (t) => {
   await waitForLog(armed.log, /outcome is ambiguous \(status 2\); lock retained/);
   assert.equal(await lockExists(context), true);
   assert.equal(await requestCount(context), 1);
-  const outcome = JSON.parse(await readFile(join(context.lockDir, "outcome.json"), "utf8"));
+  const outcome = await waitFor(
+    async () => {
+      const text = await readTextOrNull(join(context.lockDir, "outcome.json"));
+      return text === null ? null : JSON.parse(text);
+    },
+    { label: "retained outcome receipt" },
+  );
   assert.equal(outcome.outcome, "retained");
   assert.equal(outcome.state, "request-published");
   const request = JSON.parse(await readFile(join(context.lockDir, "request.json"), "utf8"));
@@ -1179,12 +1491,20 @@ test("authorization classification refuses malformed and unaligned event windows
     const lock = lockPaths(join(root, "lock"));
     await mkdir(lock.dir, { recursive: true });
     const events = join(root, "events.jsonl");
-    await writeFile(
-      events,
-      `${JSON.stringify({ type: "user.message", data: { content: "other work" } })}\n`,
-    );
+    await writeFile(events, "");
     await assert.rejects(
-      preparePublication(lock, events, 0),
+      preparePublication(lock, events, 0, {
+        beforeScan: async () => {
+          await writeFile(
+            events,
+            `${JSON.stringify({
+              id: "post-fence-user",
+              type: "user.message",
+              data: { content: "other work" },
+            })}\n`,
+          );
+        },
+      }),
       (error) =>
         error.release === false &&
         /request not published/.test(error.message),
@@ -1209,6 +1529,7 @@ test("authorization classification refuses malformed and unaligned event windows
     const run = {
       runId: "run",
       runToken: "token",
+      operationId: "89abcdef",
       lockToken: "lock",
       continuationNonce: "0123456789abcdef0123456789abcdef",
       toolCallId: "call",
@@ -1220,6 +1541,10 @@ test("authorization classification refuses malformed and unaligned event windows
       lockDir: "lock-dir",
       ready: "ready",
       handoff: "handoff",
+      controlHandoff: "control-handoff",
+      controlPrompt: "control-prompt",
+      terminalPrompt: "terminal-prompt",
+      status: "status",
       instructions: "instructions",
       continuation: "continuation",
       candidate: "candidate",
@@ -1292,6 +1617,232 @@ test("request classification separates publication, failure, and ambiguity", () 
     output: `request: p\n${JSON.stringify({ status: "failed", sessionId: "s", generation })}\n`,
     targetSession: "s",
     targetGeneration: generation,
+  });
+
+  test("resume and cancel parsing binds one exact final control call", () => {
+    const operationId = "89abcdef";
+    const toolCallId = "control-call";
+    const canonical = [
+      { type: "assistant.turn_start" },
+      { type: "assistant.message", data: { content: "answer first", toolRequests: [] } },
+      {
+        type: "assistant.message",
+        data: {
+          content: "",
+          toolRequests: [
+            {
+              name: "self_compact",
+              toolCallId,
+              arguments: { action: "resume", operationId },
+            },
+          ],
+        },
+      },
+      {
+        type: "tool.execution_start",
+        data: { toolCallId, toolName: "self_compact" },
+      },
+    ];
+    assert.equal(
+      collectControlCandidates(canonical, {
+        action: "resume",
+        operationId,
+        expectedCallId: toolCallId,
+      }).length,
+      1,
+    );
+    assert.throws(
+      () =>
+        collectControlCandidates(
+          canonical.map((event, index) =>
+            index === 2
+              ? {
+                  ...event,
+                  data: {
+                    ...event.data,
+                    toolRequests: [
+                      {
+                        ...event.data.toolRequests[0],
+                        arguments: {
+                          action: "resume",
+                          operationId: "0123abcd",
+                        },
+                      },
+                    ],
+                  },
+                }
+              : event,
+          ),
+          {
+            action: "resume",
+            operationId,
+            expectedCallId: toolCallId,
+          },
+        ),
+      /could not|invalid/,
+    );
+    assert.throws(
+      () =>
+        collectControlCandidates(
+          canonical.map((event, index) =>
+            index === 2
+              ? {
+                  ...event,
+                  data: {
+                    ...event.data,
+                    toolRequests: [
+                      ...event.data.toolRequests,
+                      { name: "bash", toolCallId: "other", arguments: {} },
+                    ],
+                  },
+                }
+              : event,
+          ),
+          {
+            action: "resume",
+            operationId,
+            expectedCallId: toolCallId,
+          },
+        ),
+      /batched/,
+    );
+    assert.throws(
+      () =>
+        collectControlCandidates(
+          [
+            ...canonical,
+            {
+              type: "assistant.message",
+              data: {
+                content: "",
+                toolRequests: [
+                  {
+                    name: "self_compact",
+                    toolCallId: "duplicate-call",
+                    arguments: { action: "resume", operationId },
+                  },
+                ],
+              },
+            },
+          ],
+          {
+            action: "resume",
+            operationId,
+            expectedCallId: toolCallId,
+          },
+        ),
+      /root tool request followed/,
+    );
+    assert.throws(
+      () =>
+        collectControlCandidates(
+          [
+            ...canonical,
+            {
+              id: "later-user",
+              type: "user.message",
+              data: { content: "later activity" },
+            },
+          ],
+          {
+            action: "resume",
+            operationId,
+            expectedCallId: toolCallId,
+          },
+        ),
+      /root activity followed/,
+    );
+  });
+
+  test("control authorization exempts only the accepted SDK message identity", () => {
+    const operationId = "89abcdef";
+    const toolCallId = "control-call";
+    const lockToken = "lock-token";
+    const prompt = controlPromptFor(operationId);
+    const events = [
+      {
+        id: "native-user",
+        type: "user.message",
+        data: { content: "interrupting user text", delivery: "idle" },
+      },
+      {
+        id: "accepted-sdk-message",
+        type: "user.message",
+        data: { content: prompt, delivery: "steering" },
+      },
+      { type: "assistant.turn_start" },
+      { type: "assistant.message", data: { content: "answer", toolRequests: [] } },
+      {
+        type: "assistant.message",
+        data: {
+          content: "",
+          toolRequests: [
+            {
+              name: "self_compact",
+              toolCallId,
+              arguments: { action: "resume", operationId },
+            },
+          ],
+        },
+      },
+      {
+        type: "tool.execution_start",
+        data: { toolCallId, toolName: "self_compact" },
+      },
+      {
+        type: "tool.execution_complete",
+        data: {
+          toolCallId,
+          result: {
+            content: `self-compact control receipt: ${lockToken}:resume`,
+          },
+        },
+      },
+      { type: "assistant.turn_end" },
+    ];
+    const text = `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
+    const classified = classifyControlAuthorization(
+      { text, size: Buffer.byteLength(text) },
+      {
+        toolCallId,
+        receipt: `self-compact control receipt: ${lockToken}:resume`,
+        action: "resume",
+        operationId,
+        observedRootEventId: "native-user",
+        control: {
+          prompt,
+          messageId: "accepted-sdk-message",
+          delivery: "steering",
+        },
+      },
+    );
+    assert.equal(classified.state, "ready");
+
+    const quoted = text.replace(
+      '"id":"accepted-sdk-message"',
+      '"id":"user-quoted-marker"',
+    );
+    assert.deepEqual(
+      classifyControlAuthorization(
+        { text: quoted, size: Buffer.byteLength(quoted) },
+        {
+          toolCallId,
+          receipt: `self-compact control receipt: ${lockToken}:resume`,
+          action: "resume",
+          operationId,
+          observedRootEventId: "native-user",
+          control: {
+            prompt,
+            messageId: "accepted-sdk-message",
+            delivery: "steering",
+          },
+        },
+      ),
+      {
+        state: "second-interruption",
+        reason: "a user-authored control-marker quote is not generated control input",
+      },
+    );
   });
   assert.equal(failed.outcome, "failed");
   assert.equal(failed.release, false);

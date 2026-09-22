@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -19,7 +19,103 @@ const nodeBin = process.env.SELF_COMPACT_NODE_BIN ?? "node";
 const sessionStateRoot =
   process.env.SELF_COMPACT_SESSION_STATE_DIR ??
   join(homedir(), ".copilot", "session-state");
+const sessionInboxRoot =
+  process.env.COPILOT_SESSION_INBOX_DIR ??
+  join(homedir(), ".copilot", "session-inbox");
 let session;
+
+async function freshGenerations(sessionId) {
+  let names;
+  try {
+    names = await readdir(join(sessionInboxRoot, "instances"));
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return [];
+    throw error;
+  }
+  const generations = new Set();
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      const instance = JSON.parse(
+        await readFile(join(sessionInboxRoot, "instances", name), "utf8"),
+      );
+      const age = Date.now() - Date.parse(instance?.updatedAt);
+      if (
+        instance?.sessionId === sessionId &&
+        typeof instance.generation === "string" &&
+        instance.generation &&
+        Number.isFinite(age) &&
+        age >= 0 &&
+        age <= 15_000
+      ) {
+        generations.add(instance.generation);
+      }
+    } catch {
+      // A malformed or concurrently replaced heartbeat is not readiness.
+    }
+  }
+  return [...generations];
+}
+
+async function requireReady(sessionId) {
+  const generations = await freshGenerations(sessionId);
+  if (generations.length !== 1) {
+    throw new Error(
+      generations.length === 0
+        ? `no fresh session-inbox instance for ${sessionId}`
+        : `multiple fresh session-inbox instances for ${sessionId}`,
+    );
+  }
+  return generations[0];
+}
+
+async function unreadTerminalStatus(sessionId) {
+  const filesDir = join(sessionStateRoot, sessionId, "files");
+  let names;
+  try {
+    names = await readdir(filesDir);
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return null;
+    throw error;
+  }
+  const terminal = new Set([
+    "terminal-success",
+    "terminal-cancelled",
+    "terminal-failure",
+  ]);
+  const statuses = [];
+  for (const name of names) {
+    if (!/^self-compact-[0-9a-f]{8}\.status\.json$/.test(name)) continue;
+    const path = join(filesDir, name);
+    try {
+      const status = JSON.parse(await readFile(path, "utf8"));
+      if (
+        terminal.has(status?.state) &&
+        typeof status.reason === "string" &&
+        !status.reportedAt
+      ) {
+        statuses.push({ path, status });
+      }
+    } catch {
+      // A malformed status cannot be surfaced as an authoritative outcome.
+    }
+  }
+  statuses.sort((left, right) =>
+    String(right.status.updatedAt).localeCompare(String(left.status.updatedAt)),
+  );
+  const latest = statuses[0];
+  if (!latest) return null;
+  const updated = {
+    ...latest.status,
+    reportedAt: new Date().toISOString(),
+  };
+  const temporary = `${latest.path}.${process.pid}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(updated, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  await rename(temporary, latest.path);
+  return latest.status;
+}
 
 async function readObjective() {
   const saved = await session.rpc.workspaces.readAutopilotObjective();
@@ -172,22 +268,46 @@ const selfCompactTool = {
     properties: {
       action: {
         type: "string",
-        enum: ["prepare", "compact"],
+        enum: ["prepare", "compact", "resume", "cancel"],
         description:
-          "Use 'prepare' in a prior assistant message while autopilot is active. Omit or use 'compact' for the final brief-bearing call.",
+          "Use 'prepare' before compacting active autopilot. After one generated interruption prompt, use 'resume' or 'cancel' with its operationId as the sole final tool request.",
       },
       brief: {
         type: "string",
         description:
           "The complete Keep/Drop/After compaction brief. It must start with Keep:, include Drop:, and end with an After compaction: instruction containing the exact words 'do not compact again'.",
       },
+      operationId: {
+        type: "string",
+        pattern: "^[0-9a-f]{8}$",
+        description:
+          "Opaque operation ID from the generated self-compact control prompt. Required only for resume or cancel.",
+      },
     },
     additionalProperties: false,
   },
   defer: "never",
-  handler: async ({ action = "compact", brief }, invocation) => {
+  handler: async ({ action = "compact", brief, operationId }, invocation) => {
+    try {
+      const terminal = await unreadTerminalStatus(invocation.sessionId);
+      if (terminal) {
+        return {
+          textResultForLlm: `Prior self-compact operation ${terminal.operationId} reached ${terminal.state}: ${terminal.reason}`,
+          resultType:
+            terminal.state === "terminal-success" ? "success" : "failure",
+        };
+      }
+    } catch (error) {
+      return {
+        textResultForLlm: `Self-compact status check failed: ${
+          error?.message ?? String(error)
+        }`,
+        resultType: "failure",
+      };
+    }
     if (action === "prepare") {
       try {
+        await requireReady(invocation.sessionId);
         const objective = await pauseActiveObjective(invocation.sessionId);
         return objective
           ? "Native autopilot is paused and its exact objective is staged. Invoke self_compact with the brief as the only and final tool request in the next assistant message."
@@ -201,6 +321,41 @@ const selfCompactTool = {
         };
       }
     }
+    if (action === "resume" || action === "cancel") {
+      if (!/^[0-9a-f]{8}$/.test(operationId ?? "") || brief !== undefined) {
+        return {
+          textResultForLlm:
+            "Self-compact control was refused: resume/cancel requires one eight-hex operationId and no brief.",
+          resultType: "failure",
+        };
+      }
+      try {
+        const { stdout } = await execFileAsync(
+          nodeBin,
+          [
+            submitter,
+            `--${action}`,
+            operationId,
+            "--tool-call-id",
+            invocation.toolCallId,
+          ],
+          {
+            env: {
+              ...process.env,
+              COPILOT_AGENT_SESSION_ID: invocation.sessionId,
+            },
+            maxBuffer: 1024 * 1024,
+          },
+        );
+        return stdout.trim();
+      } catch (error) {
+        const detail = (error.stderr || error.message || String(error)).trim();
+        return {
+          textResultForLlm: `Self-compact ${action} was refused: ${detail}`,
+          resultType: "failure",
+        };
+      }
+    }
     if (!validBrief(brief)) {
       return {
         textResultForLlm:
@@ -210,13 +365,14 @@ const selfCompactTool = {
     }
     let preparedObjective = null;
     try {
+      preparedObjective = await readPreparedObjective(invocation.sessionId);
+      await requireReady(invocation.sessionId);
       const current = await readObjective();
       if (current?.status === "active") {
         throw new Error(
           "native autopilot is active; call self_compact_prepare first, then invoke self_compact as the only and final tool request",
         );
       }
-      preparedObjective = await readPreparedObjective(invocation.sessionId);
       const { stdout } = await execFileAsync(
         nodeBin,
         [submitter, "--tool-call-id", invocation.toolCallId],
