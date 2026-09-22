@@ -119,6 +119,16 @@ every attempt remains preserved and the report identifies cases that passed
 after retry. The suite command writes one aggregate report while preserving
 each case's independent run, receipts, and judgments.
 
+Use the local suite runner for ordinary corpora. When the corpus contains full
+repositories, native builds, product exercises, multiple treatments, or enough
+observations that one host would become the bottleneck, follow
+[`references/large-actions-campaign.md`](references/large-actions-campaign.md).
+That procedure seals one immutable campaign release with separately addressed
+candidate and hidden payloads, fans unfinished attempts out through private
+GitHub Actions, preserves first model outcomes, resumes only invalid downstream
+stages, checksum-verifies retained artifacts, and reconciles one exact
+effective-result map.
+
 The runner:
 
 1. verifies the frozen case;
@@ -165,6 +175,14 @@ Repair skill defects with general language. Repair packet and harness defects
 outside the target skill. Rerun the unchanged case after any repair and retain
 the prior run.
 
+When the target skill has accumulated substantial process text, compare a
+neutral baseline, a lean replacement, and the unchanged full skill instead of
+assuming incremental editing is safest. Follow
+[`references/ablation-campaign.md`](references/ablation-campaign.md): start the
+lean arm from the smallest load-bearing rules, run one discriminating case,
+then add back a rule only when a repeated corpus regression proves it is
+missing. Existing prose earns retention through behavior, not age.
+
 Complete when the result is labeled `PASS`, `FAIL`, or `UNANSWERABLE`, with the
 reason and any generalized skill defect stated separately.
 
@@ -183,3 +201,6 @@ The evaluation is complete only when:
 - a maintained regression suite runs through one command and every included
   case passes after a target-skill change; and
 - no evaluation repair introduces case-specific hints into the target skill.
+- a large distributed campaign, when used, has one checksum-bound effective
+  result per expected attempt ID, with no missing, extra, or duplicate
+  observations and no model outcome replaced by an infrastructure retry.
