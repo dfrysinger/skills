@@ -1614,6 +1614,39 @@ test("authorization classification refuses malformed and unaligned event windows
     state: "cancel",
     reason: "duplicate helper execution identity",
   });
+
+  const authorizationLines = [
+    {
+      type: "tool.execution_start",
+      data: { toolCallId: "a", toolName: "self_compact" },
+    },
+    {
+      agentId: "subagent-1",
+      type: "assistant.message",
+      data: { content: "ignored nested activity" },
+    },
+    {
+      type: "tool.execution_complete",
+      data: { toolCallId: "a", result: { content: "r" } },
+    },
+    { type: "assistant.turn_end" },
+    { type: "assistant.turn_start" },
+  ].map((event) => JSON.stringify(event));
+  const authorizationText = `${authorizationLines.join("\n")}\n`;
+  const expectedBoundary = Buffer.byteLength(
+    `${authorizationLines.slice(0, 4).join("\n")}\n`,
+    "utf8",
+  );
+  assert.deepEqual(
+    classifyAuthorization(
+      {
+        text: authorizationText,
+        size: Buffer.byteLength(authorizationText, "utf8"),
+      },
+      { toolCallId: "a", receipt: "r" },
+    ),
+    { state: "ready", boundary: expectedBoundary },
+  );
 });
 
 test("request classification separates publication, failure, and ambiguity", () => {

@@ -218,11 +218,13 @@ export async function readEventTail(path, maxBytes) {
   }
 }
 
-export function decodeRootEvents(text) {
+function decodeRootEventRecords(text) {
   const lines = text.split("\n");
   if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-  const events = [];
+  const records = [];
+  let end = 0;
   for (const line of lines) {
+    end += Buffer.byteLength(`${line}\n`, "utf8");
     let event;
     try {
       event = JSON.parse(line);
@@ -233,9 +235,13 @@ export function decodeRootEvents(text) {
       throw new MalformedEventError("malformed event JSON");
     }
     if (event.agentId !== undefined && event.agentId !== null) continue;
-    events.push(event);
+    records.push({ event, end });
   }
-  return events;
+  return records;
+}
+
+export function decodeRootEvents(text) {
+  return decodeRootEventRecords(text).map(({ event }) => event);
 }
 
 export function eventData(event) {
@@ -470,15 +476,16 @@ export function classifyAuthorization(tail, { toolCallId, receipt }) {
     return { state: "cancel", reason: "authorization boundary exceeds event tail" };
   }
   if (tail.partial) return { state: "wait" };
-  let events;
+  let records;
   try {
-    events = decodeRootEvents(tail.text);
+    records = decodeRootEventRecords(tail.text);
   } catch (error) {
     if (error instanceof MalformedEventError) {
       return { state: "cancel", reason: "malformed authorization event JSON" };
     }
     throw error;
   }
+  const events = records.map(({ event }) => event);
 
   const starts = [];
   const completions = [];
@@ -546,11 +553,8 @@ export function classifyAuthorization(tail, { toolCallId, receipt }) {
     }
   }
   if (turnEnd < 0) return { state: "wait" };
-  const lines = tail.text.split("\n");
-  let boundary = tail.size - Buffer.byteLength(tail.text, "utf8");
-  for (let index = 0; index <= turnEnd; index += 1) {
-    boundary += Buffer.byteLength(`${lines[index]}\n`, "utf8");
-  }
+  const boundary =
+    tail.size - Buffer.byteLength(tail.text, "utf8") + records[turnEnd].end;
   return { state: "ready", boundary };
 }
 
