@@ -6,6 +6,10 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { joinSession } from "@github/copilot-sdk/extension";
+import {
+  emitSessionControlDeprecation,
+  resolveSessionControlRoot,
+} from "../session-control/storage-root.mjs";
 
 const execFileAsync = promisify(execFile);
 const extensionDirectory = dirname(fileURLToPath(import.meta.url));
@@ -19,15 +23,15 @@ const nodeBin = process.env.SELF_COMPACT_NODE_BIN ?? "node";
 const sessionStateRoot =
   process.env.SELF_COMPACT_SESSION_STATE_DIR ??
   join(homedir(), ".copilot", "session-state");
-const sessionInboxRoot =
-  process.env.COPILOT_SESSION_INBOX_DIR ??
-  join(homedir(), ".copilot", "session-inbox");
+const sessionControlRootSelection = resolveSessionControlRoot();
+const sessionControlRoot = sessionControlRootSelection.root;
+emitSessionControlDeprecation(sessionControlRootSelection);
 let session;
 
 async function freshGenerations(sessionId) {
   let names;
   try {
-    names = await readdir(join(sessionInboxRoot, "instances"));
+    names = await readdir(join(sessionControlRoot, "instances"));
   } catch (error) {
     if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return [];
     throw error;
@@ -37,7 +41,7 @@ async function freshGenerations(sessionId) {
     if (!name.endsWith(".json")) continue;
     try {
       const instance = JSON.parse(
-        await readFile(join(sessionInboxRoot, "instances", name), "utf8"),
+        await readFile(join(sessionControlRoot, "instances", name), "utf8"),
       );
       const age = Date.now() - Date.parse(instance?.updatedAt);
       if (
@@ -62,8 +66,8 @@ async function requireReady(sessionId) {
   if (generations.length !== 1) {
     throw new Error(
       generations.length === 0
-        ? `no fresh session-inbox instance for ${sessionId}`
-        : `multiple fresh session-inbox instances for ${sessionId}`,
+        ? `no fresh session-control instance for ${sessionId}`
+        : `multiple fresh session-control instances for ${sessionId}`,
     );
   }
   return generations[0];

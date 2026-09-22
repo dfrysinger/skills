@@ -26,6 +26,10 @@ chmod +x "$FAKE_BIN/ps"
 cat >"$FAKE_BIN/node" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FAKE_NODE_CALLS"
+if [[ "$1" == */storage-root.mjs ]]; then
+  printf '%s\n' "$FAKE_SESSION_CONTROL_ROOT"
+  exit 0
+fi
 if [[ "$1" == "-e" ]]; then
   exit "${FAKE_IDENTITY_VALID:-0}"
 fi
@@ -100,6 +104,7 @@ export PATH="$FAKE_BIN:$PATH"
 export MAILBOX_ROOT
 export MAILBOX_STATE_ROOT
 export FAKE_NODE_CALLS="$ROOT/node-calls"
+export FAKE_SESSION_CONTROL_ROOT="$ROOT/session-control"
 export FAKE_TMUX_CALLS="$ROOT/tmux-calls"
 export FAKE_PANE_STATE="$ROOT/pane-state"
 export FAKE_TYPED_PROMPT="$ROOT/typed-prompt"

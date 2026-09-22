@@ -131,9 +131,9 @@ start_rotation() {
   fi
   touch "$state/inuse.$$.lock"
   if [ -n "$inbox_inflight" ]; then
-    mkdir -p "$ROOT/home/.copilot/session-inbox/processing"
+    mkdir -p "$ROOT/home/.copilot/session-control/processing"
     printf '{"id":"inflight","target":{"sessionId":"%s"}}\n' "$old" \
-      >"$ROOT/home/.copilot/session-inbox/processing/inflight-$old.json"
+      >"$ROOT/home/.copilot/session-control/processing/inflight-$old.json"
   fi
   printf '%s' "$prompt" >"$input"
 
@@ -200,7 +200,7 @@ IFS=$'\t' read -r inbox_state inbox_log < <(
 printf '%s\n' '{"type":"assistant.turn_end","data":{}}' \
   >>"$inbox_state/events.jsonl"
 wait_for_result "$inbox_log"
-grep -Fq 'session-inbox work is in flight' "$inbox_log"
+grep -Fq 'session-control work is in flight' "$inbox_log"
 inbox_recovery="$(
   sed -n 's/^recovery snapshot: \([^ ]*\).*/\1/p' "$inbox_log" | tail -1
 )"

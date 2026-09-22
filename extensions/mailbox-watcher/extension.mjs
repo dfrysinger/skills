@@ -3,11 +3,11 @@ import { join } from "node:path";
 
 import { joinSession } from "@github/copilot-sdk/extension";
 
-import { createDiagnosticLogger, errorDetails } from "../session-inbox/diagnostics.mjs";
+import { createDiagnosticLogger, errorDetails } from "../session-control/diagnostics.mjs";
 import {
   currentSessionName,
   currentTmuxSession,
-} from "../session-inbox/session-identity.mjs";
+} from "../session-control/session-identity.mjs";
 import { createConfiguredMailbox } from "../../skills/mailbox/scripts/mailbox-core.mjs";
 
 const stateRoot =

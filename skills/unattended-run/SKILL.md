@@ -1,6 +1,6 @@
 ---
 name: unattended-run
-description: Keep a long, unattended Copilot CLI run on course with event-driven re-briefs and constraint challenges, one lightweight four-hour liveness backstop, and an optional autopilot objective delivered through the session-inbox SDK. Use when starting a long autopilot or `/goal` run against a plan doc, sharpening its objective, or preventing drift across context compactions.
+description: Keep a long, unattended Copilot CLI run on course with event-driven re-briefs and constraint challenges, one lightweight four-hour liveness backstop, and an optional autopilot objective delivered through the session-control SDK. Use when starting a long autopilot or `/goal` run against a plan doc, sharpening its objective, or preventing drift across context compactions.
 ---
 
 # unattended-run
@@ -21,7 +21,7 @@ course:
   before any same-session compact. It is the load-bearing scheduled deliverable
   of this skill.**
 - An **optional `/autopilot` objective** that drives the *what* until the agent
-  determines the task is complete. A detached request asks the session-inbox
+  determines the task is complete. A detached request asks the session-control
   extension to invoke the native `/autopilot` command directly, then reads the
   native objective state back to prove the exact objective was established.
   Fall back to printing it when that handoff is unavailable.
@@ -29,7 +29,7 @@ course:
 ## Critical: use the session SDK, not terminal input
 
 The objective handoff is not a terminal slash-command injection. The bundled
-helper calls `extensions/session-inbox/request.mjs autopilot`. The target
+helper calls `extensions/session-control/request.mjs autopilot`. The target
 extension invokes the bounded native `/autopilot` command through the SDK
 without waiting for idle. An idle session starts the returned native prompt
 through immediate SDK delivery; an active autopilot session updates its
@@ -295,7 +295,7 @@ the persisted objective in your own Copilot CLI session when all of these hold:
 - The objective file is readable, self-contained, and fully resolved, with no
   `<SLOT>`.
 - You know either the current Copilot session ID or the exact tmux session name
-  whose session-inbox extension should receive the request. Prefer the session
+  whose session-control extension should receive the request. Prefer the session
   ID from the current session context; use the tmux name only as a targeting
   fallback.
 
@@ -323,7 +323,7 @@ It rejects empty, slash-prefixed, permission-changing, or unresolved objectives;
 caps the receipt wait at 360 seconds; requires the SDK receipt to prove both
 `objectiveSet: true` and `delivery: "idle"` or `"steering"`; preserves the request output and objective under
 `~/.copilot/autopilot-enqueue/`; and notifies the user if delivery cannot be
-confirmed. The session-inbox extension also retains its JSON request receipt.
+confirmed. The session-control extension also retains its JSON request receipt.
 
 If neither target can be identified or the request helper is unavailable,
 print this fallback and

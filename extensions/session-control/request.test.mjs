@@ -33,7 +33,7 @@ async function runRequest(root, args, extraEnv = {}) {
   const child = spawn(process.execPath, [requestCli, ...args], {
     env: {
       ...process.env,
-      COPILOT_SESSION_INBOX_DIR: root,
+      COPILOT_SESSION_CONTROL_DIR: root,
       COPILOT_SESSION_STATE_ROOT: join(root, "session-state"),
       ...extraEnv,
     },
@@ -71,7 +71,7 @@ async function diagnosticEntries(root) {
 }
 
 test("writes an immediate send request and accepts its receipt", async () => {
-  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  const root = await mkdtemp(join(tmpdir(), "session-control-request-"));
   try {
     const instancePath = join(root, "instances", "hotel-session.json");
     await mkdir(dirname(instancePath), { recursive: true });
@@ -129,7 +129,7 @@ test("writes an immediate send request and accepts its receipt", async () => {
 });
 
 test("writes a native autopilot objective request", async () => {
-  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  const root = await mkdtemp(join(tmpdir(), "session-control-request-"));
   try {
     const instancePath = join(root, "instances", "session-1-generation-1.json");
     await mkdir(dirname(instancePath), { recursive: true });
@@ -175,7 +175,7 @@ test("writes a native autopilot objective request", async () => {
 });
 
 test("writes an extension reload request", async () => {
-  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  const root = await mkdtemp(join(tmpdir(), "session-control-request-"));
   try {
     const instancePath = join(root, "instances", "session-1-generation-1.json");
     await mkdir(dirname(instancePath), { recursive: true });
@@ -210,7 +210,7 @@ test("writes an extension reload request", async () => {
 });
 
 test("defaults sends to immediate delivery and returns recipient failures", async () => {
-  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  const root = await mkdtemp(join(tmpdir(), "session-control-request-"));
   try {
     const instancePath = join(root, "instances", "session-1-generation-1.json");
     await mkdir(dirname(instancePath), { recursive: true });
@@ -254,7 +254,7 @@ test("defaults sends to immediate delivery and returns recipient failures", asyn
 });
 
 test("rejects queued send delivery before writing a request", async () => {
-  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  const root = await mkdtemp(join(tmpdir(), "session-control-request-"));
   try {
     const instancePath = join(root, "instances", "session-1-generation-1.json");
     await mkdir(dirname(instancePath), { recursive: true });
@@ -288,7 +288,7 @@ test("rejects queued send delivery before writing a request", async () => {
 });
 
 test("rejects ambiguous targets before writing a request", async () => {
-  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  const root = await mkdtemp(join(tmpdir(), "session-control-request-"));
   try {
     const result = await (
       await runRequest(root, [
@@ -307,7 +307,7 @@ test("rejects ambiguous targets before writing a request", async () => {
 });
 
 test("rejects publication while the target session is rotating", async () => {
-  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  const root = await mkdtemp(join(tmpdir(), "session-control-request-"));
   try {
     const sessionId = "rotating-session";
     const instancesDir = join(root, "instances");
@@ -354,7 +354,7 @@ test(
   "does not publish when rotation starts between the barrier check and rename",
   { skip: process.platform === "darwin" },
   async () => {
-    const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+    const root = await mkdtemp(join(tmpdir(), "session-control-request-"));
     try {
       const sessionId = "rotation-race-session";
       const instancesDir = join(root, "instances");
@@ -384,7 +384,7 @@ test(
           "--timeout",
           "0",
         ],
-        { SESSION_INBOX_TEST_PUBLISH_GATE: gate },
+        { SESSION_CONTROL_TEST_PUBLISH_GATE: gate },
       );
       for (let attempt = 0; attempt < 100; attempt += 1) {
         try {
@@ -414,7 +414,7 @@ test(
 );
 
 test("rejects an invalid timeout before writing a request", async () => {
-  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  const root = await mkdtemp(join(tmpdir(), "session-control-request-"));
   try {
     const result = await (
       await runRequest(root, [
@@ -438,7 +438,7 @@ test("rejects an invalid timeout before writing a request", async () => {
 });
 
 test("rejects multiple fresh instances for one tmux name", async () => {
-  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  const root = await mkdtemp(join(tmpdir(), "session-control-request-"));
   try {
     const instancesDir = join(root, "instances");
     await mkdir(instancesDir, { recursive: true });
@@ -467,7 +467,7 @@ test("rejects multiple fresh instances for one tmux name", async () => {
       ])
     ).exit;
     assert.equal(result.code, 64);
-    assert.match(result.stderr, /multiple fresh session-inbox instances/);
+    assert.match(result.stderr, /multiple fresh session-control instances/);
     const diagnostics = await diagnosticEntries(root);
     assert.ok(diagnostics.some((entry) => entry.event === "target.unresolved"));
   } finally {
@@ -476,7 +476,7 @@ test("rejects multiple fresh instances for one tmux name", async () => {
 });
 
 test("rejects multiple fresh generations for one session ID", async () => {
-  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  const root = await mkdtemp(join(tmpdir(), "session-control-request-"));
   try {
     const instancesDir = join(root, "instances");
     await mkdir(instancesDir, { recursive: true });
@@ -504,14 +504,14 @@ test("rejects multiple fresh generations for one session ID", async () => {
       ])
     ).exit;
     assert.equal(result.code, 64);
-    assert.match(result.stderr, /multiple fresh session-inbox instances/);
+    assert.match(result.stderr, /multiple fresh session-control instances/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
 test("target name prefers a fresh tmux identity over session-name fallbacks", async () => {
-  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  const root = await mkdtemp(join(tmpdir(), "session-control-request-"));
   try {
     const instancesDir = join(root, "instances");
     await mkdir(instancesDir, { recursive: true });
@@ -559,7 +559,7 @@ test("target name prefers a fresh tmux identity over session-name fallbacks", as
 });
 
 test("target name falls back to the current live session name", async () => {
-  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  const root = await mkdtemp(join(tmpdir(), "session-control-request-"));
   try {
     const instancePath = join(root, "instances", "named-session.json");
     await mkdir(dirname(instancePath), { recursive: true });
@@ -597,7 +597,7 @@ test("target name falls back to the current live session name", async () => {
 });
 
 test("target name rejects multiple fresh sessions with the same session name", async () => {
-  const root = await mkdtemp(join(tmpdir(), "session-inbox-request-"));
+  const root = await mkdtemp(join(tmpdir(), "session-control-request-"));
   try {
     const instancesDir = join(root, "instances");
     await mkdir(instancesDir, { recursive: true });
@@ -626,7 +626,7 @@ test("target name rejects multiple fresh sessions with the same session name", a
       ])
     ).exit;
     assert.equal(result.code, 64);
-    assert.match(result.stderr, /multiple fresh session-inbox instances/);
+    assert.match(result.stderr, /multiple fresh session-control instances/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

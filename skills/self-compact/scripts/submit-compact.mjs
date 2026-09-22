@@ -29,7 +29,7 @@ import {
   readTextOrNull,
   readTrimmedOrNull,
   runPaths,
-  sessionInboxRoot,
+  sessionControlRoot,
   sleep,
   statusPath,
   summaryCountOf,
@@ -443,14 +443,14 @@ export async function submit({ argv = process.argv.slice(2), env = process.env }
   const verifier = env.SELF_COMPACT_VERIFIER ?? join(scriptDirectory, "resume-after-compact.mjs");
   const requestCli =
     env.SELF_COMPACT_REQUEST_CLI ??
-    join(scriptDirectory, "..", "..", "..", "extensions", "session-inbox", "request.mjs");
+    join(scriptDirectory, "..", "..", "..", "extensions", "session-control", "request.mjs");
   const sessionStateDir =
     env.SELF_COMPACT_SESSION_STATE_DIR ?? join(homedir(), ".copilot", "session-state");
   const targetSession = env.SELF_COMPACT_TARGET_SESSION ?? env.COPILOT_AGENT_SESSION_ID ?? "";
   const nodeBin = env.SELF_COMPACT_NODE_BIN ?? process.execPath;
 
   if (!(await exists(verifier))) refuse("detached verifier is unavailable");
-  if (!(await exists(requestCli))) refuse("session-inbox request CLI is unavailable");
+  if (!(await exists(requestCli))) refuse("session-control request CLI is unavailable");
   if (!targetSession) refuse("COPILOT_AGENT_SESSION_ID is unavailable");
   if (targetSession.includes("\n")) refuse("target session ID is invalid");
   if (!(await exists(nodeBin))) refuse("node is unavailable");
@@ -594,7 +594,7 @@ export async function submit({ argv = process.argv.slice(2), env = process.env }
           log: artifacts.log,
           nodeBin,
           requestCli,
-          inboxRoot: sessionInboxRoot(),
+          inboxRoot: sessionControlRoot(),
           requestTimeoutSeconds: settings.requestTimeoutSeconds,
           pollSeconds: settings.pollSeconds,
           maxPolls: settings.maxPolls,

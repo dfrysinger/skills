@@ -35,8 +35,8 @@ codex plugin add dfrysinger-skills@dfrysinger-skills
 The plugin is registered as `dfrysinger-skills`. Installing from this GitHub repository is the supported Copilot CLI path; direct local plugin installs are deprecated.
 
 The Copilot plugin also packages the recipient-local
-[`session-inbox`](./extensions/session-inbox/) SDK extension and a portable
-[`mailbox-watcher`](./extensions/mailbox-watcher/) extension. Session-inbox is a runtime
+[`session-control`](./extensions/session-control/) SDK extension and a portable
+[`mailbox-watcher`](./extensions/mailbox-watcher/) extension. Session-control is a runtime
 dependency of `mailbox`, `unattended-run`, and `self-compact`. The extension
 performs the final immediate `session.send()` or native compaction from inside
 the recipient session; filesystem requests and receipts provide durable
@@ -45,19 +45,19 @@ process after the authorizing turn ends. Neither mechanism submits work to the
 CLI FIFO.
 Mailbox watcher polls a named recipient's durable mailbox and bridges synced
 envelopes into that local request queue. The mailbox root may live in OneDrive,
-but session-inbox heartbeats, locks, and receipts remain local. Sender-side
+but session-control heartbeats, locks, and receipts remain local. Sender-side
 delivery and the recipient watcher share a short local notification claim so
 they cannot both submit the same envelope during the pre-marker window.
 Notification cleanup retains markers for every pending envelope, including
 mail whose synced attachments are still stabilizing. A newly installed or
 updated extension becomes active when
 the recipient Copilot session starts or reloads its plugins. Run
-`node extensions/session-inbox/reload-all.mjs` to reload every fresh local
+`node extensions/session-control/reload-all.mjs` to reload every fresh local
 Copilot session, or append session names to reload only those sessions. The
 script verifies that each session publishes a new heartbeat with the installed
-plugin version. An older session-inbox extension receives a one-time immediate
+plugin version. An older request extension receives a one-time immediate
 prompt to invoke its own reload action; subsequent updates reload directly
-without model involvement. Sessions with a stale or missing inbox, or which do
+without model involvement. Sessions with a stale or missing heartbeat, or which do
 not publish the replacement heartbeat, are collected in a final
 `Restart required:` summary so the calling agent can report exactly which
 Copilot CLIs need `/restart`. Claude and Codex mailbox recipients retain their
@@ -75,8 +75,15 @@ envelopes, attachments, and acknowledgement receipts. Run
 --remote-root <path>` once to persist the machine route across direct Copilot
 restarts that do not inherit shell exports.
 
-Session-inbox diagnostics are written as newline-delimited JSON under
-`~/.copilot/session-inbox/logs/`. Extension logs are named by session and
+Session-control uses `COPILOT_SESSION_CONTROL_DIR` when set. The deprecated
+`COPILOT_SESSION_INBOX_DIR` alias remains supported. Without an explicit
+setting, an existing deprecated `~/.copilot/session-inbox` root remains
+authoritative; otherwise session-control uses `~/.copilot/session-control`.
+Selection never copies or merges roots. Deprecated selections emit a
+diagnostic.
+
+Session-control diagnostics are written as newline-delimited JSON under the
+selected root's `logs/` directory. Extension logs are named by session and
 generation; request-side events share a daily log. They record lifecycle, targeting, native request submission, SDK delivery
 classification, recovery, and errors without deliberately recording prompt,
 compaction-instruction, or continuation content. Files are mode `0600` and

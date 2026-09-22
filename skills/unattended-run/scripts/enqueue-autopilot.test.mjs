@@ -131,13 +131,13 @@ async function createCase({
   const argsPath = join(root, "request-args.json");
   const promptPath = join(root, "request-prompt.base64");
   const auditDirectory = join(root, "audit");
-  const receiptDirectory = join(root, "session-inbox");
+  const receiptDirectory = join(root, "session-control");
   await mkdir(dirname(objectiveFile), { recursive: true });
   await mkdir(dirname(requestCli), { recursive: true });
   await writeFile(objectiveFile, objective);
   await writeFile(requestCli, mockRequestSource);
   const env = {
-    SESSION_INBOX_REQUEST_CLI: requestCli,
+    SESSION_CONTROL_REQUEST_CLI: requestCli,
     COPILOT_AUTOPILOT_ENQUEUE_DIR: auditDirectory,
     MOCK_ARGS: argsPath,
     MOCK_PROMPT: promptPath,
@@ -271,7 +271,7 @@ test("preserves trailing line endings in the request snapshot", async () => {
   }
 });
 
-test("rejects invalid inputs before invoking session-inbox", async (t) => {
+test("rejects invalid inputs before invoking session-control", async (t) => {
   const invalidObjectives = [
     "",
     " \n\t",
@@ -330,7 +330,7 @@ test("rejects missing objective and request helper paths", async () => {
 
     const missingObjective = await runProcess(
       ["--target-session", "session-1", join(root, "missing-objective.txt")],
-      { ...commonEnv, SESSION_INBOX_REQUEST_CLI: mockRequest },
+      { ...commonEnv, SESSION_CONTROL_REQUEST_CLI: mockRequest },
     );
     assert.equal(missingObjective.code, 64);
     await assertMissing(argsPath);
@@ -339,7 +339,7 @@ test("rejects missing objective and request helper paths", async () => {
       ["--target-session", "session-1", objective],
       {
         ...commonEnv,
-        SESSION_INBOX_REQUEST_CLI: join(root, "missing-request.mjs"),
+        SESSION_CONTROL_REQUEST_CLI: join(root, "missing-request.mjs"),
       },
     );
     assert.equal(missingHelper.code, 2);
@@ -401,7 +401,7 @@ test("confirms a tmux request from the resolved session receipt", async () => {
     const audit = await readOnlyAudit(harness.auditDirectory);
     assert.match(
       audit.authoritativeReceipt.path,
-      /session-inbox.*completed.*request-1\.json/u,
+      /session-control.*completed.*request-1\.json/u,
     );
     assert.equal(audit.authoritativeReceipt.dedupeKeyMatches, true);
     assert.equal(audit.target.requestedType, "tmux");
@@ -422,7 +422,7 @@ test("handles Windows-style path components and spaces", async () => {
   );
   const requestPath = join(
     root,
-    "windows\\plugin",
+    process.platform === "win32" ? "windows\\plugin" : "windows-plugin",
     "session inbox",
     "request.mjs",
   );
@@ -432,7 +432,15 @@ test("handles Windows-style path components and spaces", async () => {
     target: "session\\with spaces",
   });
   try {
-    assert.equal(harness.run.code, 0, harness.run.stderr);
+    const failureAudit =
+      harness.run.code === 0
+        ? null
+        : await readOnlyAudit(harness.auditDirectory);
+    assert.equal(
+      harness.run.code,
+      0,
+      `${harness.run.stderr}\n${JSON.stringify(failureAudit, null, 2)}`,
+    );
     const args = await requestArgs(harness.argsPath);
     assert.equal(args[2], "session\\with spaces");
     assert.equal(args[4], join(dirname(args[4]), "objective.txt"));

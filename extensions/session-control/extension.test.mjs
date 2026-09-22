@@ -25,6 +25,10 @@ const sourceIdentity = join(
   dirname(fileURLToPath(import.meta.url)),
   "session-identity.mjs",
 );
+const sourceStorageRoot = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "storage-root.mjs",
+);
 
 async function waitFor(read, label, attempts = 300) {
   let lastError;
@@ -66,18 +70,20 @@ function fingerprint(request) {
 }
 
 async function createHarness(initialState = {}) {
-  const root = await mkdtemp(join(tmpdir(), "session-inbox-extension-"));
+  const root = await mkdtemp(join(tmpdir(), "session-control-extension-"));
   const inbox = join(root, "inbox");
   const statePath = join(root, "state.json");
   const callsPath = join(root, "calls.jsonl");
   const extensionPath = join(root, "extension.mjs");
   const diagnosticsPath = join(root, "diagnostics.mjs");
   const identityPath = join(root, "session-identity.mjs");
+  const storageRootPath = join(root, "storage-root.mjs");
   const sdkDir = join(root, "node_modules", "@github", "copilot-sdk");
   await mkdir(sdkDir, { recursive: true });
   await cp(sourceExtension, extensionPath);
   await cp(sourceDiagnostics, diagnosticsPath);
   await cp(sourceIdentity, identityPath);
+  await cp(sourceStorageRoot, storageRootPath);
   await writeState(statePath, {
     processing: false,
     active: false,
@@ -449,12 +455,12 @@ export async function joinSession() {
   const child = spawn(process.execPath, [extensionPath], {
     env: {
       ...process.env,
-      COPILOT_SESSION_INBOX_DIR: inbox,
+      COPILOT_SESSION_CONTROL_DIR: inbox,
       MOCK_STATE: statePath,
       MOCK_CALLS: callsPath,
       MOCK_DEDUPE_DIR: join(inbox, "dedupe"),
       COPILOT_SESSION_STATE_ROOT: join(root, "session-state"),
-      COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS: "500",
+      COPILOT_SESSION_CONTROL_CONFIRM_TIMEOUT_MS: "500",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

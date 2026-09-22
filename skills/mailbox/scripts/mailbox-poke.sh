@@ -2,7 +2,7 @@
 # mailbox-poke.sh <session-name> [--wait|--terminal-only]
 #
 # If <session-name>'s mailbox has pending mail, send a natural-language wakeup
-# prompt through the recipient backend. Copilot uses the session-inbox SDK
+# prompt through the recipient backend. Copilot uses the session-control SDK
 # extension first; a definitively rejected immediate send may retry through
 # guarded terminal submission with --terminal-only.
 #
@@ -26,7 +26,8 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/_common.sh"
 . "$SCRIPT_DIR/../../_lib/agent-pane.sh"
-REQUEST_CLI="$SCRIPT_DIR/../../../extensions/session-inbox/request.mjs"
+REQUEST_CLI="$SCRIPT_DIR/../../../extensions/session-control/request.mjs"
+STORAGE_ROOT_CLI="$SCRIPT_DIR/../../../extensions/session-control/storage-root.mjs"
 
 [[ $# -lt 1 ]] && { echo "usage: mailbox-poke.sh <name> [--wait]" >&2; exit 2; }
 NAME="$1"; shift
@@ -107,7 +108,7 @@ PROMPT="check mailbox; skip if empty $MARKER"
 
 if [[ "$BACKEND" == "copilot" && "$TERMINAL_ONLY" -eq 0 ]]; then
   if [[ ! -r "$REQUEST_CLI" ]]; then
-    echo "UNVERIFIED: session-inbox request helper is unavailable; the mail is queued." >&2
+    echo "UNVERIFIED: session-control request helper is unavailable; the mail is queued." >&2
     exit 3
   fi
   PROMPT_FILE="$(mktemp "${TMPDIR:-/tmp}/mailbox-poke.XXXXXX")" || exit 3
@@ -151,8 +152,9 @@ if [[ "$BACKEND" == "copilot" && "$TERMINAL_ONLY" -eq 0 ]]; then
 fi
 
 verify_copilot_fallback_identity() {
-  local inbox_root="${COPILOT_SESSION_INBOX_DIR:-$HOME/.copilot/session-inbox}"
+  local control_root
   local session_state_root="${COPILOT_SESSION_STATE_ROOT:-$HOME/.copilot/session-state}"
+  control_root="$(node "$STORAGE_ROOT_CLI")" || return 1
   [[ -n "$EXPECTED_SESSION_ID" && -n "$EXPECTED_GENERATION" ]] || return 1
   [[ "$EXPECTED_HOST_PID" =~ ^[0-9]+$ ]] || return 1
   ap_pane_contains_pid "$PANE" "$EXPECTED_HOST_PID" || return 1
@@ -191,7 +193,7 @@ verify_copilot_fallback_identity() {
         process.exit(1);
       }
     ' \
-    "$inbox_root" \
+    "$control_root" \
     "$session_state_root" \
     "$TARGET_NAME" \
     "$EXPECTED_SESSION_ID" \

@@ -138,7 +138,7 @@ if (argv[0] === "send") {
       agentId: null,
       id: messageId,
       type: "user.message",
-      data: { content: prompt, delivery: "steering" },
+      data: { messageId, content: prompt, delivery: "steering" },
     }) + "\\n",
   );
   console.log("request: fake-send");
@@ -188,7 +188,7 @@ if (mode === "hang") {
   console.error("request: fake");
   process.exit(2);
 } else if (mode === "preflight") {
-  console.error("session-inbox-request: no fresh session-inbox instance");
+  console.error("session-control-request: no fresh session-control instance");
   process.exit(64);
 } else if (mode === "ambiguous-side-effect") {
   console.log("request: fake");
@@ -345,7 +345,7 @@ async function createCase(t, name) {
   await writeFile(draft, "unsubmitted user draft\n");
   const requestCli = join(root, "fake-request.mjs");
   await writeFile(requestCli, fakeRequestSource);
-  const inboxRoot = join(root, "session-inbox");
+  const inboxRoot = join(root, "session-control");
   await writeInstance(inboxRoot, { sessionId: "target-session", generation: targetGeneration });
   const context = {
     name,
@@ -389,7 +389,7 @@ function caseEnvironment(context, overrides = {}) {
     SELF_COMPACT_WORKSPACE: context.workspace,
     SELF_COMPACT_SESSION_STATE_DIR: context.root,
     SELF_COMPACT_REQUEST_CLI: context.requestCli,
-    COPILOT_SESSION_INBOX_DIR: context.inboxRoot,
+    COPILOT_SESSION_CONTROL_DIR: context.inboxRoot,
     FAKE_RECEIPT_GENERATION: targetGeneration,
     SELF_COMPACT_NODE_BIN: process.execPath,
     SELF_COMPACT_RUN_TOKEN: runToken,
@@ -473,7 +473,14 @@ function completeAuthorizingTurn(
     { type: "assistant.turn_end" },
   ];
   if (continuationStart) {
-    events.push({ type: "assistant.turn_start" });
+    events.push(
+      { type: "assistant.turn_start" },
+      {
+        type: "assistant.message",
+        data: { content: "", toolRequests: [] },
+      },
+      { type: "assistant.turn_end" },
+    );
   }
   if (trailingActivity) {
     events.push({ type: "user.message", data: { content: "intervening activity" } });
@@ -1328,7 +1335,7 @@ test("a definitively failed published request retains the lock", async (t) => {
   authorizingEvents(context);
   const armed = await arm(context, { env: { FAKE_REQUEST_MODE: "failed" } });
   completeAuthorizingTurn(context, armed.stdout);
-  await waitForLog(armed.log, /session-inbox reported a failed compact request/);
+  await waitForLog(armed.log, /session-control reported a failed compact request/);
   assert.equal(await lockExists(context), true);
   assert.equal(await lockState(context), "request-published");
   assert.equal(await requestCount(context), 1);
@@ -1678,7 +1685,7 @@ test("request classification separates publication, failure, and ambiguity", () 
     {
       outcome: "rejected",
       published: false,
-      reason: "session-inbox rejected the compact request before publication",
+      reason: "session-control rejected the compact request before publication",
       release: true,
     },
   );
@@ -2043,7 +2050,7 @@ test("no fresh target generation releases before the publishing marker", async (
   authorizingEvents(context);
   const armed = await arm(context);
   completeAuthorizingTurn(context, armed.stdout);
-  const log = await waitForLog(armed.log, /no fresh session-inbox instance for target-session/);
+  const log = await waitForLog(armed.log, /no fresh session-control instance for target-session/);
   assert.doesNotMatch(log, /self-compact state: publishing/);
   assert.equal(await requestCount(context), 0);
   await waitFor(async () => !(await lockExists(context)), { label: "lock release" });
@@ -2060,7 +2067,7 @@ test("a stale heartbeat is not a live target generation", async (t) => {
   authorizingEvents(context);
   const armed = await arm(context);
   completeAuthorizingTurn(context, armed.stdout);
-  await waitForLog(armed.log, /no fresh session-inbox instance for target-session/);
+  await waitForLog(armed.log, /no fresh session-control instance for target-session/);
   assert.equal(await requestCount(context), 0);
   await waitFor(async () => !(await lockExists(context)), { label: "lock release" });
 });
@@ -2076,7 +2083,7 @@ test("an ambiguous fresh target releases before the publishing marker", async (t
   completeAuthorizingTurn(context, armed.stdout);
   const log = await waitForLog(
     armed.log,
-    /multiple fresh session-inbox instances for target-session/,
+    /multiple fresh session-control instances for target-session/,
   );
   assert.doesNotMatch(log, /self-compact state: publishing/);
   assert.equal(await requestCount(context), 0);

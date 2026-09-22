@@ -4,8 +4,8 @@ set -euo pipefail
 
 SKILL="$(cd "$(dirname "$0")/.." && pwd)/SKILL.md"
 
-grep -Fq 'session-inbox extension' "$SKILL"
-grep -Fq 'requests native compaction through the session-inbox extension' "$SKILL"
+grep -Fq 'session-control extension' "$SKILL"
+grep -Fq 'requests native compaction through the session-control extension' "$SKILL"
 grep -Fq 'replaces the pane process' "$SKILL"
 grep -Fq 'terminal input injection nor the CLI FIFO' "$SKILL"
 grep -Fq '~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/mailbox/scripts/mailbox-send.sh' \

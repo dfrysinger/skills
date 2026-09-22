@@ -1,13 +1,17 @@
 #!/usr/bin/env node
-// Submit and verify one session-inbox compaction after the authorizing turn ends.
+// Submit and verify one session-control compaction after the authorizing turn ends.
 // This module owns the durable self-compact state machine and the shared
 // portable primitives used by the foreground submitter.
 
 import { spawn } from "node:child_process";
 import { open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import {
+  emitSessionControlDeprecation,
+  resolveSessionControlRoot,
+} from "../../../extensions/session-control/storage-root.mjs";
 
 export const CONTINUATION_TEXT = "Compaction done; resume, do not compact.";
 export const RECEIPT_PREFIX = "self-compact handoff receipt: ";
@@ -295,11 +299,10 @@ export function workspaceCwdOf(workspaceText) {
   return match ? match[1] : null;
 }
 
-export function sessionInboxRoot() {
-  return (
-    process.env.COPILOT_SESSION_INBOX_DIR ??
-    join(homedir(), ".copilot", "session-inbox")
-  );
+export function sessionControlRoot() {
+  const selection = resolveSessionControlRoot();
+  emitSessionControlDeprecation(selection);
+  return selection.root;
 }
 
 export function receiptPathsFor(root, id) {
@@ -311,7 +314,7 @@ export function receiptPathsFor(root, id) {
   };
 }
 
-// Mirrors the freshness contract in extensions/session-inbox/request.mjs: an
+// Mirrors the freshness contract in extensions/session-control/request.mjs: an
 // instance heartbeat only proves a live generation for fifteen seconds.
 export const INSTANCE_FRESHNESS_MS = 15_000;
 
@@ -1094,7 +1097,7 @@ export function classifyRequestOutcome({ status, output, targetSession, targetGe
     return {
       outcome: "rejected",
       published: false,
-      reason: "session-inbox rejected the compact request before publication",
+      reason: "session-control rejected the compact request before publication",
       release: true,
     };
   }
@@ -1131,14 +1134,14 @@ export function classifyRequestOutcome({ status, output, targetSession, targetGe
         outcome: "failed",
         published,
         reason:
-          "session-inbox reported failure after the compact side effect completed",
+          "session-control reported failure after the compact side effect completed",
         release: false,
       };
     }
     return {
       outcome: "failed",
       published,
-      reason: "session-inbox reported a failed compact request",
+      reason: "session-control reported a failed compact request",
       release: false,
     };
   }
@@ -1146,7 +1149,7 @@ export function classifyRequestOutcome({ status, output, targetSession, targetGe
     return {
       outcome: "ambiguous",
       published,
-      reason: `session-inbox compact request outcome is ambiguous (status ${status})`,
+      reason: `session-control compact request outcome is ambiguous (status ${status})`,
       release: false,
     };
   }
@@ -1186,8 +1189,8 @@ export function classifyRequestOutcome({ status, output, targetSession, targetGe
       outcome: "unmatched",
       published,
       reason: foreignGeneration
-        ? `session-inbox handled the compact under a different target generation than ${targetGeneration}`
-        : "session-inbox returned no matching completed receipt",
+        ? `session-control handled the compact under a different target generation than ${targetGeneration}`
+        : "session-control returned no matching completed receipt",
       release: false,
     };
   }
@@ -1465,7 +1468,7 @@ export async function verify(runFilePath) {
     if (!(await exists(run.continuation))) fail("continuation prompt is unavailable");
     if (!(await exists(run.nodeBin))) fail("node is unavailable");
     if (!(await exists(run.requestCli))) {
-      fail("session-inbox request CLI is unavailable");
+      fail("session-control request CLI is unavailable");
     }
 
     await writePrivate(lock.watcherPid, `${process.pid}\n`);
@@ -1555,13 +1558,13 @@ export async function verify(runFilePath) {
           run.targetSession,
         );
       } catch {
-        fail("could not read session-inbox readiness for interruption control");
+        fail("could not read session-control readiness for interruption control");
       }
       if (controlGenerations.length !== 1) {
         fail(
           controlGenerations.length === 0
-            ? `no fresh session-inbox instance for ${run.targetSession}`
-            : `multiple fresh session-inbox instances for ${run.targetSession}`,
+            ? `no fresh session-control instance for ${run.targetSession}`
+            : `multiple fresh session-control instances for ${run.targetSession}`,
         );
       }
       const controlPrompt = controlPromptFor(run.operationId);
@@ -1790,15 +1793,15 @@ export async function verify(runFilePath) {
         run.targetSession,
       );
     } catch {
-      fail("could not read session-inbox instance heartbeats", { release: true });
+      fail("could not read session-control instance heartbeats", { release: true });
     }
     if (generations.length === 0) {
-      fail(`no fresh session-inbox instance for ${run.targetSession}`, {
+      fail(`no fresh session-control instance for ${run.targetSession}`, {
         release: true,
       });
     }
     if (generations.length > 1) {
-      fail(`multiple fresh session-inbox instances for ${run.targetSession}`, {
+      fail(`multiple fresh session-control instances for ${run.targetSession}`, {
         release: true,
       });
     }
@@ -1834,7 +1837,7 @@ export async function verify(runFilePath) {
       fail("could not perform the final root-activity check", { release: false });
     }
 
-    logLine(`submitting one session-inbox compact request for session ${run.targetSession}`);
+    logLine(`submitting one session-control compact request for session ${run.targetSession}`);
     const { status, output } = await runCompactRequest(run);
     process.stdout.write(output.endsWith("\n") || output === "" ? output : `${output}\n`);
 
@@ -1972,7 +1975,7 @@ export async function verify(runFilePath) {
       }
       if (continuationState.state === "success") break;
       if (continuationState.state === "duplicate") {
-        fail("session-inbox delivered the continuation more than once", {
+        fail("session-control delivered the continuation more than once", {
           release: false,
         });
       }

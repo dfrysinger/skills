@@ -10,6 +10,10 @@ const sourceExtension = join(
   dirname(fileURLToPath(import.meta.url)),
   "extension.mjs",
 );
+const sourceStorageRoot = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../session-control/storage-root.mjs",
+);
 
 const goodBrief =
   "Keep: active baton\n\nDrop: resolved detail\n\nAfter compaction: continue; do not compact again.";
@@ -17,10 +21,13 @@ const goodBrief =
 async function stageExtension() {
   const root = await mkdtemp(join(tmpdir(), "self compact extension "));
   const extensionDirectory = join(root, "extensions", "self-compact");
+  const sessionControlDirectory = join(root, "extensions", "session-control");
   const sdkDirectory = join(root, "node_modules", "@github", "copilot-sdk");
   await mkdir(extensionDirectory, { recursive: true });
+  await mkdir(sessionControlDirectory, { recursive: true });
   await mkdir(sdkDirectory, { recursive: true });
   await cp(sourceExtension, join(extensionDirectory, "extension.mjs"));
+  await cp(sourceStorageRoot, join(sessionControlDirectory, "storage-root.mjs"));
   await writeFile(
     join(sdkDirectory, "package.json"),
     `${JSON.stringify({
@@ -121,7 +128,7 @@ async function runExtension(
   const submitter = join(root, "mock-submitter.mjs");
   const capture = join(root, "capture.json");
   const input = join(root, "input.txt");
-  const inboxRoot = join(root, "session-inbox");
+  const inboxRoot = join(root, "session-control");
   const instances = join(inboxRoot, "instances");
   await mkdir(instances, { recursive: true });
   if (readiness !== "zero") {
@@ -205,7 +212,7 @@ process.stdout.write("self-compact handoff receipt: proof-token\\nwatcher log: r
       ...(action ? { MOCK_ACTION: action } : {}),
       ...(operationId ? { MOCK_OPERATION_ID: operationId } : {}),
       SELF_COMPACT_SESSION_STATE_DIR: root,
-      COPILOT_SESSION_INBOX_DIR: inboxRoot,
+      COPILOT_SESSION_CONTROL_DIR: inboxRoot,
       ...(withSubmitter ? { SELF_COMPACT_SUBMITTER: submitter } : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],
