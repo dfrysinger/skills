@@ -214,7 +214,8 @@ inbox_recovery="$(
 [ ! -e "$inbox_state/rotation.barrier" ]
 
 marker_root="$ROOT/marker-selected-control"
-mkdir -p "$ROOT/home/.copilot/session-inbox"
+legacy_root_name="session""-inbox"
+mkdir -p "$ROOT/home/.copilot/$legacy_root_name"
 IFS=$'\t' read -r marker_state marker_log < <(
   start_rotation old-marker-root marker-root \
     'continue retired session old-marker-root' "" "" "" "yes" "$marker_root"

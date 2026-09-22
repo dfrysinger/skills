@@ -472,7 +472,7 @@ export async function joinSession() {
       COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS:
         initialState.useDeprecatedConfiguration ? "500" : undefined,
       COPILOT_SESSION_INBOX_AUTOPILOT_CONFIRM_TIMEOUT_MS:
-        initialState.useDeprecatedConfiguration ? "500" : undefined,
+        initialState.useDeprecatedConfiguration ? "700" : undefined,
       COPILOT_SESSION_INBOX_ROTATION_BARRIER:
         initialState.useDeprecatedConfiguration
           ? legacyRotationBarrier
@@ -1280,7 +1280,7 @@ test("deprecated extension configuration remains operational", async () => {
     );
     const started = diagnostics.find((entry) => entry.event === "extension.started");
     assert.equal(started.confirmationTimeoutMs, 500);
-    assert.equal(started.autopilotConfirmationTimeoutMs, 500);
+    assert.equal(started.autopilotConfirmationTimeoutMs, 700);
 
     await writeFile(harness.legacyRotationBarrier, "rotating\n");
     await harness.request("legacy-rotation-barrier-send", {

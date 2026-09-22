@@ -77,6 +77,10 @@ const session = {
 export async function joinSession({tools}) {
   const compact = tools.find(({name}) => name === "self_compact");
   setImmediate(async () => {
+    if (process.env.MOCK_MUTATE_CONTROL_ROOT) {
+      process.env.COPILOT_SESSION_CONTROL_DIR =
+        process.env.MOCK_MUTATE_CONTROL_ROOT;
+    }
     const invocation = {
       sessionId: "session-123",
       toolCallId: "call-456",
@@ -121,6 +125,7 @@ async function runExtension(
     action,
     operationId,
     terminalStatus,
+    mutateControlRootAfterJoin = false,
     preparedObjective,
   } = {},
 ) {
@@ -212,6 +217,9 @@ process.stdout.write("self-compact handoff receipt: proof-token\\nwatcher log: r
       ...(submitterFailure ? { MOCK_SUBMITTER_FAILURE: "true" } : {}),
       ...(action ? { MOCK_ACTION: action } : {}),
       ...(operationId ? { MOCK_OPERATION_ID: operationId } : {}),
+      ...(mutateControlRootAfterJoin
+        ? { MOCK_MUTATE_CONTROL_ROOT: "/wrong/session-control-root" }
+        : {}),
       SELF_COMPACT_SESSION_STATE_DIR: root,
       COPILOT_SESSION_CONTROL_DIR: inboxRoot,
       ...(withSubmitter ? { SELF_COMPACT_SUBMITTER: submitter } : {}),
@@ -238,7 +246,9 @@ process.stdout.write("self-compact handoff receipt: proof-token\\nwatcher log: r
 }
 
 test("arms the portable submitter through the current Node runtime", async () => {
-  const outcome = await runExtension(goodBrief);
+  const outcome = await runExtension(goodBrief, {
+    mutateControlRootAfterJoin: true,
+  });
   assert.equal(outcome.code, 0, outcome.stderr);
   const registered = JSON.parse(outcome.stdout);
   assert.equal(
@@ -259,6 +269,7 @@ test("arms the portable submitter through the current Node runtime", async () =>
   assert.equal(outcome.invocation.runtime, process.execPath);
   assert.equal(outcome.invocation.script, outcome.submitter);
   assert.match(outcome.invocation.controlRoot, /session-control$/);
+  assert.notEqual(outcome.invocation.controlRoot, "/wrong/session-control-root");
 });
 
 test("rejects malformed briefs before launching the submitter", async () => {
