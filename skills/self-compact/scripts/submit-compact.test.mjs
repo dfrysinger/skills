@@ -455,7 +455,15 @@ function authorizingEvents(context, { mode = "canonical", callId = context.toolC
   appendEvents(context, events);
 }
 
-function completeAuthorizingTurn(context, receiptContent, { callId = context.toolCallId, trailingActivity = false } = {}) {
+function completeAuthorizingTurn(
+  context,
+  receiptContent,
+  {
+    callId = context.toolCallId,
+    continuationStart = false,
+    trailingActivity = false,
+  } = {},
+) {
   const events = [
     {
       type: "tool.execution_complete",
@@ -463,6 +471,9 @@ function completeAuthorizingTurn(context, receiptContent, { callId = context.too
     },
     { type: "assistant.turn_end" },
   ];
+  if (continuationStart) {
+    events.push({ type: "assistant.turn_start" });
+  }
   if (trailingActivity) {
     events.push({ type: "user.message", data: { content: "intervening activity" } });
   }
@@ -813,7 +824,7 @@ test("one user interruption resumes the same verifier and publishes once", async
   const context = await createCase(t, "interrupt-resume");
   authorizingEvents(context);
   const armed = await arm(context);
-  completeAuthorizingTurn(context, armed.stdout);
+  completeAuthorizingTurn(context, armed.stdout, { continuationStart: true });
   appendEvents(context, [
     {
       id: "native-user-interruption",

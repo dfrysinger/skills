@@ -639,7 +639,6 @@ export async function probeInterruption(eventsPath, offset, control = null) {
     }
 
     if (
-      event.type === "assistant.turn_start" ||
       event.type === "tool.execution_start" ||
       event.type === "tool.execution_complete"
     ) {
