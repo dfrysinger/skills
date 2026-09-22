@@ -56,6 +56,27 @@ For transcript-derived or historical cases, map each hidden criterion to an
 exact frozen source record and stable event identifier. For synthetic cases,
 record the independently defined oracle that establishes the expected behavior.
 
+Build a historical candidate task in three labeled layers:
+
+1. **Original request:** exact user turns or exact marked excerpts, preserving
+   wording, ambiguity, and mistakes. Do not silently rewrite the request into a
+   cleaner or more implementation-specific issue.
+2. **Restored context:** only context proven to have been available to the
+   original agent by the cutoff but missing from the reconstructed environment.
+   Map every addition to its source event or artifact.
+3. **Evaluation operation:** clearly separate offline limitations, workspace
+   paths, allowed commands, and evidence requirements that exist only to run
+   the reproduction.
+
+Before freezing, audit the rendered candidate task against the raw capture.
+Classify every non-user sentence as restored context or evaluation operation;
+reject wording that narrows the requested outcome, names a hidden mechanism or
+state, or steers toward the expected answer without source evidence. Stage the
+packet, then read every named candidate-visible file through the same boundary
+the candidate will use. A referenced but unavailable file fails the audit.
+Label a focused fixture or command as non-exhaustive unless it reproduces the
+complete claimed behavior.
+
 For a blind phase, extract product outcomes, supported callers, observable
 acceptance, direct decisions, policy, platform facts, and observed failures.
 Keep proposed mechanisms in a later phase. Do not add hints, terminology, or
@@ -71,8 +92,10 @@ to locate the authoritative session, export exact turns and events, trace the
 repository artifacts they produced or discussed, and preserve the capture
 receipts before selecting candidate and judge packets.
 
-Complete when a candidate cannot read the expected answer and a judge can trace
-every required behavior to frozen evidence.
+Complete when the candidate task passes the text-packet audit, a candidate
+cannot read the expected answer, every named candidate-visible file is
+readable through the staged boundary, and a judge can trace every required
+behavior to frozen evidence.
 
 ## 4. Freeze and verify
 

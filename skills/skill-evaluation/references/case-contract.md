@@ -49,6 +49,14 @@ or replacing another case therefore does not invalidate it.
   ambiguity, incomplete requests, and competing repository or source guidance
   that the real agent would receive. A case is not repaired merely because
   those inputs make it harder.
+- Historical candidate tasks present exact user wording before any added
+  context. Exact excerpts declare their boundaries and omissions. Restored
+  context and evaluation-only operating instructions are separately labeled,
+  and every added sentence is accounted for in
+  `capture/candidate-text-audit.md`.
+- Every candidate-visible path named by the task exists and is readable through
+  the staged candidate boundary. A source-tree file that is absent, moved, or
+  denied after staging does not satisfy this contract.
 - A packet revision requires provenance evidence that the prior revision
   omitted, misstated, invented, or gave false authority to context relative to
   the represented real situation. The revision records that mismatch; it does
