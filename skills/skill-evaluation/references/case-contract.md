@@ -45,6 +45,14 @@ or replacing another case therefore does not invalidate it.
   the independently defined oracle from which they derive.
 - Generated summaries identify their source artifacts and remain evidence, not
   authority.
+- Candidate evidence preserves the real operating context, including natural
+  ambiguity, incomplete requests, and competing repository or source guidance
+  that the real agent would receive. A case is not repaired merely because
+  those inputs make it harder.
+- A packet revision requires provenance evidence that the prior revision
+  omitted, misstated, invented, or gave false authority to context relative to
+  the represented real situation. The revision records that mismatch; it does
+  not rewrite a faithful real-world request toward the expected answer.
 - A transcript-derived case keeps its raw capture and query receipts under
   `capture/`, then copies only deliberately selected exact evidence into a
   candidate phase or `judge-reference/`. The runner never stages `capture/`

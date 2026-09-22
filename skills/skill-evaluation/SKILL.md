@@ -189,6 +189,16 @@ candidate context. When another visible source plausibly selects the same
 behavior, classify the interaction or packet bias and isolate it before
 strengthening one skill against another instruction.
 
+Do not call difficult or ambiguous task wording a packet defect merely because
+it contributes to failure. Compare the frozen packet with the real operating
+context it represents. Preserve natural user ambiguity, repository guidance,
+source comments, tests, fixtures, and missing information when the real agent
+would receive the same context. Repair the packet only when it omits,
+misstates, invents, or gives false authority to context relative to that real
+situation. If a faithful real-world packet reliably induces the wrong result,
+improve the skill or another genuine operating control; changing the case
+would only make the evaluation easier.
+
 Classify a failure before editing:
 
 - **Skill defect:** general instructions omit or misstate a reusable reasoning
@@ -197,7 +207,8 @@ Classify a failure before editing:
   fixture reinforces, narrows, or contradicts the target skill.
 - **Execution variance:** the skill already requires the missed behavior.
 - **Packet defect:** decisive evidence is missing, leaked, or assigned to the
-  wrong phase.
+  wrong phase, or the packet materially misrepresents the real operating
+  context.
 - **Harness defect:** the candidate or judge did not receive the frozen inputs
   named by the receipt.
 
