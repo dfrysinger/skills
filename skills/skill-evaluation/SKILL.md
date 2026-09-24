@@ -142,6 +142,13 @@ every attempt remains preserved and the report identifies cases that passed
 after retry. The suite command writes one aggregate report while preserving
 each case's independent run, receipts, and judgments.
 
+When serial revisions keep reaching the same valid failure frontier, or several
+plausible mechanisms could address it, follow
+[`references/parallel-treatment-search.md`](references/parallel-treatment-search.md).
+Build a frozen population of source-backed, single-mechanism treatments with
+controls and pre-registered repetitions instead of continuing one rewrite at a
+time.
+
 Use the local suite runner for ordinary corpora. When the corpus contains full
 repositories, native builds, product exercises, multiple treatments, or enough
 observations that one host would become the bottleneck, follow
@@ -239,6 +246,14 @@ Repair skill defects with general language. Repair packet and harness defects
 outside the target skill. Rerun the unchanged case after any repair and retain
 the prior run.
 
+When the evaluator is valid but the corrective mechanism is uncertain, search
+multiple independent skills and proven practices by generalized behavior class,
+not by case vocabulary. Use those sources to generate falsifiable treatment
+hypotheses, preserve source and license provenance, and extract only the
+smallest reusable tactic. The parallel-treatment procedure owns controls,
+dose-matching, planned replication, mechanism scoring, finalist selection, and
+held-out transfer.
+
 When the target skill has accumulated substantial process text, compare a
 neutral baseline, a lean replacement, and the unchanged full skill instead of
 assuming incremental editing is safest. Follow
@@ -270,3 +285,6 @@ The evaluation is complete only when:
 - a large distributed campaign, when used, has one checksum-bound effective
   result per expected attempt ID, with no missing, extra, or duplicate
   observations and no model outcome replaced by an infrastructure retry.
+- a parallel treatment search, when used, has pre-declared controls,
+  hypotheses, repetitions, source provenance, mechanism observations,
+  selection rules, and held-out transfer for any promoted treatment.
