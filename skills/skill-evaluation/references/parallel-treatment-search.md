@@ -1,10 +1,30 @@
 # Parallel treatment search
 
-Use a parallel treatment search when a valid evaluator is stable but serial
-skill edits keep reaching the same failure frontier, the likely mechanism is
-uncertain, or one-at-a-time experiments would make learning unnecessarily slow.
-The goal is not to generate many rewrites. It is to compare a small population
-of independently motivated mechanisms under one frozen evaluation contract.
+Use a parallel treatment search whenever a valid evaluator exists and more than
+one credible mechanism could improve stochastic skill behavior. Do not wait for
+serial revisions to plateau. The goal is not to generate many rewrites. It is
+to compare a small population of independently motivated mechanisms under one
+frozen evaluation contract.
+
+Serial work is appropriate only when:
+
+- the evaluator, packet, or harness is invalid and has one evidenced repair;
+- read-only diagnosis is still establishing the behavioral claim or failure
+  classes;
+- one correction is independently required and no competing treatment remains;
+  or
+- capacity forces sequential scheduling of a matrix that was still designed
+  and frozen before its first treatment ran.
+
+Physical execution order does not change the experimental design. A
+pre-registered matrix run one job at a time is still a parallel treatment
+search; choosing each next treatment after reading the previous outcome is
+serial hill climbing.
+
+Diagnostic serial work may observe, classify, and build or repair the evaluator.
+It must not edit skill treatments. Diagnosis ends when the behavioral claim and
+failure classes are named; any candidate skill change suggested during
+diagnosis enters the frozen matrix as a hypothesis arm.
 
 ## 1. Freeze the measurement contract
 

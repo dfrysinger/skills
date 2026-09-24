@@ -74,8 +74,12 @@ before editing:
 - **reference coupling**: the grader requires an implementation shape that the
   claim did not require.
 
-Add one compact general rule only for a repeated missing-rule failure. Rerun
-the failed subset, then rerun the complete corpus on the exact candidate.
+When the failure proves exactly one compact general rule is missing and no
+competing remedy remains, add that rule and rerun the failed subset, then the
+complete corpus. When multiple credible rules, rewordings, or structures could
+close the failure, follow
+[`parallel-treatment-search.md`](parallel-treatment-search.md): keep the lean
+arm as a control and compare the alternatives in a frozen matrix.
 
 Do not:
 
@@ -95,9 +99,11 @@ already explicit in the lean arm. Preserve every attempt. A retry-assisted pass
 is evidence that the rule can work, not that behavior is deterministic.
 
 If the same failure repeats under the bounded retry policy, treat it as a
-missing or ineffective rule and revise the lean arm. If different cases miss
-different already-explicit rules without a stable pattern, do not respond by
-restating the whole skill.
+missing or ineffective rule and generate source-backed correction hypotheses.
+Apply one serially only when the evidence requires that correction and no
+competitor remains; otherwise compare the hypotheses through parallel treatment
+search. If different cases miss different already-explicit rules without a
+stable pattern, do not respond by restating the whole skill.
 
 Complete when each failure is labeled rule gap or variance from retained
 evidence rather than intuition.

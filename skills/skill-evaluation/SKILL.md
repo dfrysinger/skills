@@ -142,12 +142,11 @@ every attempt remains preserved and the report identifies cases that passed
 after retry. The suite command writes one aggregate report while preserving
 each case's independent run, receipts, and judgments.
 
-When serial revisions keep reaching the same valid failure frontier, or several
-plausible mechanisms could address it, follow
+When a valid evaluator exists and more than one credible mechanism could
+improve stochastic skill behavior, follow
 [`references/parallel-treatment-search.md`](references/parallel-treatment-search.md).
 Build a frozen population of source-backed, single-mechanism treatments with
-controls and pre-registered repetitions instead of continuing one rewrite at a
-time.
+controls and pre-registered repetitions before editing a preferred candidate.
 
 Use the local suite runner for ordinary corpora. When the corpus contains full
 repositories, native builds, product exercises, multiple treatments, or enough
@@ -242,13 +241,16 @@ Classify a failure before editing:
 - **Harness defect:** the candidate or judge did not receive the frozen inputs
   named by the receipt.
 
-Repair skill defects with general language. Repair packet and harness defects
-outside the target skill. Rerun the unchanged case after any repair and retain
-the prior run.
+Repair packet and harness defects outside the target skill. If the evidence
+establishes exactly one independently required skill correction and no
+competing treatment remains, repair it with general language, rerun the
+unchanged case, and retain the prior run. When multiple credible mechanisms
+remain, freeze them as treatment arms before editing a preferred candidate.
 
-When the evaluator is valid but the corrective mechanism is uncertain, search
-multiple independent skills and proven practices by generalized behavior class,
-not by case vocabulary. Use those sources to generate falsifiable treatment
+When the evaluator is valid but the corrective mechanism is uncertain, default
+to parallel treatment search rather than serial revision. Search multiple
+independent skills and proven practices by generalized behavior class, not by
+case vocabulary. Use those sources to generate falsifiable treatment
 hypotheses, preserve source and license provenance, and extract only the
 smallest reusable tactic. The parallel-treatment procedure owns controls,
 dose-matching, planned replication, mechanism scoring, finalist selection, and
@@ -260,7 +262,9 @@ assuming incremental editing is safest. Follow
 [`references/ablation-campaign.md`](references/ablation-campaign.md): start the
 lean arm from the smallest load-bearing rules, run one discriminating case,
 then add back a rule only when a repeated corpus regression proves it is
-missing. Existing prose earns retention through behavior, not age.
+missing. When more than one credible add-back could close the regression, use
+parallel treatment search with the lean arm as a control. Existing prose earns
+retention through behavior, not age.
 
 Complete when the result is labeled `PASS`, `FAIL`, or `UNANSWERABLE`, with the
 reason and any generalized skill defect stated separately. For a skill-change
