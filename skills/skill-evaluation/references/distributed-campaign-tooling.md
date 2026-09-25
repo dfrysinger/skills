@@ -113,6 +113,14 @@ manifests. The carrier requires:
 - deterministic target and regression receipts; and
 - structured judge JSON.
 
+When a hidden scaffold provides a sealed Cargo Git checkout but a fresh macOS
+runner has no ambient Cargo registry, the carrier runs credential-stripped
+`cargo fetch --locked` from a separately materialized owner-sealed baseline,
+not the candidate's modified workspace. The fetch uses an allowlisted
+environment with a throwaway home and records the manifest, lock, command, and
+log digests. The product command then runs with the resulting cache and its own
+offline controls.
+
 Keep package-specific builders and adapters with the private corpus unless they
 are independently generalized. Do not publish historical cases, hidden
 criteria, reference patches, private repository names, release names, or

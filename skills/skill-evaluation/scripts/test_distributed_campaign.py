@@ -130,7 +130,9 @@ class FullProductMatrixTests(unittest.TestCase):
         self.assertIn("prepare_case_python_dependencies", macos_candidate)
         self.assertIn("runtimeDependencies", macos_candidate)
         self.assertIn("pythonpath_environment(python_paths)", macos_product)
-        self.assertIn("dependency_environment(runtime_dependencies", macos_product)
+        self.assertIn("with dependency_environment(", macos_product)
+        self.assertIn("trusted-candidate", macos_product)
+        self.assertIn("cargo_fetch_workspace", macos_product)
 
     def test_pythonpath_environment_restores_prior_value(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -343,6 +345,93 @@ class FullProductMatrixTests(unittest.TestCase):
                     )
                     self.assertEqual((overlay / "registry").resolve(), registry.resolve())
                 self.assertNotIn("CARGO_HOME", os.environ)
+
+    def test_dependency_environment_fetches_locked_registry_without_ambient_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate = root / "candidate"
+            candidate_workspace = candidate / "workspaces/runtime-repo"
+            (candidate_workspace / ".cargo-git/db/repository").mkdir(parents=True)
+            (candidate_workspace / ".cargo/config.toml").parent.mkdir(exist_ok=True)
+            (candidate_workspace / ".cargo/config.toml").write_text(
+                "[net]\ngit-fetch-with-cli = true\n"
+            )
+            workspace = root / "trusted/runtime-repo"
+            git_cache = workspace / ".cargo-git"
+            (git_cache / "db/repository").mkdir(parents=True)
+            (git_cache / "db/repository/HEAD").write_text("ref: refs/heads/main\n")
+            (workspace / "Cargo.toml").write_text("[workspace]\n")
+            (workspace / "Cargo.lock").write_text("# lock\n")
+            home = root / "home"
+            home.mkdir()
+            rustup_home = home / ".rustup"
+            rustup_home.mkdir()
+            (rustup_home / "settings.toml").write_text(
+                'default_toolchain = "stable-aarch64-apple-darwin"\n'
+            )
+            run_root = root / "run"
+            captured = {}
+
+            def fetch(command, **kwargs):
+                captured["command"] = command
+                captured["environment"] = kwargs["env"]
+                captured["cwd"] = kwargs["cwd"]
+                kwargs["stdout"].write(b"fetched\n")
+                (run_root / "dependency-runtime/cargo-home/registry").mkdir()
+                return mock.Mock(returncode=0)
+
+            with mock.patch.dict(
+                os.environ,
+                {"HOME": str(home), "ACTIONS_RUNTIME_TOKEN": "secret"},
+                clear=True,
+            ):
+                with mock.patch.object(matrix.subprocess, "run", side_effect=fetch):
+                    with matrix.dependency_environment(
+                        {}, candidate, run_root, workspace
+                    ):
+                        self.assertEqual(
+                            os.environ["CARGO_HOME"],
+                            str((run_root / "dependency-runtime/cargo-home").resolve()),
+                        )
+            self.assertEqual(captured["command"], ["cargo", "fetch", "--locked"])
+            self.assertNotIn("ACTIONS_RUNTIME_TOKEN", captured["environment"])
+            self.assertNotIn("SSH_AUTH_SOCK", captured["environment"])
+            self.assertEqual(captured["environment"]["HOME"], str(
+                run_root / "dependency-runtime/cargo-fetch-home"
+            ))
+            self.assertEqual(
+                captured["environment"]["RUSTUP_HOME"],
+                str(rustup_home.resolve()),
+            )
+            self.assertEqual(
+                captured["environment"]["RUSTUP_TOOLCHAIN"],
+                "stable-aarch64-apple-darwin",
+            )
+            self.assertEqual(captured["cwd"], workspace.resolve())
+            self.assertTrue((run_root / "dependency-logs/cargo-fetch.json").is_file())
+
+    def test_dependency_environment_rejects_ancestor_cargo_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate = root / "candidate"
+            (candidate / "workspaces/runtime-repo/.cargo-git").mkdir(parents=True)
+            workspace = root / "trusted/runtime-repo"
+            (workspace / ".cargo-git").mkdir(parents=True)
+            (workspace / "Cargo.toml").write_text("[workspace]\n")
+            (workspace / "Cargo.lock").write_text("# lock\n")
+            ancestor_config = root / "trusted/.cargo/config.toml"
+            ancestor_config.parent.mkdir()
+            ancestor_config.write_text("[source.crates-io]\nreplace-with = 'candidate'\n")
+            home = root / "home"
+            home.mkdir()
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=True):
+                with self.assertRaisesRegex(
+                    ValueError, "Cargo fetch ancestor config is not allowed"
+                ):
+                    with matrix.dependency_environment(
+                        {}, candidate, root / "run", workspace
+                    ):
+                        pass
 
     def test_hosted_container_case_removes_only_redundant_root_chown(self):
         command = (

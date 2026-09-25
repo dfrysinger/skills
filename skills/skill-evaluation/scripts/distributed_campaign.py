@@ -212,6 +212,7 @@ def dependency_environment(
     dependency_sources: dict[str, Path],
     candidate_root: Path | None = None,
     run_root: Path | None = None,
+    cargo_fetch_workspace: Path | None = None,
 ):
     cargo_homes = {
         (source / "cargo-home").resolve()
@@ -233,12 +234,109 @@ def dependency_environment(
         if git_sources:
             require(run_root is not None, "Cargo Git provisioning requires a run root")
             ambient_registry = Path.home() / ".cargo/registry"
-            require(ambient_registry.is_dir(), "Ambient Cargo registry cache is missing")
             overlay = run_root / "dependency-runtime/cargo-home"
             require(not overlay.exists(), "Cargo dependency overlay already exists")
             overlay.mkdir(parents=True)
-            shutil.copytree(git_sources[0], overlay / "git", symlinks=True)
-            os.symlink(ambient_registry, overlay / "registry", target_is_directory=True)
+            if ambient_registry.is_dir():
+                shutil.copytree(git_sources[0], overlay / "git", symlinks=True)
+                os.symlink(ambient_registry, overlay / "registry", target_is_directory=True)
+            else:
+                require(
+                    cargo_fetch_workspace is not None,
+                    "Trusted Cargo dependency workspace is required",
+                )
+                workspace = cargo_fetch_workspace.resolve()
+                require(
+                    (workspace / "Cargo.toml").is_file()
+                    and (workspace / "Cargo.lock").is_file(),
+                    "Cargo dependency fetch requires a locked workspace",
+                )
+                for ancestor in workspace.parents:
+                    for config_name in (".cargo/config", ".cargo/config.toml"):
+                        require(
+                            not (ancestor / config_name).exists(),
+                            f"Cargo fetch ancestor config is not allowed: "
+                            f"{ancestor / config_name}",
+                        )
+                trusted_git = workspace / ".cargo-git"
+                require(
+                    trusted_git.is_dir(),
+                    "Trusted Cargo dependency workspace lacks the sealed Git cache",
+                )
+                shutil.copytree(trusted_git, overlay / "git", symlinks=True)
+                log = run_root / "dependency-logs/cargo-fetch.log"
+                log.parent.mkdir(parents=True, exist_ok=True)
+                fetch_home = run_root / "dependency-runtime/cargo-fetch-home"
+                fetch_home.mkdir()
+                environment = {
+                    name: os.environ[name]
+                    for name in (
+                        "PATH",
+                        "TMPDIR",
+                        "SSL_CERT_FILE",
+                        "SSL_CERT_DIR",
+                        "RUSTUP_HOME",
+                        "RUSTUP_TOOLCHAIN",
+                    )
+                    if name in os.environ
+                }
+                owner_home = Path.home()
+                rustup_home = Path(
+                    environment.get("RUSTUP_HOME", owner_home / ".rustup")
+                ).resolve()
+                if rustup_home.is_dir():
+                    environment["RUSTUP_HOME"] = str(rustup_home)
+                    if "RUSTUP_TOOLCHAIN" not in environment:
+                        settings = rustup_home / "settings.toml"
+                        require(settings.is_file(), "Rustup settings are missing")
+                        match = re.search(
+                            r'^default_toolchain\s*=\s*"([^"]+)"\s*$',
+                            settings.read_text(),
+                            flags=re.MULTILINE,
+                        )
+                        require(
+                            match is not None,
+                            "Rustup default toolchain is missing",
+                        )
+                        environment["RUSTUP_TOOLCHAIN"] = match.group(1)
+                environment.update(
+                    {
+                        "CARGO_HOME": str(overlay),
+                        "CARGO_NET_OFFLINE": "false",
+                        "CARGO_NET_GIT_FETCH_WITH_CLI": "false",
+                        "CARGO_REGISTRIES_CRATES_IO_PROTOCOL": "sparse",
+                        "GIT_CONFIG_GLOBAL": "/dev/null",
+                        "GIT_CONFIG_SYSTEM": "/dev/null",
+                        "GIT_TERMINAL_PROMPT": "0",
+                        "HOME": str(fetch_home),
+                    }
+                )
+                with log.open("wb") as output:
+                    completed = subprocess.run(
+                        ["cargo", "fetch", "--locked"],
+                        cwd=workspace,
+                        env=environment,
+                        stdout=output,
+                        stderr=subprocess.STDOUT,
+                        check=False,
+                    )
+                require(completed.returncode == 0, "Locked Cargo dependency fetch failed")
+                require(
+                    (overlay / "registry").is_dir(),
+                    "Locked Cargo dependency fetch produced no registry cache",
+                )
+                write_json(
+                    run_root / "dependency-logs/cargo-fetch.json",
+                    {
+                        "argv": ["cargo", "fetch", "--locked"],
+                        "cwd": str(workspace),
+                        "exitCode": completed.returncode,
+                        "cargoLockSha256": sha256(workspace / "Cargo.lock"),
+                        "cargoManifestSha256": sha256(workspace / "Cargo.toml"),
+                        "log": log.name,
+                        "logSha256": sha256(log),
+                    },
+                )
             cargo_homes.add(overlay.resolve())
     cargo_homes = sorted(cargo_homes)
     require(len(cargo_homes) <= 1, "Multiple dependency Cargo homes are ambiguous")
@@ -1567,8 +1665,31 @@ def run_macos_product_stage(
             "Split candidate stage unexpectedly retained external dependencies",
         )
     apply_scaffold(runner, case, case_root, candidate_root)
+    cargo_fetch_workspace = None
+    if (
+        list((candidate_root / "workspaces").glob("*/.cargo-git"))
+        and not (Path.home() / ".cargo/registry").is_dir()
+    ):
+        trusted_root = run_root / "dependency-runtime/trusted-candidate"
+        materialize_candidate(runner, package_root, attempt["caseId"], trusted_root)
+        apply_scaffold(runner, case, case_root, trusted_root)
+        trusted_workspaces = [
+            path.parent
+            for path in (trusted_root / "workspaces").glob("*/.cargo-git")
+            if path.is_dir()
+        ]
+        require(
+            len(trusted_workspaces) == 1,
+            "Trusted Cargo dependency workspace is ambiguous",
+        )
+        cargo_fetch_workspace = trusted_workspaces[0]
     with pythonpath_environment(python_paths):
-        with dependency_environment(runtime_dependencies, candidate_root, run_root):
+        with dependency_environment(
+            runtime_dependencies,
+            candidate_root,
+            run_root,
+            cargo_fetch_workspace,
+        ):
             product = runner.run_product(case, case_root, candidate_root, run_root)
             if case["grading"]["execution"] == "container":
                 prepare_container_grading_tree(runner, case, case_root, candidate_root)
