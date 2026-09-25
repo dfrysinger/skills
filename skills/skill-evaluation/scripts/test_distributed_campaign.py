@@ -256,7 +256,7 @@ class FullProductMatrixTests(unittest.TestCase):
                     [{"workspace": "repository", "resultTree": expected}],
                 )
 
-    def test_container_scaffold_modes_are_preserved_with_writable_workspace_root(self):
+    def test_container_scaffold_is_writable_for_grading(self):
         class Runner:
             @staticmethod
             def sha256(path):
@@ -302,7 +302,7 @@ class FullProductMatrixTests(unittest.TestCase):
             )
             workspace = candidate / "workspaces/workspace-a"
             self.assertEqual(workspace.stat().st_mode & 0o777, 0o777)
-            self.assertEqual(protected.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(protected.stat().st_mode & 0o777, 0o666)
 
     def test_dependency_environment_provisions_exact_cargo_home(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1356,7 +1356,7 @@ class FullProductMatrixTests(unittest.TestCase):
         )
         self.assertEqual(value, judgment)
 
-    def test_judge_output_rejects_multiple_json_objects(self):
+    def test_judge_output_accepts_repeated_identical_contract(self):
         judgment = {
             "verdict": "FAIL",
             "confidence": "HIGH",
@@ -1365,9 +1365,26 @@ class FullProductMatrixTests(unittest.TestCase):
             "overcorrections": [],
             "generalized_skill_defect": None,
         }
-        with self.assertRaisesRegex(ValueError, "exactly one contract JSON object"):
+        self.assertEqual(
             matrix.parse_judge_output(
                 json.dumps(judgment) + "\n" + json.dumps(judgment)
+            ),
+            judgment,
+        )
+
+    def test_judge_output_rejects_conflicting_contracts(self):
+        first = {
+            "verdict": "FAIL",
+            "confidence": "HIGH",
+            "matched": ["one"],
+            "missed": ["two"],
+            "overcorrections": [],
+            "generalized_skill_defect": None,
+        }
+        second = {**first, "verdict": "PASS"}
+        with self.assertRaisesRegex(ValueError, "conflicting contract JSON objects"):
+            matrix.parse_judge_output(
+                json.dumps(first) + "\n" + json.dumps(second)
             )
 
     def test_judge_output_rejects_invalid_contract(self):

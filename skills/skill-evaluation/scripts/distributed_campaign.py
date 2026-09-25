@@ -1146,11 +1146,18 @@ def parse_judge_output(text: str) -> dict:
         contract_objects = [
             candidate for _, _, candidate in objects if set(candidate) == expected
         ]
-        require(
-            len(contract_objects) == 1 or (not contract_objects and len(objects) == 1),
-            "Judge output must contain exactly one contract JSON object",
-        )
-        value = contract_objects[0] if contract_objects else objects[0][2]
+        if contract_objects:
+            value = contract_objects[0]
+            require(
+                all(candidate == value for candidate in contract_objects[1:]),
+                "Judge output contains conflicting contract JSON objects",
+            )
+        else:
+            require(
+                len(objects) == 1,
+                "Judge output must contain exactly one contract JSON object",
+            )
+            value = objects[0][2]
     require(isinstance(value, dict), "Judge output must be a JSON object")
     require(set(value) == expected, "Judge output fields do not match the contract")
     require(value["verdict"] in {"PASS", "FAIL", "UNANSWERABLE"}, "Invalid judge verdict")
@@ -1333,9 +1340,8 @@ def prepare_container_grading_tree(
     candidate_root: Path,
 ) -> None:
     runner.detach_cache_symlinks(candidate_root)
-    make_container_workspace_writable(candidate_root)
     apply_scaffold(runner, case, case_root, candidate_root)
-    make_container_workspace_roots_writable(candidate_root)
+    make_container_workspace_writable(candidate_root)
 
 
 def case_root_for(runner, package_root: Path, case_id: str) -> tuple[dict, Path, dict]:
