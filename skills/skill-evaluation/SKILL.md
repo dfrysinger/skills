@@ -159,7 +159,11 @@ That procedure seals one immutable campaign release with separately addressed
 candidate and hidden payloads, fans unfinished attempts out through private
 GitHub Actions, preserves first model outcomes, resumes only invalid downstream
 stages, checksum-verifies retained artifacts, and reconciles one exact
-effective-result map.
+effective-result map. When changing the evaluator itself, prove each changed
+stage first with the cheapest representative canary, counting package
+construction, upload and download volume, runner time, native builds, model
+calls, and judge calls as test cost. Reuse retained upstream evidence instead
+of launching a fresh model attempt when only a downstream stage changed.
 
 The runner:
 

@@ -70,7 +70,25 @@ guessing whether candidate work occurred.
 
 ## 3. Prove one route before fan-out
 
-Run a representative pilot through each distinct route:
+Treat evaluator development as its own test pyramid. Use the cheapest check
+that exercises the changed boundary:
+
+1. unit-test pure planning, receipt, parsing, and validation logic;
+2. run a tiny packaged fixture for archive, handoff, filesystem, and process
+   behavior;
+3. use a no-model canary or retained candidate artifact for runner, platform,
+   dependency, product, grader, and judge integration; and
+4. spend one real model attempt only after the cheaper layers pass.
+
+Test cost includes package construction and compression, release upload and
+artifact download bytes, runner startup, native compilation, model execution,
+judge execution, and elapsed feedback time. Prefer a small source tree and
+tiny artifacts when they exercise the same boundary. Do not use a long native
+build or multi-gigabyte artifact as the first smoke test for receipt parsing,
+stage routing, permissions, or recovery.
+
+After the evaluator-only canary passes, run a representative campaign pilot
+through each distinct route:
 
 - macOS native;
 - Linux native or container;
@@ -81,6 +99,12 @@ Run a representative pilot through each distinct route:
 Use the exact campaign payloads, secrets, security flags, pinned binaries, and
 artifact paths the full matrix will use. A token or dependency smoke test is
 useful only when it reproduces that exact child-process boundary.
+
+When a real pilot has already produced an immutable model result, reuse its
+retained candidate or product artifact for every downstream repair. Replay only
+the first invalid stage and its dependents. Do not consume another model
+attempt to test grader permissions, receipt decoding, judge parsing, retention,
+or final reconciliation.
 
 Keep execution-engine cohorts separate from workflow-treatment rankings unless
 the experiment was designed to compare them as the same independent variable.
