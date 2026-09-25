@@ -1,0 +1,1004 @@
+name: Distributed skill evaluation campaign
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_release:
+        description: Private release containing the sealed evaluator package
+        required: true
+        type: string
+      package_asset:
+        description: Sealed evaluator package asset
+        required: true
+        type: string
+      package_sha256:
+        description: Owner-approved SHA256 of the sealed package archive
+        required: true
+        type: string
+      package_manifest_sha256:
+        description: Owner-approved SHA256 of package-manifest.json
+        required: true
+        type: string
+      candidate_package_release:
+        description: Optional private release containing the candidate-safe package
+        required: false
+        default: ""
+        type: string
+      candidate_package_asset:
+        description: Candidate-safe package asset without hidden evaluator bytes
+        required: false
+        default: ""
+        type: string
+      candidate_package_sha256:
+        description: Owner-approved SHA256 of the candidate-safe package archive
+        required: false
+        default: ""
+        type: string
+      campaign_id:
+        description: Campaign identity bound into completion manifests
+        required: true
+        type: string
+      github_host:
+        description: GitHub CLI host for this repository
+        required: true
+        default: github.com
+        type: string
+      image_manifest_path:
+        description: Repository-relative image manifest path
+        required: true
+        default: config/distributed-eval-images.json
+        type: string
+      dependency_manifest_path:
+        description: Repository-relative dependency manifest path
+        required: true
+        default: config/distributed-eval-dependencies.json
+        type: string
+      copilot_cli_version:
+        description: Pinned Copilot CLI release
+        required: true
+        default: v1.0.84-1
+        type: string
+      copilot_darwin_archive_sha256:
+        description: SHA256 of the pinned Darwin arm64 Copilot CLI archive
+        required: true
+        type: string
+      copilot_darwin_binary_sha256:
+        description: SHA256 of the pinned Darwin arm64 Copilot executable
+        required: true
+        type: string
+      copilot_linux_archive_sha256:
+        description: SHA256 of the pinned Linux arm64 Copilot CLI archive
+        required: true
+        type: string
+      copilot_linux_binary_sha256:
+        description: SHA256 of the pinned Linux arm64 Copilot executable
+        required: true
+        type: string
+      bun_release:
+        description: Private release containing the pinned Darwin arm64 Bun archive
+        required: true
+        type: string
+      bun_asset:
+        description: Pinned Darwin arm64 Bun zip asset
+        required: true
+        type: string
+      bun_archive_sha256:
+        description: SHA256 of the pinned Bun archive
+        required: true
+        type: string
+      bun_version:
+        description: Expected Bun version
+        required: true
+        type: string
+      completion_release:
+        description: Private release containing the dispatch-time frozen completion map
+        required: true
+        type: string
+      completion_asset:
+        description: Frozen completion/exclusion manifest asset
+        required: true
+        default: distributed-eval-completion.json
+        type: string
+      completion_sha256:
+        description: Owner-approved SHA256 of the frozen completion/exclusion manifest
+        required: true
+        type: string
+      attempt_id:
+        description: Optional single uncompleted attempt id for a pilot
+        required: false
+        default: ""
+        type: string
+      max_parallel:
+        description: Maximum concurrent jobs in each stage
+        required: true
+        default: 50
+        type: number
+      macos_source_run_id:
+        description: Optional prior run whose immutable macOS stage artifacts must be reused
+        required: false
+        default: ""
+        type: string
+      macos_source_sha:
+        description: Exact source revision of macos_source_run_id
+        required: false
+        default: ""
+        type: string
+      linux_source_run_id:
+        description: Optional prior run whose incomplete Linux candidate/product artifact must be reused
+        required: false
+        default: ""
+        type: string
+      linux_source_sha:
+        description: Exact source revision of linux_source_run_id
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GH_HOST: ${{ inputs.github_host }}
+  PACKAGE_RELEASE: ${{ inputs.package_release }}
+  PACKAGE_ASSET: ${{ inputs.package_asset }}
+  DISTRIBUTED_EVAL_PACKAGE_ARCHIVE_SHA256: ${{ inputs.package_sha256 }}
+  DISTRIBUTED_EVAL_PACKAGE_MANIFEST_SHA256: ${{ inputs.package_manifest_sha256 }}
+  CANDIDATE_PACKAGE_RELEASE: ${{ inputs.candidate_package_release }}
+  CANDIDATE_PACKAGE_ASSET: ${{ inputs.candidate_package_asset }}
+  CANDIDATE_PACKAGE_SHA256: ${{ inputs.candidate_package_sha256 }}
+  DISTRIBUTED_EVAL_CAMPAIGN_ID: ${{ inputs.campaign_id }}
+  DISTRIBUTED_EVAL_WORKFLOW_PATH: .github/workflows/distributed-campaign.yml
+  IMAGE_MANIFEST_PATH: ${{ inputs.image_manifest_path }}
+  DEPENDENCY_MANIFEST_PATH: ${{ inputs.dependency_manifest_path }}
+  COPILOT_CLI_VERSION: ${{ inputs.copilot_cli_version }}
+  COPILOT_DARWIN_ARCHIVE_SHA256: ${{ inputs.copilot_darwin_archive_sha256 }}
+  COPILOT_DARWIN_BINARY_SHA256: ${{ inputs.copilot_darwin_binary_sha256 }}
+  COPILOT_LINUX_ARCHIVE_SHA256: ${{ inputs.copilot_linux_archive_sha256 }}
+  COPILOT_LINUX_BINARY_SHA256: ${{ inputs.copilot_linux_binary_sha256 }}
+  BUN_RELEASE: ${{ inputs.bun_release }}
+  BUN_ASSET: ${{ inputs.bun_asset }}
+  BUN_ARCHIVE_SHA256: ${{ inputs.bun_archive_sha256 }}
+  BUN_VERSION: ${{ inputs.bun_version }}
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    outputs:
+      macos_matrix: ${{ steps.plan.outputs.macos_matrix }}
+      macos_count: ${{ steps.plan.outputs.macos_count }}
+      linux_matrix: ${{ steps.plan.outputs.linux_matrix }}
+      linux_count: ${{ steps.plan.outputs.linux_count }}
+      remaining: ${{ steps.plan.outputs.remaining }}
+      max_parallel: ${{ steps.plan.outputs.max_parallel }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      COMPLETION_RELEASE: ${{ inputs.completion_release }}
+      COMPLETION_ASSET: ${{ inputs.completion_asset }}
+      COMPLETION_SHA256: ${{ inputs.completion_sha256 }}
+      ATTEMPT_ID: ${{ inputs.attempt_id }}
+      MAX_PARALLEL: ${{ inputs.max_parallel }}
+      MACOS_SOURCE_RUN_ID: ${{ inputs.macos_source_run_id }}
+      MACOS_SOURCE_SHA: ${{ inputs.macos_source_sha }}
+      LINUX_SOURCE_RUN_ID: ${{ inputs.linux_source_run_id }}
+      LINUX_SOURCE_SHA: ${{ inputs.linux_source_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Validate first-outcome dispatch
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(uname -m)" = aarch64
+          [[
+            ( -z "$CANDIDATE_PACKAGE_RELEASE" && -z "$CANDIDATE_PACKAGE_ASSET" && -z "$CANDIDATE_PACKAGE_SHA256" )
+            || ( -n "$CANDIDATE_PACKAGE_RELEASE" && -n "$CANDIDATE_PACKAGE_ASSET" && "$CANDIDATE_PACKAGE_SHA256" =~ ^[0-9a-f]{64}$ )
+          ]]
+          [[
+            ( -z "$MACOS_SOURCE_RUN_ID" && -z "$MACOS_SOURCE_SHA" )
+            || ( -n "$MACOS_SOURCE_RUN_ID" && -n "$MACOS_SOURCE_SHA" )
+          ]]
+          if [[ -n "$MACOS_SOURCE_RUN_ID" ]]; then
+            [[ "$MACOS_SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
+            [[ "$MACOS_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          fi
+          [[
+            ( -z "$LINUX_SOURCE_RUN_ID" && -z "$LINUX_SOURCE_SHA" )
+            || ( -n "$LINUX_SOURCE_RUN_ID" && -n "$LINUX_SOURCE_SHA" )
+          ]]
+          if [[ -n "$LINUX_SOURCE_RUN_ID" ]]; then
+            [[ "$LINUX_SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
+            [[ "$LINUX_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          fi
+          test -z "$MACOS_SOURCE_RUN_ID" || test -z "$LINUX_SOURCE_RUN_ID"
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py validate-dispatch \
+            --package-release "$PACKAGE_RELEASE" \
+            --package-asset "$PACKAGE_ASSET" \
+            --completion-release "$COMPLETION_RELEASE" \
+            --completion-asset "$COMPLETION_ASSET" \
+            --completion-sha256 "$COMPLETION_SHA256" \
+            --max-parallel "$MAX_PARALLEL"
+      - name: Download sealed package and completion map
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" = true
+          mkdir -p downloads/package downloads/completion evidence
+          release="${CANDIDATE_PACKAGE_RELEASE:-$PACKAGE_RELEASE}"
+          asset="${CANDIDATE_PACKAGE_ASSET:-$PACKAGE_ASSET}"
+          archive_sha="${CANDIDATE_PACKAGE_SHA256:-$DISTRIBUTED_EVAL_PACKAGE_ARCHIVE_SHA256}"
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py download-release \
+            --repository "$GITHUB_REPOSITORY" --release "$release" \
+            --asset "$asset" \
+            --destination "downloads/package/$asset" \
+            --sha256 "$archive_sha"
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py download-release \
+            --repository "$GITHUB_REPOSITORY" --release "$COMPLETION_RELEASE" \
+            --asset "$COMPLETION_ASSET" \
+            --destination "downloads/completion/$COMPLETION_ASSET" \
+            --sha256 "$COMPLETION_SHA256"
+          DISTRIBUTED_EVAL_PACKAGE_ARCHIVE_SHA256="$archive_sha" \
+            python3 -B skills/skill-evaluation/scripts/distributed_campaign.py unpack-package \
+              --archive "downloads/package/$asset" \
+              --destination inputs > evidence/package-identity.json
+      - name: Expand platform-partitioned matrix
+        id: plan
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ -n "$ATTEMPT_ID" ]]; then
+            args+=(--attempt-id "$ATTEMPT_ID")
+          fi
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py plan \
+            --package-root inputs \
+            --completion "downloads/completion/$COMPLETION_ASSET" \
+            --completion-sha256 "$COMPLETION_SHA256" \
+            --image-manifest "$IMAGE_MANIFEST_PATH" \
+            --dependency-manifest "$DEPENDENCY_MANIFEST_PATH" \
+            --output evidence/dispatch-plan.json \
+            --github-output "$GITHUB_OUTPUT" \
+            "${args[@]}" > evidence/plan.log
+          if [[ -n "$MACOS_SOURCE_RUN_ID" ]]; then
+            python3 - <<'PY'
+          import json
+          from pathlib import Path
+          plan = json.loads(Path("evidence/dispatch-plan.json").read_text())
+          if plan["linuxCount"] != 0:
+              raise SystemExit(
+                  "macOS stage reuse cannot dispatch Linux-native candidates"
+              )
+          PY
+          fi
+          if [[ -n "$LINUX_SOURCE_RUN_ID" ]]; then
+            python3 - <<'PY'
+          import json
+          from pathlib import Path
+          plan = json.loads(Path("evidence/dispatch-plan.json").read_text())
+          if plan["macosCount"] != 0 or plan["linuxCount"] != 1:
+              raise SystemExit(
+                  "Linux resume requires exactly one Linux-native attempt"
+              )
+          PY
+          fi
+          printf 'max_parallel=%s\n' "$MAX_PARALLEL" >> "$GITHUB_OUTPUT"
+          cp "downloads/completion/$COMPLETION_ASSET" evidence/completion-manifest.json
+          cp "$IMAGE_MANIFEST_PATH" evidence/image-manifest.json
+          cp "$DEPENDENCY_MANIFEST_PATH" evidence/dependency-manifest.json
+          cp .github/workflows/distributed-campaign.yml evidence/workflow.yml
+          cp skills/skill-evaluation/scripts/distributed_campaign.py evidence/distributed_campaign.py
+          sha256sum evidence/*.json evidence/*.yml evidence/*.py > evidence/control-files.sha256
+      - name: Retain dispatch plan
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: distributed-eval-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  macos-stage:
+    needs: plan
+    if: inputs.macos_source_run_id == '' && inputs.linux_source_run_id == '' && needs.plan.outputs.macos_count != '0'
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.plan.outputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.macos_matrix) }}
+    runs-on: macos-15
+    timeout-minutes: 360
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Record macOS stage identity
+        env:
+          ATTEMPT_JSON: ${{ toJSON(matrix) }}
+          COMPLETION_RELEASE: ${{ inputs.completion_release }}
+          COMPLETION_ASSET: ${{ inputs.completion_asset }}
+          COMPLETION_SHA256: ${{ inputs.completion_sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence downloads/package downloads/dependency downloads/tools dependencies
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(uname -m)" = arm64
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path("evidence/dispatch.json").write_text(json.dumps({
+              "schemaVersion": 1,
+              "stage": "macos-native",
+              "attempt": json.loads(os.environ["ATTEMPT_JSON"]),
+              "controls": {key: os.environ[key] for key in (
+                  "PACKAGE_RELEASE", "PACKAGE_ASSET", "COMPLETION_RELEASE",
+                  "COMPLETION_ASSET", "COMPLETION_SHA256",
+                  "CANDIDATE_PACKAGE_RELEASE", "CANDIDATE_PACKAGE_ASSET",
+                  "CANDIDATE_PACKAGE_SHA256",
+              )},
+              "github": {key: os.environ.get(key) for key in (
+                  "GITHUB_SHA", "GITHUB_WORKFLOW_REF", "GITHUB_WORKFLOW_SHA",
+                  "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB",
+                  "GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "RUNNER_OS",
+                  "RUNNER_ARCH", "ImageOS", "ImageVersion",
+              )},
+          }, indent=2, sort_keys=True) + "\n")
+          PY
+          cp .github/workflows/distributed-campaign.yml evidence/workflow.yml
+          cp skills/skill-evaluation/scripts/distributed_campaign.py evidence/distributed_campaign.py
+          cp "$DEPENDENCY_MANIFEST_PATH" evidence/dependency-manifest.json
+          sw_vers > evidence/sw-vers.txt
+          uname -a > evidence/platform.txt
+          df -k . > evidence/disk-before.txt
+      - name: Download and verify sealed package
+        id: package
+        run: |
+          set -euo pipefail
+          release="${CANDIDATE_PACKAGE_RELEASE:-$PACKAGE_RELEASE}"
+          asset="${CANDIDATE_PACKAGE_ASSET:-$PACKAGE_ASSET}"
+          archive_sha="${CANDIDATE_PACKAGE_SHA256:-$DISTRIBUTED_EVAL_PACKAGE_ARCHIVE_SHA256}"
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py download-release \
+            --repository "$GITHUB_REPOSITORY" --release "$release" \
+            --asset "$asset" \
+            --destination "downloads/package/$asset" \
+            --sha256 "$archive_sha"
+          DISTRIBUTED_EVAL_PACKAGE_ARCHIVE_SHA256="$archive_sha" \
+            python3 -B skills/skill-evaluation/scripts/distributed_campaign.py unpack-package \
+              --archive "downloads/package/$asset" \
+              --destination inputs > evidence/package-identity.json
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py seal-tree \
+            --root inputs --evidence evidence/package-seal.json
+          if [[ -n "$CANDIDATE_PACKAGE_ASSET" ]]; then
+            rm -f "downloads/package/$asset"
+          fi
+      - name: Download and seal exact dependency cache
+        id: dependency
+        if: matrix.dependencyAsset != ''
+        run: |
+          set -euo pipefail
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py download-release \
+            --repository "$GITHUB_REPOSITORY" \
+            --release "${{ matrix.dependencyRelease }}" \
+            --asset "${{ matrix.dependencyAsset }}" \
+            --destination "downloads/dependency/${{ matrix.dependencyAsset }}"
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py unpack-dependency \
+            --manifest "$DEPENDENCY_MANIFEST_PATH" \
+            --workspace "${{ matrix.dependencyWorkspace }}" \
+            --release "${{ matrix.dependencyRelease }}" \
+            --archive "downloads/dependency/${{ matrix.dependencyAsset }}" \
+            --destination "dependencies/${{ matrix.dependencyWorkspace }}" \
+            --evidence evidence/dependency.json
+      - name: Prepare exact pinned macOS Copilot CLI
+        id: cli
+        run: |
+          set -euo pipefail
+          mkdir host-cli
+          curl --fail --location --silent --show-error \
+            "https://github.com/github/copilot-cli/releases/download/$COPILOT_CLI_VERSION/copilot-darwin-arm64.tar.gz" \
+            --output downloads/copilot-darwin-arm64.tar.gz
+          printf '%s  downloads/copilot-darwin-arm64.tar.gz\n' \
+            "$COPILOT_DARWIN_ARCHIVE_SHA256" \
+            | shasum -a 256 --check > evidence/cli-archive-check.txt
+          tar -tzf downloads/copilot-darwin-arm64.tar.gz > evidence/cli-members.txt
+          test "$(cat evidence/cli-members.txt)" = copilot
+          tar -xzf downloads/copilot-darwin-arm64.tar.gz -C host-cli
+          printf '%s  host-cli/copilot\n' \
+            "$COPILOT_DARWIN_BINARY_SHA256" \
+            | shasum -a 256 --check > evidence/cli-executable-check.txt
+          file host-cli/copilot > evidence/cli-file.txt
+          printf '%s\n' "$GITHUB_WORKSPACE/host-cli" >> "$GITHUB_PATH"
+      - name: Prepare exact pinned Bun runtime
+        id: bun
+        run: |
+          set -euo pipefail
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py download-release \
+            --repository "$GITHUB_REPOSITORY" \
+            --release "$BUN_RELEASE" \
+            --asset "$BUN_ASSET" \
+            --destination "downloads/tools/$BUN_ASSET"
+          printf '%s  %s\n' "$BUN_ARCHIVE_SHA256" "downloads/tools/$BUN_ASSET" \
+            | shasum -a 256 --check > evidence/bun-archive-check.txt
+          unzip -Z1 "downloads/tools/$BUN_ASSET" > evidence/bun-members.txt
+          test "$(cat evidence/bun-members.txt)" = \
+            "$(printf '%s\n' 'bun-darwin-aarch64/' 'bun-darwin-aarch64/bun')"
+          unzip -q "downloads/tools/$BUN_ASSET" -d host-bun
+          chmod +x host-bun/bun-darwin-aarch64/bun
+          test "$(host-bun/bun-darwin-aarch64/bun --version)" = "$BUN_VERSION"
+          printf '%s\n' "$GITHUB_WORKSPACE/host-bun/bun-darwin-aarch64" >> "$GITHUB_PATH"
+      - name: Run candidate stage without hidden evaluator bytes
+        id: candidate_execution
+        env:
+          COPILOT_EVAL_MODEL_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          GH_TOKEN: ""
+        run: |
+          set -euo pipefail
+          test -n "$COPILOT_EVAL_MODEL_TOKEN"
+          if [[ -n "${{ matrix.dependencyWorkspace }}" ]]; then
+            source="$GITHUB_WORKSPACE/dependencies/${{ matrix.dependencyWorkspace }}"
+            if [[ "${{ matrix.dependencyArchiveRoot }}" != "." ]]; then
+              source="$source/${{ matrix.dependencyArchiveRoot }}"
+            fi
+            python3 -B skills/skill-evaluation/scripts/distributed_campaign.py run-macos-candidate-stage \
+              --package-root inputs \
+              --attempt-id "${{ matrix.attemptId }}" \
+              --case-id "${{ matrix.caseId }}" \
+              --case-revision "${{ matrix.caseRevision }}" \
+              --treatment-id "${{ matrix.treatmentId }}" \
+              --repetition "${{ matrix.repetition }}" \
+              --run-root run-root \
+              --candidate-package-sha256 "${CANDIDATE_PACKAGE_SHA256:-$DISTRIBUTED_EVAL_PACKAGE_ARCHIVE_SHA256}" \
+              --dependency-source "${{ matrix.dependencyWorkspace }}=$source" \
+              > evidence/execution.log 2>&1
+          else
+            python3 -B skills/skill-evaluation/scripts/distributed_campaign.py run-macos-candidate-stage \
+              --package-root inputs \
+              --attempt-id "${{ matrix.attemptId }}" \
+              --case-id "${{ matrix.caseId }}" \
+              --case-revision "${{ matrix.caseRevision }}" \
+              --treatment-id "${{ matrix.treatmentId }}" \
+              --repetition "${{ matrix.repetition }}" \
+              --run-root run-root \
+              --candidate-package-sha256 "${CANDIDATE_PACKAGE_SHA256:-$DISTRIBUTED_EVAL_PACKAGE_ARCHIVE_SHA256}" \
+              > evidence/execution.log 2>&1
+          fi
+      - name: Run native product stage for unsplit packages
+        id: product_execution
+        if: env.CANDIDATE_PACKAGE_ASSET == ''
+        run: |
+          set -euo pipefail
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py run-macos-product-stage \
+            --package-root inputs \
+            --attempt-id "${{ matrix.attemptId }}" \
+            --case-id "${{ matrix.caseId }}" \
+            --case-revision "${{ matrix.caseRevision }}" \
+            --treatment-id "${{ matrix.treatmentId }}" \
+            --repetition "${{ matrix.repetition }}" \
+            --run-root run-root >> evidence/execution.log 2>&1
+      - name: Preserve macOS stage evidence
+        if: always()
+        env:
+          PACKAGE_OUTCOME: ${{ steps.package.outcome }}
+          DEPENDENCY_OUTCOME: ${{ steps.dependency.outcome }}
+          CLI_OUTCOME: ${{ steps.cli.outcome }}
+          BUN_OUTCOME: ${{ steps.bun.outcome }}
+          CANDIDATE_EXECUTION_OUTCOME: ${{ steps.candidate_execution.outcome }}
+          PRODUCT_EXECUTION_OUTCOME: ${{ steps.product_execution.outcome }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path("evidence/actions-status.json").write_text(json.dumps({
+              key: os.environ[key] for key in (
+                  "PACKAGE_OUTCOME", "DEPENDENCY_OUTCOME", "CLI_OUTCOME", "BUN_OUTCOME",
+                  "CANDIDATE_EXECUTION_OUTCOME", "PRODUCT_EXECUTION_OUTCOME",
+                  "JOB_STATUS",
+              )
+          }, indent=2, sort_keys=True) + "\n")
+          PY
+          df -k . > evidence/disk-after.txt
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py retain \
+            --run-root run-root --evidence evidence --output retained.tar.gz
+      - name: Upload isolated candidate-stage artifact
+        if: always() && env.CANDIDATE_PACKAGE_ASSET != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: distributed-eval-candidate-${{ matrix.attemptId }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            retained.tar.gz
+            retained.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+      - name: Upload immutable macOS stage artifact
+        if: always() && env.CANDIDATE_PACKAGE_ASSET == ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: distributed-eval-macos-${{ matrix.attemptId }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            retained.tar.gz
+            retained.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  macos-product:
+    needs:
+      - plan
+      - macos-stage
+    if: always() && inputs.candidate_package_asset != '' && inputs.macos_source_run_id == '' && inputs.linux_source_run_id == '' && needs.plan.result == 'success' && needs.plan.outputs.macos_count != '0'
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.plan.outputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.macos_matrix) }}
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Restore isolated candidate evidence
+        run: |
+          set -euo pipefail
+          mkdir -p downloads/candidate downloads/package evidence
+          name="distributed-eval-candidate-${{ matrix.attemptId }}-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "$name" --dir downloads/candidate
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py unpack-retained \
+            --archive downloads/candidate/retained.tar.gz \
+            --checksum downloads/candidate/retained.tar.gz.sha256 \
+            --destination restored > evidence/candidate-stage-archive.json
+          mv restored/run-root run-root
+          cp -R restored/evidence/. evidence/
+          test -f run-root/macos-candidate-stage-receipt.json
+          test ! -e run-root/candidate
+          sw_vers > evidence/product-sw-vers.txt
+          uname -a > evidence/product-platform.txt
+      - name: Download and seal hidden evaluator package
+        run: |
+          set -euo pipefail
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py download-release \
+            --repository "$GITHUB_REPOSITORY" --release "$PACKAGE_RELEASE" \
+            --asset "$PACKAGE_ASSET" \
+            --destination "downloads/package/$PACKAGE_ASSET" \
+            --sha256 "$DISTRIBUTED_EVAL_PACKAGE_ARCHIVE_SHA256"
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py unpack-package \
+            --archive "downloads/package/$PACKAGE_ASSET" \
+            --destination inputs > evidence/hidden-package-identity.json
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py seal-tree \
+            --root inputs --evidence evidence/hidden-package-seal.json
+      - name: Run native product stage on reconstructed candidate
+        id: product_execution
+        run: |
+          set -euo pipefail
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py run-macos-product-stage \
+            --package-root inputs \
+            --attempt-id "${{ matrix.attemptId }}" \
+            --case-id "${{ matrix.caseId }}" \
+            --case-revision "${{ matrix.caseRevision }}" \
+            --treatment-id "${{ matrix.treatmentId }}" \
+            --repetition "${{ matrix.repetition }}" \
+            --run-root run-root > evidence/product-execution.log 2>&1
+      - name: Preserve isolated macOS product evidence
+        if: always()
+        env:
+          PRODUCT_EXECUTION_OUTCOME: ${{ steps.product_execution.outcome }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path("evidence/product-actions-status.json").write_text(json.dumps({
+              key: os.environ[key] for key in (
+                  "PRODUCT_EXECUTION_OUTCOME", "JOB_STATUS",
+              )
+          }, indent=2, sort_keys=True) + "\n")
+          PY
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py retain \
+            --run-root run-root --evidence evidence --output retained.tar.gz
+      - name: Upload immutable macOS stage artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: distributed-eval-macos-${{ matrix.attemptId }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            retained.tar.gz
+            retained.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  linux-finalize:
+    needs:
+      - plan
+      - macos-stage
+      - macos-product
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.macos_count != '0'
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.plan.outputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.macos_matrix) }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MACOS_SOURCE_RUN_ID: ${{ inputs.macos_source_run_id }}
+      MACOS_SOURCE_SHA: ${{ inputs.macos_source_sha }}
+      COMPLETION_RELEASE: ${{ inputs.completion_release }}
+      COMPLETION_ASSET: ${{ inputs.completion_asset }}
+      COMPLETION_SHA256: ${{ inputs.completion_sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Record Linux finalization identity
+        run: |
+          set -euo pipefail
+          mkdir -p evidence downloads/package downloads/images downloads/stage
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(uname -m)" = aarch64
+          uname -a > evidence/platform.txt
+          df -B1 . > evidence/disk-before.txt
+      - name: Download and verify matching macOS artifact
+        id: stage
+        run: |
+          set -euo pipefail
+          source_run_id="${MACOS_SOURCE_RUN_ID:-$GITHUB_RUN_ID}"
+          name="distributed-eval-macos-${{ matrix.attemptId }}-$source_run_id-1"
+          if [[ -n "$MACOS_SOURCE_RUN_ID" ]]; then
+            gh run view "$source_run_id" --repo "$GITHUB_REPOSITORY" \
+              --json headSha,status > evidence/source-run.json
+            python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          source = json.loads(Path("evidence/source-run.json").read_text())
+          expected = {"headSha": os.environ["MACOS_SOURCE_SHA"], "status": "completed"}
+          if source != expected:
+              raise SystemExit(f"invalid source run: {source}")
+          PY
+          fi
+          printf '%s\n' "$source_run_id" > evidence/source-run-id.txt
+          gh run download "$source_run_id" --repo "$GITHUB_REPOSITORY" \
+            --name "$name" --dir downloads/stage
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py unpack-retained \
+            --archive downloads/stage/retained.tar.gz \
+            --checksum downloads/stage/retained.tar.gz.sha256 \
+            --destination stage > evidence/stage-archive.json
+          cp -R stage/evidence evidence/macos-stage
+          cp .github/workflows/distributed-campaign.yml evidence/workflow.yml
+          cp skills/skill-evaluation/scripts/distributed_campaign.py evidence/distributed_campaign.py
+          sha256sum evidence/workflow.yml evidence/distributed_campaign.py \
+            > evidence/finalizer-files.sha256
+      - name: Download and verify sealed package
+        id: package
+        run: |
+          set -euo pipefail
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py download-release \
+            --repository "$GITHUB_REPOSITORY" --release "$PACKAGE_RELEASE" \
+            --asset "$PACKAGE_ASSET" \
+            --destination "downloads/package/$PACKAGE_ASSET" \
+            --sha256 "$DISTRIBUTED_EVAL_PACKAGE_ARCHIVE_SHA256"
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py unpack-package \
+            --archive "downloads/package/$PACKAGE_ASSET" \
+            --destination inputs > evidence/package-identity.json
+      - name: Preserve exact image IDs with the containerd image store
+        if: matrix.imageAsset != ''
+        run: |
+          set -euo pipefail
+          sudo python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("/etc/docker/daemon.json")
+          settings = json.loads(path.read_text()) if path.exists() else {}
+          settings.setdefault("features", {})["containerd-snapshotter"] = True
+          path.write_text(json.dumps(settings) + "\n")
+          PY
+          sudo systemctl restart docker
+      - name: Download and load exact grading image
+        if: matrix.imageAsset != ''
+        run: |
+          set -euo pipefail
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py download-release \
+            --repository "$GITHUB_REPOSITORY" \
+            --release "${{ matrix.imageRelease }}" \
+            --asset "${{ matrix.imageAsset }}" \
+            --destination "downloads/images/${{ matrix.imageAsset }}"
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py verify-image \
+            --manifest "$IMAGE_MANIFEST_PATH" \
+            --release "${{ matrix.imageRelease }}" \
+            --image-id "${{ matrix.imageId }}" \
+            --asset "${{ matrix.imageAsset }}" \
+            --archive "downloads/images/${{ matrix.imageAsset }}" \
+            > evidence/image-asset.json
+          sudo docker load --input "downloads/images/${{ matrix.imageAsset }}" \
+            > evidence/docker-load.log
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py verify-loaded-image \
+            --image-id "${{ matrix.imageId }}" > evidence/loaded-image.json
+      - name: Prepare exact pinned Linux Copilot CLI
+        id: cli
+        run: |
+          set -euo pipefail
+          mkdir host-cli
+          curl --fail --location --silent --show-error \
+            "https://github.com/github/copilot-cli/releases/download/$COPILOT_CLI_VERSION/copilot-linux-arm64.tar.gz" \
+            --output downloads/copilot-linux-arm64.tar.gz
+          printf '%s  downloads/copilot-linux-arm64.tar.gz\n' \
+            "$COPILOT_LINUX_ARCHIVE_SHA256" \
+            | sha256sum --check --strict > evidence/cli-archive-check.txt
+          tar -xzf downloads/copilot-linux-arm64.tar.gz -C host-cli
+          printf '%s  host-cli/copilot\n' \
+            "$COPILOT_LINUX_BINARY_SHA256" \
+            | sha256sum --check --strict > evidence/cli-executable-check.txt
+          printf '%s\n' "$GITHUB_WORKSPACE/host-cli" >> "$GITHUB_PATH"
+      - name: Finalize deterministic grading and both judges
+        id: execution
+        env:
+          COPILOT_EVAL_MODEL_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          GH_TOKEN: ""
+        run: |
+          set -euo pipefail
+          test -n "$COPILOT_EVAL_MODEL_TOKEN"
+          source=()
+          if [[ -n "$MACOS_SOURCE_RUN_ID" ]]; then
+            source+=(--source-run-id "$MACOS_SOURCE_RUN_ID")
+            source+=(--source-sha "$MACOS_SOURCE_SHA")
+          fi
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py finalize-linux \
+            --package-root inputs \
+            --attempt-id "${{ matrix.attemptId }}" \
+            --case-id "${{ matrix.caseId }}" \
+            --case-revision "${{ matrix.caseRevision }}" \
+            --treatment-id "${{ matrix.treatmentId }}" \
+            --repetition "${{ matrix.repetition }}" \
+            --run-root stage/run-root \
+            --dispatch-evidence stage/evidence/dispatch.json \
+            "${source[@]}" \
+            > evidence/execution.log 2>&1
+      - name: Preserve final evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          df -B1 . > evidence/disk-after.txt
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py retain \
+            --run-root stage/run-root --evidence evidence --output retained.tar.gz
+      - name: Upload immutable final artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: distributed-eval-final-${{ matrix.attemptId }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            retained.tar.gz
+            retained.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  linux-native:
+    needs: plan
+    if: inputs.macos_source_run_id == '' && inputs.linux_source_run_id == '' && needs.plan.outputs.linux_count != '0'
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.plan.outputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.linux_matrix) }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Prepare Linux attempt
+        run: |
+          set -euo pipefail
+          mkdir -p evidence downloads/package downloads/images
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py download-release \
+            --repository "$GITHUB_REPOSITORY" --release "$PACKAGE_RELEASE" \
+            --asset "$PACKAGE_ASSET" \
+            --destination "downloads/package/$PACKAGE_ASSET" \
+            --sha256 "$DISTRIBUTED_EVAL_PACKAGE_ARCHIVE_SHA256"
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py unpack-package \
+            --archive "downloads/package/$PACKAGE_ASSET" --destination inputs
+          curl --fail --location --silent --show-error \
+            "https://github.com/github/copilot-cli/releases/download/$COPILOT_CLI_VERSION/copilot-linux-arm64.tar.gz" \
+            --output downloads/copilot-linux-arm64.tar.gz
+          printf '%s  downloads/copilot-linux-arm64.tar.gz\n' \
+            "$COPILOT_LINUX_ARCHIVE_SHA256" \
+            | sha256sum --check --strict
+          mkdir host-cli
+          tar -xzf downloads/copilot-linux-arm64.tar.gz -C host-cli
+          printf '%s  host-cli/copilot\n' \
+            "$COPILOT_LINUX_BINARY_SHA256" \
+            | sha256sum --check --strict
+          printf '%s\n' "$GITHUB_WORKSPACE/host-cli" >> "$GITHUB_PATH"
+      - name: Configure exact Linux grading image
+        if: matrix.imageAsset != ''
+        run: |
+          set -euo pipefail
+          sudo python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("/etc/docker/daemon.json")
+          settings = json.loads(path.read_text()) if path.exists() else {}
+          settings.setdefault("features", {})["containerd-snapshotter"] = True
+          path.write_text(json.dumps(settings) + "\n")
+          PY
+          sudo systemctl restart docker
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py download-release \
+            --repository "$GITHUB_REPOSITORY" \
+            --release "${{ matrix.imageRelease }}" \
+            --asset "${{ matrix.imageAsset }}" \
+            --destination "downloads/images/${{ matrix.imageAsset }}"
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py verify-image \
+            --manifest "$IMAGE_MANIFEST_PATH" \
+            --release "${{ matrix.imageRelease }}" --image-id "${{ matrix.imageId }}" \
+            --asset "${{ matrix.imageAsset }}" \
+            --archive "downloads/images/${{ matrix.imageAsset }}"
+          sudo docker load --input "downloads/images/${{ matrix.imageAsset }}"
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py verify-loaded-image \
+            --image-id "${{ matrix.imageId }}"
+      - name: Run complete Linux attempt
+        id: execution
+        env:
+          COPILOT_EVAL_MODEL_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          GH_TOKEN: ""
+        run: |
+          set -euo pipefail
+          test -n "$COPILOT_EVAL_MODEL_TOKEN"
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py run-hosted \
+            --package-root inputs \
+            --attempt-id "${{ matrix.attemptId }}" \
+            --case-id "${{ matrix.caseId }}" \
+            --case-revision "${{ matrix.caseRevision }}" \
+            --treatment-id "${{ matrix.treatmentId }}" \
+            --repetition "${{ matrix.repetition }}" \
+            --run-root run-root > evidence/execution.log 2>&1
+      - name: Preserve complete Linux evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py retain \
+            --run-root run-root --evidence evidence --output retained.tar.gz
+      - name: Upload immutable final artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: distributed-eval-final-${{ matrix.attemptId }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            retained.tar.gz
+            retained.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  linux-refinalize:
+    needs: plan
+    if: inputs.linux_source_run_id != '' && needs.plan.outputs.linux_count == '1'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.plan.outputs.linux_matrix) }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LINUX_SOURCE_RUN_ID: ${{ inputs.linux_source_run_id }}
+      LINUX_SOURCE_SHA: ${{ inputs.linux_source_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Recover exact Linux candidate and product stage
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          source_run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$LINUX_SOURCE_RUN_ID")"
+          test "$(jq -r .status <<<"$source_run")" = completed
+          test "$(jq -r .head_sha <<<"$source_run")" = "$LINUX_SOURCE_SHA"
+          test "$(jq -r .path <<<"$source_run")" = ".github/workflows/distributed-campaign.yml"
+          mkdir -p evidence downloads/package downloads/images downloads/source-plan downloads/source-attempt
+          gh run download "$LINUX_SOURCE_RUN_ID" \
+            --name "distributed-eval-plan-$LINUX_SOURCE_RUN_ID-1" \
+            --dir downloads/source-plan
+          gh run download "$LINUX_SOURCE_RUN_ID" \
+            --name "distributed-eval-final-${{ matrix.attemptId }}-$LINUX_SOURCE_RUN_ID-1" \
+            --dir downloads/source-attempt
+          cp downloads/source-plan/dispatch-plan.json evidence/source-dispatch-plan.json
+          cp downloads/source-attempt/retained.tar.gz.sha256 evidence/source-retained.tar.gz.sha256
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py unpack-retained \
+            --archive downloads/source-attempt/retained.tar.gz \
+            --checksum downloads/source-attempt/retained.tar.gz.sha256 \
+            --destination stage > evidence/source-archive.json
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py download-release \
+            --repository "$GITHUB_REPOSITORY" --release "$PACKAGE_RELEASE" \
+            --asset "$PACKAGE_ASSET" \
+            --destination "downloads/package/$PACKAGE_ASSET" \
+            --sha256 "$DISTRIBUTED_EVAL_PACKAGE_ARCHIVE_SHA256"
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py unpack-package \
+            --archive "downloads/package/$PACKAGE_ASSET" --destination inputs
+          curl --fail --location --silent --show-error \
+            "https://github.com/github/copilot-cli/releases/download/$COPILOT_CLI_VERSION/copilot-linux-arm64.tar.gz" \
+            --output downloads/copilot-linux-arm64.tar.gz
+          printf '%s  downloads/copilot-linux-arm64.tar.gz\n' \
+            "$COPILOT_LINUX_ARCHIVE_SHA256" \
+            | sha256sum --check --strict
+          mkdir host-cli
+          tar -xzf downloads/copilot-linux-arm64.tar.gz -C host-cli
+          printf '%s  host-cli/copilot\n' \
+            "$COPILOT_LINUX_BINARY_SHA256" \
+            | sha256sum --check --strict
+          printf '%s\n' "$GITHUB_WORKSPACE/host-cli" >> "$GITHUB_PATH"
+      - name: Configure exact Linux grading image
+        if: matrix.imageAsset != ''
+        run: |
+          set -euo pipefail
+          sudo python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("/etc/docker/daemon.json")
+          settings = json.loads(path.read_text()) if path.exists() else {}
+          settings.setdefault("features", {})["containerd-snapshotter"] = True
+          path.write_text(json.dumps(settings) + "\n")
+          PY
+          sudo systemctl restart docker
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py download-release \
+            --repository "$GITHUB_REPOSITORY" \
+            --release "${{ matrix.imageRelease }}" \
+            --asset "${{ matrix.imageAsset }}" \
+            --destination "downloads/images/${{ matrix.imageAsset }}"
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py verify-image \
+            --manifest "$IMAGE_MANIFEST_PATH" \
+            --release "${{ matrix.imageRelease }}" --image-id "${{ matrix.imageId }}" \
+            --asset "${{ matrix.imageAsset }}" \
+            --archive "downloads/images/${{ matrix.imageAsset }}"
+          sudo docker load --input "downloads/images/${{ matrix.imageAsset }}"
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py verify-loaded-image \
+            --image-id "${{ matrix.imageId }}"
+      - name: Resume deterministic grading and judges
+        id: execution
+        env:
+          COPILOT_EVAL_MODEL_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          GH_TOKEN: ""
+        run: |
+          set -euo pipefail
+          test -n "$COPILOT_EVAL_MODEL_TOKEN"
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py resume-hosted-linux \
+            --package-root inputs \
+            --attempt-id "${{ matrix.attemptId }}" \
+            --case-id "${{ matrix.caseId }}" \
+            --case-revision "${{ matrix.caseRevision }}" \
+            --treatment-id "${{ matrix.treatmentId }}" \
+            --repetition "${{ matrix.repetition }}" \
+            --run-root stage/run-root \
+            --source-plan downloads/source-plan/dispatch-plan.json \
+            --source-archive-evidence evidence/source-archive.json \
+            --source-run-id "$LINUX_SOURCE_RUN_ID" \
+            --source-sha "$LINUX_SOURCE_SHA" > evidence/execution.log 2>&1
+      - name: Preserve resumed Linux evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py retain \
+            --run-root stage/run-root --evidence evidence --output retained.tar.gz
+      - name: Upload immutable resumed final artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: distributed-eval-final-${{ matrix.attemptId }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            retained.tar.gz
+            retained.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

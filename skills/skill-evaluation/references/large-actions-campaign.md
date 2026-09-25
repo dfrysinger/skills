@@ -5,6 +5,12 @@ for one local host. GitHub Actions provides elastic execution; the evaluator
 still owns case integrity, first-outcome preservation, artifact verification,
 and final reconciliation.
 
+For an implementation of this contract, see
+[`distributed-campaign-tooling.md`](distributed-campaign-tooling.md). The
+included scripts and workflow template are product-neutral. Keep each corpus,
+hidden evaluator payload, release asset, and result in a private carrier
+repository.
+
 ## 1. Freeze the execution universe
 
 Assign one stable attempt ID to every case, treatment, repetition, model, and
@@ -32,7 +38,10 @@ The candidate stage materializes only the candidate payload into an isolated
 workdir. Hidden payloads remain unavailable to that process and session.
 Structured tool logs must prove candidate reads stayed inside the candidate
 workdir and its explicit allowlist. Download or materialize hidden payloads
-only after candidate execution and patch capture have ended.
+only after candidate execution and patch capture have ended. Use a separate
+job or runner for the hidden stage so a process left behind by candidate code
+cannot observe later evaluator downloads. Reconstruct the candidate from its
+captured patch and verify its Git tree before product proof.
 
 Complete when workers can verify the campaign manifest, candidate execution
 cannot address hidden bytes, and the expected attempt set is immutable.
@@ -75,6 +84,10 @@ useful only when it reproduces that exact child-process boundary.
 
 Keep execution-engine cohorts separate from workflow-treatment rankings unless
 the experiment was designed to compare them as the same independent variable.
+When candidate-safe and hidden payloads are split, use only routes with a
+separate candidate job and complete hidden-stage dependency provisioning. The
+included reusable workflow rejects split Linux-native attempts and split
+attempts that require external dependency archives.
 
 Complete when every route produces a checksum-verified retained receipt and its
 result semantics are understood.

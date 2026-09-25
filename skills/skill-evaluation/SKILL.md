@@ -152,6 +152,9 @@ Use the local suite runner for ordinary corpora. When the corpus contains full
 repositories, native builds, product exercises, multiple treatments, or enough
 observations that one host would become the bottleneck, follow
 [`references/large-actions-campaign.md`](references/large-actions-campaign.md).
+Use the reusable scripts and workflow template described in
+[`references/distributed-campaign-tooling.md`](references/distributed-campaign-tooling.md)
+rather than copying a historical campaign repository.
 That procedure seals one immutable campaign release with separately addressed
 candidate and hidden payloads, fans unfinished attempts out through private
 GitHub Actions, preserves first model outcomes, resumes only invalid downstream
