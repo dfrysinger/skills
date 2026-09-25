@@ -1331,8 +1331,35 @@ def apply_scaffold(runner, case: dict, case_root: Path, candidate_root: Path) ->
         return
     archive = case_root / scaffold["path"]
     require(runner.sha256(archive) == scaffold["sha256"], "Grading scaffold digest mismatch")
+    destination = candidate_root / "workspaces"
     with tarfile.open(archive, "r:gz") as stream:
-        runner.extract_archive_with_modes(stream, candidate_root / "workspaces")
+        members = stream.getmembers()
+        for member in members:
+            relative = PurePosixPath(member.name)
+            require(
+                not relative.is_absolute() and ".." not in relative.parts,
+                f"Unsafe scaffold path: {relative}",
+            )
+            target = destination.joinpath(*relative.parts)
+            parent = target.parent
+            while parent != destination.parent and parent.exists():
+                require(not parent.is_symlink(), f"Symlink scaffold parent: {relative}")
+                parent.chmod(parent.stat().st_mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+                if parent == destination:
+                    break
+                parent = parent.parent
+            if member.isdir() and (target.exists() or target.is_symlink()):
+                require(
+                    target.is_dir() and not target.is_symlink(),
+                    f"Scaffold directory replaced a non-directory: {relative}",
+                )
+            elif target.exists() or target.is_symlink():
+                require(
+                    target.is_symlink() or not target.is_dir(),
+                    f"Scaffold file replaced a directory: {relative}",
+                )
+                target.unlink()
+        runner.extract_archive_with_modes(stream, destination)
 
 
 def prepare_container_grading_tree(

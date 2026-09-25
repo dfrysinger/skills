@@ -334,6 +334,128 @@ class FullProductMatrixTests(unittest.TestCase):
             self.assertEqual(workspace.stat().st_mode & 0o777, 0o755)
             self.assertEqual(protected.stat().st_mode & 0o777, 0o644)
 
+    def test_container_scaffold_replaces_read_only_cache_file_and_restores_mode(self):
+        class Runner:
+            @staticmethod
+            def sha256(path):
+                return digest(path)
+
+            @staticmethod
+            def detach_cache_symlinks(_candidate):
+                return []
+
+            @staticmethod
+            def extract_archive_with_modes(archive, destination):
+                matrix.tarfile.TarFile.extractall(archive, destination, filter="data")
+                for member in archive.getmembers():
+                    target = destination / member.name
+                    if target.exists() and not member.issym() and not member.islnk():
+                        target.chmod(member.mode)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate = root / "candidate"
+            cache = candidate / "workspaces/repository/.cargo-git/objects"
+            cache.mkdir(parents=True)
+            existing = cache / "pack.idx"
+            existing.write_text("old")
+            existing.chmod(0o444)
+            cache.chmod(0o555)
+            source = root / "pack.idx"
+            source.write_text("sealed")
+            source.chmod(0o644)
+            archive = root / "scaffold.tar.gz"
+            with tarfile.open(archive, "w:gz") as stream:
+                stream.add(source, arcname="repository/.cargo-git/objects/pack.idx")
+            case = {
+                "grading": {
+                    "scaffold": {
+                        "path": archive.name,
+                        "sha256": digest(archive),
+                    }
+                }
+            }
+            matrix.prepare_container_grading_tree(Runner(), case, root, candidate)
+            self.assertEqual(existing.read_text(), "sealed")
+            self.assertEqual(existing.stat().st_mode & 0o777, 0o644)
+
+    def test_container_scaffold_rejects_existing_directory_symlink(self):
+        class Runner:
+            @staticmethod
+            def sha256(path):
+                return digest(path)
+
+            @staticmethod
+            def detach_cache_symlinks(_candidate):
+                return []
+
+            @staticmethod
+            def extract_archive_with_modes(archive, destination):
+                matrix.tarfile.TarFile.extractall(archive, destination, filter="data")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspaces = root / "candidate/workspaces"
+            outside = root / "outside"
+            workspaces.mkdir(parents=True)
+            outside.mkdir()
+            (workspaces / "repository").symlink_to(outside, target_is_directory=True)
+            source = root / "empty"
+            source.mkdir()
+            archive = root / "scaffold.tar.gz"
+            with tarfile.open(archive, "w:gz") as stream:
+                stream.add(source, arcname="repository")
+            case = {
+                "grading": {
+                    "scaffold": {
+                        "path": archive.name,
+                        "sha256": digest(archive),
+                    }
+                }
+            }
+            with self.assertRaisesRegex(
+                ValueError, "Scaffold directory replaced a non-directory"
+            ):
+                matrix.prepare_container_grading_tree(
+                    Runner(), case, root, root / "candidate"
+                )
+
+    def test_scaffold_symlink_replaces_existing_symlink_to_directory(self):
+        class Runner:
+            @staticmethod
+            def sha256(path):
+                return digest(path)
+
+            @staticmethod
+            def extract_archive_with_modes(archive, destination):
+                matrix.tarfile.TarFile.extractall(archive, destination, filter="data")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspaces = root / "candidate/workspaces/repository"
+            outside = root / "outside"
+            workspaces.mkdir(parents=True)
+            outside.mkdir()
+            link = workspaces / "cache"
+            link.symlink_to(outside, target_is_directory=True)
+            archive = root / "scaffold.tar.gz"
+            with tarfile.open(archive, "w:gz") as stream:
+                member = tarfile.TarInfo("repository/cache")
+                member.type = tarfile.SYMTYPE
+                member.linkname = "sealed-cache"
+                stream.addfile(member)
+            case = {
+                "grading": {
+                    "scaffold": {
+                        "path": archive.name,
+                        "sha256": digest(archive),
+                    }
+                }
+            }
+            matrix.apply_scaffold(Runner(), case, root, root / "candidate")
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(os.readlink(link), "sealed-cache")
+
     def test_dependency_environment_provisions_exact_cargo_home(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "dependency"
