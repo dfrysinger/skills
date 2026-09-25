@@ -1895,6 +1895,69 @@ def validate_product_evidence(run_root: Path, stage: dict) -> None:
         require(sha256(path) == record.get("sha256"), f"Product evidence digest mismatch: {relative}")
 
 
+def load_or_recover_macos_stage_receipt(run_root: Path) -> dict:
+    receipt_path = run_root / "macos-stage-receipt.json"
+    if receipt_path.is_file():
+        return read_json(receipt_path)
+    candidate_stage = read_json(run_root / "macos-candidate-stage-receipt.json")
+    require(
+        candidate_stage.get("route") == "macos-candidate-stage",
+        "Candidate stage receipt is invalid",
+    )
+    require(
+        candidate_stage.get("candidatePackageArchiveSha256")
+        != PACKAGE_ARCHIVE_SHA256,
+        "Only split product stages may recover a missing macOS stage receipt",
+    )
+    require(
+        read_json_list(run_root / "dependency-runtime.json") == [],
+        "Split product-stage recovery does not support external dependencies",
+    )
+    product = read_json(run_root / "product/receipt.json")
+    require(
+        product.get("schemaVersion") == 1
+        and isinstance(product.get("passed"), bool)
+        and isinstance(product.get("records"), list),
+        "macOS product receipt is incomplete",
+    )
+    deterministic_execution = candidate_stage.get("deterministicExecution")
+    host_deterministic = {
+        "skipped": True,
+        "reason": "container deterministic grading is assigned to Linux finalization",
+    }
+    if deterministic_execution == "host":
+        host_deterministic = read_json(run_root / "host-deterministic/receipt.json")
+    else:
+        require(
+            deterministic_execution == "container",
+            "Unsupported deterministic execution",
+        )
+    receipt = {
+        "schemaVersion": 2,
+        **{
+            key: candidate_stage.get(key)
+            for key in IDENTITY_KEYS
+        },
+        "route": "macos-native-stage",
+        "candidatePackageArchiveSha256": candidate_stage[
+            "candidatePackageArchiveSha256"
+        ],
+        "packageArchiveSha256": PACKAGE_ARCHIVE_SHA256,
+        "packageManifestSha256": PACKAGE_MANIFEST_SHA256,
+        "candidate": candidate_stage["candidate"],
+        "sources": candidate_stage["sources"],
+        "gradingGitIdentity": candidate_stage["gradingGitIdentity"],
+        "product": product,
+        "hostDeterministic": host_deterministic,
+        "deterministicExecution": deterministic_execution,
+        "candidateRerunRequired": False,
+        "terminal": False,
+        "status": "PENDING_LINUX_FINALIZATION",
+    }
+    write_json(receipt_path, receipt)
+    return receipt
+
+
 def validate_stage_dispatch(
     evidence_path: Path,
     attempt: dict,
@@ -1993,7 +2056,7 @@ def finalize_linux(
         "COPILOT_EVAL_MODEL_TOKEN is required",
     )
     package, attempt, indexed_case = select_attempt(package_root, attempt_id, supplied_identity)
-    stage = read_json(run_root / "macos-stage-receipt.json")
+    stage = load_or_recover_macos_stage_receipt(run_root)
     require(stage.get("route") == "macos-native-stage", "Artifact is not a macOS stage")
     require({key: stage.get(key) for key in IDENTITY_KEYS} == attempt_identity(attempt),
             "macOS stage attempt identity mismatch")

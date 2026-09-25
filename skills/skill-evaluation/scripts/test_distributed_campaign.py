@@ -528,6 +528,45 @@ class FullProductMatrixTests(unittest.TestCase):
             matrix.write_json(path, [])
             self.assertEqual(matrix.read_json_list(path), [])
 
+    def test_recovers_split_stage_receipt_after_product_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_root = Path(directory)
+            candidate_stage = {
+                "attemptId": "attempt-1",
+                "caseId": "case-1",
+                "caseRevision": "revision-1",
+                "treatmentId": "treatment-1",
+                "repetition": 1,
+                "route": "macos-candidate-stage",
+                "candidatePackageArchiveSha256": "candidate-package",
+                "candidate": {"boundaryAudit": {"passed": True}},
+                "sources": [{"workspace": "runtime"}],
+                "gradingGitIdentity": {"name": "Evaluator"},
+                "deterministicExecution": "container",
+            }
+            product = {
+                "schemaVersion": 1,
+                "passed": False,
+                "records": [{"exitCode": 1}],
+                "evidenceFiles": [],
+            }
+            matrix.write_json(
+                run_root / "macos-candidate-stage-receipt.json",
+                candidate_stage,
+            )
+            matrix.write_json(run_root / "dependency-runtime.json", [])
+            matrix.write_json(run_root / "product/receipt.json", product)
+
+            receipt = matrix.load_or_recover_macos_stage_receipt(run_root)
+
+            self.assertEqual(receipt["route"], "macos-native-stage")
+            self.assertEqual(receipt["product"], product)
+            self.assertFalse(receipt["candidateRerunRequired"])
+            self.assertEqual(
+                matrix.read_json(run_root / "macos-stage-receipt.json"),
+                receipt,
+            )
+
     def test_dependency_identity_ignores_directory_allocation_size(self):
         source = inspect.getsource(matrix.dependency_metadata)
         path_source = inspect.getsource(matrix.dependency_path_metadata)
