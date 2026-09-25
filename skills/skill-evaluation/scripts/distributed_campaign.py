@@ -67,6 +67,12 @@ def read_json(path: Path) -> dict:
     return value
 
 
+def read_json_list(path: Path) -> list:
+    value = json.loads(path.read_text())
+    require(isinstance(value, list), f"Expected a JSON array: {path}")
+    return value
+
+
 def write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
@@ -1703,7 +1709,7 @@ def run_macos_product_stage(
                 )
                 (run_root / "deterministic").rename(run_root / "host-deterministic")
     verify_dependency_sources_unchanged(
-        read_json(run_root / "dependency-runtime.json")
+        read_json_list(run_root / "dependency-runtime.json")
     )
     receipt = {
         "schemaVersion": 2,

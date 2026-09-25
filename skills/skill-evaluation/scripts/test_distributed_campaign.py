@@ -522,6 +522,12 @@ class FullProductMatrixTests(unittest.TestCase):
                 receipts[0]["sourceContentSha256After"],
             )
 
+    def test_dependency_runtime_receipt_accepts_empty_array(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "dependency-runtime.json"
+            matrix.write_json(path, [])
+            self.assertEqual(matrix.read_json_list(path), [])
+
     def test_dependency_identity_ignores_directory_allocation_size(self):
         source = inspect.getsource(matrix.dependency_metadata)
         path_source = inspect.getsource(matrix.dependency_path_metadata)
