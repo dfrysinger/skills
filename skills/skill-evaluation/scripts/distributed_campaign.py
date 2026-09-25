@@ -254,6 +254,22 @@ def dependency_environment(
             os.environ["CARGO_HOME"] = previous
 
 
+@contextlib.contextmanager
+def pythonpath_environment(paths: list[Path]):
+    previous = os.environ.get("PYTHONPATH")
+    if paths:
+        os.environ["PYTHONPATH"] = os.pathsep.join(
+            [str(path) for path in paths] + ([previous] if previous else [])
+        )
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("PYTHONPATH", None)
+        else:
+            os.environ["PYTHONPATH"] = previous
+
+
 def safe_name(value: str, label: str = "name") -> str:
     require(
         isinstance(value, str)
@@ -1372,6 +1388,11 @@ def run_macos_candidate_stage(
     require(loaded_package == package and case == indexed_case, "Sealed runner case view mismatch")
     require(case["runtime"]["platform"]["os"] == "macos", "Attempt is not macOS-targeted")
     require(case["runtime"]["platform"]["architecture"] == "arm64", "Attempt is not arm64")
+    require(
+        candidate_package_archive_sha256 == PACKAGE_ARCHIVE_SHA256
+        or not dependency_sources,
+        "Split candidate stages do not support external dependency archives",
+    )
 
     run_root.mkdir(parents=True)
     try:
@@ -1391,21 +1412,27 @@ def run_macos_candidate_stage(
         )
         runner.write_json(run_root / "dependencies.json", dependency_receipt)
         runner.write_json(run_root / "dependency-runtime.json", runtime_dependency_receipt)
-        candidate = run_candidate_with_public_github(
-            runner,
-            before_copilot=(
-                lambda: remove_sealed_tree(package_root)
-                if candidate_package_archive_sha256 != PACKAGE_ARCHIVE_SHA256
-                else None
-            ),
-            package_root=package_root,
-            package=package,
-            case=case,
-            candidate_root=candidate_root,
-            treatment_id=attempt["treatmentId"],
-            run_root=run_root,
-            timeout=attempt["candidateTimeoutSeconds"],
+        python_paths = prepare_python_dependencies(
+            dependencies,
+            run_root,
+            scaffold_python_distributions(case, case_root),
         )
+        with pythonpath_environment(python_paths):
+            candidate = run_candidate_with_public_github(
+                runner,
+                before_copilot=(
+                    lambda: remove_sealed_tree(package_root)
+                    if candidate_package_archive_sha256 != PACKAGE_ARCHIVE_SHA256
+                    else None
+                ),
+                package_root=package_root,
+                package=package,
+                case=case,
+                candidate_root=candidate_root,
+                treatment_id=attempt["treatmentId"],
+                run_root=run_root,
+                timeout=attempt["candidateTimeoutSeconds"],
+            )
         runner.write_json(run_root / "candidate-receipt.json", candidate)
         sources = runner.capture_candidate(
             candidate_root, baselines, run_root / "candidate-source"
@@ -1427,6 +1454,11 @@ def run_macos_candidate_stage(
             "candidate": candidate,
             "sources": sources,
             "gradingGitIdentity": grading_git_identity,
+            "runtimeDependencies": {
+                workspace: str(path)
+                for workspace, path in sorted(runtime_dependencies.items())
+            },
+            "pythonPaths": [str(path) for path in python_paths],
             "deterministicExecution": case["grading"]["execution"],
             "candidateRerunRequired": False,
             "terminal": False,
@@ -1502,20 +1534,40 @@ def run_macos_product_stage(
         candidate_root, baselines, _ = restore_candidate_sources(
             runner, package_root, attempt, run_root, candidate_stage
         )
+    runtime_dependencies = {}
+    for workspace, value in candidate_stage.get("runtimeDependencies", {}).items():
+        safe_name(workspace, "dependency workspace")
+        path = Path(value).resolve()
+        require(path.is_dir(), f"Dependency runtime is missing: {workspace}")
+        runtime_dependencies[workspace] = path
+    python_paths = [Path(value).resolve() for value in candidate_stage.get("pythonPaths", [])]
+    require(
+        all(path.is_dir() for path in python_paths),
+        "Python dependency runtime is missing",
+    )
+    if candidate_stage["candidatePackageArchiveSha256"] != PACKAGE_ARCHIVE_SHA256:
+        require(
+            not runtime_dependencies and not python_paths,
+            "Split candidate stage unexpectedly retained external dependencies",
+        )
     apply_scaffold(runner, case, case_root, candidate_root)
-    with dependency_environment({}, candidate_root, run_root):
-        product = runner.run_product(case, case_root, candidate_root, run_root)
-        if case["grading"]["execution"] == "container":
-            prepare_container_grading_tree(runner, case, case_root, candidate_root)
-        host_deterministic = {
-            "skipped": True,
-            "reason": "container deterministic grading is assigned to Linux finalization",
-        }
-        if case["grading"]["execution"] == "host":
-            host_deterministic = runner.run_deterministic(
-                case, case_root, candidate_root, run_root, baselines
-            )
-            (run_root / "deterministic").rename(run_root / "host-deterministic")
+    with pythonpath_environment(python_paths):
+        with dependency_environment(runtime_dependencies, candidate_root, run_root):
+            product = runner.run_product(case, case_root, candidate_root, run_root)
+            if case["grading"]["execution"] == "container":
+                prepare_container_grading_tree(runner, case, case_root, candidate_root)
+            host_deterministic = {
+                "skipped": True,
+                "reason": "container deterministic grading is assigned to Linux finalization",
+            }
+            if case["grading"]["execution"] == "host":
+                host_deterministic = runner.run_deterministic(
+                    case, case_root, candidate_root, run_root, baselines
+                )
+                (run_root / "deterministic").rename(run_root / "host-deterministic")
+    verify_dependency_sources_unchanged(
+        read_json(run_root / "dependency-runtime.json")
+    )
     receipt = {
         "schemaVersion": 2,
         **attempt_identity(attempt),

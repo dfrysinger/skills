@@ -123,9 +123,26 @@ class FullProductMatrixTests(unittest.TestCase):
     def test_only_split_macos_candidate_stage_retires_package(self):
         hosted = inspect.getsource(matrix.run_hosted)
         macos_candidate = inspect.getsource(matrix.run_macos_candidate_stage)
+        macos_product = inspect.getsource(matrix.run_macos_product_stage)
         self.assertNotIn("before_copilot", hosted)
         self.assertIn("before_copilot", macos_candidate)
         self.assertIn("candidate_package_archive_sha256", macos_candidate)
+        self.assertIn("prepare_python_dependencies", macos_candidate)
+        self.assertIn("runtimeDependencies", macos_candidate)
+        self.assertIn("pythonpath_environment(python_paths)", macos_product)
+        self.assertIn("dependency_environment(runtime_dependencies", macos_product)
+
+    def test_pythonpath_environment_restores_prior_value(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dependency = Path(directory) / "python"
+            dependency.mkdir()
+            with mock.patch.dict("os.environ", {"PYTHONPATH": "existing"}, clear=True):
+                with matrix.pythonpath_environment([dependency]):
+                    self.assertEqual(
+                        os.environ["PYTHONPATH"],
+                        f"{dependency}{os.pathsep}existing",
+                    )
+                self.assertEqual(os.environ["PYTHONPATH"], "existing")
 
     def test_container_workspace_is_writable_without_changing_execute_bits(self):
         with tempfile.TemporaryDirectory() as directory:
