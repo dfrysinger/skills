@@ -1197,6 +1197,21 @@ def materialize_candidate(runner, package_root: Path, case_id: str, candidate_ro
     )
 
 
+def prepare_case_python_dependencies(
+    dependency_sources: dict[str, Path],
+    run_root: Path,
+    case: dict,
+    case_root: Path,
+) -> list[Path]:
+    if not dependency_sources:
+        return []
+    return prepare_python_dependencies(
+        dependency_sources,
+        run_root,
+        scaffold_python_distributions(case, case_root),
+    )
+
+
 def apply_scaffold(runner, case: dict, case_root: Path, candidate_root: Path) -> None:
     scaffold = case["grading"].get("scaffold")
     if scaffold is None:
@@ -1412,10 +1427,11 @@ def run_macos_candidate_stage(
         )
         runner.write_json(run_root / "dependencies.json", dependency_receipt)
         runner.write_json(run_root / "dependency-runtime.json", runtime_dependency_receipt)
-        python_paths = prepare_python_dependencies(
+        python_paths = prepare_case_python_dependencies(
             dependencies,
             run_root,
-            scaffold_python_distributions(case, case_root),
+            case,
+            case_root,
         )
         with pythonpath_environment(python_paths):
             candidate = run_candidate_with_public_github(

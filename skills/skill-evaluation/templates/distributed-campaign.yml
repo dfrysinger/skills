@@ -533,7 +533,7 @@ jobs:
     needs:
       - plan
       - macos-stage
-    if: always() && inputs.candidate_package_asset != '' && inputs.macos_source_run_id == '' && inputs.linux_source_run_id == '' && needs.plan.result == 'success' && needs.plan.outputs.macos_count != '0'
+    if: always() && inputs.candidate_package_asset != '' && inputs.macos_source_run_id == '' && inputs.linux_source_run_id == '' && needs.plan.result == 'success' && needs.macos-stage.result == 'success' && needs.plan.outputs.macos_count != '0'
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJSON(needs.plan.outputs.max_parallel) }}
@@ -623,7 +623,7 @@ jobs:
       - plan
       - macos-stage
       - macos-product
-    if: always() && needs.plan.result == 'success' && needs.plan.outputs.macos_count != '0'
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.macos_count != '0' && (inputs.macos_source_run_id != '' || (inputs.candidate_package_asset != '' && needs.macos-product.result == 'success') || (inputs.candidate_package_asset == '' && needs.macos-stage.result == 'success'))
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJSON(needs.plan.outputs.max_parallel) }}

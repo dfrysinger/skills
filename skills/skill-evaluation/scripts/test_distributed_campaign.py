@@ -127,7 +127,7 @@ class FullProductMatrixTests(unittest.TestCase):
         self.assertNotIn("before_copilot", hosted)
         self.assertIn("before_copilot", macos_candidate)
         self.assertIn("candidate_package_archive_sha256", macos_candidate)
-        self.assertIn("prepare_python_dependencies", macos_candidate)
+        self.assertIn("prepare_case_python_dependencies", macos_candidate)
         self.assertIn("runtimeDependencies", macos_candidate)
         self.assertIn("pythonpath_environment(python_paths)", macos_product)
         self.assertIn("dependency_environment(runtime_dependencies", macos_product)
@@ -143,6 +143,19 @@ class FullProductMatrixTests(unittest.TestCase):
                         f"{dependency}{os.pathsep}existing",
                     )
                 self.assertEqual(os.environ["PYTHONPATH"], "existing")
+
+    def test_empty_dependencies_do_not_read_hidden_scaffold(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(
+                matrix.prepare_case_python_dependencies(
+                    {},
+                    root / "run",
+                    {"grading": {"scaffold": {"path": "hidden/missing.tar.gz"}}},
+                    root / "candidate-safe-case",
+                ),
+                [],
+            )
 
     def test_container_workspace_is_writable_without_changing_execute_bits(self):
         with tempfile.TemporaryDirectory() as directory:
