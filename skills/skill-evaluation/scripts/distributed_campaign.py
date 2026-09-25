@@ -137,35 +137,37 @@ def remove_sealed_tree(root: Path) -> None:
     shutil.rmtree(root)
 
 
-def make_container_workspace_writable(candidate_root: Path) -> None:
-    workspaces = candidate_root / "workspaces"
-    for root, directories, files in os.walk(workspaces):
-        for name in directories:
-            path = Path(root) / name
-            if not path.is_symlink():
-                path.chmod(path.stat().st_mode | stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
-        for name in files:
-            path = Path(root) / name
-            if not path.is_symlink():
-                path.chmod(path.stat().st_mode | stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
-    workspaces.chmod(
-        workspaces.stat().st_mode
-        | stat.S_IWUSR
-        | stat.S_IWGRP
-        | stat.S_IWOTH
-    )
-
-
 def make_container_workspace_roots_writable(candidate_root: Path) -> None:
     workspaces = candidate_root / "workspaces"
+    workspaces.chmod(workspaces.stat().st_mode | stat.S_IWUSR)
     for workspace in workspaces.iterdir():
         if workspace.is_dir() and not workspace.is_symlink():
-            workspace.chmod(
-                workspace.stat().st_mode
-                | stat.S_IWUSR
-                | stat.S_IWGRP
-                | stat.S_IWOTH
-            )
+            workspace.chmod(workspace.stat().st_mode | stat.S_IWUSR)
+
+
+def run_container_deterministic_as_workspace_owner(
+    runner,
+    case: dict,
+    case_root: Path,
+    candidate_root: Path,
+    run_root: Path,
+    baselines: dict[str, str],
+) -> dict:
+    original_run_command = runner.run_command
+    owner = f"{os.getuid()}:{os.getgid()}"
+
+    def run_command_as_workspace_owner(command, **kwargs):
+        if command[:2] == ["docker", "exec"]:
+            command = [*command[:2], "--user", owner, *command[2:]]
+        return original_run_command(command, **kwargs)
+
+    runner.run_command = run_command_as_workspace_owner
+    try:
+        return runner.run_deterministic(
+            case, case_root, candidate_root, run_root, baselines
+        )
+    finally:
+        runner.run_command = original_run_command
 
 
 def synchronize_grading_git_identity(candidate_root: Path, sources: list[dict]) -> list[dict]:
@@ -1341,7 +1343,7 @@ def prepare_container_grading_tree(
 ) -> None:
     runner.detach_cache_symlinks(candidate_root)
     apply_scaffold(runner, case, case_root, candidate_root)
-    make_container_workspace_writable(candidate_root)
+    make_container_workspace_roots_writable(candidate_root)
 
 
 def case_root_for(runner, package_root: Path, case_id: str) -> tuple[dict, Path, dict]:
@@ -1411,8 +1413,13 @@ def run_hosted(
                 runner, case, case_root, candidate_root
             )
         deterministic_case, setup_adaptations = adapt_hosted_container_case(case)
-        deterministic = runner.run_deterministic(
-            deterministic_case, case_root, candidate_root, run_root, baselines
+        deterministic = run_container_deterministic_as_workspace_owner(
+            runner,
+            deterministic_case,
+            case_root,
+            candidate_root,
+            run_root,
+            baselines,
         )
         deterministic["hostedSetupAdaptations"] = setup_adaptations
 
@@ -2085,8 +2092,8 @@ def finalize_linux(
     )
     if case["grading"]["execution"] == "container":
         prepare_container_grading_tree(runner, case, case_root, candidate_root)
-        deterministic = runner.run_deterministic(
-            case, case_root, candidate_root, run_root, baselines
+        deterministic = run_container_deterministic_as_workspace_owner(
+            runner, case, case_root, candidate_root, run_root, baselines
         )
     else:
         apply_scaffold(runner, case, case_root, candidate_root)
@@ -2383,13 +2390,18 @@ def resume_hosted_linux(
     apply_scaffold(runner, case, case_root, candidate_root)
     if case["grading"]["execution"] == "container":
         runner.detach_cache_symlinks(candidate_root)
-        make_container_workspace_writable(candidate_root)
+        make_container_workspace_roots_writable(candidate_root)
     predecessor_deterministic = run_root / "deterministic"
     require(predecessor_deterministic.is_dir(), "Source deterministic evidence is missing")
     predecessor_deterministic.rename(run_root / "deterministic-predecessor")
     deterministic_case, setup_adaptations = adapt_hosted_container_case(case)
-    deterministic = runner.run_deterministic(
-        deterministic_case, case_root, candidate_root, run_root, baselines
+    deterministic = run_container_deterministic_as_workspace_owner(
+        runner,
+        deterministic_case,
+        case_root,
+        candidate_root,
+        run_root,
+        baselines,
     )
     deterministic["hostedSetupAdaptations"] = setup_adaptations
 

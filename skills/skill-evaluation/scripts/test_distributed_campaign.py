@@ -159,21 +159,24 @@ class FullProductMatrixTests(unittest.TestCase):
                 [],
             )
 
-    def test_container_workspace_is_writable_without_changing_execute_bits(self):
+    def test_container_workspace_roots_are_writable_without_changing_file_modes(self):
         with tempfile.TemporaryDirectory() as directory:
             candidate = Path(directory) / "candidate"
+            workspaces = candidate / "workspaces"
             workspace = candidate / "workspaces/repository"
             nested = workspace / "nested"
             nested.mkdir(parents=True)
             file_path = nested / "file.txt"
             file_path.write_text("content")
+            workspaces.chmod(0o555)
             workspace.chmod(0o555)
             nested.chmod(0o555)
             file_path.chmod(0o444)
-            matrix.make_container_workspace_writable(candidate)
-            self.assertEqual(workspace.stat().st_mode & 0o777, 0o777)
-            self.assertEqual(nested.stat().st_mode & 0o777, 0o777)
-            self.assertEqual(file_path.stat().st_mode & 0o777, 0o666)
+            matrix.make_container_workspace_roots_writable(candidate)
+            self.assertEqual(workspaces.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(workspace.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(nested.stat().st_mode & 0o777, 0o555)
+            self.assertEqual(file_path.stat().st_mode & 0o777, 0o444)
 
     def test_container_workspace_does_not_follow_dependency_symlinks(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -187,9 +190,36 @@ class FullProductMatrixTests(unittest.TestCase):
             dependency.chmod(0o555)
             dependency_file.chmod(0o444)
             (workspace / "node_modules").symlink_to(dependency, target_is_directory=True)
-            matrix.make_container_workspace_writable(root / "candidate")
+            matrix.make_container_workspace_roots_writable(root / "candidate")
             self.assertEqual(dependency.stat().st_mode & 0o777, 0o555)
             self.assertEqual(dependency_file.stat().st_mode & 0o777, 0o444)
+
+    def test_container_deterministic_executes_as_workspace_owner(self):
+        class Runner:
+            def __init__(self):
+                self.commands = []
+
+            def run_command(self, command, **kwargs):
+                self.commands.append(command)
+                return {"command": command}
+
+            def run_deterministic(self, *_args):
+                self.run_command(["docker", "create", "image"])
+                return self.run_command(["docker", "exec", "container", "python3", "grader.py"])
+
+        runner = Runner()
+        result = matrix.run_container_deterministic_as_workspace_owner(
+            runner, {}, Path("."), Path("."), Path("."), {}
+        )
+        owner = f"{matrix.os.getuid()}:{matrix.os.getgid()}"
+        self.assertEqual(runner.commands[0], ["docker", "create", "image"])
+        self.assertEqual(
+            runner.commands[1],
+            ["docker", "exec", "--user", owner, "container", "python3", "grader.py"],
+        )
+        self.assertEqual(result, {"command": runner.commands[1]})
+        runner.run_command(["after"])
+        self.assertEqual(runner.commands[-1], ["after"])
 
     def test_grading_git_identity_tracks_exact_captured_tree(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -301,8 +331,8 @@ class FullProductMatrixTests(unittest.TestCase):
                 / "workspaces/workspace-a/.cargo/config.toml"
             )
             workspace = candidate / "workspaces/workspace-a"
-            self.assertEqual(workspace.stat().st_mode & 0o777, 0o777)
-            self.assertEqual(protected.stat().st_mode & 0o777, 0o666)
+            self.assertEqual(workspace.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(protected.stat().st_mode & 0o777, 0o644)
 
     def test_dependency_environment_provisions_exact_cargo_home(self):
         with tempfile.TemporaryDirectory() as directory:
