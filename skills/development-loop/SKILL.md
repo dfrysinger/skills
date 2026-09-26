@@ -374,13 +374,16 @@ For bounded work, inspect the existing path, state the smallest fix, and ask:
 - What observable proof would fail if the fix were wrong?
 - Is the proposed generalization required by a supported caller today?
 
-When changing a decision driven by asynchronous state, trace its inputs from
-their producers through initial, settled, and terminal transitions before
-assigning meaning to an empty or default value. Distinguish pending data from
-confirmed absence using those assignments, and check whether a new guard
-shadows an existing exit. Prove each changed or shadowable outcome at the
-state-owning component or service; a helper fed chosen inputs is not proof
-that the owner reaches the same outcome.
+Before changing a decision driven by asynchronous state, enumerate the
+producer's reachable statuses, source identity, and what the deciding owner
+observes before the producer starts, while pending, and after resolution.
+Classify which observations prove absence, which are still pending or belong
+to another source, and which existing error exits a new guard could shadow.
+Write the guard from that classification, not from the negation of a single
+pending status. Drive the owning component or service from before the
+transition through each changed or shadowable outcome, including a terminal
+error where one exists. A helper fed chosen inputs and a passing happy-path
+fixture cannot stand in for those owner-level checks.
 
 Use a `rubber-duck` pass when the bounded solution is ambiguous, crosses
 ownership boundaries, or risks broadening.
