@@ -374,6 +374,14 @@ For bounded work, inspect the existing path, state the smallest fix, and ask:
 - What observable proof would fail if the fix were wrong?
 - Is the proposed generalization required by a supported caller today?
 
+When changing a decision driven by asynchronous state, trace its inputs from
+their producers through initial, settled, and terminal transitions before
+assigning meaning to an empty or default value. Distinguish pending data from
+confirmed absence using those assignments, and check whether a new guard
+shadows an existing exit. Prove each changed or shadowable outcome at the
+state-owning component or service; a helper fed chosen inputs is not proof
+that the owner reaches the same outcome.
+
 Use a `rubber-duck` pass when the bounded solution is ambiguous, crosses
 ownership boundaries, or risks broadening.
 
