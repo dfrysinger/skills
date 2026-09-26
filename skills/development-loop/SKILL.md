@@ -187,10 +187,13 @@ designed for the wrong lane. This step fires whenever observed behavior is
 wrong — a bug, a regression, a flaky test, a feature that misbehaves. Work that
 adds behavior starts at section 1.
 
-Watch the failure happen at the boundary it surfaces on: the running screen,
-the CLI output, the API response, the stored result, the process logs. Record
-what you observed and keep it apart from what the report claimed. A failing
-test encodes an observation; it does not replace looking.
+Observe the failure at the cheapest boundary that directly establishes the
+reported behavior: an existing focused functional test, CLI output, API
+response, stored result, process log, or running screen. Record what you
+observed and keep it apart from what the report claimed. Prefer an existing
+focused test when it drives the real decision path and fails on the user-visible
+result. Use the running app when lower-cost evidence cannot establish the
+boundary or when platform integration is itself uncertain.
 
 Then trace from the trigger to the wrong result, naming each hop and the state
 it carried. The cause is the earliest verified divergence — the first point
@@ -552,6 +555,12 @@ state transition with focused tests or instrumentation, and batch the coherent
 fix before producing another artifact. Build once per candidate, then run the
 targeted acceptance flow; use a short bounded stress repetition only when the
 defect is timing-dependent.
+
+Do not build a full native baseline before editing a bounded deterministic bug
+when source, existing logs, or a focused functional test can establish the
+failure. A pre-edit native build is justified only when the platform mechanism
+or live boundary remains unresolved after cheaper diagnostics. Otherwise reserve
+the native build for proof of the coherent candidate.
 
 **Freeze the final CI candidate.** Treat the complete cross-platform or
 otherwise expensive CI matrix as final proof, not as the primary debugging
