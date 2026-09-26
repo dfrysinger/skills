@@ -591,6 +591,16 @@ follow the local idiom until they rule.
 Before review, be able to point at the sibling each new unit followed, or the
 endorsed departure. Section 7's reviewers check idiom parity.
 
+**Check the consumer seam for composed artifacts.** When another tool,
+generator, or runtime wraps or inserts a submitted artifact, read the
+available caller contract before authoring it: identify which side owns
+entry points, wrappers, and dependencies. Run the smallest available compile
+or focused check of the artifact as the consumer assembles it; a producer-only
+check does not establish that the assembled result loads. If the primary
+build is unavailable, look for an equivalent runnable consumer in the
+supplied workspace and report the composition check as unverified if none
+exists.
+
 Run only the smallest existing test, type, lint, or build commands needed to
 catch cheap regressions and produce a runnable candidate. Do not spend time on
 broad CI, full lint, or implementation review while the live acceptance flow is
