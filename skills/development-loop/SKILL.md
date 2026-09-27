@@ -388,6 +388,8 @@ transition through each changed or shadowable outcome, including a terminal
 error where one exists. A helper fed chosen inputs and a passing happy-path
 fixture cannot stand in for those owner-level checks.
 
+Treat every existing terminal exit as independent from a new pending-state guard unless the producer contract proves otherwise. Before editing, list the cross-product of the new pending states with success, confirmed absence, and each terminal failure. For every added condition, identify which old exits it could shadow. Exercise those combinations through the owner and preserve the original terminal outcome even while another input is pending. A helper-only predicate test is insufficient.
+
 Use a `rubber-duck` pass when the bounded solution is ambiguous, crosses
 ownership boundaries, or risks broadening.
 
