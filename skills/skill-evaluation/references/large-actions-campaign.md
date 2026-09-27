@@ -59,7 +59,7 @@ model launch may receive a replacement attempt.
 Complete when a failed workflow can be classified from receipts without
 guessing whether candidate work occurred.
 
-## 3. Prove one route before fan-out
+## 3. Prove the exact hosted route before model spend
 
 Run a representative pilot through each distinct route:
 
@@ -76,8 +76,52 @@ useful only when it reproduces that exact child-process boundary.
 Keep execution-engine cohorts separate from workflow-treatment rankings unless
 the experiment was designed to compare them as the same independent variable.
 
-Complete when every route produces a checksum-verified retained receipt and its
-result semantics are understood.
+For every new or repaired case revision, or whenever the hosted runner,
+workflow, evaluator, finalizer, collector, dependency identity, or environment
+isolation changes, add a **hosted gold gate** before any candidate model runs.
+Execute a known-good reference and an unchanged-known-bad reference without
+launching a model, through the exact hosted runner and downstream dependency,
+product, grading, finalization, retention, and collection path that the
+campaign will use.
+
+The candidate payload and candidate workdir never contain either reference.
+Use the same sealed case, evaluator, and dependency payload identities, but
+materialize reference source only in a separate qualification workdir at the
+stage-2 patch-capture boundary, after the candidate stage would have ended.
+That workdir may exercise downstream stages; it cannot become input to a later
+candidate job.
+
+The known-good route must complete every required stage and return product,
+target, and regression PASS. The unchanged-known-bad reference is the frozen
+uncorrected product state whose defect defines the case. It must reach the
+intended behavioral boundary, fail the target for the expected reason, and
+return regression PASS. A setup, missing-tool, environment-routing, permission,
+timeout, finalizer, retention, or collector failure blocks dispatch even when
+the same references passed locally. Local qualification remains a fast
+development diagnostic; it is not evidence that the hosted route works.
+
+Exercise any failure path changed by the evaluator. In particular:
+
+- test timeout or launch-failure handling with a non-model stub process that
+  writes the corresponding terminal receipt without usage output; never launch
+  a model merely to exercise an evaluator failure path;
+- a missing or null upstream result must produce a typed finalizer failure
+  rather than an exception;
+- any cleanup or permission normalization before grading must be limited to an
+  explicitly declared untracked, non-symlink scratch path and must prove source
+  bytes and status unchanged;
+- product processes using a fake service must not inherit host-selection
+  variables that redirect them around that service.
+
+Reference execution does not become a candidate observation and never enters a
+treatment denominator. Keep hidden authority unavailable to later candidate
+jobs and preserve the qualification run IDs, artifact hashes, and receipts as
+case-revision evidence.
+
+Complete when every route, every new or repaired case revision, and every
+changed hosted execution path has checksum-verified known-good and
+unchanged-known-bad receipts, the collector has completed its round trip, and
+the result semantics are understood.
 
 ## 4. Dispatch unfinished work massively in parallel
 
@@ -117,6 +161,12 @@ Include:
 - judge outputs;
 - workflow and evaluator identity; and
 - a retention manifest with SHA-256 values.
+
+Usage output is required after normal candidate completion. If a retained
+candidate receipt proves timeout or launch failure before usage was flushed,
+the collector may accept the missing file only by recording typed
+`unavailable` usage and the causal receipt. It must not reject an otherwise
+classifiable artifact or synthesize zero usage.
 
 Download artifacts by exact run and artifact identity. Verify the published
 checksum before extraction. Use fail-closed extraction, absolute patch paths,

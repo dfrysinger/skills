@@ -150,7 +150,11 @@ That procedure seals one immutable campaign release with separately addressed
 candidate and hidden payloads, fans unfinished attempts out through private
 GitHub Actions, preserves first model outcomes, resumes only invalid downstream
 stages, checksum-verifies retained artifacts, and reconciles one exact
-effective-result map.
+effective-result map. Before spending a model attempt on a new or repaired case
+revision, or after changing its hosted execution path, it also requires a
+no-model hosted qualification with known-good and unchanged-known-bad
+references through the exact runner path. A local pass cannot open that
+dispatch gate.
 
 ### Treat model choice as an experimental variable
 
@@ -299,10 +303,14 @@ The evaluation is complete only when:
 - every run has raw output and a receipt;
 - at least two independent judges assess behavioral correctness for a material
   skill change;
-- a new case does not change any older case root digest; and
+- a new case does not change any older case root digest;
 - a maintained regression suite runs through one command and every included
-  case passes after a target-skill change; and
-- no evaluation repair introduces case-specific hints into the target skill.
+  case passes after a target-skill change;
+- no evaluation repair introduces case-specific hints into the target skill;
+- a new or repaired distributed case revision, and any changed hosted
+  execution path, has a passing exact-host no-model qualification receipt for
+  its known-good and unchanged-known-bad references before candidate dispatch;
+  and
 - a large distributed campaign, when used, has one checksum-bound effective
   result per expected attempt ID, with no missing, extra, or duplicate
   observations and no model outcome replaced by an infrastructure retry.
