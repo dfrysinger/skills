@@ -47,6 +47,11 @@ A blocking candidate must satisfy at least one:
 An adjacent or pre-existing issue is not blocking unless this diff makes it
 newly reachable or materially worse. Do not turn non-goals into requirements.
 
+Treat a changed implementation and its rewritten pre-existing assertion as one
+candidate-controlled claim. If the expected outcome changes without independent
+user, product, or design authority outside the diff, report a
+`contract-regression` even when the revised test passes.
+
 # Design architecture and scope contract
 
 <DESIGN_SCOPE_LENS>

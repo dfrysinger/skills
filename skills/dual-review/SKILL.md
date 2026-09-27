@@ -132,6 +132,10 @@ The prompt must enforce:
 2. **Diff causality.** A blocking candidate must be introduced or materially
    worsened by the diff, or directly violate an acceptance criterion or
    load-bearing invariant the diff claims to satisfy.
+   Treat a changed implementation and its rewritten pre-existing assertion as
+   one candidate-controlled claim. If the expected outcome changes without
+   independent user, product, or design authority outside the diff, report a
+   `contract-regression` even when the revised test passes.
 3. **Reachability.** State the supported input, state, event sequence, or caller
    that reaches the defect. Pure speculation is not a blocking finding.
 4. **Impact and likelihood.** Every finding carries severity and likelihood.

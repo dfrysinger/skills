@@ -366,6 +366,14 @@ A regression test is usually the right durable guard for a bounded behavior
 bug. Do not create a structural grep guard, invariant row, or new framework
 merely to prove one local branch.
 
+For removal and refactor work, freeze the existing assertions that protect
+retained behavior before editing. A changed implementation and its rewritten
+test are one candidate-controlled claim: change an expected outcome only when
+independent user, product, or design authority changed the contract. When
+persisted state loses a field, preserve still-valid retained data and reprocess
+only records whose retained meaning is invalid; a blanket version bump or
+rebuild requires an independently required semantic change and focused proof.
+
 Larger work carries the contract its design document already defines.
 
 ## 3. Design and self-review
