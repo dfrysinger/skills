@@ -187,10 +187,13 @@ designed for the wrong lane. This step fires whenever observed behavior is
 wrong — a bug, a regression, a flaky test, a feature that misbehaves. Work that
 adds behavior starts at section 1.
 
-Watch the failure happen at the boundary it surfaces on: the running screen,
-the CLI output, the API response, the stored result, the process logs. Record
-what you observed and keep it apart from what the report claimed. A failing
-test encodes an observation; it does not replace looking.
+Observe the failure at the cheapest boundary that directly establishes the
+reported behavior: an existing focused functional test, CLI output, API
+response, stored result, process log, or running screen. Record what you
+observed and keep it apart from what the report claimed. Prefer an existing
+focused test when it drives the real decision path and fails on the user-visible
+result. Use the running app when lower-cost evidence cannot establish the
+boundary or when platform integration is itself uncertain.
 
 Then trace from the trigger to the wrong result, naming each hop and the state
 it carried. The cause is the earliest verified divergence — the first point
@@ -374,6 +377,19 @@ For bounded work, inspect the existing path, state the smallest fix, and ask:
 - What observable proof would fail if the fix were wrong?
 - Is the proposed generalization required by a supported caller today?
 
+Before changing a decision driven by asynchronous state, enumerate the
+producer's reachable statuses, source identity, and what the deciding owner
+observes before the producer starts, while pending, and after resolution.
+Classify which observations prove absence, which are still pending or belong
+to another source, and which existing error exits a new guard could shadow.
+Write the guard from that classification, not from the negation of a single
+pending status. Drive the owning component or service from before the
+transition through each changed or shadowable outcome, including a terminal
+error where one exists. A helper fed chosen inputs and a passing happy-path
+fixture cannot stand in for those owner-level checks.
+
+Treat every existing terminal exit as independent from a new pending-state guard unless the producer contract proves otherwise. Before editing, list the cross-product of the new pending states with success, confirmed absence, and each terminal failure. For every added condition, identify which old exits it could shadow. Exercise those combinations through the owner and preserve the original terminal outcome even while another input is pending. A helper-only predicate test is insufficient.
+
 Use a `rubber-duck` pass when the bounded solution is ambiguous, crosses
 ownership boundaries, or risks broadening.
 
@@ -542,6 +558,12 @@ fix before producing another artifact. Build once per candidate, then run the
 targeted acceptance flow; use a short bounded stress repetition only when the
 defect is timing-dependent.
 
+Do not build a full native baseline before editing a bounded deterministic bug
+when source, existing logs, or a focused functional test can establish the
+failure. A pre-edit native build is justified only when the platform mechanism
+or live boundary remains unresolved after cheaper diagnostics. Otherwise reserve
+the native build for proof of the coherent candidate.
+
 **Freeze the final CI candidate.** Treat the complete cross-platform or
 otherwise expensive CI matrix as final proof, not as the primary debugging
 harness. Before starting it, batch every fix supported by focused evidence,
@@ -590,6 +612,16 @@ follow the local idiom until they rule.
 
 Before review, be able to point at the sibling each new unit followed, or the
 endorsed departure. Section 7's reviewers check idiom parity.
+
+**Check the consumer seam for composed artifacts.** When another tool,
+generator, or runtime wraps or inserts a submitted artifact, read the
+available caller contract before authoring it: identify which side owns
+entry points, wrappers, and dependencies. Run the smallest available compile
+or focused check of the artifact as the consumer assembles it; a producer-only
+check does not establish that the assembled result loads. If the primary
+build is unavailable, look for an equivalent runnable consumer in the
+supplied workspace and report the composition check as unverified if none
+exists.
 
 Run only the smallest existing test, type, lint, or build commands needed to
 catch cheap regressions and produce a runnable candidate. Do not spend time on
