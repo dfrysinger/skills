@@ -106,8 +106,18 @@ compaction or resumption, candidate movement, every phase boundary, failure,
 ownership handoff, and material user direction. When the liveness backstop
 finds stale or inconsistent state, it runs the same audit before continuing:
 
+- record the run's resource posture and throughput target. When the user
+  explicitly makes cost unconstrained and speed primary, spend model, token,
+  runner, and review capacity freely to reduce wall-clock time; do not silently
+  substitute a cost-saving policy;
 - rebuild the remaining dependency graph and mark the critical path;
 - assign every substantial independent ready scope to an available subagent;
+  when the charter declares cost unconstrained and speed primary, also launch
+  every isolated ready evaluation or proof lane up to actual host capacity.
+  Under that posture, another unrelated live proof is not a reason to queue
+  ready work; exclusivity applies per candidate, worktree, fixture, and
+  evidence path, plus any exclusive runtime resource such as an app instance,
+  port, UI session, account, permission grant, or bounded external quota;
 - for every delegated agent, reconcile its explicit scope, owned path boundary,
   workspace or branch, session or coordination channel, evidence owed,
   blockers, and integration boundary; preserve a stable assignment ID and
@@ -133,6 +143,11 @@ finds stale or inconsistent state, it runs the same audit before continuing:
   lane until one routable owner is restored;
 - keep the coordinator on integration, decisions, unblocking, and unowned
   critical-path work;
+- measure useful completed evidence per wall-clock hour against the charter's
+  throughput target. When the charter declares cost unconstrained and speed
+  primary, treat unused safe parallel capacity as a process failure to repair.
+  Under every posture, repeated coordinator polling and a ready substantial
+  lane left ownerless remain process failures;
 - batch coherent fixes before expensive gates and avoid replaying unaffected
   proof; and
 - advance other ready work during waits without violating one-owner live-proof

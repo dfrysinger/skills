@@ -98,7 +98,10 @@ liveness backstop can restore the process without copying each skill's rules.
 > critical-path work. Batch coherent fixes before expensive builds, verifiers,
 > or CI, and use proof impact mapping instead of replaying unaffected claims.
 > Preserve actual serial gates, including one proof owner and one running
-> candidate during live proof. `<PUSH_POLICY>`.
+> candidate per proof lane. Concurrent proof lanes must have separate
+> candidates, worktrees, fixtures, evidence paths, and exclusive runtime
+> resources. Integrate or promote passed candidates one at a time, rechecking
+> remaining evidence against the new base. `<PUSH_POLICY>`.
 > Decide every reversible question yourself with rubber-duck rather than asking
 > me. For systemic or critical work, preserve the plan's decision hierarchy,
 > constraint provenance, revisit conditions, and any active reframe record in
@@ -230,7 +233,11 @@ challenge as exact contextual quotes.
 > rebuild ready work and dependencies, assign every substantial independent
 > ready scope to an available subagent when delegation is safe, batch coherent
 > fixes before expensive gates, and advance other ready work during waits while
-> preserving exclusive live-proof gates.
+> preserving exclusive live-proof gates. Record whether cost is constrained or
+> unconstrained and whether speed is the primary objective. When cost is
+> explicitly unconstrained and speed is primary, launch every isolated ready
+> lane up to actual host capacity and measure useful evidence per wall-clock
+> hour.
 > Push to remote and merge when each phase is done, tested E2E and reviewed
 > clean. Decide every reversible question yourself with rubber-duck rather than
 > asking me. Stay on this course until the objective's Definition of Done (the

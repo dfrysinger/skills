@@ -39,6 +39,15 @@ An efficient loop keeps every independent ready item moving while preserving
 the serial evidence gates. Run this audit at task start, after compaction or
 resumption, at each phase boundary, and whenever the current action is waiting:
 
+When the governing charter explicitly declares cost unconstrained and speed
+primary, optimize wall-clock learning throughput rather than model, token, or
+runner spend. Launch every independent ready implementation, qualification,
+evaluation, transfer, regression, and evidence-analysis lane up to actual host
+capacity. A serial lane must name the dependency or exclusive resource that
+forces serialization; convenience, coordinator attention, or another unrelated
+live proof is not such a gate. Set and measure a throughput target, and treat
+unused safe parallel capacity as a process defect.
+
 1. Map the remaining work into ready items, dependencies, and work that must be
    exclusive. Mark the critical path.
 2. Execute cheap direct work immediately and batch independent tool calls.
@@ -109,8 +118,16 @@ critical-path, or proof-gate contradiction rather than leaving the governing
 rule implicit.
 
 Parallelism stops at an actual dependency or exclusive boundary. One proof
-owner and one running candidate remain mandatory during live proof, and review,
-broad CI, or PR work stays closed until the affected live claims pass.
+owner and one running candidate remain mandatory **per proof lane**; multiple
+isolated proof lanes should run concurrently when their candidates, fixtures,
+worktrees, evidence paths, and exclusive runtime resources do not overlap.
+Exclusive runtime resources include app instances, ports, UI sessions,
+accounts, permission grants, and bounded external quotas. Review, broad CI, or
+PR work for a candidate stays closed until every affected live claim of that
+candidate passes; proof in an unrelated isolated lane does not hold it closed.
+Integrate or promote passed candidates one at a time. After each integration,
+check whether the remaining lanes' evidence still applies to the new base, and
+never rewrite a recorded lane outcome.
 
 The audit is complete when every ready item has an active owner or is being
 executed directly, each delegated status comes from the owner rather than its
@@ -373,6 +390,16 @@ independent user, product, or design authority changed the contract. When
 persisted state loses a field, preserve still-valid retained data and reprocess
 only records whose retained meaning is invalid; a blanket version bump or
 rebuild requires an independently required semantic change and focused proof.
+An existing error, issue, incomplete, or uncertainty marker is evidence that
+the affected record may not be reusable: reprocess those marked records unless
+independent authority proves the remaining fields valid without another read.
+Do not make a migration appear complete by deleting a marker whose cause also
+made retained data uncertain.
+
+When the user names a required artifact, heading, field, command, or other
+observable label, keep that label verbatim in the acceptance contract and its
+proof. A clearer synonym may accompany it, but cannot replace it when external
+acceptance can observe the requested name.
 
 Larger work carries the contract its design document already defines.
 
@@ -777,9 +804,11 @@ same identified candidate when the user returns. If its relevant inputs changed
 or their correspondence cannot be established, mark applicability `STALE` and
 restart the scenario. An incomplete flow cannot become reusable passing proof.
 
-Use one proof owner and one running candidate. Scheduled turns and parallel
-agents must not restart the app, mutate the worktree, consume the fixture, or
-run a competing scenario; keep them read-only or stop them until proof ends.
+Each proof lane uses one proof owner and one running candidate. Other agents
+must not restart that lane's app, mutate its worktree, consume its fixture, use
+its exclusive runtime resources, or run a competing scenario against the same
+candidate or evidence path; keep them read-only for that lane or stop them
+until its proof ends.
 
 During iterative development, a changed claim's gate opens only with its current
 receipt at `PASS`. Before the first review, every changed externally observable

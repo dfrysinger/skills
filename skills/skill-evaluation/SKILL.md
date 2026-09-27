@@ -152,6 +152,42 @@ GitHub Actions, preserves first model outcomes, resumes only invalid downstream
 stages, checksum-verifies retained artifacts, and reconciles one exact
 effective-result map.
 
+### Treat model choice as an experimental variable
+
+When more than one production-eligible model is in scope for a treatment
+campaign, run a model-only baseline block before attributing differences to a
+skill treatment. Freeze identical task bytes, skill bytes, prompt, tools,
+reasoning setting, limits, dependency archives, harness and CLI identity, home
+mode, command configuration, runner class, judge prompts, judge models, and
+proof for every arm; vary only the candidate model identifier. Interleave or
+randomize arms inside one campaign window on equivalent runners, and report any
+candidate/judge family overlap. Pre-register the same fixed number of complete
+attempts for every model arm and run all of them regardless of an earlier PASS,
+because one stochastic result cannot rank models. Do not use pass-short-circuit
+`--max-attempts` retries as model-comparison repetitions; recovery attempts stay
+separate from the declared per-model denominator.
+
+For this comparison, a complete product PASS requires every executable product,
+target, and regression gate plus the normal unanimous independent-judge PASS.
+Rank models first by passing attempts divided by the fixed completed-attempt
+denominator. Pre-register the tie or uncertainty rule; differences inside it
+remain tied. Break ties by how late the earliest verified failure frontier
+falls (later ranks higher), then preserved regressions, variance, and
+wall-clock latency. Workflow color, judge prose, token count, and a plausible
+patch do not outrank observable product behavior.
+
+An unsupported model or reasoning setting is a pre-model route result; never
+substitute another model or effort level under the same attempt identity. An
+arm missing any declared model execution is not rankable. Preserve those route
+results, then use a new fully pre-registered campaign with one common supported
+configuration if comparison remains required.
+
+After the baseline selects credible models, cross the finalist model set with
+the unchanged control skill and skill treatments in a separate frozen
+campaign. Collect fresh pre-registered attempts, use held-out cases when
+available, and never reuse baseline observations in the crossed comparison so
+selection and model-by-skill effects remain visible.
+
 The runner:
 
 1. verifies the frozen case;
