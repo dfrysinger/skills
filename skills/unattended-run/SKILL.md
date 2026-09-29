@@ -16,9 +16,11 @@ course:
   authority, policy, or reframe trigger.
 - An **hourly progress nudge** — a separate `/every` reminder checks the active
   owner's explicit handoff, advances independent ready work, and runs the
-  critical-path audit when the Definition of Done is open but no work has an
-  owner. When genuinely stuck, use one rubber-duck pass on one concrete
-  blocker; do not brainstorm the same unchanged evidence every hour.
+  critical-path audit while the Definition of Done is open. It assigns all
+  independent ready scopes, not just the first useful action, and records
+  the actual gate for each scope left unowned. When genuinely stuck, use
+  one rubber-duck pass on one concrete blocker; do not brainstorm the same
+  unchanged evidence every hour.
 - A lightweight **four-hour charter check** — another `/every` reminder
   checks that the durable baton, owner or explicit blocker, candidate or proof
   state, and both schedule entries remain coherent. It performs a full
@@ -109,11 +111,15 @@ audit, even when another skill governs the run. Run it at task start,
 compaction or resumption, candidate movement, every phase boundary, failure,
 ownership handoff, and material user direction. The four-hour charter check
 runs the same audit if it finds stale or inconsistent state. The hourly
-progress nudge runs it when the Definition of Done is open but no useful
-work has an active owner or is advancing directly:
+progress nudge runs it whenever the Definition of Done is open, even when
+one owner is already working:
 
 - rebuild the remaining dependency graph and mark the critical path;
-- assign every substantial independent ready scope to an available subagent;
+- assign every substantial independent ready scope to an available subagent
+  with a separate ownership boundary, or execute cheap direct work; for
+  every scope left unowned, name its actual dependency or exclusive gate.
+  Complete the ready-lane audit before ending the hourly turn, rather than
+  stopping after the first assignment;
 - for every delegated agent, reconcile its explicit scope, owned path boundary,
   workspace or branch, session or coordination channel, evidence owed,
   blockers, and integration boundary; preserve a stable assignment ID and
@@ -285,20 +291,25 @@ Arm the separate hourly progress nudge with `manage_schedule`:
 
 ```
 manage_schedule action=create interval=1h \
-  prompt="Read <charter-path> and its current plan baton without overwriting
-  newer work. Check each active owner's explicit handoff, unblock it, and
-  advance independent ready work. If the Definition of Done is open but
-  the work frontier is empty, run development-loop's critical-path audit,
-  select the cheapest evidence-backed next action, and persist its owner
-  and stop rule. Preserve every launched model attempt's first outcome:
+  prompt="Finish any coherent in-flight charter or plan edit before reading
+  <charter-path> and its current plan baton; never overwrite newer work.
+  Reconcile each active owner's explicit handoff and unblock it. While the
+  Definition of Done is open, run development-loop's critical-path audit
+  across ALL independent ready scopes, including task lanes, model
+  comparisons, case/proof repairs, and measured evaluator optimization.
+  Assign each substantial ready scope to a separate routable owner and
+  disjoint output path, or execute cheap direct work. For every unowned
+  scope name the actual dependency, exclusive gate, or revisit predicate;
+  an active owner on another lane is not a gate. Complete this audit before
+  ending the turn. Preserve every launched model attempt's first outcome:
   a separately identified fresh repetition or experiment is allowed when
   its question, controls, qualification, denominator, and stop rule are
   stated. If stuck, give one concrete blocker to a rubber-duck agent for
   a falsifiable check or alternative; do not repeat the same brainstorm
   without new evidence. During live proof remain read-only around its
   candidate, worktree, fixture, and process. Time alone never triggers
-  constraint-challenge. If no safe action is admissible, record the exact
-  blocker and revisit condition. When the shared Definition of Done is
+  constraint-challenge. If no safe action is admissible, record each scope's
+  exact blocker and revisit condition. When the shared Definition of Done is
   verified, stop BOTH registered schedules and verify absence."
 ```
 
