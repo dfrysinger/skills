@@ -152,7 +152,7 @@ These skills form a small communication stack for long-lived, named agent sessio
 - **[`mailbox`](./skills/mailbox/SKILL.md):** Deliver messages and files between named Copilot CLI sessions, including through a shared OneDrive mailbox, with a macOS tmux compatibility path for Claude Code and Codex CLI. Delivery is durable even when the receiving session or computer is offline.
 - **[`self-compact`](./skills/self-compact/SKILL.md):** Compact a Copilot CLI conversation while preserving the durable baton, session-bound state, and one exact next action.
 - **[`rotate-session`](./skills/rotate-session/SKILL.md):** Move a long-lived Copilot CLI session into a fresh conversation that rebuilds context from the retired session's files and history.
-- **[`unattended-run`](./skills/unattended-run/SKILL.md):** Re-brief a long-running agent on a schedule so compaction does not quietly narrow the task or change its operating rules.
+- **[`unattended-run`](./skills/unattended-run/SKILL.md):** Keep a long-running agent moving with an hourly progress nudge and a four-hour charter check, without repeating full reviews on a timer.
 
 Two companion tools complete the workflow without pretending to be skills:
 
