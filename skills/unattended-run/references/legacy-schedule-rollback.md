@@ -4,9 +4,10 @@
 event-driven governance migration. Do not use them for a new charter or as the
 normal unattended-run default.
 
-Create and confirm the prior schedules before stopping the four-hour liveness
-schedule. Restore their registry entries with the returned identifiers. If
-either prior schedule cannot be confirmed, leave the liveness schedule live.
+Create and confirm the prior schedules before stopping the four-hour charter
+check and hourly progress nudge. Restore their registry entries with the
+returned identifiers. If either prior schedule cannot be confirmed, leave
+both replacement schedules live.
 
 The former two-hour charter recovery schedule was:
 
