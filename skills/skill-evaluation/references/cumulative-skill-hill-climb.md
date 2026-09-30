@@ -1,21 +1,31 @@
 # Cumulative skill hill climb
 
-Improve one published skill across a corpus. A task lane supplies evidence for
-the shared draft; it does not own a specialist skill release. The leading
-measure is how many previously failed tasks one exact shared revision solves
-while retaining its earlier wins. Report pooled passes from different skills,
-models, or case revisions separately.
+Refine and ship one shared skill, or a coherent set of skills with distinct
+reusable roles, until one exact published revision solves every evaluation
+task. Publish each supported general improvement when its own release gates
+pass rather than waiting for the entire corpus. A task lane supplies evidence
+for the shared draft; it does not own a specialist release. Measure how many
+tasks the same exact shared revision solves while retaining its earlier wins.
+Report pooled passes from different skill sets, models, or case revisions
+separately. If a task cannot be achieved under the available product, model,
+authority, or valid evaluator, record that blocker rather than claiming
+complete coverage.
+
+Treat a set as one candidate: freeze the bytes and invocation roles of every
+member together, and evaluate and release their combined behavior as a unit.
+Add a separate skill for a distinct reusable role, not to give one task its
+own version of the same guidance.
 
 ## 0. Consolidate existing evidence before new search
 
-If prior experiments already produced task passes on different skill revisions,
-inventory each pass by exact skill bytes, model, case revision, product outcome,
-unchanged control, and candidate trace. Classify the proposed rule as an
-attributable general tactic, an unverified lead, or a pass with no demonstrated
-skill advantage. A pooled pass does not become a maintained win of the
-published skill or the shared draft.
+If prior experiments already produced task passes on different revisions,
+inventory each pass by exact skill or skill-set bytes, model, case revision,
+product outcome, unchanged control, and candidate trace. Classify the proposed
+rule as an attributable general tactic, an unverified lead, or a pass with no
+demonstrated skill advantage. A pooled pass does not become a maintained win
+of the published revision or the shared draft.
 
-Start one consolidation draft from the published skill and integrate only
+Start one consolidation draft from the published revision and integrate only
 compatible, supported general tactics. Reuse matching completed comparisons
 before paying for new attempts; check interactions on the combined bytes.
 Mark each task's outcome for that exact draft as pass, fail, or unknown. Search
@@ -27,14 +37,15 @@ and the consolidated draft and its unknown task cells have exact identities.
 
 ## 1. Start from the published lineage
 
-Name the published skill bytes and the maintained passing tasks before selecting
-a previously failed task. Run the published skill on that task under a fixed,
-valid contract, or use a completed matching run whose exact inputs remain
-applicable. Establish its failure at the product boundary and inspect the
-candidate's first wrong decision, existing instructions, and the task's visible
-authority. An untested task is **unknown**, not a baseline failure.
+Name the published skill or skill-set bytes and the maintained passing tasks
+before selecting a previously failed task. Run the published revision on that
+task under a fixed, valid contract, or use a completed matching run whose exact
+inputs remain applicable. Establish its failure at the product boundary and
+inspect the candidate's first wrong decision, existing instructions, and the
+task's visible authority. An untested task is **unknown**, not a baseline
+failure.
 
-Create the first working draft from the published skill. If another task has
+Create the first working draft from the published revision. If another task has
 already produced an integrated draft, start the next task and all its
 experiments from **that draft**, which carries the published rules and the
 supported improvements since release. Incorporate the supported tactics from
@@ -56,7 +67,7 @@ it, not a quota: do not pad it with synonymous wording or weak guesses. Build
 as many credible arms as capacity allows concurrently, with each arm changing
 one general mechanism relative to the **same accumulating draft**. Predeclare
 controls, repetitions, selection, and unchanged task/model/tool/judge inputs.
-The published skill remains an additional reference when attribution to the
+The published revision remains an additional reference when attribution to the
 last release matters. Keep every first outcome; judge native product behavior
 and regressions before crediting instruction uptake.
 Screen independent arms on the smallest valid discriminating evidence, then
@@ -120,7 +131,7 @@ fixture or switch models to turn a red cell green. Mark cells with unusable or
 missing evidence unknown, not pass.
 
 Complete when the smallest supported increment preserves the measured
-previous wins and newly conquered task under one exact skill identity.
+previous wins and newly conquered task under one exact shared identity.
 
 ## 5. Rebuild the whole skill only when warranted
 
@@ -133,8 +144,8 @@ history makes it a diagnostic arm until it reproduces the existing wins.
 
 Complete when the lean replacement's exact bytes, pass distribution, retry
 dependence, and lost or retained behaviors have been compared with the
-published skill. If it cannot preserve the gains, keep the incremental skill
-rather than publishing a shorter regression.
+published revision. If it cannot preserve the gains, keep the incremental
+revision rather than publishing a shorter regression.
 
 ## 6. Publish one shared result and repeat
 
@@ -155,6 +166,9 @@ corpus permits; if the small corpus cannot support a credible split, report the
 result as directional and obtain an independent transfer task before claiming
 the held-out release gate passed. Do not relabel an exposed case as held-out.
 
-Complete when the published skill, installed skill where applicable, target
-and earlier-win scorecard all name the same exact revision, with unsolved and
-unverified tasks visible rather than pooled into its pass count.
+Complete when the published and installed skill or skill set, where applicable,
+and the target and earlier-win scorecard all name the same exact revision, with
+unsolved and unverified tasks visible rather than pooled into its pass count.
+Repeat from that revision until every task passes on the same released bytes;
+classify any task that remains unachievable with evidence and a revisit
+condition.
