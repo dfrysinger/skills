@@ -4,6 +4,12 @@ Use ablation when a skill has accumulated enough procedure that it may be
 diluting its own load-bearing rules. The goal is not the fewest lines. The goal
 is the smallest instruction set that produces the required behavior across a
 representative frozen corpus.
+For each incremental task conquest, first minimize only its *new* rules
+against the published baseline as described in the
+[`cumulative skill hill climb`](cumulative-skill-hill-climb.md). This full
+neutral/lean/full rebuild is for a skill whose accumulated length or competing
+rules warrant reconsidering the whole instruction set; a no-skill arm never
+replaces the published baseline merely because it is shorter.
 
 ## 1. Freeze the behavioral claims
 

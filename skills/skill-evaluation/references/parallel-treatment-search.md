@@ -5,6 +5,11 @@ one credible mechanism could improve stochastic skill behavior. Do not wait for
 serial revisions to plateau. The goal is not to generate many rewrites. It is
 to compare a small population of independently motivated mechanisms under one
 frozen evaluation contract.
+In a [`cumulative skill hill climb`](cumulative-skill-hill-climb.md), each
+wave starts from the same exact working draft, which inherits the published
+skill and prior supported improvements. A broad field of roughly 20 credible
+ideas is a useful parallelism target, not a required arm count; do not serialize
+ready independent arms or invent near-duplicates to fill a quota.
 
 Serial work is appropriate only when:
 
@@ -82,23 +87,28 @@ hypothesis and no arm exists only because its prose sounded promising.
 
 Start with controls that answer different questions:
 
-1. **No skill:** what the model and task produce without the target procedure.
-2. **Unchanged full skill:** whether the existing skill helps or harms.
-3. **Lean or minimal control:** whether instruction volume or process sediment
-   is the problem.
-4. **Dose-matched placebo:** whether merely adding a compact, structured skill
-   changes behavior.
+1. **Unchanged working draft:** whether an idea improves on the skill being
+   accumulated.
+2. **Published skill:** whether the accumulated draft improves on the released
+   baseline when the two differ.
+3. **No skill or lean:** whether guidance or instruction volume matters when
+   that distinction could explain the failure.
+4. **Dose-matched placebo:** whether merely adding structured text changes
+   behavior when text volume is a plausible confound.
 
 Add single-mechanism arms. Give them the same information hierarchy, step
 count, tone, and approximate instruction length. Change only the tactic under
 test. Keep composite arms separate and label them confounded; use them to test
 synergy, not to attribute causality.
 
-Prefer fewer credible arms with planned repetitions over many one-shot
-rewrites. A repeated trial is not a retry: its identity and budget are declared
-before dispatch, and every outcome is retained. When expected treatment
-differences are close to normal run-to-run variance, use at least three
-repetitions per arm or reduce the arm count until replication fits the budget.
+Run every independent credible arm concurrently up to actual capacity. A
+repeated trial is not a retry: its identity and budget are declared before
+dispatch, and every outcome is retained. When expected differences are close
+to normal run-to-run variance, plan at least three repetitions per arm. If
+capacity cannot launch all attempts at once, queue frozen attempts in bounded
+waves; do not replace the parallel search with a succession of new ideas
+chosen one result at a time. A predeclared broad-screen/replicate-finalists
+design may reduce repeated work, but a one-off winner cannot earn promotion.
 
 Complete when every arm has one treatment identity, one hypothesis, planned
 repetitions, and a clear comparison control.
@@ -170,7 +180,8 @@ promotion. A win by one arm does not establish that its tactic survives
 combination with another, and pooled wins from separate arms are not a score
 for the combined candidate. Release passing increments without waiting for
 every case to be conquered; continue other searches from isolated branches
-while the release candidate remains frozen.
+while the release candidate remains frozen. The next wave on a task starts
+from the integrated draft, not from the isolated winner or an older baseline.
 
 ## 7. Report the search
 
