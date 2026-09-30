@@ -219,21 +219,29 @@ classification.
 ### Release incremental wins
 
 Treat each published skill revision as the next baseline, not the completion of
-the whole task corpus. Keep a scorecard per exact skill revision; a pooled count
-of passes from different skills, models, or case revisions is not a candidate's
-score. Commit experimental revisions without presenting them as released.
+the whole task corpus. Independent lanes may solve different tasks concurrently
+and propose different generalizable changes, but their results are hypotheses
+for one shared skill or skill-set lineage, not separate case-specific releases.
+Integrate compatible changes into one coherent candidate and test the combined
+bytes against the corpus. Keep a scorecard per exact shared revision and
+evaluation contract; a pooled count of passes from different candidates,
+models, or case revisions is not that revision's score. Commit experimental
+revisions without presenting them as released.
 
-When a candidate conquers a previously failed full-product task, compare it
-with the published baseline on the same frozen case and execution contract,
-using predeclared repetitions when outcomes vary. Check that the applicable
-new rule was used and that the advantage is not explained by a model, packet,
-tool, or evaluator change. Launch held-out transfer, every maintained passing
-task and newly conquered task, structural checks, and independent review in
-parallel on the exact candidate bytes. Publish that revision as soon as those
-gates pass; unsolved tasks remain open for the next increment. Record the
-candidate's pass rates, retry dependence, and remaining failures, then use the
-published revision as the control for the next comparison. A task pass without
-an attributable advantage stays experimental rather than becoming a release.
+At each credible improvement, reconcile the completed lanes rather than waiting
+for every task to be solved. When the integrated candidate conquers a previously
+failed full-product task, compare it with the published baseline on the same
+frozen case and execution contract, using predeclared repetitions when outcomes
+vary. Check that the applicable new rules were used and that the advantage is
+not explained by a model, packet, tool, or evaluator change. Launch held-out
+transfer, every maintained passing task and newly conquered task, structural
+checks, and independent review in parallel on the exact integrated bytes.
+Publish that revision as soon as those gates pass; unsolved tasks remain open
+for the next increment, and independent lanes can continue on isolated
+candidates. Record the shared candidate's pass rates, retry dependence, and
+remaining failures, then use the published revision as the control for the next
+comparison. A task pass without an attributable advantage stays experimental
+rather than becoming a release.
 
 Before attributing a repeated behavior to the target skill, audit the complete
 candidate-visible instruction stack: task wording, repository and custom

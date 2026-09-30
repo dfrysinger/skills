@@ -162,6 +162,16 @@ Promote only the exact treatment bytes that:
 Complete when the winner's development, replication, transfer, and regression
 evidence all bind to the same frozen treatment identity.
 
+When independent searches target different cases in one corpus, keep their
+treatment identities and first outcomes separate. Integrate compatible
+generalized tactics into a shared candidate, then evaluate that exact
+combination against the published baseline and maintained corpus before
+promotion. A win by one arm does not establish that its tactic survives
+combination with another, and pooled wins from separate arms are not a score
+for the combined candidate. Release passing increments without waiting for
+every case to be conquered; continue other searches from isolated branches
+while the release candidate remains frozen.
+
 ## 7. Report the search
 
 Report:
