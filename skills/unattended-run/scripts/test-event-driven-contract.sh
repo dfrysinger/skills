@@ -31,7 +31,7 @@ require 'interval=4h' "$skill"
 require 'interval=1h' "$skill"
 require 'alone never makes a challenge due' "$skill"
 require 'Migrate at the next safe phase boundary' "$skill"
-require 'stale, missing, duplicated, or inconsistent' "$skill"
+require 'stale, missing, duplicated' "$skill"
 require 'no legacy' "$skill"
 require 'charter_check.*4h' "$skill"
 require 'progress.*1h' "$skill"
@@ -40,12 +40,13 @@ require 'confirmed four-hour check live as the recovery path' "$skill"
 require 'mark progress pending' "$skill"
 require 'preserve each launched model attempt' "$skill"
 require 'pre-registered repetitions' "$skill"
-require 'rubber-duck agent' "$skill"
+require 'rubber-duck pass' "$skill"
 require 'Record each real stall' "$skill"
 require 'even when' "$skill"
-require 'ALL independent ready scopes' "$skill"
-require 'Complete this audit before' "$skill"
-require 'every unowned' "$skill"
+require 'ALL independent ready' "$skill"
+require 'four-hour charter check' "$skill"
+require 'without a mandatory audit or task switch' "$skill"
+require 'every scope left unowned' "$skill"
 require 'stop BOTH registered' "$skill"
 require 'completed migration' "$skill"
 require 'Existing event triggers remain' "$skill"
@@ -59,8 +60,8 @@ require 'interval: 1h' "$template"
 require 'charter_check:' "$template"
 require 'progress:' "$template"
 require 'Mark second-hand incidents unverified' "$template"
-require 'every hourly progress nudge' "$template"
-require 'ready-lane audit before ending' "$template"
+require 'each four-hour charter' "$template"
+require 'without a mandatory audit' "$template"
 require 'run start' "$template"
 require 'compaction or resumption' "$template"
 require 'candidate movement' "$template"
@@ -89,8 +90,23 @@ reject '^  constraint_challenge:' "$template"
 reject '^  liveness:' "$template"
 reject 'select the cheapest evidence-backed next action' "$skill"
 reject 'hourly idle-frontier nudge' "$template"
+reject 'every hourly progress nudge while' "$template"
 reject 'live eight-hour challenge schedule' "$development_loop"
 reject 'scheduled challenge due' "$development_loop"
 reject 'scheduled-challenge tick' "$development_loop"
+
+four_hour_prompt=$(sed -n '/manage_schedule action=create interval=4h/,/^```/p' "$skill")
+hourly_prompt=$(sed -n '/manage_schedule action=create interval=1h/,/^```/p' "$skill")
+printf '%s\n' "$four_hour_prompt" | grep -q "run development-loop's"
+printf '%s\n' "$four_hour_prompt" | grep -q 'critical-path audit against the plan'
+printf '%s\n' "$four_hour_prompt" | grep -q 'reconcile BOTH charter registry entries'
+printf '%s\n' "$four_hour_prompt" | grep -q 'ALL independent ready'
+printf '%s\n' "$hourly_prompt" | grep -q 'Keep going on the work already underway'
+printf '%s\n' "$hourly_prompt" | grep -q 'Use safe parallelism'
+printf '%s\n' "$hourly_prompt" | grep -q 'one bounded rubber-duck pass'
+if printf '%s\n' "$hourly_prompt" | grep -Eq 'reading <charter-path>|current plan baton|Run development-loop.*audit|Reconcile each active owner|Complete this audit before'; then
+	printf 'hourly prompt must not require a plan audit\n' >&2
+	exit 1
+fi
 
 printf 'event-driven unattended contract ok\n'

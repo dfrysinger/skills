@@ -14,18 +14,17 @@ course:
   direction. Systemic and critical work invokes `constraint-challenge` only
   when `development-loop` reports a material scope, architecture, trust,
   authority, policy, or reframe trigger.
-- An **hourly progress nudge** — a separate `/every` reminder checks the active
-  owner's explicit handoff, advances independent ready work, and runs the
-  critical-path audit while the Definition of Done is open. It assigns all
-  independent ready scopes, not just the first useful action, and records
-  the actual gate for each scope left unowned. When genuinely stuck, use
-  one rubber-duck pass on one concrete blocker; do not brainstorm the same
-  unchanged evidence every hour.
-- A lightweight **four-hour charter check** — another `/every` reminder
-  checks that the durable baton, owner or explicit blocker, candidate or proof
-  state, and both schedule entries remain coherent. It performs a full
-  re-brief only when state is stale or inconsistent. **Arm both reminders
-  yourself with `manage_schedule` before any same-session compact.**
+- An **hourly progress nudge** — a separate `/every` reminder says to keep
+  going on the current work and use safe parallelism when independent work
+  is ready. It does not interrupt a coherent task for a plan audit. When
+  genuinely stuck, use one rubber-duck pass on a concrete new blocker;
+  do not brainstorm the same unchanged evidence every hour.
+- A **four-hour charter check** — another `/every` reminder reads the plan
+  and charter, reconciles explicit owner handoffs and both schedule entries,
+  and runs the critical-path audit across all independent ready scopes.
+  It performs a full re-brief only when state is stale or inconsistent.
+  **Arm both reminders yourself with `manage_schedule` before any
+  same-session compact.**
 - An **optional `/autopilot` objective** that drives the *what* until the agent
   determines the task is complete. A detached request asks the session-control
   extension to invoke the native `/autopilot` command directly, then reads the
@@ -110,16 +109,14 @@ Every charter includes the `/dfrysinger-skills:development-loop` critical-path
 audit, even when another skill governs the run. Run it at task start,
 compaction or resumption, candidate movement, every phase boundary, failure,
 ownership handoff, and material user direction. The four-hour charter check
-runs the same audit if it finds stale or inconsistent state. The hourly
-progress nudge runs it whenever the Definition of Done is open, even when
-one owner is already working:
+runs the same audit each tick. The hourly progress nudge keeps current work
+moving without a mandatory audit or task switch:
 
 - rebuild the remaining dependency graph and mark the critical path;
 - assign every substantial independent ready scope to an available subagent
   with a separate ownership boundary, or execute cheap direct work; for
   every scope left unowned, name its actual dependency or exclusive gate.
-  Complete the ready-lane audit before ending the hourly turn, rather than
-  stopping after the first assignment;
+  An active owner on one lane does not close the audit on other ready lanes;
 - for every delegated agent, reconcile its explicit scope, owned path boundary,
   workspace or branch, session or coordination channel, evidence owed,
   blockers, and integration boundary; preserve a stable assignment ID and
@@ -277,46 +274,36 @@ manage_schedule action=create interval=4h \
   state. List active schedules, reconcile BOTH charter registry entries,
   stop duplicate or legacy charter re-brief/challenge reminders, and re-list
   to require exactly one four-hour charter check and one hourly progress
-  nudge. Check workspace, objective, phase, candidate/proof identity, owner
-  route or explicit blocker, constraint gate, and registry. If any state is
-  stale, missing, duplicated, or inconsistent, follow the charter's Required
-  process skills and run development-loop's critical-path audit to repair it.
-  Otherwise leave progress to the hourly reminder. Time alone never triggers
-  a full re-brief or constraint challenge. During live proof remain read-only.
-  When the shared Definition of Done is verified, stop BOTH registered
-  schedules and every duplicate pointed at this charter; verify absence."
+  nudge. Reconcile explicit owner handoffs and run development-loop's
+  critical-path audit against the plan: verify workspace, objective, phase,
+  candidate/proof identity, owner routes or explicit blockers, constraint
+  gate, and ALL independent ready scopes. Repair stale, missing, duplicated,
+  or inconsistent state without disturbing live proof. Time alone never
+  triggers a full re-brief or constraint challenge. When the shared
+  Definition of Done is verified,
+  stop BOTH registered schedules and every duplicate pointed at this
+  charter; verify absence."
 ```
 
 Arm the separate hourly progress nudge with `manage_schedule`:
 
 ```
 manage_schedule action=create interval=1h \
-  prompt="Finish any coherent in-flight charter or plan edit before reading
-  <charter-path> and its current plan baton; never overwrite newer work.
-  Reconcile each active owner's explicit handoff and unblock it. While the
-  Definition of Done is open, run development-loop's critical-path audit
-  across ALL independent ready scopes, including task lanes, model
-  comparisons, case/proof repairs, and measured evaluator optimization.
-  Assign each substantial ready scope to a separate routable owner and
-  disjoint output path, or execute cheap direct work. For every unowned
-  scope name the actual dependency, exclusive gate, or revisit predicate;
-  an active owner on another lane is not a gate. Complete this audit before
-  ending the turn. Preserve every launched model attempt's first outcome:
-  a separately identified fresh repetition or experiment is allowed when
-  its question, controls, qualification, denominator, and stop rule are
-  stated. If stuck, give one concrete blocker to a rubber-duck agent for
-  a falsifiable check or alternative; do not repeat the same brainstorm
-  without new evidence. During live proof remain read-only around its
-  candidate, worktree, fixture, and process. Time alone never triggers
-  constraint-challenge. If no safe action is admissible, record each scope's
-  exact blocker and revisit condition. When the shared Definition of Done is
+  prompt="Keep going on the work already underway. Use safe parallelism
+  when independent work is ready or the current action is waiting. This
+  hourly nudge does not interrupt a coherent task or require a plan audit;
+  the four-hour charter check owns that audit. If genuinely stuck on a
+  concrete new blocker, use one bounded rubber-duck pass to find a
+  distinguishing next action; do not repeat unchanged brainstorms.
+  Preserve live-proof ownership, immutable first outcomes, and normal
+  proof and promotion gates. When the shared Definition of Done is
   verified, stop BOTH registered schedules and verify absence."
 ```
 
 The charter remains authoritative for skill and compaction policy. Both
-reminders carry the same off-switch and must reconcile against both registry
-entries. Do not let the hourly nudge duplicate a live proof or mistake an
-immutable first outcome for a blanket ban on new experiments.
+reminders carry the same off-switch; the four-hour check reconciles both
+registry entries. Do not let the hourly nudge duplicate a live proof or mistake
+an immutable first outcome for a blanket ban on new experiments.
 
 **Complete when** the charter names its governing, execution, and context
 skills, the registry holds both returned IDs, and `manage_schedule
