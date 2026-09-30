@@ -6,6 +6,25 @@ measure is how many previously failed tasks one exact shared revision solves
 while retaining its earlier wins. Report pooled passes from different skills,
 models, or case revisions separately.
 
+## 0. Consolidate existing evidence before new search
+
+If prior experiments already produced task passes on different skill revisions,
+inventory each pass by exact skill bytes, model, case revision, product outcome,
+unchanged control, and candidate trace. Classify the proposed rule as an
+attributable general tactic, an unverified lead, or a pass with no demonstrated
+skill advantage. A pooled pass does not become a maintained win of the
+published skill or the shared draft.
+
+Start one consolidation draft from the published skill and integrate only
+compatible, supported general tactics. Reuse matching completed comparisons
+before paying for new attempts; check interactions on the combined bytes.
+Mark each task's outcome for that exact draft as pass, fail, or unknown. Search
+for new tactics only where the consolidated draft has a verified failure;
+unattributed historical passes are leads to investigate, not rules to copy.
+
+Complete when every inherited tactic has a traceable mechanism and comparator,
+and the consolidated draft and its unknown task cells have exact identities.
+
 ## 1. Start from the published lineage
 
 Name the published skill bytes and the maintained passing tasks before selecting
@@ -18,10 +37,11 @@ authority. An untested task is **unknown**, not a baseline failure.
 Create the first working draft from the published skill. If another task has
 already produced an integrated draft, start the next task and all its
 experiments from **that draft**, which carries the published rules and the
-supported improvements since release. An older, neutral, lean, or no-skill
-version may be an explicit control for attribution or ablation, never the new
-development starting point. Give each independent investigation its own
-isolated copy of this same draft and frozen task inputs.
+supported improvements since release. Incorporate the supported tactics from
+existing experiments through section 0 before starting new search. An older,
+neutral, lean, or no-skill version may be an explicit control for attribution
+or ablation, never the new development starting point. Give each independent
+investigation its own isolated copy of this same draft and frozen task inputs.
 
 Complete when the draft's published ancestor, latest integrated parent,
 prior-win set, case identity, comparator, and first observable failure are
@@ -39,6 +59,10 @@ controls, repetitions, selection, and unchanged task/model/tool/judge inputs.
 The published skill remains an additional reference when attribution to the
 last release matters. Keep every first outcome; judge native product behavior
 and regressions before crediting instruction uptake.
+Screen independent arms on the smallest valid discriminating evidence, then
+replicate promising treatments on the product and compare the combined draft.
+Do not pay for the entire maintained corpus on every exploratory arm, or
+promote an arm from a cheap proxy alone.
 
 Independent task lanes may search concurrently, but freeze each lane's draft
 parent. A treatment selected on one lane is a proposal to integrate, not
@@ -74,13 +98,19 @@ lead, not yet a publishable gain.
 ## 4. Minimize the new increment
 
 Once the combined draft passes, start a fresh **delta ablation** at the published
-skill, not at no skill. Add only the new general sentences or mechanisms needed
-to reproduce the gain. Test single additions first; test combinations when
-their behavior interacts. Remove instructions whose absence does not reduce
-target success or weaken an earlier passing task. Compare the minimal
-candidate with the full exploratory draft under the same frozen case, model,
-limits, product, and judge contract. Preserve repetitions when outcomes vary;
-one lucky run cannot establish that an instruction is unnecessary.
+skill plus any previously retained increments, not at no skill. Add only the
+new general sentences or mechanisms needed to reproduce the gain. Test single
+additions first; test combinations when their behavior interacts. Remove
+instructions whose absence does not reduce target success or weaken an earlier
+passing task. For each maintained win, retain its exact contract, original
+per-attempt result and control; compare planned repeated attempts on the new
+bytes with that result. Treat a retry-assisted suite PASS as a capability
+signal, not proof that a previous pass-rate advantage was preserved. If
+observed rates differ within measurement noise, record the uncertainty and
+seek enough discriminating evidence before claiming preservation. Compare the
+minimal candidate with the full exploratory draft under the same frozen case,
+model, limits, product, and judge contract. Preserve repetitions when outcomes
+vary; one lucky run cannot establish that an instruction is unnecessary.
 
 Run the resulting exact candidate against all maintained earlier passing
 tasks, including wins from other lanes. If one regresses, diagnose its first
@@ -116,6 +146,14 @@ every unsolved task. After publication the released bytes become the next
 parent and control. Carry remaining failures and the most promising supported
 ideas forward, preserving each experimental first result and its original
 identity.
+
+Separate cases whose traces guide search or ablation from routine regression
+cases and genuinely held-out transfer cases. Once a case influences a treatment
+or removal decision, its later result is development evidence, not independent
+transfer evidence for that revision. Reserve unused transfer cases where the
+corpus permits; if the small corpus cannot support a credible split, report the
+result as directional and obtain an independent transfer task before claiming
+the held-out release gate passed. Do not relabel an exposed case as held-out.
 
 Complete when the published skill, installed skill where applicable, target
 and earlier-win scorecard all name the same exact revision, with unsolved and

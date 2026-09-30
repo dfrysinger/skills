@@ -149,11 +149,12 @@ Build a frozen population of source-backed, single-mechanism treatments with
 controls and pre-registered repetitions before editing a preferred candidate.
 For a skill improving across several tasks, follow the complete
 [`cumulative skill hill climb`](references/cumulative-skill-hill-climb.md):
-start from the published skill, then branch every new task and experiment from
-the latest integrated draft; explore independent ideas in parallel, minimize
-supported gains, protect earlier wins, and publish the exact shared revision.
-Older, neutral, and lean skills are comparison controls, not independent
-starting points for a new task.
+first inventory existing experimental passes and consolidate attributable
+tactics from the published skill, then branch every new task and experiment
+from the latest integrated draft; explore independent ideas in parallel,
+minimize supported gains, protect earlier wins, and publish the exact shared
+revision. Older, neutral, and lean skills are comparison controls, not
+independent starting points for a new task.
 
 Use the local suite runner for ordinary corpora. When the corpus contains full
 repositories, native builds, product exercises, multiple treatments, or enough
