@@ -72,15 +72,16 @@ can restore the process without copying each skill's rules.
 > supports them. Keep the plan up to date so future agents can pick it up. Use
 > `/dfrysinger-skills:development-loop` critical-path audit at run start,
 > compaction or resumption, candidate movement, every phase boundary, failure,
-> ownership handoff, material user direction, a stale charter check, and
-> every hourly progress nudge while the Definition of Done is open: rebuild
+> ownership handoff, material user direction, and each four-hour charter
+> check while the Definition of Done is open: rebuild
 > ready work and dependencies, mark the critical path, assign every
 > substantial independent ready scope to a separate available owner when
 > delegation is safe, or execute cheap direct work. An active owner on one
 > lane does not close the audit on other ready lanes. Name the actual
-> dependency or exclusive gate for each scope left unowned, and complete
-> the ready-lane audit before ending the hourly turn. For every delegated
-> agent, keep its stable assignment ID, scope, owned path boundary, workspaces
+> dependency or exclusive gate for each scope left unowned. The hourly
+> progress nudge keeps the current work moving without a mandatory audit
+> or task switch. For every delegated agent, keep its stable assignment ID,
+> scope, owned path boundary, workspaces
 > or branches, routable owner address, owed evidence, blockers, and integration
 > boundaries in the durable baton. Use fully qualified `name@machine` for
 > mailbox agents and the exact agent ID for native subagents; a bare display
