@@ -9,6 +9,15 @@ Use a **frozen case** to separate evidence from the answer the skill is expected
 to reach. The target skill may be any installed or development skill; this
 procedure does not encode its output shape or domain.
 
+For a multi-task corpus, the goal is to refine and ship one shared skill or
+coherent set of skills that solves every evaluation task. Carry each proven
+general improvement into the next shared revision and ship it when its own
+product, regression, and transfer gates pass; do not wait for the whole corpus
+to turn green. Measure progress on the same exact released revision, not a
+pooled count of passes from different experiments. Follow the
+[`cumulative skill hill climb`](references/cumulative-skill-hill-climb.md)
+for the complete process.
+
 ## 1. Define the behavioral claim
 
 Name the target skill, the behavior being tested, the user-visible failure that
@@ -141,6 +150,12 @@ release regression gate. For stochastic model or judge variance, use
 every attempt remains preserved and the report identifies cases that passed
 after retry. The suite command writes one aggregate report while preserving
 each case's independent run, receipts, and judgments.
+
+For a corpus-wide improvement, begin with the published skill or skill set,
+inventory existing experimental passes, and consolidate attributable tactics
+before new searches. Branch every new task and experiment from the latest
+integrated draft. Older, neutral, and lean skills are comparison controls,
+not independent starting points for a new task.
 
 When a valid evaluator exists and more than one credible mechanism could
 improve stochastic skill behavior, follow
