@@ -140,8 +140,15 @@ a bare `UNANSWERABLE`.
 """
 
 
-def add_case(root: Path, case_id: str, skill: str, phases: list[str]) -> None:
+def add_case(
+    root: Path, case_id: str, skill: str, phases: list[str], *,
+    case_type: str = "prose",
+) -> None:
     ensure_case_id(case_id)
+    if case_type not in {"prose", "repository-task"}:
+        raise ValueError(f"unsupported case type: {case_type}")
+    if case_type == "repository-task" and len(phases) != 1:
+        raise ValueError("repository tasks require exactly one candidate phase")
     if not phases or len(set(phases)) != len(phases):
         raise ValueError("provide one or more unique --phase values")
     for phase in phases:
@@ -202,6 +209,9 @@ def add_case(root: Path, case_id: str, skill: str, phases: list[str]) -> None:
             },
         },
     )
+    if case_type == "repository-task":
+        from repository_task import scaffold_repository
+        scaffold_repository(case_dir)
     corpus["cases"].append(case_id)
     corpus["cases"].sort()
     write_json(corpus_path(root), corpus)
@@ -223,6 +233,8 @@ def copy_with_manifest(
     label: str,
     case_id: str,
     case_dir: Path,
+    *,
+    preserve_modes: bool = False,
 ) -> dict:
     case_dir = case_dir.resolve()
     files = []
@@ -231,6 +243,8 @@ def copy_with_manifest(
         target = target_root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
+        if preserve_modes:
+            shutil.copymode(source, target)
         files.append(
             {
                 "path": relative.as_posix(),
@@ -242,6 +256,8 @@ def copy_with_manifest(
                 },
             }
         )
+        if preserve_modes:
+            files[-1]["mode"] = source.stat().st_mode & 0o777
     manifest = {
         "schema_version": 1,
         "case_id": case_id,
@@ -259,6 +275,13 @@ def freeze_case(root: Path, case_id: str, replace: bool) -> Path:
         raise ValueError(f"unknown case: {case_id}")
     case_dir = root / "cases" / case_id
     definition = read_json(case_dir / "case.json")
+    case_type = definition.get("case_type", "prose")
+    if case_type not in {"prose", "repository-task"}:
+        raise ValueError(f"unsupported case type: {case_type}")
+    repository = case_type == "repository-task"
+    if repository:
+        from repository_task import validate_definition
+        validate_definition(definition, case_dir)
     if definition.get("case_id") != case_id:
         raise ValueError("case.json ID does not match its directory")
     if definition.get("behavioral_claim", "").startswith("Replace "):
@@ -311,6 +334,7 @@ def freeze_case(root: Path, case_id: str, replace: bool) -> Path:
                 phase_id,
                 case_id,
                 case_dir,
+                preserve_modes=repository,
             )
             if not manifest["files"]:
                 raise ValueError(f"phase {phase_id} has no evidence files")
@@ -333,6 +357,7 @@ def freeze_case(root: Path, case_id: str, replace: bool) -> Path:
             "judge-reference",
             case_id,
             case_dir,
+            preserve_modes=repository,
         )
         if not judge_manifest["files"]:
             raise ValueError("judge-reference has no evidence files")
@@ -358,6 +383,16 @@ def freeze_case(root: Path, case_id: str, replace: bool) -> Path:
                 "file_count": len(judge_manifest["files"]),
             },
         }
+        if repository:
+            source = resolve_under(case_dir, definition["repository_task"]["snapshot_dir"])
+            manifest = copy_with_manifest(
+                source, stage / "repository", "repository", case_id, case_dir,
+                preserve_modes=True,
+            )
+            root_manifest["repository_packet"] = {
+                "manifest_sha256": digest(stage / "repository" / "bundle-manifest.json"),
+                "file_count": len(manifest["files"]),
+            }
         write_json(stage / "case-manifest.json", root_manifest)
 
         revision = digest(stage / "case-manifest.json")
@@ -408,6 +443,8 @@ def verify_bundle(bundle: Path) -> int:
         source = resolve_under(bundle, relative)
         if not source.is_file() or digest(source) != record["sha256"]:
             raise ValueError(f"bundle digest mismatch: {source}")
+        if "mode" in record and source.stat().st_mode & 0o777 != record["mode"]:
+            raise ValueError(f"bundle mode mismatch: {source}")
         allowed.add(Path(relative).as_posix())
         count += 1
     actual = {
@@ -446,6 +483,19 @@ def verify_case(root: Path, case_id: str) -> int:
     if digest(judge_manifest) != root_manifest["judge_packet"]["manifest_sha256"]:
         raise ValueError("judge manifest digest mismatch")
     count += verify_bundle(judge_bundle)
+    definition = read_json(target / "case.json")
+    case_type = definition.get("case_type", "prose")
+    if case_type not in {"prose", "repository-task"}:
+        raise ValueError(f"unsupported case type: {case_type}")
+    if case_type == "repository-task":
+        from repository_task import validate_definition
+        validate_definition(definition, target, frozen=True)
+        repository = target / "repository"
+        if digest(repository / "bundle-manifest.json") != root_manifest.get(
+            "repository_packet", {}
+        ).get("manifest_sha256"):
+            raise ValueError("repository manifest digest mismatch")
+        count += verify_bundle(repository)
     return count
 
 
@@ -456,13 +506,17 @@ def parse_run(
     expected_model: str,
     cwd: Path,
     require_skill: bool | None,
+    boundary: str = "prose",
 ) -> dict:
     messages: list[str] = []
     result_event = None
     skill_loaded = False
+    skill_attempted = False
+    pending_skills: set[str] = set()
     models: set[str] = set()
     viewed_paths: list[str] = []
     pending_views: dict[str, tuple[str, str, bool]] = {}
+    tool_calls = []
     for line in log.read_text(encoding="utf-8").splitlines():
         try:
             event = json.loads(line)
@@ -479,13 +533,18 @@ def parse_run(
             if isinstance(content, str) and content.strip():
                 messages.append(content)
         elif event_type == "tool.execution_start":
+            tool_calls.append(data)
             arguments = data.get("arguments")
             if (
                 data.get("toolName") == "skill"
                 and isinstance(arguments, dict)
                 and arguments.get("skill") == skill
             ):
-                skill_loaded = True
+                skill_attempted = True
+                if boundary == "prose":
+                    skill_loaded = True
+                elif isinstance(data.get("toolCallId"), str):
+                    pending_skills.add(data["toolCallId"])
             if data.get("toolName") == "view" and isinstance(arguments, dict):
                 requested = arguments.get("path")
                 call_id = data.get("toolCallId")
@@ -502,18 +561,21 @@ def parse_run(
                     pending_views[call_id] = (requested, str(resolved), inside)
         elif event_type == "tool.execution_complete":
             call_id = data.get("toolCallId")
+            if isinstance(call_id, str) and call_id in pending_skills and data.get("success") is True:
+                skill_loaded = True
             if (
                 isinstance(call_id, str)
                 and call_id in pending_views
                 and data.get("success") is True
             ):
                 requested, resolved, inside = pending_views[call_id]
-                if not inside:
+                if not inside and boundary == "prose":
                     raise ValueError(
                         f"view escaped evaluation workdir: {requested}"
                     )
                 viewed_paths.append(
                     Path(resolved).relative_to(cwd.resolve()).as_posix()
+                    if inside else requested
                 )
         elif event_type == "result":
             result_event = event
@@ -521,7 +583,7 @@ def parse_run(
         raise ValueError(f"missing successful result event in {log}")
     if not messages:
         raise ValueError(f"no assistant.message output in {log}")
-    if models != {expected_model}:
+    if (boundary == "prose" and models != {expected_model}) or expected_model not in models:
         raise ValueError(
             f"run used model identities {sorted(models)!r}, "
             f"expected {expected_model!r}"
@@ -529,12 +591,19 @@ def parse_run(
     if require_skill is not None and skill_loaded != require_skill:
         action = "invoke" if require_skill else "not invoke"
         raise ValueError(f"run must {action} target skill {skill!r}")
+    if boundary != "prose" and require_skill is False and skill_attempted:
+        raise ValueError("baseline must not attempt target skill invocation")
     return {
         "answer": messages[-1],
         "skill_loaded": skill_loaded,
         "models": sorted(models),
         "result_exit_code": result_event["exitCode"],
         "viewed_paths": viewed_paths,
+        "tool_calls": len(tool_calls),
+        "usage": result_event.get("usage"),
+        "input_tokens": None,
+        "output_tokens": None,
+        "boundary": boundary,
     }
 
 
@@ -557,6 +626,8 @@ def copy_packet(bundle: Path, workdir: Path) -> dict:
         target = workdir / record["path"]
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
+        if "mode" in record:
+            target.chmod(record["mode"])
         if digest(target) != record["sha256"]:
             raise ValueError(f"staged packet digest mismatch: {target}")
     return manifest
@@ -771,6 +842,108 @@ def write_failure_receipt(
     )
 
 
+def harness_identity(destination: Path | None = None) -> dict:
+    from repository_task import harness_sources
+    directory = Path(__file__).resolve().parent
+    modules = harness_sources()
+    if destination:
+        destination.mkdir(parents=True, exist_ok=True)
+        for module in modules:
+            shutil.copyfile(directory / module["path"], destination / module["path"])
+        directory = destination
+    return {
+        "path": str(directory / "skill_eval.py"),
+        "sha256": digest(directory / "skill_eval.py"),
+        "modules": modules,
+    }
+
+
+def run_judges(
+    *, frozen: Path, definition: dict, run_root: Path, pinned_plugin: Path,
+    copilot: Path, home_mode: str, timeout_seconds: int,
+    candidate_artifacts: list[Path],
+) -> list[dict]:
+    judge = definition["judge"]
+    case_id = definition["case_id"]
+    case_revision = digest(frozen / "case-manifest.json")
+    judgments = []
+    with tempfile.TemporaryDirectory(prefix="skill-evaluation-judges-") as directory:
+        for judge_model in judge.get("models", DEFAULT_JUDGES):
+            slug = re.sub(r"[^a-z0-9]+", "-", judge_model.lower()).strip("-")
+            workdir = Path(directory) / f"judge-{slug}"
+            copy_packet(frozen / "judge-reference", workdir / "judge-reference")
+            for artifact in candidate_artifacts:
+                relative = artifact.relative_to(run_root)
+                destination = workdir / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(artifact, destination)
+            shutil.copyfile(frozen / judge["criteria_file"], workdir / "criteria.md")
+            prompt_body = (frozen / judge["prompt_file"]).read_text(encoding="utf-8")
+            if JUDGE_RUNTIME_CONTRACT not in prompt_body:
+                prompt_body = f"{prompt_body.rstrip()}\n\n{JUDGE_RUNTIME_CONTRACT}"
+            repository_contract = ""
+            if definition.get("case_type") == "repository-task":
+                repository_contract = (
+                    "\nAssess supported scope and process from the candidate patch, "
+                    "trajectory and execution receipts. Do not replace executable correctness "
+                    "with your verdict or require similarity to the reference patch. "
+                    "Flag observed retrieval of historical/source-origin answers as contamination.\n"
+                )
+            prompt = (
+                f"{prompt_body}\n{repository_contract}\nCase revision: {case_revision}\n"
+                "Candidate outputs and receipts are in this working directory. "
+                "Hidden evidence is under judge-reference/. Use only relative paths "
+                "inside this working directory; do not inspect its parent or any absolute path.\n"
+                "Candidate artifacts:\n" + "\n".join(
+                    f"- {path.relative_to(run_root).as_posix()}" for path in candidate_artifacts
+                ) + "\n"
+            )
+            prompt_path = run_root / f"judge-{slug}-prompt.md"
+            prompt_path.write_text(prompt, encoding="utf-8")
+            log = run_root / f"judge-{slug}-raw.jsonl"
+            try:
+                command = run_copilot(
+                    copilot=copilot, plugin_dir=pinned_plugin, cwd=workdir, prompt=prompt,
+                    model=judge_model, effort="high", log=log, session_id=str(uuid.uuid4()),
+                    resume=False, home_mode=home_mode, run_home=run_root / f"judge-{slug}-home",
+                    timeout_seconds=timeout_seconds, allow_skill=False,
+                )
+                parsed = parse_run(
+                    log, skill=definition["target_skill"], expected_model=judge_model,
+                    cwd=workdir, require_skill=False,
+                )
+                judgment = parse_json_output(parsed["answer"])
+                validate_judgment(judgment, judge_model)
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                write_failure_receipt(
+                    run_root / f"judge-{slug}-failure-receipt.json", case_id=case_id,
+                    case_revision=case_revision, stage=f"judge:{judge_model}", error=error, log=log,
+                )
+                raise
+            judgment["model"] = judge_model
+            path = run_root / f"judgment-{slug}.json"
+            write_json(path, judgment)
+            write_json(run_root / f"judge-{slug}-receipt.json", {
+                "schema_version": 1, "case_id": case_id, "case_revision": case_revision,
+                "judge_model": judge_model, "judge_family": model_family(judge_model),
+                "judge_packet_manifest_sha256": digest(frozen / "judge-reference" / "bundle-manifest.json"),
+                "skill_identity_sha256": digest(run_root / "skill-identity.json"),
+                "copilot_identity_sha256": digest(run_root / "copilot-identity.json"),
+                "harness_identity_sha256": digest(run_root / "harness-identity.json"),
+                "prompt_sha256": digest(prompt_path), "raw_log_sha256": digest(log),
+                "judgment_sha256": digest(path), "home_mode": home_mode,
+                "timeout_seconds": timeout_seconds, "observed_models": parsed["models"],
+                "result_exit_code": parsed["result_exit_code"], "viewed_paths": parsed["viewed_paths"],
+                "command": command_record(command, digest(prompt_path)),
+                "candidate_artifacts": [
+                    {"path": artifact.relative_to(run_root).as_posix(), "sha256": digest(artifact)}
+                    for artifact in candidate_artifacts
+                ],
+            })
+            judgments.append(judgment)
+    return judgments
+
+
 def run_case(
     root: Path,
     case_id: str,
@@ -782,12 +955,20 @@ def run_case(
     timeout_seconds: int,
     copilot_identity_record: dict | None = None,
     harness_identity_record: dict | None = None,
+    *,
+    arm: str = "skill",
+    expected_revision: str | None = None,
 ) -> Path:
     if timeout_seconds <= 0:
         raise ValueError("timeout-seconds must be positive")
     verify_case(root, case_id)
     frozen = frozen_case_path(root, case_id)
+    if expected_revision is not None and digest(frozen / "case-manifest.json") != expected_revision:
+        raise ValueError("frozen case changed during suite; refusing a different-byte retry")
     definition = read_json(frozen / "case.json")
+    repository = definition.get("case_type") == "repository-task"
+    if arm not in {"baseline", "skill"} or (arm == "baseline" and not repository):
+        raise ValueError("baseline arm requires a repository-task case")
     judge = definition["judge"]
     judge_models = judge.get("models", DEFAULT_JUDGES)
     judge_families = {model_family(value) for value in judge_models}
@@ -803,19 +984,70 @@ def run_case(
     )
     run_root.mkdir(parents=True)
     pinned_plugin = run_root / "target-plugin"
-    snapshot_plugin(plugin_dir, pinned_plugin)
-    identity = skill_identity(pinned_plugin, definition["target_skill"])
-    write_json(run_root / "skill-identity.json", identity)
-    write_json(
-        run_root / "copilot-identity.json",
-        copilot_identity_record or copilot_identity(copilot),
-    )
-    harness_identity = harness_identity_record or {
-        "path": str(Path(__file__).resolve()),
-        "sha256": digest(Path(__file__).resolve()),
-    }
-    write_json(run_root / "harness-identity.json", harness_identity)
     case_revision = digest(frozen / "case-manifest.json")
+    try:
+        snapshot_plugin(plugin_dir, pinned_plugin)
+        identity = skill_identity(pinned_plugin, definition["target_skill"])
+        write_json(run_root / "skill-identity.json", identity)
+        write_json(
+            run_root / "copilot-identity.json",
+            copilot_identity_record or copilot_identity(copilot),
+        )
+        running_harness = harness_identity()
+        if harness_identity_record and running_harness["modules"] != harness_identity_record.get(
+            "modules", running_harness["modules"]
+        ):
+            raise ValueError("harness changed after suite snapshot")
+        recorded_harness = {**(harness_identity_record or running_harness),
+                            "modules": running_harness["modules"]}
+        write_json(run_root / "harness-identity.json", recorded_harness)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        if not repository:
+            raise
+        invalid = {
+            "schema_version": 1, "case_id": case_id, "case_revision": case_revision,
+            "case_type": "repository-task", "arm": arm,
+            "execution_status": "INVALID", "behavioral_verdict": None,
+            "failure_kind": "run_setup", "error_type": type(error).__name__, "error": str(error),
+        }
+        write_json(run_root / "execution-result.json", invalid)
+        write_json(run_root / "repository-result.json", invalid)
+        (run_root / "REPORT.md").write_text(
+            f"# Repository evaluation: {case_id}\n\n**Executable result: INVALID**\n\n"
+            "Run setup failed; see `execution-result.json`.\n", encoding="utf-8",
+        )
+        return run_root
+    if repository:
+        from repository_task import execute_repository
+        result = execute_repository(
+            root, case_id, frozen, run_root, pinned_plugin, model, effort, timeout_seconds, arm,
+        )
+        if result["execution_status"] != "INVALID":
+            artifacts = [
+                path for path in sorted(run_root.rglob("*"))
+                if path.is_file() and "target-plugin" not in path.relative_to(run_root).parts
+            ]
+            try:
+                run_judges(
+                    frozen=frozen, definition=definition, run_root=run_root,
+                    pinned_plugin=pinned_plugin, copilot=copilot, home_mode="isolated",
+                    timeout_seconds=timeout_seconds, candidate_artifacts=artifacts,
+                )
+                result["behavioral_verdict"] = result_from_run(run_root, behavioral_only=True)
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                result["behavioral_error"] = {"type": type(error).__name__, "message": str(error)}
+        write_json(run_root / "repository-result.json", result)
+        (run_root / "REPORT.md").write_text(
+            f"# Repository evaluation: {case_id}\n\n"
+            f"**Executable result: {result['execution_status']}**\n\n"
+            f"- Behavioral verdict: {result['behavioral_verdict'] or 'UNAVAILABLE'}\n"
+            f"- Arm: `{arm}`\n- Case revision: `{case_revision}`\n"
+            f"- Failure kind: `{result['failure_kind']}`\n"
+            "- Candidate network: enabled; remote-history isolation: not enforced.\n"
+            "- Artifacts: `execution-result.json`, `candidate.patch`, `candidate/`, "
+            "`grading/`, and independent `judgment-*.json`.\n", encoding="utf-8",
+        )
+        return run_root
     session_id = str(uuid.uuid4())
     phase_outputs = []
     runtime = tempfile.TemporaryDirectory(prefix="skill-evaluation-")
@@ -907,92 +1139,12 @@ def run_case(
     for phase in definition["phases"]:
         remove_tree(runtime_root / f"{phase['id']}-workdir", runtime_root)
 
-    judgments = []
-    for judge_model in judge_models:
-        slug = re.sub(r"[^a-z0-9]+", "-", judge_model.lower()).strip("-")
-        workdir = runtime_root / f"judge-{slug}-workdir"
-        copy_packet(frozen / "judge-reference", workdir / "judge-reference")
-        for phase_id, output_path, receipt_path in phase_outputs:
-            shutil.copyfile(output_path, workdir / output_path.name)
-            shutil.copyfile(receipt_path, workdir / receipt_path.name)
-        criteria = frozen / judge["criteria_file"]
-        shutil.copyfile(criteria, workdir / "criteria.md")
-        prompt_body = (frozen / judge["prompt_file"]).read_text(encoding="utf-8")
-        if JUDGE_RUNTIME_CONTRACT not in prompt_body:
-            prompt_body = f"{prompt_body.rstrip()}\n\n{JUDGE_RUNTIME_CONTRACT}"
-        prompt = (
-            f"{prompt_body}\nCase revision: {case_revision}\n"
-            "Candidate outputs and receipts are in this working directory. "
-            "Hidden evidence is under judge-reference/. Use only relative paths "
-            "inside this working directory; do not inspect its parent or any "
-            "absolute path.\n"
-        )
-        prompt_path = run_root / f"judge-{slug}-prompt.md"
-        prompt_path.write_text(prompt, encoding="utf-8")
-        log = run_root / f"judge-{slug}-raw.jsonl"
-        try:
-            command = run_copilot(
-                copilot=copilot,
-                plugin_dir=pinned_plugin,
-                cwd=workdir,
-                prompt=prompt,
-                model=judge_model,
-                effort="high",
-                log=log,
-                session_id=str(uuid.uuid4()),
-                resume=False,
-                home_mode=home_mode,
-                run_home=run_root / f"judge-{slug}-home",
-                timeout_seconds=timeout_seconds,
-                allow_skill=False,
-            )
-            run_result = parse_run(
-                log,
-                skill=definition["target_skill"],
-                expected_model=judge_model,
-                cwd=workdir,
-                require_skill=False,
-            )
-            judgment = parse_json_output(run_result["answer"])
-            validate_judgment(judgment, judge_model)
-        except (OSError, ValueError, json.JSONDecodeError) as error:
-            write_failure_receipt(
-                run_root / f"judge-{slug}-failure-receipt.json",
-                case_id=case_id,
-                case_revision=case_revision,
-                stage=f"judge:{judge_model}",
-                error=error,
-                log=log,
-            )
-            runtime.cleanup()
-            raise
-        judgment["model"] = judge_model
-        path = run_root / f"judgment-{slug}.json"
-        write_json(path, judgment)
-        receipt = {
-            "schema_version": 1,
-            "case_id": case_id,
-            "case_revision": case_revision,
-            "judge_model": judge_model,
-            "judge_family": model_family(judge_model),
-            "judge_packet_manifest_sha256": digest(
-                frozen / "judge-reference" / "bundle-manifest.json"
-            ),
-            "skill_identity_sha256": digest(run_root / "skill-identity.json"),
-            "copilot_identity_sha256": digest(run_root / "copilot-identity.json"),
-            "harness_identity_sha256": digest(run_root / "harness-identity.json"),
-            "prompt_sha256": digest(prompt_path),
-            "raw_log_sha256": digest(log),
-            "judgment_sha256": digest(path),
-            "home_mode": home_mode,
-            "timeout_seconds": timeout_seconds,
-            "observed_models": run_result["models"],
-            "result_exit_code": run_result["result_exit_code"],
-            "viewed_paths": run_result["viewed_paths"],
-            "command": command_record(command, digest(prompt_path)),
-        }
-        write_json(run_root / f"judge-{slug}-receipt.json", receipt)
-        judgments.append(judgment)
+    judgments = run_judges(
+        frozen=frozen, definition=definition, run_root=run_root,
+        pinned_plugin=pinned_plugin, copilot=copilot, home_mode=home_mode,
+        timeout_seconds=timeout_seconds,
+        candidate_artifacts=[path for _, output, receipt in phase_outputs for path in (output, receipt)],
+    )
 
     verdicts = [judgment["verdict"] for judgment in judgments]
     overall = (
@@ -1040,7 +1192,10 @@ def run_case(
     return run_root
 
 
-def result_from_run(run_root: Path) -> str:
+def result_from_run(run_root: Path, *, behavioral_only: bool = False) -> str:
+    execution = run_root / "execution-result.json"
+    if execution.is_file() and not behavioral_only:
+        return read_json(execution)["execution_status"]
     judgments = [
         read_json(path)["verdict"]
         for path in sorted(run_root.glob("judgment-*.json"))
@@ -1063,6 +1218,8 @@ def run_suite(
     workers: int,
     case_ids: list[str] | None = None,
     max_attempts: int = 1,
+    *,
+    arm: str = "skill",
 ) -> tuple[Path, bool]:
     if workers <= 0:
         raise ValueError("workers must be positive")
@@ -1082,12 +1239,16 @@ def run_suite(
     started_clock = time.monotonic()
     suite_root = root / "suite-runs" / f"{utc_stamp()}-{uuid.uuid4().hex[:8]}"
     suite_root.mkdir(parents=True)
-    harness_snapshot = suite_root / "skill_eval.py"
-    shutil.copyfile(Path(__file__).resolve(), harness_snapshot)
-    harness_identity_record = {
-        "path": str(harness_snapshot),
-        "sha256": digest(harness_snapshot),
-    }
+    harness_identity_record = harness_identity(suite_root)
+    suite_plugin = suite_root / "target-plugin"
+    snapshot_plugin(plugin_dir, suite_plugin)
+    revisions = {}
+    for case_id in selected:
+        try:
+            revisions[case_id] = digest(frozen_case_path(root, case_id) / "case-manifest.json")
+        except (OSError, ValueError, json.JSONDecodeError):
+            # Preserve per-case error handling for an unfrozen suite member.
+            revisions[case_id] = None
     suite_runtime = tempfile.TemporaryDirectory(prefix="skill-evaluation-suite-")
     frozen_copilot = Path(suite_runtime.name) / "copilot"
     shutil.copy2(copilot.resolve(), frozen_copilot)
@@ -1106,7 +1267,7 @@ def run_suite(
                     run_case,
                     root,
                     case_id,
-                    plugin_dir,
+                    suite_plugin,
                     frozen_copilot,
                     model,
                     effort,
@@ -1114,6 +1275,8 @@ def run_suite(
                     timeout_seconds,
                     copilot_identity_record,
                     harness_identity_record,
+                    arm=arm,
+                    expected_revision=revisions[case_id],
                 ): case_id
                 for case_id in pending
             }
@@ -1126,8 +1289,17 @@ def run_suite(
                         "result": result_from_run(run_root),
                         "run_path": str(run_root.relative_to(root)),
                     }
+                    execution_path = run_root / "repository-result.json"
+                    if not execution_path.is_file():
+                        execution_path = run_root / "execution-result.json"
+                    if execution_path.is_file():
+                        execution = read_json(execution_path)
+                        attempt["execution_status"] = execution["execution_status"]
+                        attempt["behavioral_verdict"] = execution["behavioral_verdict"]
                     attempts_by_case[case_id].append(attempt)
-                    if attempt["result"] != "PASS":
+                    if attempt["result"] != "PASS" or (
+                        "behavioral_verdict" in attempt and attempt["behavioral_verdict"] != "PASS"
+                    ):
                         next_pending.append(case_id)
                 except Exception as error:
                     attempt = {
@@ -1154,7 +1326,8 @@ def run_suite(
             except (OSError, ValueError, json.JSONDecodeError):
                 definition = {}
         successful = next(
-            (attempt for attempt in attempts if attempt["result"] == "PASS"),
+            (attempt for attempt in attempts if attempt["result"] == "PASS"
+             and ("behavioral_verdict" not in attempt or attempt["behavioral_verdict"] == "PASS")),
             None,
         )
         completed_attempts = [
@@ -1166,6 +1339,7 @@ def run_suite(
         results.append(
             {
                 "case_id": case_id,
+                "case_type": definition.get("case_type", "prose"),
                 "target_skill": definition.get("target_skill", "unknown"),
                 "cohort": definition.get("cohort", "default"),
                 "result": "PASS" if successful else (
@@ -1174,6 +1348,8 @@ def run_suite(
                     else "FAIL"
                 ),
                 "run_path": final_attempt.get("run_path") if final_attempt else None,
+                "behavioral_verdict": final_attempt.get("behavioral_verdict") if final_attempt else None,
+                "passed_after_retry": bool(successful and successful["attempt"] > 1),
                 "attempt_count": len(attempts),
                 "attempts": attempts,
             }
@@ -1181,9 +1357,24 @@ def run_suite(
 
     results.sort(key=lambda item: item["case_id"])
     failures.sort(key=lambda item: item["case_id"])
-    passed = not failures and all(item["result"] == "PASS" for item in results)
+    passed = not failures and all(
+        item["result"] == "PASS"
+        and (item["case_type"] != "repository-task" or item["behavioral_verdict"] == "PASS")
+        for item in results
+    )
     completed_at = utc_instant()
     duration_seconds = round(time.monotonic() - started_clock, 3)
+    repository_results = [item for item in results if item["case_type"] == "repository-task"]
+    first_attempts = [item["attempts"][0] for item in repository_results]
+    valid_first = [item for item in first_attempts if item["result"] in {"PASS", "FAIL"}]
+    first_passes = sum(item["result"] == "PASS" for item in valid_first)
+    executable_summary = {
+        "requested": len(first_attempts), "valid_first_attempts": len(valid_first),
+        "invalid_first_attempts": len(first_attempts) - len(valid_first),
+        "first_attempt_passes": first_passes,
+        "pass_at_1": first_passes / len(valid_first) if valid_first else None,
+        "coverage": len(valid_first) / len(first_attempts) if first_attempts else None,
+    }
     write_json(
         suite_root / "suite-result.json",
         {
@@ -1196,7 +1387,12 @@ def run_suite(
             "effort": effort,
             "max_attempts": max_attempts,
             "home_mode": home_mode,
+            "arm": arm,
+            "repository_executable": executable_summary,
+            "harness_identity": harness_identity_record,
             "plugin_dir": str(plugin_dir),
+            "plugin_snapshot": str(suite_plugin),
+            "case_revisions": revisions,
             "cases": results,
             "failures": failures,
         },
@@ -1215,19 +1411,31 @@ def run_suite(
         f"- Candidate model: `{model}` ({effort})",
         f"- Maximum attempts per case: {max_attempts}",
         f"- Cases passing after retry: "
-        f"{sum(item['result'] == 'PASS' and item['attempt_count'] > 1 for item in results)}",
+        f"{sum(item['passed_after_retry'] for item in results)}",
         f"- Authentication home: `{home_mode}`",
         "",
         "## Cases",
         "",
-        "| Case | Cohort | Skill | Attempts | Result |",
-        "| --- | --- | --- | --- | --- |",
+        "| Case | Cohort | Skill | Attempts | Result | Behavioral |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
+    if repository_results:
+        report[4:4] = [
+            "## Repository first-attempt executable results",
+            "",
+            f"- Pass@1: {executable_summary['pass_at_1']}",
+            f"- Requested: {len(first_attempts)}; valid: {len(valid_first)}; "
+            f"invalid/error: {len(first_attempts) - len(valid_first)}",
+            f"- Coverage: {executable_summary['coverage']}",
+            "- Retries and behavioral judgments do not change pass@1.",
+            "- Repository rows show executable Result and independent Behavioral verdict.",
+            "",
+        ]
     for item in results:
         report.append(
             f"| `{item['case_id']}` | `{item['cohort']}` | "
             f"`{item['target_skill']}` | {item['attempt_count']} | "
-            f"**{item['result']}** |"
+            f"**{item['result']}** | {item['behavioral_verdict'] or '-'} |"
         )
     if failures:
         report.extend(["", "## Execution failures", ""])
@@ -1255,6 +1463,7 @@ def parser() -> argparse.ArgumentParser:
     add.add_argument("case_id")
     add.add_argument("--skill", required=True)
     add.add_argument("--phase", action="append", required=True)
+    add.add_argument("--case-type", choices=("prose", "repository-task"), default="prose")
 
     freeze = sub.add_parser("freeze")
     freeze.add_argument("corpus", type=Path)
@@ -1264,6 +1473,9 @@ def parser() -> argparse.ArgumentParser:
     verify = sub.add_parser("verify")
     verify.add_argument("corpus", type=Path)
     verify.add_argument("--case")
+    validate = sub.add_parser("validate-case")
+    validate.add_argument("corpus", type=Path)
+    validate.add_argument("--case", required=True)
 
     run = sub.add_parser("run")
     run.add_argument("corpus", type=Path)
@@ -1278,6 +1490,7 @@ def parser() -> argparse.ArgumentParser:
         "--home-mode", choices=("existing", "isolated"), default="existing"
     )
     run.add_argument("--timeout-seconds", type=int, default=1200)
+    run.add_argument("--arm", choices=("baseline", "skill"), default="skill")
 
     suite = sub.add_parser("run-suite")
     suite.add_argument("corpus", type=Path)
@@ -1294,6 +1507,7 @@ def parser() -> argparse.ArgumentParser:
     suite.add_argument("--timeout-seconds", type=int, default=1200)
     suite.add_argument("--workers", type=int, default=3)
     suite.add_argument("--max-attempts", type=int, default=1)
+    suite.add_argument("--arm", choices=("baseline", "skill"), default="skill")
     return result
 
 
@@ -1305,7 +1519,7 @@ def main(argv: list[str] | None = None) -> int:
             init_corpus(root)
             print(root)
         elif args.command == "add-case":
-            add_case(root, args.case_id, args.skill, args.phase)
+            add_case(root, args.case_id, args.skill, args.phase, case_type=args.case_type)
             print(root / "cases" / args.case_id)
         elif args.command == "freeze":
             print(freeze_case(root, args.case, args.replace))
@@ -1314,9 +1528,14 @@ def main(argv: list[str] | None = None) -> int:
             cases = [args.case] if args.case else corpus["cases"]
             count = sum(verify_case(root, case_id) for case_id in cases)
             print(f"verified {len(cases)} cases and {count} files")
+        elif args.command == "validate-case":
+            from repository_task import validate_repository_case
+            path = validate_repository_case(root, args.case)
+            print(path)
+            if read_json(path / "admission-receipt.json")["status"] != "PASS":
+                return 1
         elif args.command == "run":
-            print(
-                run_case(
+            run_path = run_case(
                     root,
                     args.case,
                     args.plugin_dir.expanduser().resolve(),
@@ -1325,8 +1544,14 @@ def main(argv: list[str] | None = None) -> int:
                     args.effort,
                     args.home_mode,
                     args.timeout_seconds,
+                    arm=args.arm,
                 )
-            )
+            print(run_path)
+            repository_result = run_path / "repository-result.json"
+            if repository_result.is_file():
+                outcome = read_json(repository_result)
+                if outcome["execution_status"] != "PASS" or outcome["behavioral_verdict"] != "PASS":
+                    return 1
         elif args.command == "run-suite":
             suite_root, passed = run_suite(
                 root,
@@ -1339,6 +1564,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.workers,
                 args.case,
                 args.max_attempts,
+                arm=args.arm,
             )
             print(suite_root)
             if not passed:
