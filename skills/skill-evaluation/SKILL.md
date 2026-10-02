@@ -152,9 +152,9 @@ after retry. The suite command writes one aggregate report while preserving
 each case's independent run, receipts, and judgments.
 
 For a corpus-wide improvement, begin with the published skill or skill set,
-inventory existing experimental passes, and consolidate attributable tactics
-before new searches. Branch every new task and experiment from the latest
-integrated draft. Older, neutral, and lean skills are comparison controls,
+inventory existing experimental passes, and consolidate eligible general
+lessons through the cumulative hill climb before new searches. Branch every new
+task and experiment from the latest integrated draft. Older, neutral, and lean skills are comparison controls,
 not independent starting points for a new task.
 
 When a valid evaluator exists and more than one credible mechanism could
@@ -289,9 +289,12 @@ Classify a failure before editing:
   context.
 - **Harness defect:** the candidate or judge did not receive the frozen inputs
   named by the receipt.
+- **Grading defect:** a check rejects behavior permitted by the task or accepts
+  behavior that fails its requirements.
 
-Repair packet and harness defects outside the target skill. If the evidence
-establishes exactly one independently required skill correction and no
+Repair packet, harness, and grading defects outside the target skill, preserving
+original outcomes and identifying corrected evaluations separately. If the
+evidence establishes exactly one independently required skill correction and no
 competing treatment remains, repair it with general language, rerun the
 unchanged case, and retain the prior run. When multiple credible mechanisms
 remain, freeze them as treatment arms before editing a preferred candidate.
@@ -305,8 +308,10 @@ smallest reusable tactic. The parallel-treatment procedure owns controls,
 dose-matching, planned replication, mechanism scoring, finalist selection, and
 held-out transfer.
 
-When the target skill has accumulated substantial process text, compare a
-neutral baseline, a lean replacement, and the unchanged full skill instead of
+For corpus consolidation, preserve the declared prior-win set on the combined
+draft before minimizing it, following the cumulative hill climb. When observed
+instruction dilution or contradiction warrants rebuilding the whole skill,
+compare a neutral baseline, a lean replacement, and the unchanged full skill instead of
 assuming incremental editing is safest. Follow
 [`references/ablation-campaign.md`](references/ablation-campaign.md): start the
 lean arm from the smallest load-bearing rules, run one discriminating case,

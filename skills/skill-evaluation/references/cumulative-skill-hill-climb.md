@@ -25,15 +25,51 @@ rule as an attributable general tactic, an unverified lead, or a pass with no
 demonstrated skill advantage. A pooled pass does not become a maintained win
 of the published revision or the shared draft.
 
-Start one consolidation draft from the published revision and integrate only
-compatible, supported general tactics. Reuse matching completed comparisons
-before paying for new attempts; check interactions on the combined bytes.
-Mark each task's outcome for that exact draft as pass, fail, or unknown. Search
-for new tactics only where the consolidated draft has a verified failure;
-unattributed historical passes are leads to investigate, not rules to copy.
+**Combine, make it work, then minimize.** Start one exploratory consolidation
+draft from the published revision and latest integrated improvements. Map the
+general lessons from earlier passing versions to that draft: retain existing
+coverage and add missing compatible guidance together. Resolve contradictions
+and exclude task answers or hidden criteria before testing; leave reduction
+of useful wording until the combined behavior works. Repeating instructions
+already present is a separate treatment hypothesis, not a missing lesson.
 
-Complete when every inherited tactic has a traceable mechanism and comparator,
-and the consolidated draft and its unknown task cells have exact identities.
+A historical pass makes its general guidance eligible for investigation, not
+automatically attributable or releasable. Record each carried lesson's source
+and evidence classification, and keep unverified additions experimental until
+comparisons support them. Reuse matching completed comparisons before paying
+for new attempts; check interactions on the combined bytes.
+
+Declare the prior-win set being consolidated and its success and replication
+rule before dispatch. Test that set on the same frozen draft, marking each task
+pass, fail, or unknown. Refine verified failures from this accumulating draft
+until it preserves the declared wins, then minimize through section 4. Keep
+new-task search outside a consolidation-only work order.
+
+Complete when the declared prior-win set, shared draft, inherited lesson map,
+evidence classifications, and per-task outcomes have exact identities.
+
+### Keep consolidation experiments useful
+
+Before another skill experiment, compare retained outputs with the task's
+actual requirements. A checker that rejects permitted behavior needs a grading
+repair, not task-specific wording in the skill. Qualify the correction against
+valid and invalid behavior while preserving the acceptance requirements.
+
+When only downstream grading changes, reuse checksum-verified retained
+candidate outputs instead of paying for another coding attempt. Establish
+correspondence for the original candidate, coding inputs, skill or plugin,
+model, and the environment inputs relevant to the reused evidence. Rerun the
+affected product checks and judges under a separately identified grading
+revision; preserve original outcomes and report each revision separately.
+Changed candidate-visible inputs, changed candidate bytes, or missing relevant
+correspondence require a new coding attempt rather than a retained regrade.
+
+At wave boundaries, compare useful learning with measured evaluation cost and
+elapsed time. Fix demonstrated evaluation overhead before another unchanged
+wave, using the existing evaluator and its cheapest representative canary.
+Record which calls or work the change avoided; an untested strategy is not a
+speed improvement. If product progress stalls, classify task achievability
+through section 3 before generating more variants.
 
 ## 1. Start from the published lineage
 
@@ -108,9 +144,10 @@ lead, not yet a publishable gain.
 
 ## 4. Minimize the new increment
 
-Once the combined draft passes, start a fresh **delta ablation** at the published
-skill plus any previously retained increments, not at no skill. Add only the
-new general sentences or mechanisms needed to reproduce the gain. Test single
+Once the combined draft preserves the declared prior-win set and passes its
+target under the predeclared rule, start a fresh **delta ablation** at the
+published skill plus any previously retained increments, not at no skill. Add
+only the new general sentences or mechanisms needed to reproduce the gain. Test single
 additions first; test combinations when their behavior interacts. Remove
 instructions whose absence does not reduce target success or weaken an earlier
 passing task. For each maintained win, retain its exact contract, original
