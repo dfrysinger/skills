@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
@@ -9,6 +10,7 @@ import subprocess
 import tempfile
 import unittest
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
@@ -27,6 +29,20 @@ class RepositoryTaskTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_admission_binding_ignores_local_image_tag_metadata(self):
+        frozen = Path(self.temp.name) / "frozen"
+        frozen.mkdir()
+        (frozen / "case-manifest.json").write_text("{}")
+        binding = repository.admission_binding(frozen, {
+            "requested": self.image,
+            "id": self.image,
+            "repo_digests": ["local-name@" + self.image],
+        })
+        self.assertEqual(binding["image"], {
+            "requested": self.image,
+            "id": self.image,
+        })
 
     def make_case(self, name="example"):
         evaluator.add_case(self.root, name, "example-skill", ["candidate"],
@@ -495,6 +511,22 @@ class RepositoryTaskTests(unittest.TestCase):
         with self.assertRaisesRegex(repository.InfrastructureError, "unsupported"):
             repository.validate_treatment_output(output)
 
+    def test_export_omits_unchanged_setup_symlink_and_rejects_changed_target(self):
+        frozen = self.freeze()
+        candidate = Path(self.temp.name) / "candidate"
+        repository.copy_packet(frozen / "repository", candidate)
+        (candidate / "node_modules").symlink_to("/opt/runtime/node_modules")
+        patch = Path(self.temp.name) / "candidate.patch"
+        allowed = [{"path": "node_modules", "target": "/opt/runtime/node_modules"}]
+
+        repository.export_patch(frozen, candidate, patch, allowed)
+        self.assertEqual(patch.read_bytes(), b"")
+
+        (candidate / "node_modules").unlink()
+        (candidate / "node_modules").symlink_to("/tmp/untrusted")
+        with self.assertRaisesRegex(repository.CandidateStateError, "retargeted setup symlink"):
+            repository.export_patch(frozen, candidate, patch, allowed)
+
     def test_sandcastle_sessions_use_preallocated_ids_and_missing_telemetry_is_partial(self):
         frozen = self.freeze()
         run = self.root / "runs" / "sandcastle"
@@ -572,11 +604,10 @@ class RepositoryTaskTests(unittest.TestCase):
 
             def usage_events(self, session_id):
                 owner.assertTrue(self.stopped)
-                return (
+                return io.BytesIO(
                     b'{"type":"session.shutdown","data":'
                     b'{"totalNanoAiu":1000000000,"totalPremiumRequests":1}}\n'
-                    if session_id == self.implementer else None
-                )
+                ) if session_id == self.implementer else nullcontext(None)
 
         treatment = {
             "fingerprint": "f" * 64,
@@ -790,7 +821,8 @@ class RepositoryTaskTests(unittest.TestCase):
         frozen = evaluator.freeze_case(self.root, "example", False)
         run_root = Path(self.temp.name) / "run"
         run_root.mkdir()
-        for name in ("skill-identity.json", "copilot-identity.json", "harness-identity.json"):
+        for name in ("skill-identity.json", "treatment-identity.json",
+                     "copilot-identity.json", "harness-identity.json"):
             (run_root / name).write_text("{}\n", encoding="utf-8")
         captured_prompts = []
         judgment = {
@@ -855,7 +887,8 @@ class RepositoryTaskTests(unittest.TestCase):
         for name in ("plain", "extras", "bad-type", "bad-list", "missing", "malformed", "wrong-model"):
             run = self.root / "runs" / name / "example"
             run.mkdir(parents=True)
-            for filename in ("skill-identity.json", "copilot-identity.json", "harness-identity.json"):
+            for filename in ("skill-identity.json", "treatment-identity.json",
+                             "copilot-identity.json", "harness-identity.json"):
                 evaluator.write_json(run / filename, {})
             evaluator.write_json(run / "execution-result.json", {
                 "case_id": "example", "case_revision": evaluator.digest(frozen / "case-manifest.json"),
