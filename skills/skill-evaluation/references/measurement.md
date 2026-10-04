@@ -93,6 +93,11 @@ or observed undeclared session files remain explicit incomplete or contaminated
 coverage. Candidate-authored declarations and the absence of another observed
 file never establish exhaustive accounting.
 
+A failed post-candidate session inventory still stops the writer and preserves
+measurements for allocated or observed sessions. Its error marks coverage
+incomplete; launched work cannot become exact zero spending because inventory
+failed.
+
 `credits` in the accounting summary is an exact total only when every relevant
 session has known credits and terminal coverage. Otherwise it is null and
 `observed_credits` is the explicitly partial subtotal, also null if nothing is
@@ -203,6 +208,12 @@ and standalone discovery of the same run produce one row. Runs without new
 measurement artifacts remain visible with unknown accounting and full timing.
 Malformed records and conflicting ownership fail visibly rather than being
 silently omitted.
+
+Compatibility-`BLOCKED` and preparation-`INVALID` attempts can precede treatment
+snapshot capture. History retains their declared identity and original result,
+marks `treatment_artifacts_verified` false, and does not treat missing snapshots
+as execution evidence. Executed attempts still require matching descriptor,
+source and adapter artifacts.
 
 Reports show per-attempt correctness, behavioral verdict, accounting coverage,
 quality and duration. Treatment-aware reports also project treatment,

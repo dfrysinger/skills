@@ -278,6 +278,13 @@ passes when one identical-byte attempt reaches unanimous `PASS`; otherwise its
 last completed attempt determines the case result. Never discard failed
 attempts or describe a retry-assisted pass as deterministic.
 
+For a separately scoped release, declare its repeated-run qualification rule
+before dispatch. Report qualification separately from each original outcome,
+instruction uptake, and causal or generalization claims. Retain every failure;
+do not change the threshold after seeing results or call a qualified artifact
+deterministic. This is distinct from the suite runner's retry-until-one-`PASS`
+policy and does not alter any attempt's verdict.
+
 For an experiment that changes a skill, compare two layers separately:
 
 1. **Instruction uptake:** for each changed rule that applies to the case,
@@ -314,15 +321,22 @@ for every task to be solved. When the integrated candidate conquers a previously
 failed full-product task, compare it with the published baseline on the same
 frozen case and execution contract, using predeclared repetitions when outcomes
 vary. Check that the applicable new rules were used and that the advantage is
-not explained by a model, packet, tool, or evaluator change. Launch held-out
-transfer, every maintained passing task and newly conquered task, structural
-checks, and independent review in parallel on the exact integrated bytes.
+not explained by a model, packet, tool, or evaluator change. Run applicable
+held-out transfer, maintained-task and newly conquered-task acceptance on the
+exact integrated bytes, concurrently where independent. Follow the target
+skill's prerequisite gates: when runtime proof must precede implementation
+review or broad checks, complete that proof first, then review the same frozen
+candidate. A separately authorized check-contract review is not implementation
+review.
 Publish that revision as soon as those gates pass; unsolved tasks remain open
 for the next increment, and independent lanes can continue on isolated
 candidates. Record the shared candidate's pass rates, retry dependence, and
 remaining failures, then use the published revision as the control for the next
-comparison. A task pass without an attributable advantage stays experimental
-rather than becoming a release.
+comparison. A newly claimed tactic without an attributable advantage stays
+experimental rather than becoming a proven improvement. For explicitly scoped
+consolidation or minimization of existing successes, use the corresponding
+release branch in the cumulative hill climb; do not invent a new-task campaign
+or claim individual-rule causality from artifact qualification.
 
 Before attributing a repeated behavior to the target skill, audit the complete
 candidate-visible instruction stack: task wording, repository and custom
@@ -404,7 +418,8 @@ The evaluation is complete only when:
   skill change;
 - a new case does not change any older case root digest; and
 - a maintained regression suite runs through one command and every included
-  case passes after a target-skill change; and
+  case meets its predeclared qualification rule after a target-skill change,
+  with complete original attempt outcomes retained; and
 - no evaluation repair introduces case-specific hints into the target skill.
 - a large distributed campaign, when used, has one checksum-bound effective
   result per expected attempt ID, with no missing, extra, or duplicate

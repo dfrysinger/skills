@@ -195,6 +195,15 @@ parent and control. Carry remaining failures and the most promising supported
 ideas forward, preserving each experimental first result and its original
 identity.
 
+For an explicitly scoped consolidation or minimization of existing successes,
+qualify the exact combined artifact against the declared prior-win and
+preservation rules. Do not add an unseen task or require an individual rule's
+causal advantage to complete that scope. Disclose failed originals, instruction
+uptake, model and contract differences, and untested scope. This branch
+establishes artifact qualification, not a newly conquered task, independent
+transfer, or broad generalization. Newly claimed treatment or generalization
+improvements retain their applicable uptake, comparison and held-out gates.
+
 Separate cases whose traces guide search or ablation from routine regression
 cases and genuinely held-out transfer cases. Once a case influences a treatment
 or removal decision, its later result is development evidence, not independent
@@ -202,6 +211,14 @@ transfer evidence for that revision. Reserve unused transfer cases where the
 corpus permits; if the small corpus cannot support a credible split, report the
 result as directional and obtain an independent transfer task before claiming
 the held-out release gate passed. Do not relabel an exposed case as held-out.
+
+Bind the evaluated target and its reached support files to the reviewed,
+published and installed deliverable. If packaging or inherited support differs,
+inspect actual reads, searches, callers and discovery metadata/content rather
+than inferring independence from the absence of a skill invocation. Compare
+content, file types, modes, membership and synchronized versions. Reuse only
+applicable evidence; delivered equivalence is neither a new behavioral run nor
+qualification of the entire plugin.
 
 Complete when the published and installed skill or skill set, where applicable,
 and the target and earlier-win scorecard all name the same exact revision, with

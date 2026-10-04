@@ -543,6 +543,7 @@ class RepositoryTaskTests(unittest.TestCase):
         owner = self
         unsafe_output = [False]
         timed_out = [False]
+        inventory_failed = [False]
 
         class FakeContainer:
             def __init__(self, image, mounts, artifacts, **kwargs):
@@ -597,6 +598,8 @@ class RepositoryTaskTests(unittest.TestCase):
                 return {"exit_code": 0, "timed_out": False, "log": log.name}
 
             def session_ids(self):
+                if inventory_failed[0]:
+                    raise repository.InfrastructureError("inventory unavailable after candidate")
                 return {self.implementer}, []
 
             def stop(self):
@@ -649,6 +652,34 @@ class RepositoryTaskTests(unittest.TestCase):
         self.assertFalse(accounting["candidate"]["complete"])
         self.assertEqual(accounting["candidate"]["observed_credits"], 1)
         self.assertIsNone(accounting["candidate"]["credits"])
+        inventory_failed[0] = True
+        inventory_run = self.root / "runs" / "sandcastle-inventory-failed"
+        inventory_run.mkdir()
+        with (
+            mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "nonsecret-test"}),
+            mock.patch("repository_task.image_identity", return_value={"id": self.image}),
+            mock.patch("repository_task.require_admission", return_value=admission),
+            mock.patch("repository_task.Container", FakeContainer),
+            mock.patch("repository_task.grade") as grade,
+        ):
+            inventory_result = repository.execute_repository(
+                self.root, "example", frozen, inventory_run, inventory_run / "plugin",
+                "gpt-5.6-sol-fast", "high", 60, "skill", treatment=treatment,
+            )
+        self.assertEqual(inventory_result["execution_status"], "INVALID")
+        grade.assert_not_called()
+        inventory_records = [
+            evaluator.read_json(path)
+            for path in sorted((inventory_run / "measurements").glob("*.json"))
+        ]
+        self.assertEqual(len(inventory_records), 2)
+        inventory_accounting = repository.measurement.accounting(inventory_records)["candidate"]
+        self.assertEqual(inventory_accounting["observed_credits"], 1)
+        self.assertFalse(inventory_accounting["complete"])
+        self.assertIsNone(inventory_accounting["credits"])
+        self.assertIn("inventory unavailable", evaluator.read_json(
+            inventory_run / "candidate-session-coverage.json")["errors"][0])
+        inventory_failed[0] = False
         unsafe_output[0] = True
         unsafe_run = self.root / "runs" / "sandcastle-unsafe"
         unsafe_run.mkdir()
@@ -727,6 +758,26 @@ class RepositoryTaskTests(unittest.TestCase):
         result = evaluator.read_json(run / "execution-result.json")
         self.assertEqual(result["execution_status"], "BLOCKED")
         self.assertEqual(list((run / "measurements").glob("*.json")), [])
+        row = evaluation_history.history(self.root)["attempts"][0]
+        self.assertEqual(row["correctness"], "BLOCKED")
+        self.assertFalse(row["treatment_artifacts_verified"])
+        definition["compatibility"] = {"language": "typescript", "package_system": "npm"}
+        evaluator.write_json(case / "case.json", definition)
+        evaluator.freeze_case(self.root, "example", True)
+        with mock.patch("skill_eval.snapshot_plugin", side_effect=ValueError("bad plugin")):
+            invalid_run = evaluator.run_case(
+                self.root, "example", plugin, Path("/missing"), "fake", "high",
+                "existing", 60, treatment_file=treatment,
+            )
+        invalid = evaluation_history.run_row(self.root, invalid_run, None, {})
+        self.assertEqual(invalid["correctness"], "INVALID")
+        self.assertFalse(invalid["treatment_artifacts_verified"])
+        self.assertEqual(len(evaluation_history.history(self.root)["attempts"]), 2)
+        result["execution_status"] = "PASS"
+        evaluator.write_json(run / "execution-result.json", result)
+        evaluator.write_json(run / "repository-result.json", result)
+        with self.assertRaisesRegex(ValueError, "descriptor artifact mismatch"):
+            evaluation_history.run_row(self.root, run, None, {})
 
     def test_reportable_treatment_requires_matching_admission(self):
         case = self.make_case()

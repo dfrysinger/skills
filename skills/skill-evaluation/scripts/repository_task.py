@@ -865,6 +865,7 @@ def execute_repository(
                     outcome = "failed"
                     observed_session_ids: set[str] = set()
                     malformed_session_paths: list[str] = []
+                    inventory_error = None
                     session_records = []
                     session_validation_error = None
                     try:
@@ -933,7 +934,10 @@ def execute_repository(
                         raise
                     finally:
                         if runner_kind != "direct-copilot" and container.created and not container.stopped:
-                            observed_session_ids, malformed_session_paths = container.session_ids()
+                            try:
+                                observed_session_ids, malformed_session_paths = container.session_ids()
+                            except (OSError, ValueError, InfrastructureError, subprocess.TimeoutExpired) as error:
+                                inventory_error = error
                         timeline.switch("cleanup", status=outcome)
                         try:
                             container.stop()
@@ -957,7 +961,7 @@ def execute_repository(
                                         "model": model,
                                         "outcome": outcome,
                                     }]
-                                    if reviewer_session_id in observed_session_ids:
+                                    if inventory_error or reviewer_session_id in observed_session_ids:
                                         session_records.append({
                                             "session_id": reviewer_session_id,
                                             "role": "candidate_reviewer",
@@ -968,6 +972,10 @@ def execute_repository(
                                 undeclared = sorted(observed_session_ids - declared)
                                 missing = sorted(declared - observed_session_ids)
                                 coverage_errors = [
+                                    *(
+                                        [f"candidate session inventory failed: {type(inventory_error).__name__}: {inventory_error}"]
+                                        if inventory_error else []
+                                    ),
                                     *(
                                         [f"invalid Sandcastle session result: {session_validation_error}"]
                                         if session_validation_error else []
@@ -985,6 +993,7 @@ def execute_repository(
                                     "undeclared": undeclared,
                                     "missing": missing,
                                     "malformed_paths": malformed_session_paths,
+                                    "errors": coverage_errors,
                                     "complete": not coverage_errors,
                                 })
                                 for item in session_records:
@@ -999,6 +1008,8 @@ def execute_repository(
                                         started_clock=invoked_clock, outcome=item["outcome"],
                                         coverage_errors=coverage_errors,
                                     )
+                        if inventory_error:
+                            raise inventory_error
             finally:
                 # Export only after the context has stopped/removed its sole writer.
                 if container.created and not container.stopped:
