@@ -118,7 +118,9 @@ source-only blinding, not a promise of perfect anonymity.
 manifest and versioned prompt hash. Individual `quality/review-*.json`
 artifacts preserve each reviewer, outcome, failure and finding without
 consolidation. Assessment destinations are write-once; a second write is
-refused. There is no standalone reassessment command.
+refused. The generated `requirements/task.md` manifest record identifies its
+source with a `kind`, a `root` (`packet` or `frozen_case`) and a path relative
+to that root. There is no standalone reassessment command.
 
 After a successful CLI exit, quality validation reads the exact owned native
 session before its temporary home is deleted. It requires a matching fresh
