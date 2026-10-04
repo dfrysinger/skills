@@ -1227,16 +1227,49 @@ class HistoryTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def run_fixture(self, name, status, credits=None, *, complete=True, old=False, owner=None):
+    def run_fixture(
+        self, name, status, credits=None, *, complete=True, old=False, owner=None,
+        treatment_id=None, adapter_digest=None, compatibility_status="ADMITTED",
+        arm="skill",
+    ):
         path = self.root / "runs" / name / "example"
         path.mkdir(parents=True)
         skill_eval.write_json(path / "execution-result.json", {
             "schema_version": 1, "case_id": "example", "case_type": "repository-task",
             "case_revision": "fixed", "execution_status": status, "behavioral_verdict": None,
-            "arm": "skill", "model": "gpt-example", "effort": "high",
+            "arm": arm, "model": "gpt-example", "effort": "high",
             "timeout_seconds": 10, "elapsed_seconds": 2,
         })
         skill_eval.write_json(path / "skill-identity.json", {"name": "example", "files": []})
+        if treatment_id:
+            descriptor = {
+                "schema_version": 1,
+                "id": treatment_id,
+                "source": {"repository": "https://example.invalid", "revision": "fixed",
+                           "license": "MIT", "retrieved_at": "2026-09-16T00:00:00Z"},
+                "runner": {"kind": "direct-copilot"},
+                "compatibility": {"language": ["python"]},
+                "entry_skill": "example",
+                "intervention_policy": "frozen",
+                "adapter": {"digest": adapter_digest, "description": "test"},
+            }
+            skill_eval.write_json(path / "treatment.json", descriptor)
+            skill_eval.write_json(path / "treatment-identity.json", {
+                "schema_version": 1,
+                "descriptor": descriptor,
+                "descriptor_sha256": skill_eval.digest(path / "treatment.json"),
+                "fingerprint": skill_eval.json_fingerprint(descriptor),
+                "adapter_identity": None,
+                "source_identity": None,
+            })
+            skill_eval.write_json(path / "compatibility.json", {
+                "schema_version": 1,
+                "status": compatibility_status,
+                "treatment_id": treatment_id,
+                "requirements": {"language": ["python"]},
+                "case": {"language": "python"},
+                "reasons": [],
+            })
         if not old:
             skill_eval.write_json(path / "attempt.json", {
                 "schema_version": 1, "case_id": "example", "suite_owner": owner,
@@ -1303,6 +1336,37 @@ class HistoryTests(unittest.TestCase):
         self.assertNotIn("supplemental_fields_ignored", json.dumps(result))
         self.assertEqual(before, {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()})
 
+    def test_legacy_baseline_and_missing_compatibility_remain_honest(self):
+        path = self.run_fixture("legacy-baseline", "PASS", old=True, arm="baseline")
+        row = evaluation_history.run_row(self.root, path, None, {})
+        self.assertIsNone(row["population"]["entry_skill"])
+        self.assertEqual(row["population"]["compatibility_status"], "unknown")
+        execution = skill_eval.read_json(path / "execution-result.json")
+        execution.pop("arm")
+        skill_eval.write_json(path / "execution-result.json", execution)
+        suite_row = evaluation_history.run_row(
+            self.root, path, None, {"arm": "baseline"}
+        )
+        self.assertEqual(suite_row["population"]["treatment_id"], "legacy-baseline")
+        self.assertIsNone(suite_row["population"]["entry_skill"])
+
+    def test_history_reads_pre_subrole_measurement_and_accounting(self):
+        path = self.run_fixture("legacy-accounting", "PASS", 2)
+        measurement_path = path / "measurements" / "candidate.json"
+        record = skill_eval.read_json(measurement_path)
+        record.pop("subrole")
+        skill_eval.write_json(measurement_path, record)
+        accounting = skill_eval.read_json(path / "accounting.json")
+        for session in accounting["sessions"]:
+            session.pop("subrole")
+        skill_eval.write_json(path / "accounting.json", accounting)
+        report = evaluation_history.history(self.root)
+        self.assertEqual(len(report["attempts"]), 1)
+        self.assertEqual(
+            report["attempts"][0]["accounting"]["sessions"][0]["subrole"],
+            "candidate",
+        )
+
     def test_suite_owned_runs_count_once_and_retry_excluded_from_first_ratio(self):
         cases = []
         for suite_id, values in (("one", [("FAIL", 3), ("PASS", 4)]),
@@ -1344,6 +1408,26 @@ class HistoryTests(unittest.TestCase):
         skill_eval.write_json(first / "accounting.json", corrupted)
         with self.assertRaisesRegex(ValueError, "does not match"):
             evaluation_history.history(self.root)
+
+    def test_treatment_adapter_and_compatibility_prevent_population_pooling(self):
+        self.run_fixture(
+            "first", "PASS", 1, treatment_id="workflow-a", adapter_digest="a" * 64
+        )
+        self.run_fixture(
+            "second", "PASS", 1, treatment_id="workflow-b", adapter_digest="b" * 64
+        )
+        self.run_fixture(
+            "third", "PASS", 1, treatment_id="workflow-a", adapter_digest="a" * 64,
+            compatibility_status="BLOCKED",
+        )
+        report = evaluation_history.history(self.root)
+        self.assertEqual(len(report["populations"]), 3)
+        text = evaluation_history.markdown(report)
+        self.assertIn("Candidate credits", text)
+        self.assertIn("Evaluator credits", text)
+        self.assertIn("Intervention", text)
+        self.assertIn("Compatibility", text)
+        self.assertIn("workflow-a", text)
 
     def test_failed_suite_path_is_recovered_from_owned_attempt_without_duplicate(self):
         owner = {"suite_path": "suite-runs/failed", "case_id": "example",
