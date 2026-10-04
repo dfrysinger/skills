@@ -1,0 +1,1405 @@
+"""Synthetic measurement fixtures; no models, Docker, or private cases."""
+
+from __future__ import annotations
+
+import hashlib
+import io
+import json
+import os
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import unittest
+import uuid
+from contextlib import nullcontext
+from pathlib import Path
+from unittest import mock
+
+import evaluation_history
+import measurement as m
+import quality_review
+import skill_eval
+import test_repository_task
+
+
+def events(nano=1_000_000_000, kind="session.shutdown", **extra):
+    return (json.dumps({"type": kind, "data": {
+        "totalNanoAiu": nano, "totalPremiumRequests": 0.33, **extra,
+    }}) + "\n").encode()
+
+
+def capture_bytes(content):
+    return nullcontext(io.BytesIO(content) if content is not None else None)
+
+
+def read_capture(capture):
+    with capture as content:
+        return content.read() if content is not None else None
+
+
+class MeasurementTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.session = str(uuid.uuid4())
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def record(self, name="candidate", content=None, stdout=None, **kwargs):
+        log = self.root / f"{name}.jsonl"
+        if stdout is not None:
+            log.write_bytes(stdout)
+        return m.collect(
+            destination=self.root / f"{name}.measurement.json", session_id=kwargs.pop("session_id", self.session),
+            role=kwargs.pop("role", "candidate"), phase=name, model="gpt-example", effort="high",
+            cli_version="test-cli", log=log,
+            capture=kwargs.pop("capture", lambda: capture_bytes(content)),
+            source=kwargs.pop("source", "container_eventfile"),
+            started_at=kwargs.pop("started_at", "2026-01-01T00:00:00+00:00"),
+            started_clock=time.monotonic(), outcome=kwargs.pop("outcome", "completed"), **kwargs,
+        )
+
+    def home_file(self):
+        home = self.root / "home"
+        path = home / "session-state" / self.session / "events.jsonl"
+        path.parent.mkdir(parents=True)
+        return home, path
+
+    def archive(self, entries):
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode="w") as archive:
+            for name, kind, data in entries:
+                info = tarfile.TarInfo(name)
+                info.type = kind
+                info.size = len(data) if kind == tarfile.REGTYPE else 0
+                if kind in (tarfile.SYMTYPE, tarfile.LNKTYPE):
+                    info.linkname = "/outside/secret"
+                archive.addfile(info, io.BytesIO(data) if info.size else None)
+        return output.getvalue()
+
+    def test_known_mapping_breakdowns_and_identity_are_not_additive(self):
+        content = events(
+            session_id="forged", role="external", case_id="forged", secret="must-not-persist",
+            modelMetrics={"gpt-example": {"totalNanoAiu": 1_000_000_000,
+                                          "usage": {"inputTokens": 2, "secret": "excluded"}}},
+            agentMetrics={"child": {"totalNanoAiu": 900_000_000}},
+        )
+        record = self.record(content=content, stdout=events(800_000_000, "session.usage_checkpoint"))
+        self.assertEqual(record["credits"], 1)
+        self.assertEqual(record["mapping"], m.MAPPING)
+        self.assertEqual(record["session_id"], self.session)
+        self.assertEqual(record["role"], "candidate")
+        self.assertEqual(record["cli_version"], "test-cli")
+        self.assertEqual(record["completeness"], "complete")
+        self.assertNotIn("secret", json.dumps(record))
+        self.assertNotIn("forged", json.dumps(record))
+        self.assertEqual(m.accounting([record])["candidate"]["credits"], 1)
+
+    def test_premium_only_unknown_and_partial(self):
+        premium = self.record(name="premium", stdout=b'{"type":"result","usage":{"premiumRequests":0.5}}\n')
+        self.assertIsNone(premium["credits"])
+        self.assertEqual(premium["premium_requests"], 0.5)
+        self.assertEqual(premium["completeness"], "partial")
+        unknown = self.record(name="unknown")
+        self.assertEqual(unknown["completeness"], "unknown")
+        self.assertIsNone(unknown["credits"])
+        self.assertIsNone(unknown["premium_requests"])
+        partial = self.record(name="timeout", content=events(250_000_000, "session.usage_checkpoint"),
+                              outcome="timed_out")
+        self.assertEqual(partial["credits"], 0.25)
+        total = m.accounting([partial])["total"]
+        self.assertEqual(total["observed_credits"], 0.25)
+        self.assertIsNone(total["credits"])
+        self.assertFalse(total["complete"])
+        unmapped = self.record(name="unmapped", stdout=(
+            b'{"type":"result","usage":{"cost":19,"unit":"unrecognized"}}\n'))
+        self.assertIsNone(unmapped["credits"])
+        self.assertIn("unrecognized", (self.root / "unmapped.jsonl").read_text())
+        terminal_premium = self.record(name="terminal-premium", content=events(None))
+        self.assertEqual(m.accounting([terminal_premium])["total"]["premium_requests"], 0.33)
+        self.assertIsNone(m.accounting([terminal_premium])["total"]["credits"])
+
+    def test_invalid_numeric_and_structural_usage_is_error_not_zero(self):
+        for index, value in enumerate((-1, True, "2", float("nan"), float("inf"), {}, 10 ** 400)):
+            with self.subTest(value=type(value).__name__, index=index):
+                result = self.record(name=f"bad-{index}", content=events(value))
+                self.assertEqual(result["completeness"], "error")
+                self.assertIsNone(result["credits"])
+                self.assertTrue(result["errors"])
+        for index, value in enumerate((b"invalid", b"[]\n", b'{"type":[]}\n',
+                                       b'{"type":"session.shutdown","data":[]}\n',
+                                       events(agentMetrics=[]), b"[" * 2000 + b"]" * 2000)):
+            result = self.record(name=f"structure-{index}", content=value)
+            self.assertEqual(result["completeness"], "error")
+
+    def test_selected_observation_never_mixes_alternative_counters(self):
+        record = self.record(content=events(None), stdout=events(5_000_000_000))
+        self.assertIsNone(record["credits"])
+        self.assertEqual(record["selected_observation"], 0)
+
+    def test_two_sessions_failed_judges_and_resumed_totals(self):
+        first = self.record(content=events(1_000_000_000))
+        second = self.record(name="resume", content=events(3_000_000_000),
+                             started_at="2026-01-01T00:01:00+00:00")
+        judge = self.record(name="judge", content=events(2_000_000_000),
+                            session_id=str(uuid.uuid4()), role="behavioral_judge", outcome="failed")
+        summary = m.accounting([second, judge, first])
+        self.assertEqual(summary["candidate"]["credits"], 3)
+        self.assertEqual(summary["evaluation"]["credits"], 2)
+        self.assertEqual(summary["total"]["credits"], 5)
+        self.assertEqual(len(summary["sessions"]), 2)
+        later = self.record(name="empty-resume", started_at="2026-01-01T00:02:00+00:00")
+        provisional = m.accounting([first, second, later])["candidate"]
+        self.assertEqual(provisional["observed_credits"], 3)
+        self.assertIsNone(provisional["credits"])
+        with self.assertRaisesRegex(m.MeasurementError, "multiple spending roles"):
+            m.accounting([first, {**second, "role": "quality_judge"}])
+        decreased = self.record(name="decreased", content=events(1_000_000_000),
+                                started_at="2026-01-01T00:03:00+00:00")
+        with self.assertRaisesRegex(m.MeasurementError, "decreased"):
+            m.accounting([second, decreased])
+
+    def test_old_shutdown_before_new_activity_is_not_terminal(self):
+        content = events() + b'{"type":"user.message","data":{}}\n' + events(
+            2_000_000_000, "session.usage_checkpoint")
+        record = self.record(content=content)
+        self.assertEqual(record["credits"], 2)
+        self.assertEqual(record["completeness"], "partial")
+
+    def test_host_exact_owned_file_and_unrelated_session_excluded(self):
+        home, path = self.home_file()
+        path.write_bytes(events())
+        unrelated = home / "session-state" / str(uuid.uuid4()) / "events.jsonl"
+        unrelated.parent.mkdir()
+        unrelated.write_bytes(b"unrelated secret")
+        self.assertEqual(read_capture(m.host_events(home, self.session)), events())
+        path.unlink()
+        self.assertIsNone(read_capture(m.host_events(home, self.session)))
+        with self.assertRaises(m.MeasurementError):
+            read_capture(m.host_events(home, "../outside"))
+
+    def test_host_symlink_directory_fifo_hardlink_and_overbound_record_rejected(self):
+        home, path = self.home_file()
+        outside = self.root / "outside"
+        outside.write_bytes(b"secret")
+        path.symlink_to(outside)
+        with self.assertRaises(m.MeasurementError):
+            read_capture(m.host_events(home, self.session))
+        path.unlink()
+        path.mkdir()
+        with self.assertRaises(m.MeasurementError):
+            read_capture(m.host_events(home, self.session))
+        path.rmdir()
+        os.mkfifo(path)
+        with self.assertRaises(m.MeasurementError):
+            read_capture(m.host_events(home, self.session))
+        path.unlink()
+        os.link(outside, path)
+        with self.assertRaises(m.MeasurementError):
+            read_capture(m.host_events(home, self.session))
+        path.unlink()
+        path.write_bytes(b"x" * 20)
+        with mock.patch.object(m, "MAX_EVENT_BYTES", 10), self.assertRaises(m.MeasurementError):
+            with m.host_events(home, self.session) as stream:
+                m.observations(stream, "host_eventfile", terminal=True)
+        path.unlink()
+        path.parent.rmdir()
+        path.parent.symlink_to(self.root, target_is_directory=True)
+        with self.assertRaises(m.MeasurementError):
+            read_capture(m.host_events(home, self.session))
+        home_alias = self.root / "home-alias"
+        home_alias.symlink_to(home, target_is_directory=True)
+        with self.assertRaises(m.MeasurementError):
+            read_capture(m.host_events(home_alias, self.session))
+
+    def test_archive_single_regular_only_and_no_extraction(self):
+        data = events()
+        regular = ("events.jsonl", tarfile.REGTYPE, data)
+        self.assertEqual(read_capture(m.archive_events(self.archive([regular]))), data)
+        for entries in (
+            [regular, regular],
+            [("events.jsonl", tarfile.SYMTYPE, b"")],
+            [("events.jsonl", tarfile.LNKTYPE, b"")],
+            [("events.jsonl", tarfile.DIRTYPE, b"")],
+            [("events.jsonl", tarfile.CHRTYPE, b"")],
+            [("../events.jsonl", tarfile.REGTYPE, data)],
+            [("/events.jsonl", tarfile.REGTYPE, data)],
+        ):
+            with self.subTest(entries=entries), self.assertRaises(m.MeasurementError):
+                read_capture(m.archive_events(self.archive(entries)))
+        with mock.patch.object(m, "MAX_EVENT_BYTES", 1), self.assertRaises(m.MeasurementError):
+            with m.archive_events(self.archive([regular])) as stream:
+                m.observations(stream, "container_eventfile", terminal=True)
+        with self.assertRaises(m.MeasurementError):
+            read_capture(m.archive_events(self.archive([regular]) + self.archive([regular])))
+        self.assertFalse((self.root / "events.jsonl").exists())
+
+    def test_container_exact_path_stopped_guard_absence_and_capture_error(self):
+        with mock.patch.object(m, "bounded_command", return_value=nullcontext((
+            0, io.BytesIO(self.archive([("events.jsonl", tarfile.REGTYPE, events())])), b"",
+        ))) as command:
+            self.assertEqual(read_capture(m.container_events("owned", self.session, stopped=True)), events())
+            self.assertEqual(command.call_args.args[0], [
+                "docker", "cp", f"owned:/tmp/eval-home/session-state/{self.session}/events.jsonl", "-"])
+            with self.assertRaises(m.MeasurementError):
+                read_capture(m.container_events("owned", self.session, stopped=False))
+        message = f"Could not find the file /tmp/eval-home/session-state/{self.session}/events.jsonl in container owned"
+        with mock.patch.object(m, "bounded_command", return_value=nullcontext((1, io.BytesIO(), message.encode()))):
+            self.assertIsNone(read_capture(m.container_events("owned", self.session, stopped=True)))
+        with mock.patch.object(m, "bounded_command", return_value=nullcontext((1, io.BytesIO(), b"daemon broken"))):
+            with self.assertRaises(m.MeasurementError):
+                read_capture(m.container_events("owned", self.session, stopped=True))
+
+    def test_bounded_collection_limits_pipes_before_allocation(self):
+        with self.assertRaisesRegex(m.MeasurementError, "stderr exceeds byte limit"):
+            with m.bounded_command([sys.executable, "-c", "import os; os.write(2, b'x' * 100000)"]):
+                self.fail("oversized stderr accepted")
+        with self.assertRaisesRegex(m.MeasurementError, "timed out"):
+            with m.bounded_command([sys.executable, "-c", "import time; time.sleep(10)"], timeout=0.05):
+                self.fail("timed out capture accepted")
+
+    def test_read_failure_only_persists_filtered_error(self):
+        destination = self.root / "failed.measurement.json"
+        with mock.patch.object(m, "host_events", side_effect=m.MeasurementError("telemetry type rejected")):
+            record = m.collect(
+                destination=destination, session_id=self.session, role="candidate", phase="candidate",
+                model="gpt-example", effort="high", cli_version="test", log=self.root / "absent",
+                capture=lambda: m.host_events(self.root, self.session), source="host_eventfile",
+                started_at=m.instant(), started_clock=time.monotonic(), outcome="failed")
+        self.assertEqual(record["completeness"], "error")
+        self.assertIsNone(record["credits"])
+
+    def test_timeline_outer_interval_does_not_sum_parallel_work(self):
+        clock = [0.0]
+        with mock.patch.object(m.time, "monotonic", side_effect=lambda: clock[0]):
+            timer = m.Timeline()
+            clock[0] = 2
+            timer.switch("candidate")
+            clock[0] = 5
+            timer.switch("behavioral_judging")
+            clock[0] = 8
+            timer.switch("quality_review")
+            clock[0] = 10
+            timer.switch("cleanup")
+            clock[0] = 12
+            result = timer.finish("completed")
+        self.assertEqual(result["elapsed_seconds"], 12)
+        self.assertEqual([stage["elapsed_seconds"] for stage in result["stages"]], [2, 3, 3, 2, 2])
+
+    def test_host_transport_timeout_and_nonzero_keep_usage(self):
+        for index, failure in enumerate((
+            subprocess.TimeoutExpired(["fake"], 1, output=events(500_000_000, "session.usage_checkpoint")),
+            subprocess.CompletedProcess(["fake"], 1, stdout=events(500_000_000, "session.usage_checkpoint").decode()),
+        )):
+            log = self.root / f"transport-{index}.log"
+            destination = self.root / f"transport-{index}.measurement.json"
+            kwargs = dict(copilot=Path("/fake"), plugin_dir=self.root, cwd=self.root, prompt="public",
+                          model="gpt-example", effort="high", log=log, session_id=str(uuid.uuid4()),
+                          resume=False, home_mode="existing", run_home=self.root, timeout_seconds=1,
+                          allow_skill=False, measurement_path=destination, role="quality_judge")
+            with mock.patch.object(skill_eval.subprocess, "run") as run, mock.patch.object(
+                m, "host_events", side_effect=lambda *args: nullcontext(None),
+            ):
+                if isinstance(failure, Exception):
+                    run.side_effect = failure
+                else:
+                    run.return_value = failure
+                with self.assertRaises(ValueError):
+                    skill_eval.run_copilot(**kwargs)
+            record = skill_eval.read_json(destination)
+            self.assertEqual(record["credits"], 0.5)
+            self.assertEqual(record["role"], "quality_judge")
+            self.assertEqual(record["completeness"], "partial")
+
+    def test_resumed_transport_does_not_reuse_prior_shutdown(self):
+        home, path = self.home_file()
+        path.write_bytes(events())
+        log = self.root / "resumed.log"
+        destination = self.root / "resumed.measurement.json"
+        with mock.patch.dict(os.environ, {"COPILOT_HOME": str(home)}), mock.patch.object(
+            skill_eval.subprocess, "run", side_effect=subprocess.TimeoutExpired(["fake"], 1, output=b""),
+        ):
+            with self.assertRaises(ValueError):
+                skill_eval.run_copilot(
+                    copilot=Path("/fake"), plugin_dir=self.root, cwd=self.root, prompt="public",
+                    model="gpt-example", effort="high", log=log, session_id=self.session,
+                    resume=True, home_mode="existing", run_home=self.root, timeout_seconds=1,
+                    allow_skill=True, measurement_path=destination,
+                )
+        record = skill_eval.read_json(destination)
+        self.assertEqual(record["completeness"], "unknown")
+        self.assertIsNone(record["credits"])
+
+    def large_file(self, path):
+        record = b'{"type":"tool.execution_complete","data":{"content":"' + b"x" * (1024 * 1024) + b'"}}\n'
+        with path.open("wb") as stream:
+            for _ in range(34):
+                stream.write(record)
+            stream.write(events())
+        self.assertGreater(path.stat().st_size, 33 * 1024 * 1024)
+
+    def test_large_host_accounting_has_terminal_usage_and_closes_reader(self):
+        home, path = self.home_file()
+        self.large_file(path)
+        with m.host_events(home, self.session) as stream:
+            self.assertEqual(m.observations(stream, "host_eventfile", terminal=True)[-1]["raw"]["totalNanoAiu"],
+                             1_000_000_000)
+        self.assertTrue(stream.closed)
+        record = self.record(name="large-host", capture=lambda: m.host_events(home, self.session),
+                             source="host_eventfile")
+        self.assertEqual(record["credits"], 1)
+        self.assertEqual(record["completeness"], "complete")
+        self.assertEqual(len(record["observations"]), 1)
+
+    def test_large_stdout_accounting_remains_partial_without_native_terminal(self):
+        self.large_file(self.root / "large-stdout.jsonl")
+        record = self.record(name="large-stdout")
+        self.assertEqual(record["credits"], 1)
+        self.assertEqual(record["completeness"], "partial")
+        self.assertEqual(record["errors"], [])
+        self.assertEqual(record["observations"][0]["source"], "invocation_stdout")
+
+    def test_large_stopped_container_spools_beyond_both_former_ceilings(self):
+        path = self.root / "large-events.jsonl"
+        self.large_file(path)
+        archive = self.root / "large.tar"
+        with tarfile.open(archive, "w") as output, path.open("rb") as stream:
+            member = tarfile.TarInfo("events.jsonl")
+            member.size = path.stat().st_size
+            output.addfile(member, stream)
+        self.assertGreater(archive.stat().st_size, 33 * 1024 * 1024)
+        command = m.bounded_command
+        spools = []
+        temporary_file = m.tempfile.TemporaryFile
+
+        def spool(**kwargs):
+            result = temporary_file(**kwargs)
+            spools.append(result)
+            self.assertEqual(os.fstat(result.fileno()).st_mode & 0o077, 0)
+            return result
+
+        def local_copy(argv):
+            self.assertEqual(argv, ["docker", "cp",
+                                   f"owned:/tmp/eval-home/session-state/{self.session}/events.jsonl", "-"])
+            return command([sys.executable, "-c",
+                            "import shutil,sys; shutil.copyfileobj(open(sys.argv[1], 'rb'), sys.stdout.buffer)",
+                            str(archive)])
+
+        with mock.patch.object(m, "bounded_command", side_effect=local_copy), mock.patch.object(
+            m.tempfile, "TemporaryFile", side_effect=spool,
+        ):
+            record = self.record(name="large-container",
+                                 capture=lambda: m.container_events("owned", self.session, stopped=True))
+        self.assertEqual(record["credits"], 1)
+        self.assertEqual(record["completeness"], "complete")
+        self.assertEqual(len(spools), 1)
+        self.assertTrue(spools[0].closed)
+
+    def test_raw_record_bound_grammar_and_bounded_reads(self):
+        class ShortReader(io.BytesIO):
+            def read(self, size=-1):
+                if not 0 < size <= 65536:
+                    raise AssertionError("unbounded read")
+                return super().read(min(size, 2))
+
+        separators = ("\r\n", "\r", "\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+        content = "".join('{"type":"system.message"}' + separator for separator in separators).encode()
+        records = list(m.jsonl_records(ShortReader(content), grammar="telemetry"))
+        self.assertEqual(b"".join(raw for raw, _ in records), content)
+        self.assertEqual(len(records), len(separators))
+        self.assertTrue(all(event["type"] == "system.message" for _, event in records))
+        raw = b'{"type":"system.message","text":"' + ("\u00e9" * 40).encode() + b'"}\n'
+        self.assertLess(len(raw.decode()), 100)
+        self.assertGreater(len(raw), 100)
+        for grammar in ("native", "telemetry"):
+            with mock.patch.object(m, "MAX_EVENT_BYTES", len(raw)):
+                self.assertEqual(len(list(m.jsonl_records(io.BytesIO(raw), grammar=grammar))), 1)
+            with mock.patch.object(m, "MAX_EVENT_BYTES", len(raw) - 1), self.assertRaisesRegex(
+                m.MeasurementError, "record exceeds byte limit",
+            ):
+                list(m.jsonl_records(io.BytesIO(raw), grammar=grammar))
+        duplicates = b'{"type":"system.message","data":{"n":NaN},"data":{}}\n'
+        self.assertEqual(len(list(m.jsonl_records(duplicates, grammar="telemetry"))), 1)
+        with self.assertRaises(m.MeasurementError):
+            list(m.jsonl_records(duplicates, grammar="native"))
+
+    def test_corrupt_late_records_and_read_errors_do_not_admit_partial_source(self):
+        class BrokenReader(io.BytesIO):
+            def read(self, size=-1):
+                raise OSError("unavailable source")
+
+        for index, content in enumerate((events() + b"\xff\n", events() + b"{broken\n")):
+            record = self.record(name=f"corrupt-{index}", content=content)
+            self.assertEqual(record["completeness"], "error")
+            self.assertEqual(record["observations"], [])
+        record = self.record(name="broken-reader", capture=lambda: nullcontext(BrokenReader()))
+        self.assertEqual(record["completeness"], "error")
+        self.assertIsNone(record["credits"])
+
+    def test_archive_corruption_is_rejected_before_member_is_exposed(self):
+        data = self.archive([("events.jsonl", tarfile.REGTYPE, events())])
+        end = 512 + len(events())
+        corruptions = (
+            data[:end - 1], data[:1024], data[:-1],
+            data[:end] + b"x" + data[end + 1:],
+            data[:-512] + b"x" + data[-511:],
+            self.archive([("events.jsonl", tarfile.GNUTYPE_SPARSE, b"")]),
+            self.archive([("events.jsonl", tarfile.FIFOTYPE, b"")]),
+        )
+        for content in corruptions:
+            with self.subTest(size=len(content)), self.assertRaises(m.MeasurementError):
+                with m.archive_events(io.BytesIO(content)):
+                    self.fail("corrupt archive exposed its member")
+        spools = []
+        temporary_file = m.tempfile.TemporaryFile
+
+        def spool(**kwargs):
+            result = temporary_file(**kwargs)
+            spools.append(result)
+            return result
+
+        for program in ("import sys; sys.stdout.write('not a tar')",
+                        "import time; time.sleep(10)",
+                        "import os; os.write(2, b'x'*100000)"):
+            with mock.patch.object(m.tempfile, "TemporaryFile", side_effect=spool), self.assertRaises(
+                m.MeasurementError,
+            ):
+                with m.bounded_command([sys.executable, "-c", program], timeout=0.1) as (_, output, _):
+                    with m.archive_events(output):
+                        self.fail("invalid archive accepted")
+            self.assertTrue(spools[-1].closed)
+
+    def test_large_resume_prefix_and_suffix_keep_only_new_cumulative_observations(self):
+        home, path = self.home_file()
+        self.large_file(path)
+        first = self.record(name="before", capture=lambda: m.host_events(home, self.session),
+                            source="host_eventfile")
+        suffix = b'{"type":"session.resume","data":{}}\n' + events(2_000_000_000, "session.usage_checkpoint") + events(
+            3_000_000_000)
+
+        def resume(*args, **kwargs):
+            with path.open("ab") as stream:
+                stream.write(suffix)
+            return subprocess.CompletedProcess(["fake"], 0, stdout="")
+
+        destination = self.root / "after.measurement.json"
+        with mock.patch.dict(os.environ, {"COPILOT_HOME": str(home)}), mock.patch.object(
+            skill_eval.subprocess, "run", side_effect=resume,
+        ):
+            skill_eval.run_copilot(
+                copilot=Path("/fake"), plugin_dir=self.root, cwd=self.root, prompt="public",
+                model="gpt-example", effort="high", log=self.root / "after.jsonl", session_id=self.session,
+                resume=True, home_mode="existing", run_home=home, timeout_seconds=1,
+                allow_skill=True, measurement_path=destination)
+        record = skill_eval.read_json(destination)
+        self.assertEqual(record["completeness"], "complete")
+        self.assertEqual([item["raw"]["totalNanoAiu"] for item in record["observations"]],
+                         [2_000_000_000, 3_000_000_000])
+        self.assertEqual(m.accounting([first, record])["candidate"]["credits"], 3)
+
+    def test_resume_exact_byte_offset_and_changed_truncated_missing_prefix_errors(self):
+        prefix = b' \r\n' + events()[:-1]
+        suffix = b"\n" + events(3_000_000_000)
+        snapshot = m.snapshot_events(io.BytesIO(prefix))
+        self.assertEqual(snapshot, (len(prefix), hashlib.sha256(prefix).hexdigest()))
+        source = io.BytesIO(prefix + suffix)
+        m.verify_prefix(source, snapshot)
+        self.assertEqual(source.tell(), len(prefix))
+        self.assertEqual(m.observations(source, "host_eventfile", terminal=True)[0]["raw"]["totalNanoAiu"],
+                         3_000_000_000)
+        home, path = self.home_file()
+        for failure in ("changed", "truncated", "missing", "missing-before"):
+            path.write_bytes(events())
+            if failure == "missing-before":
+                path.unlink()
+
+            def resume(*args, **kwargs):
+                if failure == "missing":
+                    path.unlink()
+                elif failure == "truncated":
+                    path.write_bytes(events()[:-1])
+                else:
+                    path.write_bytes(events(3_000_000_000))
+                return subprocess.CompletedProcess(["fake"], 0, stdout=events(3_000_000_000).decode())
+
+            destination = self.root / f"{failure}.measurement.json"
+            with self.subTest(failure=failure), mock.patch.dict(os.environ, {"COPILOT_HOME": str(home)}), mock.patch.object(
+                skill_eval.subprocess, "run", side_effect=resume,
+            ):
+                skill_eval.run_copilot(
+                    copilot=Path("/fake"), plugin_dir=self.root, cwd=self.root, prompt="public",
+                    model="gpt-example", effort="high", log=self.root / f"{failure}.jsonl", session_id=self.session,
+                    resume=True, home_mode="existing", run_home=home, timeout_seconds=1,
+                    allow_skill=True, measurement_path=destination)
+            record = skill_eval.read_json(destination)
+            self.assertEqual(record["completeness"], "error")
+            self.assertTrue(record["errors"])
+            self.assertTrue(all(item["source"] == "invocation_stdout" for item in record["observations"]))
+
+
+class QualityTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = test_repository_task.RepositoryTaskTests()
+        self.fixture.setUp()
+        self.root = self.fixture.root
+        self.frozen = self.fixture.freeze()
+        self.definition = skill_eval.read_json(self.frozen / "case.json")
+        self.run = self.root / "runs" / "review" / "example"
+        self.run.mkdir(parents=True)
+        (self.run / "candidate.patch").write_bytes(
+            (self.frozen / "judge-reference" / "reference.patch").read_bytes())
+        skill_eval.write_json(self.run / "copilot-identity.json", {"version": "fake"})
+
+    def tearDown(self):
+        self.fixture.tearDown()
+
+    def review(self):
+        return {
+            "judgment": "needs_revision", "summary": "A source-linked concern.",
+            "findings": [{"path": "candidate/code.py", "start_line": 1, "end_line": 1,
+                          "quotation": "return a + b", "severity": "medium",
+                          "trigger": "A concrete input", "explanation": "A concrete risk"}],
+        }
+
+    def native_events(self, kwargs, answer):
+        records = [
+            {"type": "session.start", "data": {
+                "sessionId": kwargs["session_id"], "selectedModel": kwargs["model"]}},
+            {"type": "tool.execution_start", "data": {
+                "toolCallId": "empty", "toolName": "view", "arguments": {}}},
+            {"type": "tool.execution_complete", "data": {"toolCallId": "empty", "success": False}},
+            {"type": "tool.execution_start", "data": {
+                "toolCallId": "read", "toolName": "view", "arguments": {"path": "candidate/code.py"}}},
+            {"type": "tool.execution_complete", "data": {
+                "toolCallId": "read", "success": True, "result": {"content": "native-only source payload"}}},
+            {"type": "assistant.message", "data": {
+                "content": answer, "model": kwargs["model"], "reasoningText": "native-only reasoning"}},
+            {"type": "session.shutdown", "data": {"totalNanoAiu": 1_000_000_000}},
+        ]
+        content = ("\n".join(json.dumps(record) for record in records) + "\n").encode()
+        path = kwargs["run_home"] / "session-state" / kwargs["session_id"] / "events.jsonl"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(content)
+        return path, content
+
+    def new_run(self, name):
+        run = self.root / "runs" / name / "example"
+        run.mkdir(parents=True)
+        for filename in ("candidate.patch", "copilot-identity.json"):
+            (run / filename).write_bytes((self.run / filename).read_bytes())
+        return run
+
+    def assess(self, run=None):
+        return quality_review.review_repository(
+            frozen=self.frozen, run_root=run or self.run, definition=self.definition,
+            copilot=Path("/fake"), timeout_seconds=1)
+
+    def test_review_prompt_explains_nested_requirements_and_missing_evidence(self):
+        prompts = []
+
+        def transport(**kwargs):
+            prompts.append(kwargs["prompt"])
+            kwargs["log"].write_text("{}\n", encoding="utf-8")
+            self.native_events(kwargs, json.dumps(self.review()))
+
+        with mock.patch.object(quality_review, "run_copilot", side_effect=transport):
+            assessment = self.assess()
+        self.assertTrue(assessment["complete"])
+        self.assertEqual(len(prompts), len(self.definition["judge"]["models"]))
+        for prompt in prompts:
+            self.assertIn("requirements/task.md", prompt)
+            self.assertIn("every file under requirements/evidence/", prompt)
+            self.assertIn("including nested directories", prompt)
+            self.assertIn("A directory listing is not the contents of its files.", prompt)
+            self.assertIn("Missing decisive evidence requires unassessable", prompt)
+            self.assertIn("every object level, including each finding", prompt)
+            self.assertIn("Put qualifications in summary or explanation", prompt)
+        self.assertEqual(
+            (self.run / "quality" / "prompt.md").read_text(encoding="utf-8"), prompts[0])
+
+    def test_packet_contains_only_source_and_public_requirements(self):
+        packet = self.run / "packet"
+        manifest = quality_review.prepare_packet(
+            self.frozen, self.definition, self.run / "candidate.patch", packet)
+        self.assertEqual({Path(item["path"]).parts[0] for item in manifest},
+                         {"baseline", "candidate", "requirements", "source-nodes.json"})
+        self.assertTrue(all((packet / item["path"]).stat().st_mode & 0o222 == 0 for item in manifest))
+        self.assertEqual(
+            (packet / "requirements" / "task.md").read_bytes(),
+            (packet / "requirements" / "evidence" / "task.md").read_bytes())
+        task_record = next(
+            item for item in manifest if item["path"] == "requirements/task.md")
+        self.assertEqual(task_record["source"], {
+            "kind": "evidence_task",
+            "root": "packet",
+            "path": "requirements/evidence/task.md",
+        })
+        self.assertNotEqual(
+            (packet / "requirements" / "task.md").read_bytes(),
+            (self.frozen / self.definition["phases"][0]["prompt_file"]).read_bytes())
+        content = "\n".join(path.read_text() for path in packet.rglob("*") if path.is_file())
+        self.assertIn("return a - b", content)
+        self.assertIn("return a + b", content)
+        self.assertIn("Fix addition", content)
+        for value in ("TARGET_CHECKS_PASSED", "REGRESSION_CHECKS_PASSED", "synthetic-v1",
+                      "example-skill", "trajectory", "premiumRequests", "reference.patch"):
+            self.assertNotIn(value, content)
+        quality_review.validate_review(self.review(), packet)
+        for change in (
+            {"path": "../outside"}, {"path": str(packet / "candidate/code.py")},
+            {"path": "candidate/missing.py"}, {"path": "requirements/evidence/task.md"},
+            {"start_line": 0}, {"end_line": 100}, {"start_line": True},
+            {"quotation": "not present"}, {"quotation": ""}, {"trigger": ""},
+            {"severity": "5"}, {"severity": []},
+            {"additional_assessment": "A qualification belongs in existing fields"},
+        ):
+            value = self.review()
+            value["findings"][0].update(change)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                quality_review.validate_review(value, packet)
+        invalid = self.review()
+        invalid["judgment"] = []
+        with self.assertRaises(ValueError):
+            quality_review.validate_review(invalid, packet)
+
+    def test_packet_uses_phase_prompt_when_evidence_task_is_missing(self):
+        case = self.fixture.make_case("fallback")
+        (case / "evidence" / "candidate" / "task.md").unlink()
+        (case / "evidence" / "candidate" / "rubric.md").write_text(
+            "Assess the addition repair.\n")
+        frozen = skill_eval.freeze_case(self.root, "fallback", False)
+        self.assertGreater(skill_eval.verify_case(self.root, "fallback"), 0)
+        definition = skill_eval.read_json(frozen / "case.json")
+        packet = self.run / "fallback-packet"
+        manifest = quality_review.prepare_packet(
+            frozen, definition, self.run / "candidate.patch", packet)
+        self.assertEqual(
+            (packet / "requirements" / "task.md").read_bytes(),
+            (frozen / definition["phases"][0]["prompt_file"]).read_bytes())
+        self.assertEqual(
+            (packet / "requirements" / "evidence" / "rubric.md").read_text(),
+            "Assess the addition repair.\n")
+        paths = {item["path"] for item in manifest}
+        self.assertIn("requirements/evidence/rubric.md", paths)
+        task_record = next(
+            item for item in manifest if item["path"] == "requirements/task.md")
+        self.assertEqual(task_record["source"], {
+            "kind": "phase_prompt",
+            "root": "frozen_case",
+            "path": definition["phases"][0]["prompt_file"],
+        })
+
+    def test_read_primary_task_does_not_follow_symlink(self):
+        evidence = self.root / "linked-evidence"
+        evidence.mkdir()
+        fallback_relative = self.definition["phases"][0]["prompt_file"]
+        fallback = self.frozen / fallback_relative
+        (evidence / "task.md").symlink_to(fallback)
+        content, source = quality_review.read_primary_task(
+            evidence, fallback, fallback_relative)
+        self.assertEqual(
+            content, fallback.read_bytes())
+        self.assertEqual(source, {
+            "kind": "phase_prompt",
+            "root": "frozen_case",
+            "path": fallback_relative,
+        })
+
+    def test_read_primary_task_rejects_opened_non_regular_and_linked_files(self):
+        fallback_relative = self.definition["phases"][0]["prompt_file"]
+        fallback = self.frozen / fallback_relative
+        for kind in ("directory", "fifo", "hardlink"):
+            with self.subTest(kind=kind):
+                evidence = self.root / f"{kind}-evidence"
+                evidence.mkdir()
+                task = evidence / "task.md"
+                if kind == "directory":
+                    task.mkdir()
+                elif kind == "fifo":
+                    os.mkfifo(task)
+                else:
+                    original = evidence / "original.md"
+                    original.write_text("Do not use linked requirements.\n")
+                    os.link(original, task)
+                content, source = quality_review.read_primary_task(
+                    evidence, fallback, fallback_relative)
+                self.assertEqual(content, fallback.read_bytes())
+                self.assertEqual(source, {
+                    "kind": "phase_prompt",
+                    "root": "frozen_case",
+                    "path": fallback_relative,
+                })
+
+    def test_citation_reconciliation_is_exact_or_unique_same_file_line_sequence(self):
+        packet = self.root / "citation-packet"
+        candidate = packet / "candidate"
+        baseline = packet / "baseline"
+        candidate.mkdir(parents=True)
+        baseline.mkdir()
+        (candidate / "source.py").write_text(
+            "header\n"
+            "\tif ready:\n"
+            "\t\tresult = build(\n"
+            "\t\t\tvalue,\n"
+            "\t\t)\n"
+            "\treturn result\n"
+            "footer\n",
+            encoding="utf-8",
+        )
+        (candidate / "duplicate.py").write_text(
+            "first\n"
+            "    repeated()\n"
+            "middle\n"
+            "\trepeated()\n"
+            "last\n",
+            encoding="utf-8",
+        )
+        (baseline / "source.py").write_text(
+            "header\n"
+            "if ready:\n"
+            "    result = changed(value)\n",
+            encoding="utf-8",
+        )
+
+        def finding(**changes):
+            value = {
+                "path": "candidate/source.py", "start_line": 1, "end_line": 1,
+                "quotation": "header", "severity": "medium",
+                "trigger": "A concrete input", "explanation": "A concrete risk",
+            }
+            value.update(changes)
+            return value
+
+        exact = finding(start_line=2, end_line=5, quotation="\tif ready:\n")
+        normalized = finding(
+            start_line=3,
+            end_line=4,
+            quotation="if ready:\n  result = build(\n    value,\n  )\nreturn result",
+        )
+        review = {
+            "judgment": "needs_revision",
+            "summary": "Source-linked concerns.",
+            "findings": [exact, normalized],
+        }
+        original = json.loads(json.dumps(review))
+        self.assertEqual(quality_review.validate_review(review, packet), [
+            {
+                "finding_index": 0,
+                "mode": "exact",
+                "declared_range": [2, 5],
+                "resolved_range": [2, 5],
+            },
+            {
+                "finding_index": 1,
+                "mode": "normalized_unique",
+                "declared_range": [3, 4],
+                "resolved_range": [2, 6],
+            },
+        ])
+        self.assertEqual(review, original)
+
+        invalid_findings = {
+            "absent": finding(quotation="missing()"),
+            "internally changed": finding(quotation="if ready:\nresult = other(value)"),
+            "wrong file": finding(
+                path="baseline/source.py",
+                quotation="if ready:\nresult = build(\nvalue,\n)\nreturn result",
+            ),
+            "ambiguous": finding(
+                path="candidate/duplicate.py", quotation="repeated()",
+            ),
+        }
+        for name, invalid_finding in invalid_findings.items():
+            invalid = {
+                "judgment": "needs_revision",
+                "summary": "An invalid citation.",
+                "findings": [invalid_finding],
+            }
+            with self.subTest(name=name), self.assertRaisesRegex(
+                ValueError, "quality finding quotation does not match source range",
+            ):
+                quality_review.validate_review(invalid, packet)
+
+    def test_supplemental_fields_preserve_answer_and_caller_metadata(self):
+        self.definition["judge"]["models"] = self.definition["judge"]["models"][:1]
+        extras = {
+            "model": "forged", "family": "forged", "session_id": "forged",
+            "status": "not_run", "validation": {"forged": True},
+            "viewed_paths": ["../outside"], "raw_log_sha256": "forged",
+            "phase": "candidate", "stage": "judge:forged", "effort": "low",
+            "selected_response": {"path": "../outside"},
+            "supplemental_fields_ignored": [], "a/b[0]": {"note": "unvalidated"},
+        }
+        for index, additional in enumerate(({}, extras)):
+            value = self.review()
+            value["findings"].append({
+                "path": "candidate/code.py", "start_line": 1, "end_line": 1,
+                "quotation": "  def add(a, b): return a + b  ", "severity": "low",
+                "trigger": "Another concrete input", "explanation": "Another concrete risk",
+            })
+            expected_review = json.loads(json.dumps(value))
+            value.update(additional)
+            expected_ignored = [[key] for key in additional]
+            if additional:
+                value["findings"][0]["note"] = {"confidence": "unvalidated"}
+                expected_ignored.append(["findings", 0, "note"])
+            answer = "Preface\n```json\n" + json.dumps(value) + "\n```\nTrailing qualification."
+            calls = []
+
+            def transport(**kwargs):
+                calls.append(kwargs)
+                kwargs["log"].write_text("stdout is not the selected answer")
+                self.native_events(kwargs, answer)
+
+            run = self.new_run(f"fields-{index}")
+            with self.subTest(additional=bool(additional)), mock.patch.object(
+                quality_review, "run_copilot", side_effect=transport,
+            ):
+                result = self.assess(run)
+            self.assertTrue(result["complete"])
+            reviewer = result["reviewers"][0]
+            self.assertEqual(
+                {key: reviewer[key] for key in quality_review.REVIEW_FIELDS}, expected_review)
+            self.assertEqual(reviewer["citation_reconciliations"], [
+                {
+                    "finding_index": 0,
+                    "mode": "exact",
+                    "declared_range": [1, 1],
+                    "resolved_range": [1, 1],
+                },
+                {
+                    "finding_index": 1,
+                    "mode": "normalized_unique",
+                    "declared_range": [1, 1],
+                    "resolved_range": [1, 1],
+                },
+            ])
+            self.assertEqual(reviewer["supplemental_fields_ignored"], expected_ignored)
+            self.assertEqual(reviewer["model"], calls[0]["model"])
+            self.assertEqual(reviewer["session_id"], calls[0]["session_id"])
+            self.assertEqual(reviewer["family"], skill_eval.model_family(calls[0]["model"]))
+            self.assertEqual(reviewer["effort"], "high")
+            self.assertEqual(reviewer["viewed_paths"], ["candidate/code.py"])
+            self.assertEqual(reviewer["validation"]["source"], "native_session_events")
+            self.assertEqual(reviewer["raw_log_sha256"], skill_eval.digest(calls[0]["log"]))
+            self.assertNotIn("phase", reviewer)
+            self.assertNotIn("stage", reviewer)
+            response = run / reviewer["selected_response"]["path"]
+            self.assertEqual(skill_eval.digest(response), reviewer["selected_response"]["sha256"])
+            self.assertEqual(skill_eval.read_json(response), {"answer": answer})
+            parsed = skill_eval.parse_json_output(skill_eval.read_json(response)["answer"])
+            self.assertEqual(parsed["findings"], value["findings"])
+            original = json.dumps(parsed)
+            self.assertEqual(
+                quality_review.partition_review(parsed), (expected_review, expected_ignored))
+            self.assertEqual(json.dumps(parsed), original)
+            skill_eval.write_json(run / "execution-result.json", {
+                "case_id": "example", "case_revision": result["case_revision"],
+                "patch_sha256": result["patch_sha256"], "execution_status": "PASS",
+            })
+            rows = evaluation_history.history(self.root)["attempts"]
+            row = next(row for row in rows if row["run_path"] == run.relative_to(self.root).as_posix())
+            self.assertEqual(row["correctness"], "PASS")
+            self.assertEqual(row["quality"]["reviewers"], [reviewer])
+
+    def test_projection_does_not_repair_required_evidence(self):
+        packet = self.run / "packet"
+        quality_review.prepare_packet(
+            self.frozen, self.definition, self.run / "candidate.patch", packet)
+        invalid = [
+            {"summary": "Missing fields", "findings": []},
+            {**self.review(), "summary": []},
+            {**self.review(), "judgment": "PASS"},
+            {**self.review(), "findings": {}},
+            {**self.review(), "findings": [False]},
+        ]
+        for change in (
+            {"path": "../outside"}, {"start_line": True}, {"end_line": 100},
+            {"quotation": "invented"}, {"severity": []}, {"trigger": ""},
+        ):
+            value = self.review()
+            value["findings"][0].update(change)
+            value["findings"][0]["note"] = "supplemental"
+            invalid.append(value)
+        misspelled = self.review()
+        misspelled["findings"][0]["start_lines"] = misspelled["findings"][0].pop("start_line")
+        invalid.append(misspelled)
+        for value in invalid:
+            value["commentary"] = "supplemental"
+            canonical, _ = quality_review.partition_review(value)
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                quality_review.validate_review(canonical, packet)
+
+    def test_one_failed_reviewer_keeps_other_and_refuses_reassessment(self):
+        calls = []
+
+        def transport(**kwargs):
+            calls.append(kwargs)
+            self.assertFalse(kwargs["allow_skill"])
+            plugin = skill_eval.read_json(kwargs["plugin_dir"] / "plugin.json")
+            self.assertEqual(plugin["skills"], [])
+            self.assertEqual(kwargs["role"], "quality_judge")
+            answer = json.dumps(self.review()) if len(calls) == 1 else "not-json"
+            kwargs["log"].write_text("\n".join(json.dumps(event) for event in (
+                {"type": "assistant.message", "data": {"content": answer, "model": kwargs["model"]}},
+                {"type": "result", "exitCode": 0},
+            )))
+            self.native_events(kwargs, answer)
+            m.collect(
+                destination=kwargs["measurement_path"], session_id=kwargs["session_id"],
+                role=kwargs["role"], phase=kwargs["phase"], model=kwargs["model"],
+                effort=kwargs["effort"], cli_version="fake", log=kwargs["log"],
+                capture=lambda: capture_bytes(events()), source="host_eventfile",
+                started_at=m.instant(), started_clock=time.monotonic(), outcome="completed")
+
+        with mock.patch.object(quality_review, "run_copilot", side_effect=transport):
+            assessment = quality_review.review_repository(
+                frozen=self.frozen, run_root=self.run, definition=self.definition,
+                copilot=Path("/fake"), timeout_seconds=1)
+        self.assertEqual(len(calls), 2)
+        self.assertNotEqual(calls[0]["session_id"], calls[1]["session_id"])
+        self.assertFalse(assessment["complete"])
+        self.assertEqual(assessment["reviewers"][0]["judgment"], "needs_revision")
+        self.assertEqual(assessment["reviewers"][1]["status"], "failed")
+        self.assertEqual(assessment["patch_sha256"], skill_eval.digest(self.run / "candidate.patch"))
+        records = [skill_eval.read_json(path) for path in (self.run / "measurements").glob("*.json")]
+        self.assertEqual(m.accounting(records)["evaluation"]["credits"], 2)
+        path = self.run / "quality" / "assessment.json"
+        original = path.read_bytes()
+        with self.assertRaises(FileExistsError):
+            quality_review.review_repository(
+                frozen=self.frozen, run_root=self.run, definition=self.definition,
+                copilot=Path("/fake"), timeout_seconds=1)
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_missing_source_is_incomplete_without_invocations(self):
+        (self.run / "candidate.patch").unlink()
+        with mock.patch.object(quality_review, "run_copilot") as transport:
+            result = quality_review.review_repository(
+                frozen=self.frozen, run_root=self.run, definition=self.definition,
+                copilot=Path("/fake"), timeout_seconds=1)
+        transport.assert_not_called()
+        self.assertFalse(result["complete"])
+        self.assertEqual(len(result["reviewers"]), 2)
+
+    def test_complete_independent_reviews_keep_disagreement(self):
+        count = 0
+
+        def transport(**kwargs):
+            nonlocal count
+            count += 1
+            value = self.review() if count == 1 else {
+                "judgment": "acceptable", "summary": "Source meets the requirement.", "findings": []}
+            kwargs["log"].write_text("\n".join(json.dumps(event) for event in (
+                {"type": "assistant.message", "data": {
+                    "content": json.dumps(value), "model": kwargs["model"]}},
+                {"type": "result", "exitCode": 0},
+            )))
+            self.native_events(kwargs, json.dumps(value))
+
+        with mock.patch.object(quality_review, "run_copilot", side_effect=transport):
+            result = quality_review.review_repository(
+                frozen=self.frozen, run_root=self.run, definition=self.definition,
+                copilot=Path("/fake"), timeout_seconds=1)
+        self.assertTrue(result["complete"])
+        self.assertTrue(result["disagreement"])
+        self.assertEqual(len(result["reviewers"][0]["findings"]), 1)
+        self.assertEqual(result["reviewers"][1]["findings"], [])
+
+    def test_native_success_keeps_stdout_errors_partial_accounting_and_no_native_payloads(self):
+        calls = []
+        measurements = {}
+        markers = {}
+        stdout = "{corrupt redacted stdout\n"
+
+        def transport(**kwargs):
+            calls.append(kwargs)
+            _, content = self.native_events(kwargs, json.dumps(self.review()))
+            markers[kwargs["session_id"]] = hashlib.sha256(content).hexdigest()
+            with mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "synthetic-test-token"}), mock.patch.object(
+                skill_eval.subprocess, "run",
+                return_value=subprocess.CompletedProcess(["fake"], 0, stdout=stdout),
+            ):
+                result = skill_eval.run_copilot(**kwargs)
+            measurements[kwargs["measurement_path"]] = kwargs["measurement_path"].read_bytes()
+            return result
+
+        with mock.patch.object(quality_review, "run_copilot", side_effect=transport):
+            result = self.assess()
+        self.assertTrue(result["complete"])
+        records = []
+        for call, reviewer in zip(calls, result["reviewers"]):
+            self.assertEqual(reviewer["status"], "completed")
+            self.assertEqual(reviewer["validation"], {
+                "source": "native_session_events", "sha256": markers[reviewer["session_id"]],
+                "record_count": 7, "process_completed_successfully": True,
+            })
+            self.assertEqual(reviewer["viewed_paths"], ["candidate/code.py"])
+            self.assertEqual(call["log"].read_text(), stdout)
+            self.assertEqual(reviewer["raw_log_sha256"], skill_eval.digest(call["log"]))
+            self.assertFalse(call["run_home"].exists())
+            self.assertEqual(call["measurement_path"].read_bytes(), measurements[call["measurement_path"]])
+            records.append(skill_eval.read_json(call["measurement_path"]))
+            self.assertEqual(records[-1]["completeness"], "error")
+            self.assertTrue(records[-1]["errors"])
+        accounting = m.accounting(records)["evaluation"]
+        self.assertEqual(accounting["observed_credits"], 2)
+        self.assertIsNone(accounting["credits"])
+        self.assertFalse(accounting["complete"])
+        for path in self.run.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(b"native-only", path.read_bytes())
+        self.assertFalse(list(self.run.rglob("events.jsonl")))
+
+    def test_failed_process_cannot_be_rescued_by_terminal_native_events(self):
+        self.definition["judge"]["models"] = self.definition["judge"]["models"][:1]
+        for name, outcome in (("timeout", "timed_out"), ("nonzero", "failed"), ("invocation", "failed")):
+            calls = []
+
+            def transport(**kwargs):
+                calls.append(kwargs)
+                self.native_events(kwargs, json.dumps(self.review()))
+                with mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "synthetic-test-token"}), mock.patch.object(
+                    skill_eval.subprocess, "run",
+                ) as process:
+                    if name == "timeout":
+                        process.side_effect = subprocess.TimeoutExpired(["fake"], 1, output=b"partial stdout")
+                    elif name == "nonzero":
+                        process.return_value = subprocess.CompletedProcess(["fake"], 2, stdout="failed stdout")
+                    else:
+                        process.side_effect = OSError("invocation unavailable")
+                    return skill_eval.run_copilot(**kwargs)
+
+            with self.subTest(name=name), mock.patch.object(
+                quality_review, "run_copilot", side_effect=transport,
+            ), mock.patch.object(quality_review, "parse_native_run") as parse:
+                result = self.assess(self.new_run(name))
+                parse.assert_not_called()
+            self.assertFalse(result["complete"])
+            reviewer = result["reviewers"][0]
+            self.assertEqual(reviewer["status"], "failed")
+            self.assertNotIn("validation", reviewer)
+            self.assertNotIn("judgment", reviewer)
+            self.assertNotIn("selected_response", reviewer)
+            self.assertEqual(skill_eval.read_json(calls[0]["measurement_path"])["outcome"], outcome)
+            self.assertFalse(calls[0]["run_home"].exists())
+
+    def test_native_quality_success_does_not_fill_unknown_credit_totals(self):
+        self.definition["judge"]["models"] = self.definition["judge"]["models"][:1]
+        measurements = {}
+
+        def transport(**kwargs):
+            path, content = self.native_events(kwargs, json.dumps(self.review()))
+            path.write_bytes(content.replace(b'"totalNanoAiu": 1000000000', b'"totalPremiumRequests": 0.33'))
+            with mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "synthetic-test-token"}), mock.patch.object(
+                skill_eval.subprocess, "run",
+                return_value=subprocess.CompletedProcess(["fake"], 0, stdout=""),
+            ):
+                result = skill_eval.run_copilot(**kwargs)
+            measurements[kwargs["measurement_path"]] = kwargs["measurement_path"].read_bytes()
+            return result
+
+        with mock.patch.object(quality_review, "run_copilot", side_effect=transport):
+            result = self.assess()
+        self.assertTrue(result["complete"])
+        for path, original in measurements.items():
+            self.assertEqual(path.read_bytes(), original)
+            record = skill_eval.read_json(path)
+            self.assertEqual(record["premium_requests"], 0.33)
+            self.assertIsNone(record["credits"])
+            accounting = m.accounting([record])["evaluation"]
+            self.assertFalse(accounting["complete"])
+            self.assertIsNone(accounting["credits"])
+            self.assertIsNone(accounting["observed_credits"])
+
+    def test_missing_rejected_or_invalid_native_events_never_fall_back_to_valid_stdout(self):
+        self.definition["judge"]["models"] = self.definition["judge"]["models"][:1]
+        for failure in ("missing", "corrupt", "wrong-session", "wrong-model", "incomplete", "oversized", "symlink"):
+            calls = []
+
+            def transport(**kwargs):
+                calls.append(kwargs)
+                answer = json.dumps(self.review())
+                kwargs["log"].write_text("\n".join(json.dumps(event) for event in (
+                    {"type": "assistant.message", "data": {"content": answer, "model": kwargs["model"]}},
+                    {"type": "result", "exitCode": 0},
+                )))
+                path, content = self.native_events(kwargs, answer)
+                if failure == "missing":
+                    path.parent.rename(path.parent.with_name(str(uuid.uuid4())))
+                elif failure == "corrupt":
+                    path.write_bytes(b"{broken\n")
+                elif failure == "wrong-session":
+                    path.write_bytes(content.replace(kwargs["session_id"].encode(), str(uuid.uuid4()).encode()))
+                elif failure == "wrong-model":
+                    path.write_bytes(content.replace(kwargs["model"].encode(), b"other-model"))
+                elif failure == "incomplete":
+                    path.write_bytes(b"\n".join(content.splitlines()[:-1]) + b"\n")
+                elif failure == "oversized":
+                    with path.open("r+b") as stream:
+                        stream.truncate(len(content) + m.MAX_EVENT_BYTES + 1)
+                else:
+                    target = path.with_name("linked.jsonl")
+                    path.rename(target)
+                    path.symlink_to(target)
+
+            with self.subTest(failure=failure), mock.patch.object(
+                quality_review, "run_copilot", side_effect=transport,
+            ), mock.patch.object(m, "host_events", wraps=m.host_events) as read:
+                result = self.assess(self.new_run(failure))
+                read.assert_called_once_with(calls[0]["run_home"], calls[0]["session_id"])
+            reviewer = result["reviewers"][0]
+            self.assertFalse(result["complete"])
+            self.assertEqual(reviewer["status"], "failed")
+            self.assertNotIn("validation", reviewer)
+            self.assertNotIn("judgment", reviewer)
+            self.assertNotIn("selected_response", reviewer)
+            self.assertTrue(reviewer["error"])
+            self.assertEqual(reviewer["raw_log_sha256"], skill_eval.digest(calls[0]["log"]))
+            self.assertFalse(calls[0]["run_home"].exists())
+            if failure == "oversized":
+                self.assertIn("byte limit", reviewer["error"]["message"])
+
+    def test_native_transport_cannot_relax_json_or_exact_quotation_checks(self):
+        self.definition["judge"]["models"] = self.definition["judge"]["models"][:1]
+        bad_quote = self.review()
+        bad_quote["findings"][0]["quotation"] = "invented quotation"
+        for index, answer in enumerate(("not-json", "[]", json.dumps(bad_quote))):
+            def transport(**kwargs):
+                kwargs["log"].write_text("stdout is not the review source")
+                self.native_events(kwargs, answer)
+
+            with self.subTest(answer=answer), mock.patch.object(
+                quality_review, "run_copilot", side_effect=transport,
+            ):
+                result = self.assess(self.new_run(f"invalid-answer-{index}"))
+            self.assertFalse(result["complete"])
+            reviewer = result["reviewers"][0]
+            self.assertEqual(reviewer["status"], "failed")
+            self.assertNotIn("judgment", reviewer)
+            self.assertEqual(reviewer["validation"]["source"], "native_session_events")
+            response = self.run.parent.parent / f"invalid-answer-{index}" / "example"
+            response = response / reviewer["selected_response"]["path"]
+            self.assertEqual(skill_eval.read_json(response), {"answer": answer})
+            self.assertEqual(skill_eval.digest(response), reviewer["selected_response"]["sha256"])
+            if index == 2:
+                self.assertIn("quotation", reviewer["error"]["message"])
+
+    def test_native_unassessable_is_not_an_acceptable_judgment(self):
+        self.definition["judge"]["models"] = self.definition["judge"]["models"][:1]
+        value = {"judgment": "unassessable", "summary": "Decisive source is missing.", "findings": []}
+
+        def transport(**kwargs):
+            kwargs["log"].write_text("stdout is not the review source")
+            self.native_events(kwargs, json.dumps(value))
+
+        with mock.patch.object(quality_review, "run_copilot", side_effect=transport):
+            result = self.assess()
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["reviewers"][0]["judgment"], "unassessable")
+
+    def test_review_audit_rejects_execution_and_outside_reads(self):
+        packet = self.run / "packet"
+        packet.mkdir()
+        log = self.run / "raw.log"
+        for name, arguments in (("bash", {"command": "true"}), ("view", {"path": "../outside"})):
+            log.write_text("\n".join(json.dumps(event) for event in (
+                {"type": "tool.execution_start", "data": {
+                    "toolCallId": "read", "toolName": name, "arguments": arguments}},
+                {"type": "tool.execution_complete", "data": {"toolCallId": "read", "success": True}},
+                {"type": "assistant.message", "data": {"model": "gpt-example", "content": "{}"}},
+                {"type": "result", "exitCode": 0},
+            )))
+            with self.assertRaises(ValueError):
+                skill_eval.parse_run(log, skill="example-skill", expected_model="gpt-example",
+                                     cwd=packet, require_skill=False, allowed_tools={"view"})
+
+
+class HistoryTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        skill_eval.init_corpus(self.root)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def run_fixture(self, name, status, credits=None, *, complete=True, old=False, owner=None):
+        path = self.root / "runs" / name / "example"
+        path.mkdir(parents=True)
+        skill_eval.write_json(path / "execution-result.json", {
+            "schema_version": 1, "case_id": "example", "case_type": "repository-task",
+            "case_revision": "fixed", "execution_status": status, "behavioral_verdict": None,
+            "arm": "skill", "model": "gpt-example", "effort": "high",
+            "timeout_seconds": 10, "elapsed_seconds": 2,
+        })
+        skill_eval.write_json(path / "skill-identity.json", {"name": "example", "files": []})
+        if not old:
+            skill_eval.write_json(path / "attempt.json", {
+                "schema_version": 1, "case_id": "example", "suite_owner": owner,
+                "quality_review": False,
+            })
+            log = path / "log.jsonl"
+            log.write_text("")
+            m.collect(
+                destination=path / "measurements" / "candidate.json",
+                session_id=str(uuid.uuid4()), role="candidate", phase="candidate",
+                model="gpt-example", effort="high", cli_version="fake", log=log,
+                capture=lambda: capture_bytes(events(credits * 1_000_000_000,
+                                       "session.shutdown" if complete else "session.usage_checkpoint")
+                                if credits is not None else None),
+                source="container_eventfile", started_at=m.instant(),
+                started_clock=time.monotonic(), outcome="completed")
+            records = [skill_eval.read_json(path / "measurements" / "candidate.json")]
+            skill_eval.write_json(path / "accounting.json", m.accounting(records))
+        return path
+
+    def test_stable_history_keeps_old_unknowns_invalid_and_failed_spending(self):
+        self.run_fixture("pass", "PASS", 2)
+        self.run_fixture("fail", "FAIL", 3)
+        self.run_fixture("invalid", "INVALID", 1)
+        self.run_fixture("old", "FAIL", old=True)
+        first = evaluation_history.history(self.root)
+        second = evaluation_history.history(self.root)
+        self.assertEqual(first, second)
+        self.assertEqual(len(first["attempts"]), 4)
+        self.assertEqual(len(first["populations"]), 1)
+        summary = first["populations"][0]
+        self.assertIsNone(summary["credits_per_successful_first_attempt"])
+        self.assertEqual(summary["total_spend"]["observed_credits"], 6)
+        self.assertEqual(summary["invalid_spend"]["credits"], 1)
+        self.assertEqual(summary["unsuccessful_spend"]["observed_credits"], 4)
+        old = next(row for row in first["attempts"] if row["run_path"] == "runs/old/example")
+        self.assertIsNone(old["elapsed_seconds"])
+        self.assertEqual(old["legacy_execution_elapsed_seconds"], 2)
+        self.assertFalse(old["accounting_available"])
+        text = evaluation_history.markdown(first)
+        self.assertIn("unknown", text)
+        self.assertIn("invalid_spend", text)
+
+    def test_history_does_not_backfill_or_reinterpret_legacy_reviews(self):
+        for status in ("completed", "failed"):
+            path = self.run_fixture(status, "PASS", old=True)
+            reviewer = {"status": status, "model": "claude-opus-5"}
+            if status == "completed":
+                reviewer.update(judgment="acceptable", summary="Source reviewed.", findings=[])
+            else:
+                reviewer["error"] = "Original extra-field rejection"
+                skill_eval.write_failure_receipt(
+                    path / "judge-legacy-failure-receipt.json", case_id="example",
+                    case_revision="fixed", stage="judge:claude-opus-5",
+                    error=ValueError("Original extra-field rejection"), log=path / "missing.log")
+            skill_eval.write_json(path / "quality" / "assessment.json", {
+                "schema_version": 1, "complete": status == "completed", "case_revision": "fixed",
+                "patch_sha256": None, "expected_models": ["claude-opus-5"],
+                "reviewers": [reviewer],
+            })
+        before = {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
+        result = evaluation_history.history(self.root)
+        self.assertEqual(len(result["attempts"]), 2)
+        self.assertNotIn("supplemental_fields_ignored", json.dumps(result))
+        self.assertEqual(before, {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()})
+
+    def test_suite_owned_runs_count_once_and_retry_excluded_from_first_ratio(self):
+        cases = []
+        for suite_id, values in (("one", [("FAIL", 3), ("PASS", 4)]),
+                                 ("two", [("PASS", 2)]), ("three", [("INVALID", 1)])):
+            attempts = []
+            for ordinal, (status, credits) in enumerate(values, 1):
+                owner = {"suite_path": f"suite-runs/{suite_id}", "case_id": "example",
+                         "attempt": ordinal, "max_attempts": 2}
+                path = self.run_fixture(f"{suite_id}-{ordinal}", status, credits, owner=owner)
+                attempts.append({"attempt": ordinal, "result": status,
+                                 "run_path": path.relative_to(self.root).as_posix()})
+            cases.append(attempts)
+            skill_eval.write_json(self.root / "suite-runs" / suite_id / "suite-result.json", {
+                "schema_version": 1, "max_attempts": 2, "cases": [{"case_id": "example", "attempts": attempts}],
+            })
+        history = evaluation_history.history(self.root)
+        self.assertEqual(len(history["attempts"]), 4)
+        self.assertEqual(len(history["populations"]), 1)
+        summary = history["populations"][0]
+        self.assertEqual(summary["first_attempt_spend"]["credits"], 6)
+        self.assertEqual(summary["credits_per_successful_first_attempt"], 6)
+        self.assertEqual(summary["retry_spend"]["credits"], 4)
+        self.assertEqual(summary["eventual_executable_passes"], 2)
+        self.assertEqual(summary["retry_assisted_executable_passes"], 1)
+        self.assertEqual(evaluation_history.history(self.root), history)
+
+    def test_partial_credits_zero_success_and_population_changes_have_no_false_ratio(self):
+        first = self.run_fixture("partial", "PASS", 2, complete=False)
+        second = self.run_fixture("fail", "FAIL", 1)
+        result = skill_eval.read_json(second / "execution-result.json")
+        result["case_revision"] = "different"
+        skill_eval.write_json(second / "execution-result.json", result)
+        report = evaluation_history.history(self.root)
+        self.assertEqual(len(report["populations"]), 2)
+        self.assertTrue(all(item["credits_per_successful_first_attempt"] is None for item in report["populations"]))
+        self.assertEqual(len(evaluation_history.history(self.root, model="other")["attempts"]), 0)
+        corrupted = skill_eval.read_json(first / "accounting.json")
+        corrupted["total"]["observed_credits"] = 100
+        skill_eval.write_json(first / "accounting.json", corrupted)
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            evaluation_history.history(self.root)
+
+    def test_failed_suite_path_is_recovered_from_owned_attempt_without_duplicate(self):
+        owner = {"suite_path": "suite-runs/failed", "case_id": "example",
+                 "attempt": 1, "max_attempts": 1}
+        self.run_fixture("failed", "INVALID", 2, owner=owner)
+        skill_eval.write_json(self.root / "suite-runs/failed/suite-result.json", {
+            "max_attempts": 1, "cases": [{"case_id": "example",
+                                       "attempts": [{"attempt": 1, "result": "ERROR"}]}],
+        })
+        result = evaluation_history.history(self.root)
+        self.assertEqual(len(result["attempts"]), 1)
+        self.assertEqual(result["populations"][0]["invalid_spend"]["credits"], 2)
+
+    def test_corrupt_attempt_and_duplicate_suite_ownership_fail_visibly(self):
+        path = self.run_fixture("valid", "PASS", 1)
+        (path / "execution-result.json").write_text("[]")
+        with self.assertRaisesRegex(ValueError, "must be an object"):
+            evaluation_history.history(self.root)
+        (path / "execution-result.json").write_text('{"execution_status":"invented"}')
+        with self.assertRaisesRegex(ValueError, "invalid execution"):
+            evaluation_history.history(self.root)
+        for name in ("a", "b"):
+            skill_eval.write_json(self.root / "suite-runs" / name / "suite-result.json", {
+                "cases": [{"case_id": "example", "attempts": [
+                    {"attempt": 1, "result": "PASS", "run_path": path.relative_to(self.root).as_posix()}]}],
+            })
+        with self.assertRaisesRegex(ValueError, "multiple suite"):
+            evaluation_history.history(self.root)
+
+    def test_one_session_cannot_be_counted_as_two_attempts(self):
+        first = self.run_fixture("first", "PASS", 1)
+        second = self.run_fixture("second", "PASS", 1)
+        record = skill_eval.read_json(first / "measurements/candidate.json")
+        skill_eval.write_json(second / "measurements/candidate.json", record)
+        skill_eval.write_json(second / "accounting.json", m.accounting([record]))
+        with self.assertRaisesRegex(ValueError, "multiple attempts"):
+            evaluation_history.history(self.root)
+
+    def test_history_cli_formats_and_quality_options(self):
+        self.run_fixture("cli", "PASS", 1)
+        for format_name in ("json", "markdown"):
+            output = io.StringIO()
+            with mock.patch("sys.stdout", output):
+                self.assertEqual(skill_eval.main([
+                    "history", str(self.root), "--format", format_name, "--case", "example",
+                ]), 0)
+            if format_name == "json":
+                self.assertEqual(len(json.loads(output.getvalue())["attempts"]), 1)
+            else:
+                self.assertIn("# Evaluation history", output.getvalue())
+        for command in ("run", "run-suite"):
+            arguments = [command, str(self.root), "--plugin-dir", "/plugin", "--quality-review"]
+            if command == "run":
+                arguments += ["--case", "example"]
+            self.assertTrue(skill_eval.parser().parse_args(arguments).quality_review)
+
+
+if __name__ == "__main__":
+    unittest.main()
