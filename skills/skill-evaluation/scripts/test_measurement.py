@@ -627,6 +627,19 @@ class QualityTests(unittest.TestCase):
         self.assertEqual({Path(item["path"]).parts[0] for item in manifest},
                          {"baseline", "candidate", "requirements", "source-nodes.json"})
         self.assertTrue(all((packet / item["path"]).stat().st_mode & 0o222 == 0 for item in manifest))
+        self.assertEqual(
+            (packet / "requirements" / "task.md").read_bytes(),
+            (packet / "requirements" / "evidence" / "task.md").read_bytes())
+        task_record = next(
+            item for item in manifest if item["path"] == "requirements/task.md")
+        self.assertEqual(task_record["source"], {
+            "kind": "evidence_task",
+            "root": "packet",
+            "path": "requirements/evidence/task.md",
+        })
+        self.assertNotEqual(
+            (packet / "requirements" / "task.md").read_bytes(),
+            (self.frozen / self.definition["phases"][0]["prompt_file"]).read_bytes())
         content = "\n".join(path.read_text() for path in packet.rglob("*") if path.is_file())
         self.assertIn("return a - b", content)
         self.assertIn("return a + b", content)
@@ -652,6 +665,164 @@ class QualityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             quality_review.validate_review(invalid, packet)
 
+    def test_packet_uses_phase_prompt_when_evidence_task_is_missing(self):
+        case = self.fixture.make_case("fallback")
+        (case / "evidence" / "candidate" / "task.md").unlink()
+        (case / "evidence" / "candidate" / "rubric.md").write_text(
+            "Assess the addition repair.\n")
+        frozen = skill_eval.freeze_case(self.root, "fallback", False)
+        self.assertGreater(skill_eval.verify_case(self.root, "fallback"), 0)
+        definition = skill_eval.read_json(frozen / "case.json")
+        packet = self.run / "fallback-packet"
+        manifest = quality_review.prepare_packet(
+            frozen, definition, self.run / "candidate.patch", packet)
+        self.assertEqual(
+            (packet / "requirements" / "task.md").read_bytes(),
+            (frozen / definition["phases"][0]["prompt_file"]).read_bytes())
+        self.assertEqual(
+            (packet / "requirements" / "evidence" / "rubric.md").read_text(),
+            "Assess the addition repair.\n")
+        paths = {item["path"] for item in manifest}
+        self.assertIn("requirements/evidence/rubric.md", paths)
+        task_record = next(
+            item for item in manifest if item["path"] == "requirements/task.md")
+        self.assertEqual(task_record["source"], {
+            "kind": "phase_prompt",
+            "root": "frozen_case",
+            "path": definition["phases"][0]["prompt_file"],
+        })
+
+    def test_read_primary_task_does_not_follow_symlink(self):
+        evidence = self.root / "linked-evidence"
+        evidence.mkdir()
+        fallback_relative = self.definition["phases"][0]["prompt_file"]
+        fallback = self.frozen / fallback_relative
+        (evidence / "task.md").symlink_to(fallback)
+        content, source = quality_review.read_primary_task(
+            evidence, fallback, fallback_relative)
+        self.assertEqual(
+            content, fallback.read_bytes())
+        self.assertEqual(source, {
+            "kind": "phase_prompt",
+            "root": "frozen_case",
+            "path": fallback_relative,
+        })
+
+    def test_read_primary_task_rejects_opened_non_regular_and_linked_files(self):
+        fallback_relative = self.definition["phases"][0]["prompt_file"]
+        fallback = self.frozen / fallback_relative
+        for kind in ("directory", "fifo", "hardlink"):
+            with self.subTest(kind=kind):
+                evidence = self.root / f"{kind}-evidence"
+                evidence.mkdir()
+                task = evidence / "task.md"
+                if kind == "directory":
+                    task.mkdir()
+                elif kind == "fifo":
+                    os.mkfifo(task)
+                else:
+                    original = evidence / "original.md"
+                    original.write_text("Do not use linked requirements.\n")
+                    os.link(original, task)
+                content, source = quality_review.read_primary_task(
+                    evidence, fallback, fallback_relative)
+                self.assertEqual(content, fallback.read_bytes())
+                self.assertEqual(source, {
+                    "kind": "phase_prompt",
+                    "root": "frozen_case",
+                    "path": fallback_relative,
+                })
+
+    def test_citation_reconciliation_is_exact_or_unique_same_file_line_sequence(self):
+        packet = self.root / "citation-packet"
+        candidate = packet / "candidate"
+        baseline = packet / "baseline"
+        candidate.mkdir(parents=True)
+        baseline.mkdir()
+        (candidate / "source.py").write_text(
+            "header\n"
+            "\tif ready:\n"
+            "\t\tresult = build(\n"
+            "\t\t\tvalue,\n"
+            "\t\t)\n"
+            "\treturn result\n"
+            "footer\n",
+            encoding="utf-8",
+        )
+        (candidate / "duplicate.py").write_text(
+            "first\n"
+            "    repeated()\n"
+            "middle\n"
+            "\trepeated()\n"
+            "last\n",
+            encoding="utf-8",
+        )
+        (baseline / "source.py").write_text(
+            "header\n"
+            "if ready:\n"
+            "    result = changed(value)\n",
+            encoding="utf-8",
+        )
+
+        def finding(**changes):
+            value = {
+                "path": "candidate/source.py", "start_line": 1, "end_line": 1,
+                "quotation": "header", "severity": "medium",
+                "trigger": "A concrete input", "explanation": "A concrete risk",
+            }
+            value.update(changes)
+            return value
+
+        exact = finding(start_line=2, end_line=5, quotation="\tif ready:\n")
+        normalized = finding(
+            start_line=3,
+            end_line=4,
+            quotation="if ready:\n  result = build(\n    value,\n  )\nreturn result",
+        )
+        review = {
+            "judgment": "needs_revision",
+            "summary": "Source-linked concerns.",
+            "findings": [exact, normalized],
+        }
+        original = json.loads(json.dumps(review))
+        self.assertEqual(quality_review.validate_review(review, packet), [
+            {
+                "finding_index": 0,
+                "mode": "exact",
+                "declared_range": [2, 5],
+                "resolved_range": [2, 5],
+            },
+            {
+                "finding_index": 1,
+                "mode": "normalized_unique",
+                "declared_range": [3, 4],
+                "resolved_range": [2, 6],
+            },
+        ])
+        self.assertEqual(review, original)
+
+        invalid_findings = {
+            "absent": finding(quotation="missing()"),
+            "internally changed": finding(quotation="if ready:\nresult = other(value)"),
+            "wrong file": finding(
+                path="baseline/source.py",
+                quotation="if ready:\nresult = build(\nvalue,\n)\nreturn result",
+            ),
+            "ambiguous": finding(
+                path="candidate/duplicate.py", quotation="repeated()",
+            ),
+        }
+        for name, invalid_finding in invalid_findings.items():
+            invalid = {
+                "judgment": "needs_revision",
+                "summary": "An invalid citation.",
+                "findings": [invalid_finding],
+            }
+            with self.subTest(name=name), self.assertRaisesRegex(
+                ValueError, "quality finding quotation does not match source range",
+            ):
+                quality_review.validate_review(invalid, packet)
+
     def test_supplemental_fields_preserve_answer_and_caller_metadata(self):
         self.definition["judge"]["models"] = self.definition["judge"]["models"][:1]
         extras = {
@@ -664,6 +835,12 @@ class QualityTests(unittest.TestCase):
         }
         for index, additional in enumerate(({}, extras)):
             value = self.review()
+            value["findings"].append({
+                "path": "candidate/code.py", "start_line": 1, "end_line": 1,
+                "quotation": "  def add(a, b): return a + b  ", "severity": "low",
+                "trigger": "Another concrete input", "explanation": "Another concrete risk",
+            })
+            expected_review = json.loads(json.dumps(value))
             value.update(additional)
             expected_ignored = [[key] for key in additional]
             if additional:
@@ -684,7 +861,22 @@ class QualityTests(unittest.TestCase):
                 result = self.assess(run)
             self.assertTrue(result["complete"])
             reviewer = result["reviewers"][0]
-            self.assertEqual({key: reviewer[key] for key in quality_review.REVIEW_FIELDS}, self.review())
+            self.assertEqual(
+                {key: reviewer[key] for key in quality_review.REVIEW_FIELDS}, expected_review)
+            self.assertEqual(reviewer["citation_reconciliations"], [
+                {
+                    "finding_index": 0,
+                    "mode": "exact",
+                    "declared_range": [1, 1],
+                    "resolved_range": [1, 1],
+                },
+                {
+                    "finding_index": 1,
+                    "mode": "normalized_unique",
+                    "declared_range": [1, 1],
+                    "resolved_range": [1, 1],
+                },
+            ])
             self.assertEqual(reviewer["supplemental_fields_ignored"], expected_ignored)
             self.assertEqual(reviewer["model"], calls[0]["model"])
             self.assertEqual(reviewer["session_id"], calls[0]["session_id"])
@@ -699,8 +891,10 @@ class QualityTests(unittest.TestCase):
             self.assertEqual(skill_eval.digest(response), reviewer["selected_response"]["sha256"])
             self.assertEqual(skill_eval.read_json(response), {"answer": answer})
             parsed = skill_eval.parse_json_output(skill_eval.read_json(response)["answer"])
+            self.assertEqual(parsed["findings"], value["findings"])
             original = json.dumps(parsed)
-            self.assertEqual(quality_review.partition_review(parsed), (self.review(), expected_ignored))
+            self.assertEqual(
+                quality_review.partition_review(parsed), (expected_review, expected_ignored))
             self.assertEqual(json.dumps(parsed), original)
             skill_eval.write_json(run / "execution-result.json", {
                 "case_id": "example", "case_revision": result["case_revision"],
