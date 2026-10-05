@@ -98,7 +98,10 @@ When setup creates an image-local dependency symlink at a path absent from
 frozen source, the evaluator records its relative path and literal target
 before model invocation. Final capture omits only that exact unchanged link;
 removing it or replacing it with ordinary source remains visible in the patch.
-All other symlinks and special entries are refused without following a target.
+Retargeting a recorded setup link is refused. Candidate-created links are
+captured as Git mode `120000` and raw target bytes, including broken, absolute,
+outward and directory targets. Capture never follows a link or traverses its
+directory target. Special entries remain unsupported.
 
 ## Freeze and admit
 
@@ -187,7 +190,8 @@ After the candidate is stopped, a separate trusted checkout computes its
 patch against frozen source. Candidate Git history, indexes, ignore rules,
 attributes, and hooks do not establish that base. Capture includes new and
 ignored files, deletions, executable-bit changes, and binary changes; it
-excludes Git metadata. Exact unchanged setup-owned runtime links recorded
+also preserves candidate-created link nodes and excludes Git metadata.
+Exact unchanged setup-owned runtime links recorded
 before invocation are omitted without following them; unsupported candidate
 filesystem entries produce a scored output failure rather than silently
 disappearing.
@@ -197,6 +201,18 @@ entrypoints mounted read-only at `/grader`. Graders have no token or network.
 Candidate changes to local test commands cannot replace those entrypoints.
 This does not claim resistance to arbitrary candidate code monkeypatching a
 test runtime.
+
+Source-quality packets project link nodes into regular files containing their
+exact raw target bytes before hashing, changing permissions or reviewer reads.
+Evaluator-owned root `source-nodes.json` lists each projected path, original
+kind and Git mode, raw-target SHA-256 and projection-file SHA-256. It is part of
+the packet manifest, separate from the `baseline/` and `candidate/` namespaces.
+Ordinary source bytes and the assessment's original patch digest are unchanged.
+The versioned source-review prompt requires reading this metadata and treating
+target bytes as link evidence, never as referent source. Missing or non-textual
+decisive evidence requires an unassessable judgment. A failed preparation never
+launches a reviewer. Grading trees retain real links inside the existing offline
+container boundary; review projection does not modify the preserved patch.
 
 The corpus directory must be available to Docker bind mounts. Runtime
 directories are created beneath the run artifacts rather than the host's
