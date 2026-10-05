@@ -135,11 +135,54 @@ ID, and quoted or byte-addressed source that establishes it. For every selected
 artifact, retain its ledger entry and digest in the same packet or in a
 packet-visible provenance file.
 
-## 7. Audit completeness and leakage
+## 7. Audit the candidate text packet
+
+Render the exact task the candidate will receive and create
+`capture/candidate-text-audit.md`. Keep three kinds of text visibly separate:
+
+| Layer | Allowed content | Required authority |
+| --- | --- | --- |
+| Original request | Verbatim user turns or clearly bounded exact excerpts | Session ID, turn or event ID, timestamp |
+| Restored context | Context the original agent had but the reproduction lacks | Source event or artifact available by the candidate cutoff |
+| Evaluation operation | Offline limitations, workspace locations, commands, and evidence delivery | Harness or package contract |
+
+Preserve the user's wording, sequence, ambiguity, and mistakes. When one turn
+contains an unrelated request, retain the complete turn when safe, or mark the
+exact excerpt boundary and omission instead of presenting the excerpt as the
+complete request. A summary may introduce the evidence but cannot replace it.
+
+For every sentence not copied from the original request, record:
+
+- its layer;
+- why the candidate needs it;
+- the exact source proving the original agent had it, or the harness contract
+  that requires it; and
+- whether it changes, narrows, expands, or merely explains the requested
+  outcome.
+
+Reject an addition that names a state, mechanism, implementation, edge case, or
+success condition solely because the hidden answer uses it. Also reject an
+addition that narrows a broad user-visible outcome to the subset exercised by a
+convenient fixture. A focused fixture may remain candidate-visible, but label
+it as one proof path rather than the complete acceptance boundary unless it
+actually reproduces the whole claim.
+
+After staging or freezing, read the rendered task and every path it names
+through the same candidate filesystem and permission boundary. Missing,
+mislocated, denied, or differently worded evidence fails the audit. Compare the
+staged bytes with the text-audit ledger before allowing a run.
+
+## 8. Audit completeness and leakage
 
 Before freezing, verify:
 
 - the stable session and artifact identifiers resolve to the captured sources;
+- `capture/candidate-text-audit.md` accounts for every candidate-task sentence
+  that is not an exact user quote;
+- the staged original request matches its captured bytes or declares exact
+  excerpt boundaries and omissions;
+- every candidate-visible file named by the task exists and is readable from
+  the candidate boundary;
 - every selected byte has a digest and capture receipt and has passed the
   sensitive-content boundary;
 - every historical criterion maps to exact authority;

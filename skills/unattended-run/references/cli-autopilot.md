@@ -21,7 +21,7 @@ to paste when that handoff is unavailable.
 ## Launching the run
 
 - The agent may hand off a persisted multi-line objective after the `/every`
-  reminder is live. The bundled detached helper calls the session-inbox request
+  reminder is live. The bundled detached helper calls the session-control request
   CLI with the bounded `autopilot` request, the target session ID or tmux
   session name, and `--prompt-file`.
 - The extension invokes the native `/autopilot` command through

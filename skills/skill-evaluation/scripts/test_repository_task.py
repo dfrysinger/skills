@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
@@ -9,9 +10,11 @@ import subprocess
 import tempfile
 import unittest
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
+import evaluation_history
 import repository_task as repository
 import skill_eval as evaluator
 
@@ -171,6 +174,234 @@ class RepositoryTaskTests(unittest.TestCase):
         self.assertEqual(patch.read_bytes(), b"")
         repository.apply_patch(candidate, patch)
 
+    def test_setup_runtime_link_is_literal_and_excluded_from_export(self):
+        frozen = self.freeze()
+        candidate = Path(self.temp.name) / "candidate"
+        evaluator.copy_packet(frozen / "repository", candidate)
+        outside = Path(self.temp.name) / "outside-sentinel"
+        outside.write_text("outside source must not be captured\n")
+        (candidate / "runtime-link").symlink_to("../outside-sentinel")
+        links = repository.observe_setup_links(frozen, candidate)
+        self.assertEqual(links, [{"path": "runtime-link", "target": "../outside-sentinel"}])
+        (candidate / "code.py").write_text("def add(a, b): return a + b\n")
+        (candidate / "ignored.txt").write_text("must be captured\n")
+        (candidate / "mode.sh").chmod(0o644)
+        patch = Path(self.temp.name) / "candidate.patch"
+        repository.export_patch(frozen, candidate, patch, links)
+        self.assertNotIn(b"outside source must not be captured", patch.read_bytes())
+        fresh = Path(self.temp.name) / "fresh"
+        evaluator.copy_packet(frozen / "repository", fresh)
+        repository.apply_patch(fresh, patch)
+        self.assertEqual((fresh / "code.py").read_text(), "def add(a, b): return a + b\n")
+        self.assertEqual((fresh / "ignored.txt").read_text(), "must be captured\n")
+        self.assertEqual((fresh / "mode.sh").stat().st_mode & 0o777, 0o644)
+        self.assertFalse((fresh / "runtime-link").exists())
+
+    def test_removed_and_ordinary_replaced_setup_links_are_exported(self):
+        frozen = self.freeze()
+        removed = Path(self.temp.name) / "removed"
+        evaluator.copy_packet(frozen / "repository", removed)
+        (removed / "runtime-link").symlink_to("runtime-target")
+        links = repository.observe_setup_links(frozen, removed)
+        (removed / "runtime-link").unlink()
+        removed_patch = Path(self.temp.name) / "removed.patch"
+        repository.export_patch(frozen, removed, removed_patch, links)
+        self.assertEqual(removed_patch.read_bytes(), b"")
+
+        replacement = Path(self.temp.name) / "replacement"
+        evaluator.copy_packet(frozen / "repository", replacement)
+        (replacement / "runtime-link").symlink_to("runtime-target")
+        links = repository.observe_setup_links(frozen, replacement)
+        (replacement / "runtime-link").unlink()
+        (replacement / "runtime-link").mkdir()
+        (replacement / "runtime-link" / "source.py").write_text("replacement source\n")
+        replacement_patch = Path(self.temp.name) / "replacement.patch"
+        repository.export_patch(frozen, replacement, replacement_patch, links)
+        fresh = Path(self.temp.name) / "replacement-fresh"
+        evaluator.copy_packet(frozen / "repository", fresh)
+        repository.apply_patch(fresh, replacement_patch)
+        self.assertEqual(
+            (fresh / "runtime-link" / "source.py").read_text(),
+            "replacement source\n",
+        )
+
+    def test_setup_links_reject_frozen_source_collisions_and_ancestors(self):
+        case = self.make_case()
+        (case / "repository" / "nested").mkdir()
+        (case / "repository" / "nested" / "source.py").write_text("frozen source\n")
+        frozen = evaluator.freeze_case(self.root, "example", False)
+
+        collision = Path(self.temp.name) / "collision"
+        evaluator.copy_packet(frozen / "repository", collision)
+        (collision / "code.py").unlink()
+        (collision / "code.py").symlink_to("runtime-target")
+        with self.assertRaisesRegex(ValueError, "overlaps frozen source"):
+            repository.observe_setup_links(frozen, collision)
+
+        ancestor = Path(self.temp.name) / "ancestor"
+        evaluator.copy_packet(frozen / "repository", ancestor)
+        shutil.rmtree(ancestor / "nested")
+        (ancestor / "nested").symlink_to("runtime-target")
+        with self.assertRaisesRegex(ValueError, "overlaps frozen source"):
+            repository.observe_setup_links(frozen, ancestor)
+
+    def test_export_refuses_retargeted_setup_links_and_special_entries(self):
+        frozen = self.freeze()
+        retargeted = Path(self.temp.name) / "retargeted"
+        evaluator.copy_packet(frozen / "repository", retargeted)
+        (retargeted / "runtime-link").symlink_to("runtime-target")
+        links = repository.observe_setup_links(frozen, retargeted)
+        (retargeted / "runtime-link").unlink()
+        (retargeted / "runtime-link").symlink_to("different-target")
+        with self.assertRaises(repository.CandidateStateError):
+            repository.export_patch(frozen, retargeted, Path(self.temp.name) / "retargeted.patch", links)
+
+        special = Path(self.temp.name) / "special"
+        evaluator.copy_packet(frozen / "repository", special)
+        os.mkfifo(special / "unsupported")
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            repository.observe_setup_links(frozen, special)
+        with self.assertRaises(repository.CandidateStateError):
+            repository.export_patch(frozen, special, Path(self.temp.name) / "special.patch")
+
+    def test_setup_capture_without_commands_preserves_no_setup_export(self):
+        frozen = self.freeze()
+        task = evaluator.read_json(frozen / "case.json")["repository_task"]
+        artifacts = Path(self.temp.name) / "setup-capture"
+        capture = repository.check_candidate_setup(frozen, task, artifacts)
+        self.assertEqual(capture["commands"], [])
+        self.assertEqual(capture["runtime_links"], [])
+        self.assertEqual((artifacts / capture["patch"]["path"]).read_bytes(), b"")
+
+    def test_admission_replays_setup_exports_for_base_and_reference(self):
+        case = self.make_case()
+        definition = evaluator.read_json(case / "case.json")
+        definition["repository_task"]["candidate_setup"] = [{
+            "argv": ["create-runtime-link"],
+            "timeout_seconds": 10,
+        }]
+        evaluator.write_json(case / "case.json", definition)
+        frozen = evaluator.freeze_case(self.root, "example", False)
+        graded_patches = []
+
+        class FakeContainer:
+            def __init__(self, image, mounts, artifacts, **kwargs):
+                self.source = mounts[0][0]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def execute(self, command, label, **kwargs):
+                (self.source / "runtime-link").symlink_to("image-runtime")
+                return {"exit_code": 0, "timed_out": False}
+
+        def fake_grade(frozen, task, artifacts, patch):
+            graded_patches.append((artifacts.name, patch.read_bytes()))
+            target = artifacts / "target"
+            target.mkdir(parents=True)
+            target_passed = artifacts.name == "reference"
+            check = {
+                "exit_code": 0 if target_passed else 1,
+                "timed_out": False,
+                "log": "check.log",
+            }
+            (target / check["log"]).write_text(
+                "TARGET_CHECKS_PASSED" if target_passed else "wrong addition",
+            )
+            return {
+                "target": {
+                    "setup_ok": True,
+                    "passed": target_passed,
+                    "check": check,
+                },
+                "regression": {
+                    "setup_ok": True,
+                    "passed": True,
+                    "check": check,
+                },
+            }
+
+        with (
+            mock.patch("repository_task.image_identity", return_value={"id": self.image}),
+            mock.patch("repository_task.Container", FakeContainer),
+            mock.patch("repository_task.grade", side_effect=fake_grade),
+        ):
+            admission = repository.validate_repository_case(self.root, "example")
+
+        receipt = evaluator.read_json(admission / "admission-receipt.json")
+        self.assertEqual(receipt["status"], "PASS")
+        self.assertEqual(
+            receipt["candidate_setup_base"]["runtime_links"],
+            [{"path": "runtime-link", "target": "image-runtime"}],
+        )
+        self.assertEqual([name for name, _ in graded_patches], ["base", "reference"])
+        self.assertEqual(graded_patches[0][1], b"")
+        self.assertIn(b"return a + b", graded_patches[1][1])
+
+    def test_pre_model_failures_are_not_reclassified_as_candidate_output(self):
+        case = self.make_case()
+        definition = evaluator.read_json(case / "case.json")
+        definition["repository_task"]["candidate_setup"] = [{
+            "argv": ["prepare-source"],
+            "timeout_seconds": 10,
+        }]
+        evaluator.write_json(case / "case.json", definition)
+        frozen = evaluator.freeze_case(self.root, "example", False)
+        admission = Path(self.temp.name) / "admission.json"
+        admission.write_text("{}")
+
+        for failure, expected_stage in (
+            ("setup", "candidate_setup"),
+            ("observation", "candidate_setup_observation"),
+        ):
+            class FakeContainer:
+                def __init__(self, image, mounts, artifacts, **kwargs):
+                    self.artifacts = artifacts
+                    self.source = mounts[0][0]
+                    self.created = True
+                    self.stopped = False
+                    self.artifacts.mkdir(parents=True)
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    self.stopped = True
+
+                def execute(self, command, label, **kwargs):
+                    log = self.artifacts / f"{label}.log"
+                    log.write_text("copilot test\n")
+                    if label == "cli-version":
+                        return {"exit_code": 0, "log": log.name}
+                    if failure == "setup":
+                        (self.source / "unexpected-link").symlink_to("runtime-target")
+                        return {"exit_code": 1, "log": log.name}
+                    (self.source / "code.py").unlink()
+                    (self.source / "code.py").symlink_to("runtime-target")
+                    return {"exit_code": 0, "log": log.name}
+
+            run = Path(self.temp.name) / f"{failure}-run"
+            run.mkdir()
+            with (
+                mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "nonsecret-test-sentinel"}),
+                mock.patch("repository_task.image_identity", return_value={"id": self.image}),
+                mock.patch("repository_task.require_admission", return_value=admission),
+                mock.patch("repository_task.Container", FakeContainer),
+                mock.patch("repository_task.grade") as grade,
+            ):
+                result = repository.execute_repository(
+                    self.root, "example", frozen, run, run / "plugin",
+                    "fake", "high", 1, "baseline",
+                )
+            self.assertEqual(result["execution_status"], "INVALID", result)
+            self.assertEqual(result["failure_kind"], expected_stage)
+            self.assertNotEqual(result["failure_kind"], "candidate_output")
+            self.assertFalse((run / "candidate.patch").exists())
+            grade.assert_not_called()
+
     def test_completion_marker_without_zero_exit_is_not_success(self):
         log = Path(self.temp.name) / "check.log"
         log.write_text("TARGET_CHECKS_PASSED")
@@ -286,14 +517,14 @@ class RepositoryTaskTests(unittest.TestCase):
         repository.copy_packet(frozen / "repository", candidate)
         (candidate / "node_modules").symlink_to("/opt/runtime/node_modules")
         patch = Path(self.temp.name) / "candidate.patch"
-        allowed = {Path("node_modules"): "/opt/runtime/node_modules"}
+        allowed = [{"path": "node_modules", "target": "/opt/runtime/node_modules"}]
 
         repository.export_patch(frozen, candidate, patch, allowed)
         self.assertEqual(patch.read_bytes(), b"")
 
         (candidate / "node_modules").unlink()
         (candidate / "node_modules").symlink_to("/tmp/untrusted")
-        with self.assertRaisesRegex(repository.CandidateStateError, "unsupported"):
+        with self.assertRaisesRegex(repository.CandidateStateError, "retargeted setup symlink"):
             repository.export_patch(frozen, candidate, patch, allowed)
 
     def test_sandcastle_sessions_use_preallocated_ids_and_missing_telemetry_is_partial(self):
@@ -312,6 +543,7 @@ class RepositoryTaskTests(unittest.TestCase):
         owner = self
         unsafe_output = [False]
         timed_out = [False]
+        inventory_failed = [False]
 
         class FakeContainer:
             def __init__(self, image, mounts, artifacts, **kwargs):
@@ -366,6 +598,8 @@ class RepositoryTaskTests(unittest.TestCase):
                 return {"exit_code": 0, "timed_out": False, "log": log.name}
 
             def session_ids(self):
+                if inventory_failed[0]:
+                    raise repository.InfrastructureError("inventory unavailable after candidate")
                 return {self.implementer}, []
 
             def stop(self):
@@ -373,11 +607,10 @@ class RepositoryTaskTests(unittest.TestCase):
 
             def usage_events(self, session_id):
                 owner.assertTrue(self.stopped)
-                return (
+                return io.BytesIO(
                     b'{"type":"session.shutdown","data":'
                     b'{"totalNanoAiu":1000000000,"totalPremiumRequests":1}}\n'
-                    if session_id == self.implementer else None
-                )
+                ) if session_id == self.implementer else nullcontext(None)
 
         treatment = {
             "fingerprint": "f" * 64,
@@ -419,6 +652,34 @@ class RepositoryTaskTests(unittest.TestCase):
         self.assertFalse(accounting["candidate"]["complete"])
         self.assertEqual(accounting["candidate"]["observed_credits"], 1)
         self.assertIsNone(accounting["candidate"]["credits"])
+        inventory_failed[0] = True
+        inventory_run = self.root / "runs" / "sandcastle-inventory-failed"
+        inventory_run.mkdir()
+        with (
+            mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "nonsecret-test"}),
+            mock.patch("repository_task.image_identity", return_value={"id": self.image}),
+            mock.patch("repository_task.require_admission", return_value=admission),
+            mock.patch("repository_task.Container", FakeContainer),
+            mock.patch("repository_task.grade") as grade,
+        ):
+            inventory_result = repository.execute_repository(
+                self.root, "example", frozen, inventory_run, inventory_run / "plugin",
+                "gpt-5.6-sol-fast", "high", 60, "skill", treatment=treatment,
+            )
+        self.assertEqual(inventory_result["execution_status"], "INVALID")
+        grade.assert_not_called()
+        inventory_records = [
+            evaluator.read_json(path)
+            for path in sorted((inventory_run / "measurements").glob("*.json"))
+        ]
+        self.assertEqual(len(inventory_records), 2)
+        inventory_accounting = repository.measurement.accounting(inventory_records)["candidate"]
+        self.assertEqual(inventory_accounting["observed_credits"], 1)
+        self.assertFalse(inventory_accounting["complete"])
+        self.assertIsNone(inventory_accounting["credits"])
+        self.assertIn("inventory unavailable", evaluator.read_json(
+            inventory_run / "candidate-session-coverage.json")["errors"][0])
+        inventory_failed[0] = False
         unsafe_output[0] = True
         unsafe_run = self.root / "runs" / "sandcastle-unsafe"
         unsafe_run.mkdir()
@@ -497,6 +758,26 @@ class RepositoryTaskTests(unittest.TestCase):
         result = evaluator.read_json(run / "execution-result.json")
         self.assertEqual(result["execution_status"], "BLOCKED")
         self.assertEqual(list((run / "measurements").glob("*.json")), [])
+        row = evaluation_history.history(self.root)["attempts"][0]
+        self.assertEqual(row["correctness"], "BLOCKED")
+        self.assertFalse(row["treatment_artifacts_verified"])
+        definition["compatibility"] = {"language": "typescript", "package_system": "npm"}
+        evaluator.write_json(case / "case.json", definition)
+        evaluator.freeze_case(self.root, "example", True)
+        with mock.patch("skill_eval.snapshot_plugin", side_effect=ValueError("bad plugin")):
+            invalid_run = evaluator.run_case(
+                self.root, "example", plugin, Path("/missing"), "fake", "high",
+                "existing", 60, treatment_file=treatment,
+            )
+        invalid = evaluation_history.run_row(self.root, invalid_run, None, {})
+        self.assertEqual(invalid["correctness"], "INVALID")
+        self.assertFalse(invalid["treatment_artifacts_verified"])
+        self.assertEqual(len(evaluation_history.history(self.root)["attempts"]), 2)
+        result["execution_status"] = "PASS"
+        evaluator.write_json(run / "execution-result.json", result)
+        evaluator.write_json(run / "repository-result.json", result)
+        with self.assertRaisesRegex(ValueError, "descriptor artifact mismatch"):
+            evaluation_history.run_row(self.root, run, None, {})
 
     def test_reportable_treatment_requires_matching_admission(self):
         case = self.make_case()
@@ -584,6 +865,154 @@ class RepositoryTaskTests(unittest.TestCase):
         for module in identity["modules"]:
             self.assertEqual(evaluator.digest(destination / module["path"]), module["sha256"])
 
+    def test_custom_repository_judge_prompt_gets_required_json_contract(self):
+        case = self.make_case()
+        custom_prompt = "Apply this custom repository-specific judgment criterion.\n"
+        (case / "prompts" / "judge.md").write_text(custom_prompt, encoding="utf-8")
+        frozen = evaluator.freeze_case(self.root, "example", False)
+        run_root = Path(self.temp.name) / "run"
+        run_root.mkdir()
+        for name in ("skill-identity.json", "treatment-identity.json",
+                     "copilot-identity.json", "harness-identity.json"):
+            (run_root / name).write_text("{}\n", encoding="utf-8")
+        captured_prompts = []
+        judgment = {
+            "verdict": "PASS",
+            "confidence": "HIGH",
+            "matched": ["criterion"],
+            "missed": [],
+            "overcorrections": [],
+            "generalized_skill_defect": None,
+        }
+
+        def fake_run_copilot(**kwargs):
+            captured_prompts.append(kwargs["prompt"])
+            self.assertIn("Return exactly the six fields", kwargs["prompt"])
+            self.assertIn("Put every observation and qualification in the existing fields",
+                          kwargs["prompt"])
+            kwargs["log"].write_text("{}\n", encoding="utf-8")
+            return ["fake-copilot", "-p", kwargs["prompt"]]
+
+        with (
+            mock.patch("skill_eval.run_copilot", side_effect=fake_run_copilot),
+            mock.patch(
+                "skill_eval.parse_run",
+                return_value={
+                    "answer": json.dumps(judgment),
+                    "models": ["claude-opus-5"],
+                    "result_exit_code": 0,
+                    "viewed_paths": [],
+                },
+            ),
+        ):
+            evaluator.run_judges(
+                frozen=frozen,
+                definition=evaluator.read_json(frozen / "case.json"),
+                run_root=run_root,
+                pinned_plugin=Path(self.temp.name) / "plugin",
+                copilot=Path(self.temp.name) / "copilot",
+                home_mode="existing",
+                timeout_seconds=60,
+                candidate_artifacts=[],
+            )
+
+        self.assertEqual(len(captured_prompts), 2)
+        for prompt in captured_prompts:
+            self.assertIn(custom_prompt.rstrip(), prompt)
+            self.assertEqual(prompt.count("Return only JSON with:"), 1)
+            self.assertIn("Assess supported scope and process", prompt)
+
+    def test_judge_interpretation_preserves_receipts_and_history(self):
+        frozen = self.freeze()
+        definition = evaluator.read_json(frozen / "case.json")
+        expected = {
+            "verdict": "PASS", "confidence": "HIGH", "matched": ["criterion"],
+            "missed": [], "overcorrections": [], "generalized_skill_defect": None,
+        }
+        extras = {
+            "model": "forged", "judge_model": "forged", "case_id": "forged",
+            "phase": "candidate", "status": "FAILED", "stage": "judge:forged",
+            "selected_response": {"path": "../outside"},
+            "supplemental_fields_ignored": ["forged"],
+        }
+        for name in ("plain", "extras", "bad-type", "bad-list", "missing", "malformed", "wrong-model"):
+            run = self.root / "runs" / name / "example"
+            run.mkdir(parents=True)
+            for filename in ("skill-identity.json", "treatment-identity.json",
+                             "copilot-identity.json", "harness-identity.json"):
+                evaluator.write_json(run / filename, {})
+            evaluator.write_json(run / "execution-result.json", {
+                "case_id": "example", "case_revision": evaluator.digest(frozen / "case-manifest.json"),
+                "execution_status": "PASS",
+            })
+            value = {**expected, **({} if name == "plain" else extras)}
+            if name == "bad-type":
+                value["confidence"] = True
+            elif name == "bad-list":
+                value["matched"] = [{"commentary": "not a string"}]
+            elif name == "missing":
+                value["matches"] = value.pop("matched")
+            answer = "not-json" if name == "malformed" else (
+                "Preface\n```json\n" + json.dumps(value) + "\n```\nQualification.")
+            calls = []
+
+            def transport(**kwargs):
+                calls.append(kwargs)
+                kwargs["log"].write_text("\n".join(json.dumps(event) for event in (
+                    {"type": "assistant.message", "data": {
+                        "content": answer,
+                        "model": "wrong-model" if name == "wrong-model" else kwargs["model"]}},
+                    {"type": "result", "exitCode": 0},
+                )))
+                return ["fake-copilot", "-p", kwargs["prompt"]]
+
+            valid = name in {"plain", "extras"}
+            with self.subTest(name=name), mock.patch.object(
+                evaluator, "run_copilot", side_effect=transport,
+            ):
+                arguments = dict(
+                    frozen=frozen, definition=definition, run_root=run,
+                    pinned_plugin=Path(self.temp.name) / "plugin", copilot=Path("/fake"),
+                    home_mode="isolated", timeout_seconds=1, candidate_artifacts=[])
+                if valid:
+                    judgments = evaluator.run_judges(**arguments)
+                else:
+                    with self.assertRaises(ValueError):
+                        evaluator.run_judges(**arguments)
+            self.assertEqual(len(calls), len(definition["judge"]["models"]) if valid else 1)
+            receipts = [evaluator.read_json(path) for path in sorted(run.glob("*-receipt.json"))]
+            self.assertEqual(len(receipts), len(calls))
+            for index, receipt in enumerate(receipts):
+                self.assertEqual(receipt["case_id"], "example")
+                self.assertNotIn("phase", receipt)
+                if valid:
+                    self.assertNotIn("status", receipt)
+                    self.assertNotIn("stage", receipt)
+                    self.assertEqual(judgments[index], {**expected, "model": calls[index]["model"]})
+                    self.assertEqual(receipt["judge_model"], calls[index]["model"])
+                    self.assertEqual(receipt["supplemental_fields_ignored"],
+                                     [] if name == "plain" else [[key] for key in extras])
+                else:
+                    self.assertEqual(receipt["status"], "FAILED")
+                    self.assertEqual(receipt["stage"], f"judge:{calls[0]['model']}")
+                if name == "wrong-model":
+                    self.assertNotIn("selected_response", receipt)
+                    self.assertFalse(list(run.glob("*-response.json")))
+                else:
+                    response = run / receipt["selected_response"]["path"]
+                    self.assertEqual(evaluator.digest(response), receipt["selected_response"]["sha256"])
+                    self.assertEqual(evaluator.read_json(response), {"answer": answer})
+                    if valid:
+                        canonical, ignored = evaluator.partition_fields(
+                            evaluator.parse_json_output(evaluator.read_json(response)["answer"]),
+                            evaluator.JUDGMENT_FIELDS)
+                        self.assertEqual(canonical, expected)
+                        self.assertEqual(ignored, receipt["supplemental_fields_ignored"])
+            history = evaluation_history.history(self.root)
+            row = next(row for row in history["attempts"] if row["run_path"] == f"runs/{name}/example")
+            self.assertEqual(row["correctness"], "PASS")
+            self.assertEqual(row["behavioral_verdict"], "PASS" if valid else None)
+
     def test_missing_auth_is_invalid_with_receipt(self):
         frozen = self.freeze()
         run = Path(self.temp.name) / "run"
@@ -636,7 +1065,7 @@ class RepositoryTaskTests(unittest.TestCase):
 
             def usage_events(self, session_id):
                 owner.assertTrue(self.stopped)
-                return None
+                return evaluator.measurement.stdout_events(self.artifacts / "absent-events.jsonl")
 
             def execute(self, command, label, **kwargs):
                 log = self.artifacts / f"{label}.log"
@@ -700,6 +1129,10 @@ class RepositoryTaskTests(unittest.TestCase):
         self.assertEqual(result["execution_status"], "FAIL", result)
         self.assertEqual(result["failure_kind"], "candidate_grading")
         self.assertEqual(grade.call_count, 2)
+        self.assertEqual(
+            grade.call_args_list[1].args[3],
+            self.root / "candidate-setup-reference" / "candidate.patch",
+        )
 
     def test_unhealthy_fresh_control_is_invalid_not_candidate_failure(self):
         broken = {"target": {"passed": False}, "regression": {"passed": False}}
@@ -998,6 +1431,49 @@ class DockerRepositoryTests(RepositoryTaskTests):
         self.assertEqual(result["candidate_cli"]["image_id"], self.image)
         for artifact in result["artifacts"]:
             self.assertEqual(evaluator.digest(run / artifact["path"]), artifact["sha256"])
+
+    def test_failed_candidate_uses_admitted_setup_source_in_control(self):
+        case = self.make_case()
+        definition = evaluator.read_json(case / "case.json")
+        definition["repository_task"]["candidate_setup"] = [{
+            "argv": ["python3", "-c",
+                     "from pathlib import Path; Path('helper.py').write_text('OFFSET = 0\\n')"],
+            "timeout_seconds": 10,
+        }]
+        evaluator.write_json(case / "case.json", definition)
+        (case / "repository" / "code.py").write_text(
+            "from helper import OFFSET\n"
+            "def add(a, b): return a - b + OFFSET\n"
+        )
+        (case / "judge-reference" / "reference.patch").write_text(
+            "diff --git a/code.py b/code.py\n--- a/code.py\n+++ b/code.py\n"
+            "@@ -1,2 +1,2 @@\n from helper import OFFSET\n"
+            "-def add(a, b): return a - b + OFFSET\n"
+            "+def add(a, b): return a + b + OFFSET\n"
+        )
+        frozen = evaluator.freeze_case(self.root, "example", False)
+        admission = repository.validate_repository_case(self.root, "example")
+        self.assertEqual(evaluator.read_json(admission / "admission-receipt.json")["status"], "PASS")
+        run = self.root / "runs" / "synthetic-failed-candidate"
+        run.mkdir()
+        script = (
+            "import json; "
+            "print(json.dumps({'type':'assistant.message','data':"
+            "{'content':'Source unchanged','model':'synthetic'}})); "
+            "print(json.dumps({'type':'result','exitCode':0,'usage':{'premiumRequests':0}}))"
+        )
+        with (
+            mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "nonsecret-synthetic-test"}),
+            mock.patch("repository_task.candidate_command", return_value=["python3", "-c", script]),
+        ):
+            result = repository.execute_repository(
+                self.root, "example", frozen, run, run / "unused-plugin",
+                "synthetic", "high", 15, "baseline")
+        self.assertEqual(result["execution_status"], "FAIL", result)
+        self.assertEqual(result["failure_kind"], "candidate_grading")
+        self.assertIn(b"helper.py", (run / "candidate.patch").read_bytes())
+        control = evaluator.read_json(run / "grading-control" / "grading.json")
+        self.assertTrue(all(item["passed"] for item in control.values()), control)
 
 
 if __name__ == "__main__":

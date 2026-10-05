@@ -119,6 +119,7 @@ def run_row(root: Path, path: Path, owner: dict | None, suite: dict) -> dict:
     treatment = optional(path / "treatment-identity.json")
     compatibility = optional(path / "compatibility.json")
     arm = attempt.get("arm", execution.get("arm", suite.get("arm", "skill")))
+    treatment_artifacts_verified = False
     if treatment:
         if treatment.get("schema_version") != 1 or not isinstance(treatment.get("descriptor"), dict):
             raise ValueError("malformed treatment identity")
@@ -128,16 +129,21 @@ def run_row(root: Path, path: Path, owner: dict | None, suite: dict) -> dict:
             raise ValueError("attempt and treatment identity disagree")
         if attempt.get("treatment_id") not in {None, treatment["descriptor"]["id"]}:
             raise ValueError("attempt and treatment id disagree")
+        unexecuted = (
+            status == "BLOCKED" and execution.get("failure_kind") == "incompatible_treatment"
+            or status == "INVALID" and execution.get("failure_kind") == "run_setup"
+        )
         descriptor_path = path / "treatment.json"
-        if treatment.get("descriptor_sha256") is not None:
+        if not unexecuted and treatment.get("descriptor_sha256") is not None:
             if not descriptor_path.is_file() or digest(descriptor_path) != treatment["descriptor_sha256"]:
                 raise ValueError("treatment descriptor artifact mismatch")
-        if treatment.get("source_identity") is not None:
+        if not unexecuted and treatment.get("source_identity") is not None:
             if directory_identity(path / "sandcastle-treatment") != treatment["source_identity"]:
                 raise ValueError("Sandcastle treatment snapshot mismatch")
-        if treatment.get("adapter_identity") is not None:
+        if not unexecuted and treatment.get("adapter_identity") is not None:
             if directory_identity(path / "sandcastle-adapter") != treatment["adapter_identity"]:
                 raise ValueError("Sandcastle adapter snapshot mismatch")
+        treatment_artifacts_verified = not unexecuted
     else:
         legacy = {
             "schema_version": 1,
@@ -242,6 +248,7 @@ def run_row(root: Path, path: Path, owner: dict | None, suite: dict) -> dict:
     }
     return {
         "run_path": run_path, "attempt": owner["attempt"] if owner else 1,
+        "treatment_artifacts_verified": treatment_artifacts_verified,
         "suite_path": owner["suite_path"] if owner else None,
         "experiment_id": f"{owner['suite_path']}/{case_id}" if owner else run_path,
         "population": population, "correctness": status,

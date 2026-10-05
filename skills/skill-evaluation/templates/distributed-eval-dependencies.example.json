@@ -1,0 +1,27 @@
+{
+  "dependencies": [
+    {
+      "archiveRoot": ".",
+      "asset": "workspace-dependencies.tar.gz",
+      "bytes": 123456,
+      "cachePaths": [
+        "vendor"
+      ],
+      "cases": [
+        "example-case"
+      ],
+      "locks": [
+        {
+          "path": "dependency.lock",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "reason": null,
+      "release": "evaluation-dependencies",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "status": "READY",
+      "workspace": "repository"
+    }
+  ],
+  "schemaVersion": 1
+}

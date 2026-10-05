@@ -6,6 +6,7 @@ import copy
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -139,6 +140,25 @@ class ValidateLiveProofTest(unittest.TestCase):
     def test_accepts_complete_current_receipt(self) -> None:
         self.validate()
 
+    def test_independent_scopes_share_the_complete_candidate_fingerprint(self) -> None:
+        (self.worktree / "other.txt").write_text("independent component\n")
+        complete = MODULE.candidate_snapshot(str(self.worktree))
+        narrow = MODULE.candidate_snapshot(str(self.worktree), reuse_inputs=["app.txt"])
+        broad = MODULE.candidate_snapshot(
+            str(self.worktree), reuse_inputs=["app.txt", "other.txt"]
+        )
+        self.assertEqual(narrow["worktree"], broad["worktree"])
+        self.assertEqual(narrow["head"], broad["head"])
+        self.assertEqual(narrow["fingerprint"], complete["fingerprint"])
+        self.assertEqual(broad["fingerprint"], complete["fingerprint"])
+        self.assertNotEqual(narrow["reuseInputs"], broad["reuseInputs"])
+        self.assertEqual(MODULE._validate_candidate(narrow), narrow)
+        self.assertEqual(MODULE._validate_candidate(broad), broad)
+        (self.worktree / "other.txt").write_text("changed component\n")
+        changed = MODULE.candidate_snapshot(str(self.worktree), reuse_inputs=["app.txt"])
+        self.assertNotEqual(changed["fingerprint"], narrow["fingerprint"])
+        self.assertEqual(changed["reuseInputs"], narrow["reuseInputs"])
+
     def test_rejects_stale_candidate(self) -> None:
         (self.worktree / "app.txt").write_text("changed after proof\n")
         self.assert_rejected(self.receipt, "candidate is stale")
@@ -183,6 +203,438 @@ class ValidateLiveProofTest(unittest.TestCase):
         receipt = copy.deepcopy(self.receipt)
         receipt["status"] = "INCONCLUSIVE"
         self.assert_rejected(receipt, "status must be PASS")
+
+    def prepare_reuse(self, inputs: list[str] | None = None) -> None:
+        self.inputs = inputs or ["app.txt"]
+        self.receipt["candidate"] = MODULE.candidate_snapshot(
+            str(self.worktree), reuse_inputs=self.inputs
+        )
+        self.coverage = {
+            name: "Measured input closure documented in the scenario inventory."
+            for name in MODULE.INPUT_CLASSES
+        }
+        self.receipt["reuseCoverageEvidence"] = self.coverage.copy()
+        self.receipt_path.write_text(json.dumps(self.receipt))
+        self.source_bytes = self.receipt_path.read_bytes()
+        self.reuse_path = self.root / "reuse.json"
+
+    def reuse_record(self) -> dict[str, object]:
+        return {
+            "schemaVersion": 1,
+            "sourceReceiptSha256": MODULE._hash_file(self.receipt_path),
+            "candidate": MODULE.candidate_snapshot(str(self.worktree), reuse_inputs=self.inputs),
+            "checkedCorrespondenceEvidence": self.coverage.copy(),
+        }
+
+    def validate_reuse(self, record: dict[str, object] | None = None) -> dict[str, object]:
+        self.reuse_path.write_text(json.dumps(record or self.reuse_record()))
+        return MODULE.validate_receipt(str(self.receipt_path), str(self.reuse_path))
+
+    def test_reuses_across_commit_and_worktree_without_rewriting_execution(self) -> None:
+        self.prepare_reuse()
+        (self.worktree / "unrelated.txt").write_text("independent component\n")
+        subprocess.run(["git", "-C", str(self.worktree), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.worktree), "commit", "-qm", "unrelated"], check=True
+        )
+        moved = self.root / "other-worktree"
+        subprocess.run(
+            ["git", "-C", str(self.worktree), "worktree", "add", "-q", "--detach", str(moved)],
+            check=True,
+        )
+        self.worktree = moved
+        record = self.reuse_record()
+        with self.assertRaisesRegex(MODULE.ReceiptError, "candidate is stale"):
+            MODULE.validate_receipt(str(self.receipt_path))
+        snapshot = subprocess.run(
+            ["python3", str(SCRIPT), "fingerprint", "--worktree", str(moved),
+             "--reuse-input", "app.txt"],
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(json.loads(snapshot.stdout), record["candidate"])
+        result = self.validate_reuse(record)
+        self.assertEqual(result["candidate"], record["candidate"]["fingerprint"])
+        self.assertEqual(result["reusedFrom"]["candidate"], self.receipt["candidate"]["fingerprint"])
+        self.assertEqual(self.receipt_path.read_bytes(), self.source_bytes)
+        completed = subprocess.run(
+            ["python3", str(SCRIPT), "validate", str(self.receipt_path), "--reuse", str(self.reuse_path)],
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(json.loads(completed.stdout), result)
+
+    def test_reuses_unchanged_dirty_input_after_commit(self) -> None:
+        (self.worktree / "app.txt").write_text("dirty but exercised\n")
+        self.prepare_reuse()
+        subprocess.run(["git", "-C", str(self.worktree), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.worktree), "commit", "-qm", "record exercised code"], check=True
+        )
+        self.validate_reuse()
+
+    def test_reuses_with_unrelated_dirty_and_untracked_changes(self) -> None:
+        (self.worktree / "other.txt").write_text("unrelated\n")
+        self.prepare_reuse()
+        (self.worktree / "other.txt").write_text("unrelated successor\n")
+        self.validate_reuse()
+
+    def test_rejects_changed_inputs_even_with_fresh_target_fingerprint(self) -> None:
+        scope = self.worktree / "inputs"
+        scope.mkdir()
+        for name in MODULE.INPUT_CLASSES:
+            (scope / name).write_text("original\n")
+        self.prepare_reuse(["app.txt", "inputs"])
+        for name in MODULE.INPUT_CLASSES:
+            with self.subTest(input_class=name):
+                path = scope / name
+                path.write_text("changed\n")
+                with self.assertRaisesRegex(MODULE.ReceiptError, "reuse inputs changed"):
+                    self.validate_reuse()
+                path.write_text("original\n")
+        (self.worktree / "app.txt").write_text("changed runtime\n")
+        with self.assertRaisesRegex(MODULE.ReceiptError, "reuse inputs changed"):
+            self.validate_reuse()
+
+    def test_rejects_added_deleted_and_mode_changed_scoped_files(self) -> None:
+        scope = self.worktree / "inputs"
+        scope.mkdir()
+        path = scope / "runtime.txt"
+        path.write_text("runtime\n")
+        self.prepare_reuse(["inputs"])
+        original_mode = path.stat().st_mode
+        for change in ("add", "delete", "mode"):
+            with self.subTest(change=change):
+                added = scope / "new.txt"
+                if change == "add":
+                    added.write_text("new dependency\n")
+                elif change == "delete":
+                    path.unlink()
+                else:
+                    path.chmod(0o755)
+                with self.assertRaisesRegex(MODULE.ReceiptError, "reuse inputs changed"):
+                    self.validate_reuse()
+                if change == "add":
+                    added.unlink()
+                elif change == "delete":
+                    path.write_text("runtime\n")
+                path.chmod(original_mode)
+
+    def test_rejects_ignored_input_changes_and_scope_removal(self) -> None:
+        (self.worktree / ".gitignore").write_text("runtime.env\n")
+        runtime = self.worktree / "runtime.env"
+        runtime.write_text("original\n")
+        self.prepare_reuse(["app.txt", "runtime.env"])
+        self.receipt["candidate"] = MODULE.candidate_snapshot(
+            str(self.worktree), additional_inputs=["runtime.env"], reuse_inputs=self.inputs
+        )
+        self.receipt_path.write_text(json.dumps(self.receipt))
+        self.assertIn("runtime.env", [
+            item["path"] for item in self.receipt["candidate"]["reuseInputs"]
+        ])
+        accepted = self.reuse_record()
+        accepted["candidate"] = MODULE.candidate_snapshot(
+            str(self.worktree), additional_inputs=["runtime.env"], reuse_inputs=self.inputs
+        )
+        self.validate_reuse(accepted)
+        record = self.reuse_record()
+        record["candidate"] = MODULE.candidate_snapshot(
+            str(self.worktree), additional_inputs=["runtime.env"], reuse_inputs=["app.txt"]
+        )
+        with self.assertRaisesRegex(MODULE.ReceiptError, "reuse inputs changed"):
+            self.validate_reuse(record)
+        runtime.write_text("changed\n")
+        record["candidate"] = MODULE.candidate_snapshot(
+            str(self.worktree), additional_inputs=["runtime.env"], reuse_inputs=self.inputs
+        )
+        with self.assertRaisesRegex(MODULE.ReceiptError, "reuse inputs changed"):
+            self.validate_reuse(record)
+
+    def test_unrelated_additional_inputs_keep_explicit_reuse_scope(self) -> None:
+        (self.worktree / ".gitignore").write_text("desktop.js\n")
+        desktop = self.worktree / "desktop.js"
+        desktop.write_text("original desktop output\n")
+        self.prepare_reuse()
+        self.receipt["candidate"] = MODULE.candidate_snapshot(
+            str(self.worktree), additional_inputs=["desktop.js"], reuse_inputs=self.inputs
+        )
+        self.receipt_path.write_text(json.dumps(self.receipt))
+        original = self.receipt_path.read_bytes()
+        desktop.write_text("changed desktop output\n")
+        record = self.reuse_record()
+        record["candidate"] = MODULE.candidate_snapshot(
+            str(self.worktree), additional_inputs=["desktop.js"], reuse_inputs=self.inputs
+        )
+        self.assertEqual(
+            record["candidate"]["reuseInputs"], self.receipt["candidate"]["reuseInputs"]
+        )
+        self.assertNotEqual(
+            record["candidate"]["fingerprint"], self.receipt["candidate"]["fingerprint"]
+        )
+        self.validate_reuse(record)
+        self.assertEqual(self.receipt_path.read_bytes(), original)
+        desktop.write_text("changed after correspondence\n")
+        with self.assertRaisesRegex(MODULE.ReceiptError, "candidate is stale"):
+            self.validate_reuse(record)
+
+    def test_target_only_additional_input_preserves_full_identity_for_both_reuse_paths(self) -> None:
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                (self.worktree / ".gitignore").write_text("desktop.js\n")
+                if legacy:
+                    record = self.prepare_legacy()
+                else:
+                    self.prepare_reuse()
+                    record = self.reuse_record()
+                desktop = self.worktree / "desktop.js"
+                desktop.write_text("target-only generated output\n")
+                complete = MODULE.candidate_snapshot(
+                    str(self.worktree), additional_inputs=["desktop.js"]
+                )
+                record["candidate"] = MODULE.candidate_snapshot(
+                    str(self.worktree), additional_inputs=["desktop.js"],
+                    reuse_inputs=self.inputs,
+                )
+                self.assertEqual(record["candidate"]["fingerprint"], complete["fingerprint"])
+                self.assertEqual(
+                    [item["path"] for item in record["candidate"]["reuseInputs"]], self.inputs
+                )
+                self.assertNotEqual(
+                    record["candidate"]["fingerprint"], self.receipt["candidate"]["fingerprint"]
+                )
+                self.validate_reuse(record)
+                self.assertEqual(self.receipt_path.read_bytes(), self.source_bytes)
+                forged = copy.deepcopy(record)
+                forged["candidate"]["fingerprint"] = "sha256:" + "0" * 64
+                with self.assertRaisesRegex(MODULE.ReceiptError, "candidate is stale"):
+                    self.validate_reuse(forged)
+                desktop.write_text("modified after binding\n")
+                with self.assertRaisesRegex(MODULE.ReceiptError, "candidate is stale"):
+                    self.validate_reuse(record)
+                desktop.unlink()
+
+    def test_rejects_new_ignored_file_in_scoped_directory(self) -> None:
+        scope = self.worktree / "inputs"
+        scope.mkdir()
+        (self.worktree / ".gitignore").write_text("inputs/\n")
+        self.prepare_reuse(["inputs"])
+        (scope / "generated.txt").write_text("new ignored input\n")
+        with self.assertRaisesRegex(MODULE.ReceiptError, "reuse inputs changed"):
+            self.validate_reuse()
+
+    def test_output_exclusions_do_not_hide_reuse_input_changes(self) -> None:
+        with self.assertRaisesRegex(MODULE.ReceiptError, "excluded output is tracked"):
+            MODULE.candidate_snapshot(str(self.worktree), excluded_outputs=["app.txt"])
+        scope = self.worktree / "inputs"
+        scope.mkdir()
+        (scope / "generated.txt").write_text("original\n")
+        self.prepare_reuse(["inputs"])
+        self.receipt["candidate"] = MODULE.candidate_snapshot(
+            str(self.worktree), excluded_outputs=["inputs"], reuse_inputs=self.inputs
+        )
+        self.receipt_path.write_text(json.dumps(self.receipt))
+        (scope / "generated.txt").write_text("changed\n")
+        record = self.reuse_record()
+        record["candidate"] = MODULE.candidate_snapshot(
+            str(self.worktree), excluded_outputs=["inputs"], reuse_inputs=self.inputs
+        )
+        with self.assertRaisesRegex(MODULE.ReceiptError, "reuse inputs changed"):
+            self.validate_reuse(record)
+
+    def test_rejects_missing_scope_and_symlinks(self) -> None:
+        (self.worktree / "linked").symlink_to(self.worktree, target_is_directory=True)
+        scope = self.worktree / "inputs"
+        scope.mkdir()
+        (scope / "linked.txt").symlink_to(self.worktree / "app.txt")
+        for value in ("missing", "../app.txt", "linked/app.txt", "inputs"):
+            with self.subTest(path=value), self.assertRaises(MODULE.ReceiptError):
+                MODULE.candidate_snapshot(str(self.worktree), reuse_inputs=[value])
+
+    def test_rejects_missing_coverage_and_changed_source_receipt(self) -> None:
+        self.prepare_reuse()
+        for name in MODULE.INPUT_CLASSES:
+            with self.subTest(input_class=name):
+                record = self.reuse_record()
+                del record["checkedCorrespondenceEvidence"][name]
+                with self.assertRaisesRegex(MODULE.ReceiptError, "checkedCorrespondenceEvidence"):
+                    self.validate_reuse(record)
+        record = self.reuse_record()
+        self.receipt_path.write_bytes(self.source_bytes + b"\n")
+        with self.assertRaisesRegex(MODULE.ReceiptError, "source receipt hash"):
+            self.validate_reuse(record)
+
+    def test_rejects_receipt_without_execution_time_scope(self) -> None:
+        self.prepare_reuse()
+        del self.receipt["candidate"]["reuseInputs"]
+        self.receipt_path.write_text(json.dumps(self.receipt))
+        with self.assertRaisesRegex(MODULE.ReceiptError, "execution-time reuseInputs"):
+            self.validate_reuse()
+
+    def test_rejects_stale_reuse_target(self) -> None:
+        self.prepare_reuse()
+        record = self.reuse_record()
+        (self.worktree / "app.txt").write_text("changed after correspondence\n")
+        with self.assertRaisesRegex(MODULE.ReceiptError, "candidate is stale"):
+            self.validate_reuse(record)
+
+    def test_reuse_does_not_relax_original_receipt_gates(self) -> None:
+        self.prepare_reuse()
+        for field, value, message in (
+            ("status", "FAIL", "status must be PASS"),
+            ("manualWorkaround", True, "manualWorkaround"),
+            ("unverified", ["missing claim"], "unverified"),
+            ("reuseCoverageEvidence", {}, "reuseCoverageEvidence"),
+        ):
+            with self.subTest(field=field):
+                receipt = copy.deepcopy(self.receipt)
+                receipt[field] = value
+                self.receipt_path.write_text(json.dumps(receipt))
+                with self.assertRaisesRegex(MODULE.ReceiptError, message):
+                    self.validate_reuse()
+        receipt = copy.deepcopy(self.receipt)
+        receipt["scenario"]["checkpoints"][0]["evidence"][0]["kind"] = "test"
+        self.receipt_path.write_text(json.dumps(receipt))
+        with self.assertRaisesRegex(MODULE.ReceiptError, "kind must be one of"):
+            self.validate_reuse()
+        self.receipt_path.write_bytes(self.source_bytes)
+        write_png(self.capture, [(0, 0, 0), (0, 0, 0)])
+        with self.assertRaisesRegex(MODULE.ReceiptError, "visually blank"):
+            self.validate_reuse()
+
+    def test_direct_validation_still_checks_scoped_ignored_inputs(self) -> None:
+        (self.worktree / ".gitignore").write_text("runtime.env\n")
+        runtime = self.worktree / "runtime.env"
+        runtime.write_text("original\n")
+        self.prepare_reuse(["app.txt", "runtime.env"])
+        self.validate()
+        runtime.write_text("changed\n")
+        self.assert_rejected(self.receipt, "candidate is stale")
+
+    def prepare_legacy(
+        self, inputs: list[str] | None = None,
+        additional: list[str] | None = None, excluded: list[str] | None = None,
+    ) -> dict[str, object]:
+        self.inputs = inputs or ["app.txt"]
+        self.receipt["candidate"] = MODULE.candidate_snapshot(
+            str(self.worktree), excluded_outputs=excluded, additional_inputs=additional
+        )
+        self.receipt_path.write_text(json.dumps(self.receipt))
+        self.source_bytes = self.receipt_path.read_bytes()
+        self.original_worktree = self.worktree
+        target = self.root / "target"
+        subprocess.run(
+            ["git", "-C", str(self.worktree), "worktree", "add", "-q", "--detach", str(target)],
+            check=True,
+        )
+        shutil.copytree(
+            self.worktree, target, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git")
+        )
+        self.worktree = target
+        self.coverage = {
+            name: "Checked against the original recorded inputs and scenario evidence."
+            for name in MODULE.INPUT_CLASSES
+        }
+        self.reuse_path = self.root / "reuse.json"
+        record = self.reuse_record()
+        record["candidate"] = MODULE.candidate_snapshot(
+            str(target), excluded, additional, self.inputs
+        )
+        record["deriveLegacyBaseline"] = True
+        record["legacyCoverageEvidence"] = self.coverage.copy()
+        return record
+
+    def test_derives_legacy_baseline_without_rewriting_execution(self) -> None:
+        record = self.prepare_legacy()
+        (self.worktree / "unrelated.txt").write_text("independent change\n")
+        subprocess.run(["git", "-C", str(self.worktree), "add", "unrelated.txt"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.worktree), "commit", "-qm", "unrelated"], check=True
+        )
+        record["candidate"] = self.reuse_record()["candidate"]
+        result = self.validate_reuse(record)
+        self.assertEqual(result["legacyBaseline"], {
+            "origin": "derived-during-validation",
+            "reuseInputs": record["candidate"]["reuseInputs"],
+        })
+        self.assertEqual(result["reusedFrom"]["candidate"], self.receipt["candidate"]["fingerprint"])
+        self.assertEqual(self.receipt_path.read_bytes(), self.source_bytes)
+        completed = subprocess.run(
+            ["python3", str(SCRIPT), "validate", str(self.receipt_path), "--reuse", str(self.reuse_path)],
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(json.loads(completed.stdout), result)
+
+    def test_legacy_accepts_retained_dirty_untracked_and_recorded_ignored_inputs(self) -> None:
+        (self.worktree / "app.txt").write_text("original dirty code\n")
+        (self.worktree / "fixture.txt").write_text("original untracked fixture\n")
+        (self.worktree / ".gitignore").write_text("runtime.env\n")
+        (self.worktree / "runtime.env").write_text("recorded runtime identity\n")
+        record = self.prepare_legacy(
+            ["app.txt", "fixture.txt", "runtime.env"], additional=["runtime.env"]
+        )
+        self.validate_reuse(record)
+        (self.worktree / "runtime.env").write_text("changed relevant target runtime\n")
+        record["candidate"] = MODULE.candidate_snapshot(
+            str(self.worktree), additional_inputs=["runtime.env"], reuse_inputs=self.inputs
+        )
+        with self.assertRaisesRegex(MODULE.ReceiptError, "reuse inputs changed"):
+            self.validate_reuse(record)
+        (self.original_worktree / "runtime.env").write_text("runtime changed\n")
+        with self.assertRaisesRegex(MODULE.ReceiptError, "candidate is stale"):
+            self.validate_reuse(record)
+
+    def test_legacy_rejects_changed_source_even_outside_requested_scope(self) -> None:
+        record = self.prepare_legacy()
+        (self.original_worktree / "unrelated.txt").write_text("source no longer exact\n")
+        with self.assertRaisesRegex(MODULE.ReceiptError, "candidate is stale"):
+            self.validate_reuse(record)
+
+    def test_legacy_rejects_changed_target_inputs_with_fresh_fingerprint(self) -> None:
+        record = self.prepare_legacy()
+        (self.worktree / "app.txt").write_text("new executable content\n")
+        record["candidate"] = self.reuse_record()["candidate"]
+        record["legacyBaseline"] = {
+            "origin": "derived-during-validation",
+            "reuseInputs": record["candidate"]["reuseInputs"],
+        }
+        with self.assertRaisesRegex(MODULE.ReceiptError, "reuse inputs changed"):
+            self.validate_reuse(record)
+
+    def test_legacy_rejects_missing_or_redirected_source(self) -> None:
+        record = self.prepare_legacy()
+        original = self.original_worktree
+        moved = self.root / "moved"
+        original.rename(moved)
+        with self.assertRaisesRegex(MODULE.ReceiptError, "git .* failed|does not exist"):
+            self.validate_reuse(record)
+        original.symlink_to(moved, target_is_directory=True)
+        with self.assertRaisesRegex(MODULE.ReceiptError, "moved or was redirected"):
+            self.validate_reuse(record)
+
+    def test_legacy_rejects_unrecorded_ignored_runtime_input(self) -> None:
+        (self.worktree / ".gitignore").write_text("runtime.env\n")
+        (self.worktree / "runtime.env").write_text("unverified runtime identity\n")
+        record = self.prepare_legacy(["app.txt", "runtime.env"])
+        with self.assertRaisesRegex(MODULE.ReceiptError, "not covered by the original fingerprint"):
+            self.validate_reuse(record)
+
+    def test_legacy_rejects_unrecorded_excluded_input(self) -> None:
+        (self.worktree / "generated.txt").write_text("unverified generated input\n")
+        record = self.prepare_legacy(["app.txt", "generated.txt"], excluded=["generated.txt"])
+        with self.assertRaisesRegex(MODULE.ReceiptError, "not covered by the original fingerprint"):
+            self.validate_reuse(record)
+
+    def test_legacy_rejects_missing_coverage_and_failed_original_scenario(self) -> None:
+        record = self.prepare_legacy()
+        for name in MODULE.INPUT_CLASSES:
+            with self.subTest(input_class=name):
+                incomplete = copy.deepcopy(record)
+                del incomplete["legacyCoverageEvidence"][name]
+                with self.assertRaisesRegex(MODULE.ReceiptError, "legacyCoverageEvidence"):
+                    self.validate_reuse(incomplete)
+        self.receipt["scenario"]["checkpoints"][0]["result"] = "FAIL"
+        self.receipt_path.write_text(json.dumps(self.receipt))
+        record["sourceReceiptSha256"] = MODULE._hash_file(self.receipt_path)
+        with self.assertRaisesRegex(MODULE.ReceiptError, "result must be PASS"):
+            self.validate_reuse(record)
 
 
 if __name__ == "__main__":

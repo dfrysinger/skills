@@ -111,7 +111,7 @@ done
 DELIVERY_LOCK="$STATE/$OLD/delivery.lock"
 exec 8>"$DELIVERY_LOCK"
 if ! /usr/bin/lockf -t 10 8; then
-  record_result "rotation cancelled because session-inbox publication could not be quiesced; prompt preserved at $RECOVERY"
+  record_result "rotation cancelled because session-control publication could not be quiesced; prompt preserved at $RECOVERY"
   exit 1
 fi
 inbox_status="$(/usr/bin/perl -MJSON::PP -e '
@@ -147,12 +147,12 @@ inbox_status="$(/usr/bin/perl -MJSON::PP -e '
 exec 8>&-
 case "$inbox_status" in
   busy)
-    record_result "rotation cancelled because session-inbox work is in flight; prompt preserved at $RECOVERY"
+    record_result "rotation cancelled because session-control work is in flight; prompt preserved at $RECOVERY"
     exit 1
     ;;
   clear) ;;
   *)
-    record_result "rotation cancelled because session-inbox quiescence could not be verified; prompt preserved at $RECOVERY"
+    record_result "rotation cancelled because session-control quiescence could not be verified; prompt preserved at $RECOVERY"
     exit 1
     ;;
 esac

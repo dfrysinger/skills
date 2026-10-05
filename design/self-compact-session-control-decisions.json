@@ -1,0 +1,25 @@
+{
+  "revision": "decisions-v1",
+  "decision_record": "design/self-compact-session-control-decisions.json",
+  "events": [
+    {
+      "event_id": "user-name-20260921T223216-0600",
+      "question": "Should the shared session request extension keep the name session-inbox?",
+      "recommended_answer": "No. Rename the shared extension to session-control because it carries messages, autopilot objectives, compaction, reload requests, and liveness state rather than one inbox feature.",
+      "user_answer": "im confused when you say session inbox, is that the extension name? its awfully specific to one feature and confusing",
+      "context": "The user was told that session-inbox is the shared local control channel used by self-compact and several other SDK-backed operations.",
+      "authority": "top-level product direction",
+      "resolved": true
+    },
+    {
+      "event_id": "user-reliability-20260921T223535-0600",
+      "question": "What should happen when a user message arrives after self-compaction is armed but before publication?",
+      "recommended_answer": "Preserve and answer the user message normally, keep one bounded pending compaction operation, then retry from a fresh quiet boundary unless the latest user instruction cancels or supersedes it.",
+      "user_answer": "great agreed then make the suggested improvements and if a user interrupts dont then skip the compaction event forever, it seems like maybe you could capture the users question and answer it after compaction or something like that",
+      "context": "The user approved the proposed session-control rename and asked for readiness, status, retry, and interruption improvements after observing two failed compact attempts followed by a later success.",
+      "authority": "top-level product direction",
+      "resolved": true
+    }
+  ],
+  "unresolved_event_ids": []
+}

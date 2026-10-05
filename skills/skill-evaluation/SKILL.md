@@ -9,6 +9,15 @@ Use a **frozen case** to separate evidence from the answer the skill is expected
 to reach. The target skill may be any installed or development skill; this
 procedure does not encode its output shape or domain.
 
+For a multi-task corpus, the goal is to refine and ship one shared skill or
+coherent set of skills that solves every evaluation task. Carry each proven
+general improvement into the next shared revision and ship it when its own
+product, regression, and transfer gates pass; do not wait for the whole corpus
+to turn green. Measure progress on the same exact released revision, not a
+pooled count of passes from different experiments. Follow the
+[`cumulative skill hill climb`](references/cumulative-skill-hill-climb.md)
+for the complete process.
+
 ## 1. Define the behavioral claim
 
 Name the target skill, the behavior being tested, the user-visible failure that
@@ -59,6 +68,27 @@ For transcript-derived or historical cases, map each hidden criterion to an
 exact frozen source record and stable event identifier. For synthetic cases,
 record the independently defined oracle that establishes the expected behavior.
 
+Build a historical candidate task in three labeled layers:
+
+1. **Original request:** exact user turns or exact marked excerpts, preserving
+   wording, ambiguity, and mistakes. Do not silently rewrite the request into a
+   cleaner or more implementation-specific issue.
+2. **Restored context:** only context proven to have been available to the
+   original agent by the cutoff but missing from the reconstructed environment.
+   Map every addition to its source event or artifact.
+3. **Evaluation operation:** clearly separate offline limitations, workspace
+   paths, allowed commands, and evidence requirements that exist only to run
+   the reproduction.
+
+Before freezing, audit the rendered candidate task against the raw capture.
+Classify every non-user sentence as restored context or evaluation operation;
+reject wording that narrows the requested outcome, names a hidden mechanism or
+state, or steers toward the expected answer without source evidence. Stage the
+packet, then read every named candidate-visible file through the same boundary
+the candidate will use. A referenced but unavailable file fails the audit.
+Label a focused fixture or command as non-exhaustive unless it reproduces the
+complete claimed behavior.
+
 For a blind phase, extract product outcomes, supported callers, observable
 acceptance, direct decisions, policy, platform facts, and observed failures.
 Keep proposed mechanisms in a later phase. Do not add hints, terminology, or
@@ -74,8 +104,10 @@ to locate the authoritative session, export exact turns and events, trace the
 repository artifacts they produced or discussed, and preserve the capture
 receipts before selecting candidate and judge packets.
 
-Complete when a candidate cannot read the expected answer and a judge can trace
-every required behavior to frozen evidence.
+Complete when the candidate task passes the text-packet audit, a candidate
+cannot read the expected answer, every named candidate-visible file is
+readable through the staged boundary, and a judge can trace every required
+behavior to frozen evidence.
 
 ## 4. Freeze and verify
 
@@ -121,6 +153,35 @@ release regression gate. For stochastic model or judge variance, use
 every attempt remains preserved and the report identifies cases that passed
 after retry. The suite command writes one aggregate report while preserving
 each case's independent run, receipts, and judgments.
+
+For a corpus-wide improvement, begin with the published skill or skill set,
+inventory existing experimental passes, and consolidate eligible general
+lessons through the cumulative hill climb before new searches. Branch every new
+task and experiment from the latest integrated draft. Older, neutral, and lean skills are comparison controls,
+not independent starting points for a new task.
+
+When a valid evaluator exists and more than one credible mechanism could
+improve stochastic skill behavior, follow
+[`references/parallel-treatment-search.md`](references/parallel-treatment-search.md).
+Build a frozen population of source-backed, single-mechanism treatments with
+controls and pre-registered repetitions before editing a preferred candidate.
+
+Use the local suite runner for ordinary corpora. When the corpus contains full
+repositories, native builds, product exercises, multiple treatments, or enough
+observations that one host would become the bottleneck, follow
+[`references/large-actions-campaign.md`](references/large-actions-campaign.md).
+Use the reusable scripts and workflow template described in
+[`references/distributed-campaign-tooling.md`](references/distributed-campaign-tooling.md)
+rather than copying a historical campaign repository.
+That procedure seals one immutable campaign release with separately addressed
+candidate and hidden payloads, fans unfinished attempts out through private
+GitHub Actions, preserves first model outcomes, resumes only invalid downstream
+stages, checksum-verifies retained artifacts, and reconciles one exact
+effective-result map. When changing the evaluator itself, prove each changed
+stage first with the cheapest representative canary, counting package
+construction, upload and download volume, runner time, native builds, model
+calls, and judge calls as test cost. Reuse retained upstream evidence instead
+of launching a fresh model attempt when only a downstream stage changed.
 
 The runner:
 
@@ -217,22 +278,132 @@ passes when one identical-byte attempt reaches unanimous `PASS`; otherwise its
 last completed attempt determines the case result. Never discard failed
 attempts or describe a retry-assisted pass as deterministic.
 
+For a separately scoped release, declare its repeated-run qualification rule
+before dispatch. Report qualification separately from each original outcome,
+instruction uptake, and causal or generalization claims. Retain every failure;
+do not change the threshold after seeing results or call a qualified artifact
+deterministic. This is distinct from the suite runner's retry-until-one-`PASS`
+policy and does not alter any attempt's verdict.
+
+For an experiment that changes a skill, compare two layers separately:
+
+1. **Instruction uptake:** for each changed rule that applies to the case,
+   record `OBSERVED`, `PARTIAL`, `ABSENT`, or `NOT_APPLICABLE`, citing candidate
+   actions or artifacts. This shows whether the skill changed the agent's
+   process even when the case remains red.
+2. **Product movement:** compare executable gates, recurrence of the known
+   defect, preserved behavior, and the earliest remaining failure frontier
+   against the unchanged control. Credit product improvement only when the
+   known defect disappears or the frontier moves later without an equal or
+   earlier regression.
+
+Keep both layers in the report. Instruction uptake does not turn an unchanged
+product failure into progress, and a product pass without evidence that the
+changed rule was used does not establish a reusable skill improvement. Use
+`Conquered`, `Strict improvement`, `Mixed`, `No signal`, or `Regression` for
+product movement; retain the per-rule uptake rows underneath that
+classification.
+
+### Release incremental wins
+
+Treat each published skill revision as the next baseline, not the completion of
+the whole task corpus. Independent lanes may solve different tasks concurrently
+and propose different generalizable changes, but their results are hypotheses
+for one shared skill or skill-set lineage, not separate case-specific releases.
+Integrate compatible changes into one coherent candidate and test the combined
+bytes against the corpus. Keep a scorecard per exact shared revision and
+evaluation contract; a pooled count of passes from different candidates,
+models, or case revisions is not that revision's score. Commit experimental
+revisions without presenting them as released.
+
+At each credible improvement, reconcile the completed lanes rather than waiting
+for every task to be solved. When the integrated candidate conquers a previously
+failed full-product task, compare it with the published baseline on the same
+frozen case and execution contract, using predeclared repetitions when outcomes
+vary. Check that the applicable new rules were used and that the advantage is
+not explained by a model, packet, tool, or evaluator change. Run applicable
+held-out transfer, maintained-task and newly conquered-task acceptance on the
+exact integrated bytes, concurrently where independent. Follow the target
+skill's prerequisite gates: when runtime proof must precede implementation
+review or broad checks, complete that proof first, then review the same frozen
+candidate. A separately authorized check-contract review is not implementation
+review.
+Publish that revision as soon as those gates pass; unsolved tasks remain open
+for the next increment, and independent lanes can continue on isolated
+candidates. Record the shared candidate's pass rates, retry dependence, and
+remaining failures, then use the published revision as the control for the next
+comparison. A newly claimed tactic without an attributable advantage stays
+experimental rather than becoming a proven improvement. For explicitly scoped
+consolidation or minimization of existing successes, use the corresponding
+release branch in the cumulative hill climb; do not invent a new-task campaign
+or claim individual-rule causality from artifact qualification.
+
+Before attributing a repeated behavior to the target skill, audit the complete
+candidate-visible instruction stack: task wording, repository and custom
+instructions, every invoked skill, design or work-order documents, source
+comments, existing tests and fixtures, and validation guidance. Record which
+sources reinforce or oppose the observed choice. Hidden judge criteria are not
+candidate context. When another visible source plausibly selects the same
+behavior, classify the interaction or packet bias and isolate it before
+strengthening one skill against another instruction.
+
+Do not call difficult or ambiguous task wording a packet defect merely because
+it contributes to failure. Compare the frozen packet with the real operating
+context it represents. Preserve natural user ambiguity, repository guidance,
+source comments, tests, fixtures, and missing information when the real agent
+would receive the same context. Repair the packet only when it omits,
+misstates, invents, or gives false authority to context relative to that real
+situation. If a faithful real-world packet reliably induces the wrong result,
+improve the skill or another genuine operating control; changing the case
+would only make the evaluation easier.
+
 Classify a failure before editing:
 
 - **Skill defect:** general instructions omit or misstate a reusable reasoning
   step.
+- **Instruction interaction:** another candidate-visible instruction or
+  fixture reinforces, narrows, or contradicts the target skill.
 - **Execution variance:** the skill already requires the missed behavior.
 - **Packet defect:** decisive evidence is missing, leaked, or assigned to the
-  wrong phase.
+  wrong phase, or the packet materially misrepresents the real operating
+  context.
 - **Harness defect:** the candidate or judge did not receive the frozen inputs
   named by the receipt.
+- **Grading defect:** a check rejects behavior permitted by the task or accepts
+  behavior that fails its requirements.
 
-Repair skill defects with general language. Repair packet and harness defects
-outside the target skill. Rerun the unchanged case after any repair and retain
-the prior run.
+Repair packet, harness, and grading defects outside the target skill, preserving
+original outcomes and identifying corrected evaluations separately. If the
+evidence establishes exactly one independently required skill correction and no
+competing treatment remains, repair it with general language, rerun the
+unchanged case, and retain the prior run. When multiple credible mechanisms
+remain, freeze them as treatment arms before editing a preferred candidate.
+
+When the evaluator is valid but the corrective mechanism is uncertain, default
+to parallel treatment search rather than serial revision. Search multiple
+independent skills and proven practices by generalized behavior class, not by
+case vocabulary. Use those sources to generate falsifiable treatment
+hypotheses, preserve source and license provenance, and extract only the
+smallest reusable tactic. The parallel-treatment procedure owns controls,
+dose-matching, planned replication, mechanism scoring, finalist selection, and
+held-out transfer.
+
+For corpus consolidation, preserve the declared prior-win set on the combined
+draft before minimizing it, following the cumulative hill climb. When observed
+instruction dilution or contradiction warrants rebuilding the whole skill,
+compare a neutral baseline, a lean replacement, and the unchanged full skill instead of
+assuming incremental editing is safest. Follow
+[`references/ablation-campaign.md`](references/ablation-campaign.md): start the
+lean arm from the smallest load-bearing rules, run one discriminating case,
+then add back a rule only when a repeated corpus regression proves it is
+missing. When more than one credible add-back could close the regression, use
+parallel treatment search with the lean arm as a control. Existing prose earns
+retention through behavior, not age.
 
 Complete when the result is labeled `PASS`, `FAIL`, or `UNANSWERABLE`, with the
-reason and any generalized skill defect stated separately.
+reason and any generalized skill defect stated separately. For a skill-change
+experiment, completion also requires the instruction-uptake rows and product-
+movement classification above.
 
 ## Verification
 
@@ -247,5 +418,12 @@ The evaluation is complete only when:
   skill change;
 - a new case does not change any older case root digest; and
 - a maintained regression suite runs through one command and every included
-  case passes after a target-skill change; and
+  case meets its predeclared qualification rule after a target-skill change,
+  with complete original attempt outcomes retained; and
 - no evaluation repair introduces case-specific hints into the target skill.
+- a large distributed campaign, when used, has one checksum-bound effective
+  result per expected attempt ID, with no missing, extra, or duplicate
+  observations and no model outcome replaced by an infrastructure retry.
+- a parallel treatment search, when used, has pre-declared controls,
+  hypotheses, repetitions, source provenance, mechanism observations,
+  selection rules, and held-out transfer for any promoted treatment.

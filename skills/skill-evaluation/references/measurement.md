@@ -40,11 +40,21 @@ The evaluator reads only the exact invocation-owned
 `session-state/UUID/events.jsonl`. Host capture rejects links, non-regular and
 multiply linked files and opens path components beneath the selected home
 without following links. Container capture stops the writer, then runs one
-exact `docker cp` into a bounded in-memory archive reader. It accepts one
-regular `events.jsonl`, never extracts to the host filesystem and rejects
-additional entries, links and special files. Event content is limited to
-32 MiB; archive transport allows another 1 MiB for headers and padding.
-Rejected source bytes are not persisted by the collector.
+exact `docker cp` into a scoped temporary spool. It accepts one regular
+`events.jsonl`, never extracts archive paths to the host filesystem and rejects
+additional entries, links, sparse and special files, truncation and nonzero
+padding or trailing data. Capture retains its deadline and bounded stderr;
+the spool is closed and removed on success or failure.
+
+Host events, invocation stdout and archive members share a streaming JSONL
+parser. Each raw record, including its line terminator, is limited to 32 MiB
+before UTF-8 decoding. There is no whole-eventfile or archive byte quota.
+Accounting retains its line and blank-record grammar; native quality validation
+requires LF-delimited records without blank records, duplicate keys or
+non-finite JSON constants. Only filtered observations and required native
+validation state survive record processing. Earlier CLI subprocess-output
+buffering is separate and is not made constant-memory by this collector.
+Rejected source bytes are not retained as measurement artifacts.
 
 Only allowlisted usage counters and model/agent breakdowns are retained.
 Authentication homes, configuration, tokens, databases and unrelated sessions
@@ -56,8 +66,11 @@ Terminal shutdown is preferred over a partial checkpoint; invocation stdout
 is fallback evidence. No successful answer or result parser is required to
 collect usage. A missing timeout eventfile is supported. Malformed numeric
 or structural evidence is an explicit measurement error, not zero spending.
-Resume capture reads only newly appended events, so an earlier shutdown cannot
-establish terminal coverage for a later failed invocation.
+Resume capture snapshots the prior byte length and SHA-256 digest without
+retaining the transcript. The successor must contain that identical prefix;
+missing, changed or truncated prefixes are errors. Phase observations start at
+the exact snapshot byte offset, so an earlier shutdown cannot establish terminal
+coverage for a later failed invocation.
 
 Documented `totalNanoAiu` fields use mapping `copilot-sdk-nano-aiu-1e9`, with
 SDK source revision `d3755535869e97d2bcf5aa6a5b8c35de79f5a7d8`: one AI credit is
@@ -79,6 +92,11 @@ Missing expected events, malformed or duplicate declarations, a wrong model,
 or observed undeclared session files remain explicit incomplete or contaminated
 coverage. Candidate-authored declarations and the absence of another observed
 file never establish exhaustive accounting.
+
+A failed post-candidate session inventory still stops the writer and preserves
+measurements for allocated or observed sessions. Its error marks coverage
+incomplete; launched work cannot become exact zero spending because inventory
+failed.
 
 `credits` in the accounting summary is an exact total only when every relevant
 session has known credits and terminal coverage. Otherwise it is null and
@@ -116,7 +134,27 @@ source-only blinding, not a promise of perfect anonymity.
 manifest and versioned prompt hash. Individual `quality/review-*.json`
 artifacts preserve each reviewer, outcome, failure and finding without
 consolidation. Assessment destinations are write-once; a second write is
-refused. There is no standalone reassessment command.
+refused. The generated `requirements/task.md` manifest record identifies its
+source with a `kind`, a `root` (`packet` or `frozen_case`) and a path relative
+to that root. There is no standalone reassessment command.
+
+After a successful CLI exit, quality validation reads the exact owned native
+session before its temporary home is deleted. It requires a matching fresh
+session, selected and observed assistant models, terminal shutdown, paired
+allowlisted tools, in-packet successful views and a final answer. A failed view
+does not count as a source read. Missing, corrupt or incomplete events fail the
+review without falling back to stdout; an over-bound raw record also fails
+quality validation.
+
+The reviewer's `validation` record identifies native session events, their byte
+digest of all original file bytes and record count, and successful process completion.
+The digest is computed incrementally, without filtering or re-encoding. It marks
+bytes inspected in process, not independently re-verifiable durable integrity
+evidence. No separate native transcript or tool-payload copy is retained. The existing
+stdout artifact, its digest and measurement errors remain intact.
+Native review success does not upgrade accounting completeness or change
+historical assessments. Candidate and behavioral judging keep their separate
+stdout validation contract.
 
 Shipping judgments are `acceptable`, `needs_revision`,
 `fundamentally_incorrect` or `unassessable`. Findings require a baseline or
@@ -130,6 +168,30 @@ is retained. A failed or missing reviewer makes the assessment incomplete and
 cannot erase a successful reviewer or imply a complete acceptable assessment.
 An unavailable patch produces an explicit incomplete assessment without
 starting reviewers.
+
+### Supplemental reviewer fields
+
+Quality and behavioral callers select the defined assessment fields before
+strict validation. Additional quality finding fields are also excluded.
+Missing fields, incorrect types, invalid source citations and invalid
+invocation evidence still fail; fields are never repaired or defaulted.
+
+`supplemental_fields_ignored` on quality reviewer records and behavioral
+receipts lists excluded locations as arrays of keys and list indices. An empty
+list means interpretation ran and found no additional fields. Excluded values
+are unvalidated commentary, not assessment data or caller-owned provenance.
+
+Each selected answer is saved exactly in an `{"answer": "..."}` envelope named
+`*-response.json`. The caller's `selected_response` contains its run-relative
+path and file hash. This preserves supplemental values, fences and trailing
+prose without retaining native tool or reasoning payloads. If required output
+validation fails after selection, the failed reviewer record or failure receipt
+still links the answer. Failures before selection have no answer artifact.
+
+Canonical behavioral judgments retain their defined fields and caller-selected
+model. History does not interpret or rewrite older records, including rejected
+responses. Absence of these diagnostics on older records does not mean they
+were interpreted. Behavioral failure isolation is unchanged.
 
 ## Read historical results
 
@@ -146,6 +208,12 @@ and standalone discovery of the same run produce one row. Runs without new
 measurement artifacts remain visible with unknown accounting and full timing.
 Malformed records and conflicting ownership fail visibly rather than being
 silently omitted.
+
+Compatibility-`BLOCKED` and preparation-`INVALID` attempts can precede treatment
+snapshot capture. History retains their declared identity and original result,
+marks `treatment_artifacts_verified` false, and does not treat missing snapshots
+as execution evidence. Executed attempts still require matching descriptor,
+source and adapter artifacts.
 
 Reports show per-attempt correctness, behavioral verdict, accounting coverage,
 quality and duration. Treatment-aware reports also project treatment,

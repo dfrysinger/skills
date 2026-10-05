@@ -7,8 +7,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { createDiagnosticLogger, errorDetails } from "./diagnostics.mjs";
+import {
+  emitSessionControlDeprecation,
+  resolveSessionControlRoot,
+} from "./storage-root.mjs";
 
-const root = process.env.COPILOT_SESSION_INBOX_DIR ?? join(homedir(), ".copilot", "session-inbox");
+const rootSelection = resolveSessionControlRoot();
+const root = rootSelection.root;
+emitSessionControlDeprecation(rootSelection);
 const sessionStateRoot =
   process.env.COPILOT_SESSION_STATE_ROOT ??
   join(homedir(), ".copilot", "session-state");
@@ -17,6 +23,12 @@ const diagnostics = createDiagnosticLogger(
   `requests-${new Date().toISOString().slice(0, 10)}.jsonl`,
   { component: "request", pid: process.pid },
 );
+if (rootSelection.deprecation) {
+  diagnostics.log("storage.deprecated", {
+    source: rootSelection.source,
+    message: rootSelection.deprecation,
+  });
+}
 process.on("uncaughtException", (error) => {
   diagnostics.log("request.crashed", { error: errorDetails(error) });
   console.error(error);
@@ -26,7 +38,7 @@ process.on("uncaughtException", (error) => {
 function usage(message) {
   if (message) {
     diagnostics.log("request.invalid", { error: { message } });
-    console.error(`session-inbox-request: ${message}`);
+    console.error(`session-control-request: ${message}`);
   }
   console.error(
     "usage: request.mjs <send|autopilot|compact|reload-extensions> (--target-name NAME | --target-tmux NAME | --target-session ID) [options]",
@@ -65,7 +77,7 @@ async function readRequiredFile(path, label) {
 }
 
 async function waitForTestPublishGate() {
-  const gate = process.env.SESSION_INBOX_TEST_PUBLISH_GATE;
+  const gate = process.env.SESSION_CONTROL_TEST_PUBLISH_GATE;
   if (!gate) return;
   await writeFile(`${gate}.ready`, "ready\n");
   const deadline = Date.now() + 5_000;
@@ -100,7 +112,7 @@ async function resolveTarget({ targetName, tmuxSession, sessionId }) {
     names = await readdir(instancesDir);
   } catch (error) {
     if (error?.code === "ENOENT") {
-      usage(`no live session-inbox instance for ${targetName ?? tmuxSession ?? sessionId}`);
+      usage(`no live session-control instance for ${targetName ?? tmuxSession ?? sessionId}`);
     }
     throw error;
   }
@@ -160,8 +172,8 @@ async function resolveTarget({ targetName, tmuxSession, sessionId }) {
     });
     usage(
       matches.length === 0
-        ? `no fresh session-inbox instance for ${label}`
-        : `multiple fresh session-inbox instances for ${label}`,
+        ? `no fresh session-control instance for ${label}`
+        : `multiple fresh session-control instances for ${label}`,
     );
   }
   return {
@@ -255,7 +267,7 @@ if (process.platform === "darwin") {
         "/bin/sh",
         "-c",
         'if [ -e "$1" ]; then exit 73; fi; /bin/mv "$2" "$3"',
-        "publish-session-inbox-request",
+        "publish-session-control-request",
         rotationBarrier,
         temporaryPath,
         pendingPath,
@@ -341,5 +353,5 @@ diagnostics.log("receipt.timeout", {
   timeoutSeconds,
   pendingPath,
 });
-console.error(`session-inbox-request: timed out waiting for ${id}`);
+console.error(`session-control-request: timed out waiting for ${id}`);
 process.exit(2);

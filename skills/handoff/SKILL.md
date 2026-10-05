@@ -75,7 +75,7 @@ After compaction: Read the handoff and plan, re-invoke <skills>, and continue th
 
 Then call `self_compact` with that one `brief` argument as the final action and
 end the turn. The extension's detached verifier waits for the authorizing turn
-to become idle, requests native compaction through the session-inbox extension,
+to become idle, requests native compaction through the session-control extension,
 proves the matching checkpoint, and sends one fixed SDK continuation. Unlike
 `/new`, the same session retains schedules and SQL state.
 

@@ -27,7 +27,7 @@ const execFileAsync = promisify(execFile);
 const mailboxCoreUrl = new URL("./mailbox-core.mjs", import.meta.url).href;
 const requestCli = join(
   scriptDirectory,
-  "../../../extensions/session-inbox/request.mjs",
+  "../../../extensions/session-control/request.mjs",
 );
 
 async function waitForRequest(inboxRoot) {
@@ -50,7 +50,7 @@ async function waitForRequest(inboxRoot) {
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  throw new Error("timed out waiting for session-inbox request");
+  throw new Error("timed out waiting for session-control request");
 }
 
 async function waitForFile(path) {
@@ -848,12 +848,12 @@ test("recipient-local actions use only the unqualified local mailbox", async () 
 
 test("recipient-local watcher terminates an ambiguous wakeup without duplicate requests", async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-watch-"));
-  const previousInboxRoot = process.env.COPILOT_SESSION_INBOX_DIR;
+  const previousInboxRoot = process.env.COPILOT_SESSION_CONTROL_DIR;
   try {
     const mailboxRoot = join(root, "mailbox");
     const stateRoot = join(root, "state");
-    const inboxRoot = join(root, "session-inbox");
-    process.env.COPILOT_SESSION_INBOX_DIR = inboxRoot;
+    const inboxRoot = join(root, "session-control");
+    process.env.COPILOT_SESSION_CONTROL_DIR = inboxRoot;
     const instancePath = join(inboxRoot, "instances", "hotel-session.json");
     await mkdir(dirname(instancePath), { recursive: true });
     await writeFile(
@@ -973,9 +973,9 @@ test("recipient-local watcher terminates an ambiguous wakeup without duplicate r
     assert.doesNotMatch(diagnostics, /wake through the local bridge/);
   } finally {
     if (previousInboxRoot === undefined) {
-      delete process.env.COPILOT_SESSION_INBOX_DIR;
+      delete process.env.COPILOT_SESSION_CONTROL_DIR;
     } else {
-      process.env.COPILOT_SESSION_INBOX_DIR = previousInboxRoot;
+      process.env.COPILOT_SESSION_CONTROL_DIR = previousInboxRoot;
     }
     await rm(root, { recursive: true, force: true });
   }

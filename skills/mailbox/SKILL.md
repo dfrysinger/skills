@@ -23,7 +23,7 @@ Do NOT use mailbox for:
 - **Identity = a live agent name.** On macOS, a live tmux session name remains
   the first choice so existing Agent Stack sessions keep their established
   identity. When no live tmux identity matches, Copilot falls back to the
-  session's current `/rename` name. Only fresh session-inbox heartbeats are
+  session's current `/rename` name. Only fresh session-control heartbeats are
   eligible, so abandoned historical sessions with the same name are ignored.
   On Windows, use `copilot-agent <name>` after placing
   `scripts/copilot-agent.cmd` on `PATH`, or call
@@ -76,13 +76,13 @@ Do NOT use mailbox for:
   the unqualified local mailbox plus its configured `name@machine` remote
   transport address every two seconds. Qualified mail is copied into the
   ordinary local mailbox before notification.
-  New mail is bridged into the machine-local session-inbox request queue. Session-inbox
+  New mail is bridged into the machine-local session-control request queue. Session-control
   heartbeats, claims, locks, receipts, and logs remain local and must not be
   placed in OneDrive.
 - **Wakeup = short natural-language nudge through the recipient agent.** Sender
   writes the envelope, then `mailbox-poke.sh` resolves the recipient backend.
   Copilot sessions receive `check mailbox; skip if empty` as a real user turn
-  through the plugin's `session-inbox` extension and immediate SDK
+  through the plugin's `session-control` extension and immediate SDK
   `session.send()`. An active Copilot turn receives the nudge through its
   steering lane, while an idle session starts it normally. The extension does
   not wait for idle before submitting it. Claude and Codex retain the
@@ -194,7 +194,7 @@ still override the persisted machine and remote root for an explicit process.
 
 ## Pitfalls
 
-- **Copilot wakeups use immediate native delivery.** Session-inbox submits the
+- **Copilot wakeups use immediate native delivery.** Session-control submits the
   user message with SDK delivery mode `immediate`, so an active long-running or
   autopilot turn receives it as steering instead of leaving it stranded in the
   normal FIFO queue. The watcher marks the envelope notified only after an
@@ -208,7 +208,7 @@ still override the persisted machine and remote root for an explicit process.
   envelope notified.
   The durable envelope remains pending until the recipient reads and
   acknowledges it. If the host temporarily places an immediate send in FIFO,
-  session-inbox snapshots the queue before submission and promotes only the
+  session-control snapshots the queue before submission and promotes only the
   single exact matching item that appeared afterward. An owned but unsteerable
   item is removed rather than left queued; ambiguous ownership leaves every
   queued item untouched. On macOS, only a receipt that explicitly proves the
@@ -226,7 +226,7 @@ still override the persisted machine and remote root for an explicit process.
 - **Do not sync local mailbox or session state.** A cloud file provider is not
   a distributed lock and can expose stale heartbeats, conflicting claims, or
   partial mutable state. Keep `MAILBOX_LOCAL_ROOT`, `MAILBOX_STATE_ROOT`, and
-  session-inbox local. Only `MAILBOX_REMOTE_ROOT` belongs in OneDrive.
+  session-control local. Only `MAILBOX_REMOTE_ROOT` belongs in OneDrive.
 - **One watcher owns each local or import route.** A configured session owns
   separate local locks for `hotel` delivery and `hotel@surface-pro` import.
   Duplicate Copilot

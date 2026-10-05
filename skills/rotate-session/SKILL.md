@@ -124,7 +124,7 @@ timed-out rotation preserves the private recovery snapshot. Do not issue
 another rotation until the first request's outcome is resolved.
 
 At the replacement boundary, the verifier disables pane input and creates
-`rotation.barrier` in the retired session folder. The session-inbox extension
+`rotation.barrier` in the retired session folder. The session-control extension
 rejects new work while that barrier exists, and the verifier cancels if an
 older request is still executing. A successful rotation leaves the barrier on
 the retired session so delayed mailbox or continuation requests cannot wake it

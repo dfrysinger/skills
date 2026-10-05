@@ -35,9 +35,9 @@ codex plugin add dfrysinger-skills@dfrysinger-skills
 The plugin is registered as `dfrysinger-skills`. Installing from this GitHub repository is the supported Copilot CLI path; direct local plugin installs are deprecated.
 
 The Copilot plugin also packages the recipient-local
-[`session-inbox`](./extensions/session-inbox/) SDK extension and a portable
-[`mailbox-watcher`](./extensions/mailbox-watcher/) extension. Session-inbox is a runtime
-dependency of `mailbox`, `unattended-run`, and `self-compact`. The extension
+[`session-control`](./extensions/session-control/) SDK extension and a portable
+[`mailbox-watcher`](./extensions/mailbox-watcher/) extension. Session-control is a runtime
+dependency of `mailbox`, `rotate-session`, `unattended-run`, and `self-compact`. The extension
 performs the final immediate `session.send()` or native compaction from inside
 the recipient session; filesystem requests and receipts provide durable
 machine-local IPC. macOS rotation separately replaces the verified tmux pane
@@ -45,19 +45,19 @@ process after the authorizing turn ends. Neither mechanism submits work to the
 CLI FIFO.
 Mailbox watcher polls a named recipient's durable mailbox and bridges synced
 envelopes into that local request queue. The mailbox root may live in OneDrive,
-but session-inbox heartbeats, locks, and receipts remain local. Sender-side
+but session-control heartbeats, locks, and receipts remain local. Sender-side
 delivery and the recipient watcher share a short local notification claim so
 they cannot both submit the same envelope during the pre-marker window.
 Notification cleanup retains markers for every pending envelope, including
 mail whose synced attachments are still stabilizing. A newly installed or
 updated extension becomes active when
 the recipient Copilot session starts or reloads its plugins. Run
-`node extensions/session-inbox/reload-all.mjs` to reload every fresh local
+`node extensions/session-control/reload-all.mjs` to reload every fresh local
 Copilot session, or append session names to reload only those sessions. The
 script verifies that each session publishes a new heartbeat with the installed
-plugin version. An older session-inbox extension receives a one-time immediate
+plugin version. An older request extension receives a one-time immediate
 prompt to invoke its own reload action; subsequent updates reload directly
-without model involvement. Sessions with a stale or missing inbox, or which do
+without model involvement. Sessions with a stale or missing heartbeat, or which do
 not publish the replacement heartbeat, are collected in a final
 `Restart required:` summary so the calling agent can report exactly which
 Copilot CLIs need `/restart`. Claude and Codex mailbox recipients retain their
@@ -75,8 +75,15 @@ envelopes, attachments, and acknowledgement receipts. Run
 --remote-root <path>` once to persist the machine route across direct Copilot
 restarts that do not inherit shell exports.
 
-Session-inbox diagnostics are written as newline-delimited JSON under
-`~/.copilot/session-inbox/logs/`. Extension logs are named by session and
+Session-control uses `COPILOT_SESSION_CONTROL_DIR` when set. The deprecated
+`COPILOT_SESSION_INBOX_DIR` alias remains supported. Without an explicit
+setting, an existing deprecated `~/.copilot/session-inbox` root remains
+authoritative; otherwise session-control uses `~/.copilot/session-control`.
+Selection never copies or merges roots. Deprecated selections emit a
+diagnostic.
+
+Session-control diagnostics are written as newline-delimited JSON under the
+selected root's `logs/` directory. Extension logs are named by session and
 generation; request-side events share a daily log. They record lifecycle, targeting, native request submission, SDK delivery
 classification, recovery, and errors without deliberately recording prompt,
 compaction-instruction, or continuation content. Files are mode `0600` and
@@ -145,7 +152,7 @@ These skills form a small communication stack for long-lived, named agent sessio
 - **[`mailbox`](./skills/mailbox/SKILL.md):** Deliver messages and files between named Copilot CLI sessions, including through a shared OneDrive mailbox, with a macOS tmux compatibility path for Claude Code and Codex CLI. Delivery is durable even when the receiving session or computer is offline.
 - **[`self-compact`](./skills/self-compact/SKILL.md):** Compact a Copilot CLI conversation while preserving the durable baton, session-bound state, and one exact next action.
 - **[`rotate-session`](./skills/rotate-session/SKILL.md):** Move a long-lived Copilot CLI session into a fresh conversation that rebuilds context from the retired session's files and history.
-- **[`unattended-run`](./skills/unattended-run/SKILL.md):** Re-brief a long-running agent on a schedule so compaction does not quietly narrow the task or change its operating rules.
+- **[`unattended-run`](./skills/unattended-run/SKILL.md):** Keep a long-running agent moving with an hourly progress nudge and a four-hour charter check, without repeating full reviews on a timer.
 
 Two companion tools complete the workflow without pretending to be skills:
 
@@ -177,7 +184,7 @@ Two companion tools complete the workflow without pretending to be skills:
 ### Skill authoring
 
 - **[`skill-create`](./skills/skill-create/SKILL.md):** Create and validate a reusable skill without requiring the full Dreaming lifecycle.
-- **[`skill-evaluation`](./skills/skill-evaluation/SKILL.md):** Build phase-isolated behavioral regression cases for any agent skill, run a complete corpus through one suite command, and obtain hidden-reference judgments from independent model families.
+- **[`skill-evaluation`](./skills/skill-evaluation/SKILL.md):** Build phase-isolated behavioral regression cases, compare neutral, lean, and full skill variants, and run checksum-reconciled large corpora through local workers or massively parallel private GitHub Actions.
 - **[`writing-great-skills`](./skills/writing-great-skills/SKILL.md):** Structure skills so agents invoke them predictably and can follow them without excess context.
 
 `writing-great-skills` is user-invoked and carries no automatic model-facing

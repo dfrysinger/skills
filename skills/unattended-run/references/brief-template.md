@@ -2,19 +2,20 @@
 
 Two artifacts: the **charter** you persist and re-feed through the `/every`
 schedules you arm yourself, and the **optional objective** you best-effort send
-through the session-inbox SDK extension or print as a fallback for
+through the session-control SDK extension or print as a fallback for
 `/autopilot`. Fill every `<SLOT>`; delete any clause that doesn't apply rather
 than leaving a placeholder.
 
 ## Objective — OPTIONAL, persisted and handed to `/autopilot`
 
-`/autopilot` is not an agent tool. After arming every applicable schedule,
+`/autopilot` is not an agent tool. After arming both reminders,
 invoke the objective file in the current session through the SDK handoff as the
 final tool action when targeting is safe. The handoff invokes the native
 autopilot command and reads its state back to prove the exact objective was
 established. Otherwise print its contents and explain that the user must paste
-it to establish native autopilot. The charter re-brief continues to restore
-working rules, but it does not replace the persistent objective.
+it to establish native autopilot. Event-driven re-briefs, the charter check,
+and the hourly progress nudge continue to restore working rules and advance
+ready work, but they do not replace the persistent objective.
 
 Persist a complete work order, not a compressed slogan. Autopilot re-reads it
 on every continuation, so include enough context to resume correctly after
@@ -42,7 +43,7 @@ Objective slots:
   the whole plan.
 - **`<DOD_REF>`** — the exact, unique heading of the Definition of Done that
   covers this run's scope. It is the objective's sole completion authority, and
-  the charter and every applicable reminder point at the same heading, so all
+  the charter and both reminders point at the same heading, so all
   surfaces stop on one condition that can't drift apart. Its items must be
   observable (tests green, the E2E scenario passes, the feature works end to
   end) so autopilot stops only when they genuinely hold.
@@ -54,8 +55,8 @@ Objective slots:
 
 The standing operating rules. This is the *how*; the objective owns the *what*
 and the stop condition, so the charter closes by pointing back at `<DOD_REF>`.
-Keep the skill manifest structured so the two-hour reminder can restore the
-process after compaction without copying each skill's rules.
+Keep the skill manifest structured so event-driven re-briefs and both reminders
+can restore the process without copying each skill's rules.
 
 > Keep building against the plan at `<PLAN_DOC>`[ through `<SCOPE>`] in your
 > `<WORKSPACE>`. Follow the required process skills below.
@@ -63,14 +64,24 @@ process after compaction without copying each skill's rules.
 > design doc, brief, or charter, finish the current coherent edit and persist it
 > to the authoritative file before reconciling against that file. Never replace
 > an in-flight revision with the older persisted version.
-> Use rubber-duck to brainstorm solutions and align on paths forward whenever
-> you get stuck. Keep the plan up to date so future agents can pick it up. Use
-> `/dfrysinger-skills:development-loop` critical-path audit at run start, every
-> phase boundary, and every scheduled re-brief: rebuild ready work and
-> dependencies, mark the critical path, assign every substantial independent
-> ready scope to an available subagent when delegation is safe, and advance
-> another ready item whenever the current one is waiting. For every delegated
-> agent, keep its stable assignment ID, scope, owned path boundary, workspaces
+> If stuck, give a rubber-duck agent one concrete blocker and ask for a
+> distinguishing check or alternative; do not repeat the same brainstorm
+> each hour without new evidence. Record actual stalls with the goal, expected
+> next action, observed non-progress, first divergence, source receipt, and
+> recovery. Mark second-hand incidents unverified until their owner's result
+> supports them. Keep the plan up to date so future agents can pick it up. Use
+> `/dfrysinger-skills:development-loop` critical-path audit at run start,
+> compaction or resumption, candidate movement, every phase boundary, failure,
+> ownership handoff, material user direction, and each four-hour charter
+> check while the Definition of Done is open: rebuild
+> ready work and dependencies, mark the critical path, assign every
+> substantial independent ready scope to a separate available owner when
+> delegation is safe, or execute cheap direct work. An active owner on one
+> lane does not close the audit on other ready lanes. Name the actual
+> dependency or exclusive gate for each scope left unowned. The hourly
+> progress nudge keeps the current work moving without a mandatory audit
+> or task switch. For every delegated agent, keep its stable assignment ID,
+> scope, owned path boundary, workspaces
 > or branches, routable owner address, owed evidence, blockers, and integration
 > boundaries in the durable baton. Use fully qualified `name@machine` for
 > mailbox agents and the exact agent ID for native subagents; a bare display
@@ -95,29 +106,28 @@ process after compaction without copying each skill's rules.
 > critical-path work. Batch coherent fixes before expensive builds, verifiers,
 > or CI, and use proof impact mapping instead of replaying unaffected claims.
 > Preserve actual serial gates, including one proof owner and one running
-> candidate during live proof. `<PUSH_POLICY>`.
-> Decide every reversible question yourself with rubber-duck rather than asking
-> me. For systemic or critical work, preserve the plan's decision hierarchy,
+> candidate during live proof. Keep launched model attempts' first outcomes
+> immutable, but allow separately identified fresh repetitions and experiments
+> with a named question, planned denominator, fixed controls, qualification,
+> and stop rule. `<PUSH_POLICY>`.
+> Decide reversible questions yourself rather than asking me. For systemic
+> or critical work, preserve the plan's decision hierarchy,
 > constraint provenance, revisit conditions, and any active reframe record in
 > the current baton; inherited mechanisms do not become requirements merely
 > because they survived compaction. Also preserve the last completed
 > independent constraint-challenge record and its `gate_status`,
 > `blocked_scope`, and `permitted_scope`; separately preserve the
-> unattended-run-owned schedule registry. Record each schedule's kind,
-> identifier, interval, and status; for the eight-hour challenge schedule also
-> record its armed-at timestamp, replacement generation, and nullable
-> `reset_after_reviewed_at`. Preserve any event trigger and
+> unattended-run-owned schedule registry. Record both reminders' kinds,
+> identifiers, intervals, and statuses. Preserve any event trigger and
 > every relevant user statement received since the prior completed challenge
 > in the durable decision record or baton quote ledger with a stable event ID,
 > exact quote, and enough surrounding context to classify it. Never replace
 > those words with an agent summary. Before advancing an action,
 > require a `CLEAR` gate or a `PARTIAL` gate that explicitly permits that exact
 > action and does not block it.
-> Run `/dfrysinger-skills:constraint-challenge` when `development-loop` reports
-> an event trigger or when the independent eight-hour schedule fires. After an
-> event-triggered challenge completes, set `reset_after_reviewed_at` to that
-> review's timestamp and use the registry reset transaction to replace the
-> eight-hour schedule once. A periodic challenge does not set that marker.
+> Run `/dfrysinger-skills:constraint-challenge` only when
+> `development-loop` reports a material scope, architecture, trust, authority,
+> policy, or reframe trigger. Time passing alone never makes a challenge due.
 > After any due challenge returns, compare its new gate with the exact next
 > action again and stop if it no longer permits that action.
 > `<COORDINATION>`.
@@ -136,8 +146,8 @@ process after compaction without copying each skill's rules.
 > - **Context:** `/dfrysinger-skills:self-compact` — at the governing workflow's
 >   compaction points, or when context becomes noisy or repetitive, persist the
 >   complete baton and invoke and follow this skill as the final action. Do not
->   compact merely because the two-hour reminder fired or while active live proof
->   is in progress.
+>   compact merely because either reminder fired or while
+>   active live proof is in progress.
 
 Add this machine-readable registry to the persisted charter. Use
 `PENDING_CREATION` until `manage_schedule` returns the real identifier, then
@@ -146,17 +156,16 @@ replace the identifier and set `status: live` immediately. Omit
 
 ```yaml
 schedule_registry:
-  charter_rebrief:
+  charter_check:
+    kind: charter_check
     id: PENDING_CREATION
-    interval: 2h
+    interval: 4h
     status: pending
-  constraint_challenge:
+  progress:
+    kind: progress
     id: PENDING_CREATION
-    interval: 8h
+    interval: 1h
     status: pending
-    armed_at: PENDING_CREATION
-    generation: 0
-    reset_after_reviewed_at: null
 ```
 
 Charter slots:
@@ -205,9 +214,7 @@ the governing plan records its constraint provenance and reframe gate, and the
 current baton states whether any revisit condition is open. It also records the
 last completed independent constraint challenge, its `gate_status`,
 `blocked_scope`, and `permitted_scope`. Separately, `unattended-run` owns and
-records a schedule registry containing each schedule's kind, identifier,
-interval, and status; the challenge entry also records its armed-at timestamp
-and replacement generation plus its nullable `reset_after_reviewed_at`. The
+records both reminders' kinds, identifiers, intervals, and statuses. The
 baton preserves any event trigger and relevant user statements since the prior
 challenge as exact contextual quotes.
 
@@ -234,8 +241,9 @@ challenge as exact contextual quotes.
 > worktree. Follow the required process skills below. Use rubber-duck to
 > brainstorm solutions and align on
 > paths forward whenever you get stuck. Keep the plan up to date so future agents
-> can pick it up. At run start, every phase boundary, and every two-hour
-> re-brief, run `/dfrysinger-skills:development-loop`'s critical-path audit:
+> can pick it up. At run start, compaction or resumption, candidate movement,
+> every phase boundary, failure, ownership handoff, and material user
+> direction, run `/dfrysinger-skills:development-loop`'s critical-path audit:
 > rebuild ready work and dependencies, assign every substantial independent
 > ready scope to an available subagent when delegation is safe, batch coherent
 > fixes before expensive gates, and advance other ready work during waits while
@@ -253,15 +261,14 @@ challenge as exact contextual quotes.
 
 ```yaml
 schedule_registry:
-  charter_rebrief:
+  charter_check:
+    kind: charter_check
     id: schedule-101
-    interval: 2h
+    interval: 4h
     status: live
-  constraint_challenge:
+  progress:
+    kind: progress
     id: schedule-102
-    interval: 8h
+    interval: 1h
     status: live
-    armed_at: 2026-08-31T06:00:00Z
-    generation: 0
-    reset_after_reviewed_at: null
 ```

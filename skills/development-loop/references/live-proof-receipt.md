@@ -21,10 +21,11 @@ that names every changed runtime input, the path it reaches, affected receipt
 ids, and any shared dependency that broadens the set. A lane label or new
 commit hash does not establish reach.
 
-The validator remains fingerprint-strict for each receipt. Unaffected receipts
-from an earlier fingerprint remain diagnostic history, not current release
-evidence. Final acceptance validates every required claim fresh against one
-frozen candidate and never combines evidence across fingerprints.
+Direct validation remains fingerprint-strict. An unaffected receipt from an
+earlier execution needs an explicit checked correspondence record to establish
+current applicability. Final acceptance requires all claims to apply to one
+exact target fingerprint, including any eligible reused evidence. Per-claim
+scope hashes are checked separately and do not replace that complete identity.
 
 ## 2. Freeze the candidate
 
@@ -45,11 +46,10 @@ Use `--additional-input <relative-path>` for ignored configuration or generated
 inputs that affect the candidate. The helper records their hashes without
 recording their contents. Never exclude a tracked file; the helper rejects it.
 
-Copy the returned candidate object into the receipt. Any later tracked change,
-untracked runtime input, or named additional input changes the fingerprint and
-makes the receipt non-current for that successor candidate. Preserve an
-unaffected passing receipt as history; validate fresh receipts for every claim
-in the final frozen-candidate campaign.
+Copy the returned candidate object into the receipt. A later commit, tracked
+change, untracked input, or named additional input changes the fingerprint.
+Direct validation then fails; checked reuse below may establish applicability
+without changing the execution receipt.
 
 ## 3. Record the complete flow
 
@@ -147,7 +147,7 @@ python3 "$SKILL_DIR/scripts/validate-live-proof.py" validate "$RECEIPT"
 
 The validator fails when:
 
-- the source candidate changed after proof;
+- the candidate fingerprint changed without accepted reuse correspondence;
 - the running candidate lacks identity-matching evidence;
 - the flow lacks trigger and terminal checkpoints;
 - any checkpoint lacks direct evidence or did not pass;
@@ -164,3 +164,162 @@ result and record it in `running`.
 
 `FAIL`, `BLOCKED`, `STALE`, and `INCONCLUSIVE` are useful durable states, but
 they do not pass this validator or open a completion gate.
+
+## 5. Reuse unchanged-component evidence
+
+Preserve the original execution receipt. A different commit or worktree does
+not itself invalidate the observation, but accepting it for another candidate
+requires explicit, checked input correspondence. Never replace its candidate,
+running identity, model identity, checkpoints, or results with the new ones.
+
+Before execution, add `--reuse-input <relative-file-or-directory>` to the
+fingerprint command for every exercised executable path and relevant input.
+Directory scopes include all descendants, including ignored files, so added
+or removed runtime inputs are detected. File content, permissions, type, and
+directory membership are hashed. `--additional-input` files contribute to the
+complete candidate identity, not automatically to a claim's reuse scope.
+Declare relevant ignored inputs in both `--additional-input` and `--reuse-input`
+(or a containing reuse directory). Unrelated generated files remain part of
+the complete identity without becoming dependencies of every claim. Excluded evidence
+outputs are not excluded from these scopes: do not place evidence inside an
+input directory. Symlinks and special files in reuse scopes are rejected
+rather than treating a link's unchanged spelling as unchanged target content.
+
+For a new execution, add `reuseCoverageEvidence` to its receipt, with all six
+keys below. Each value names the relevant recorded paths and the evidence
+establishing their coverage, or explains why that input class is inapplicable:
+
+| Key | Coverage to establish |
+| --- | --- |
+| `executablePaths` | All exercised code, callers, loaded modules, and harness paths |
+| `configuration` | Relevant flags, settings, and ignored configuration |
+| `dependencies` | Actual dependency contents/identities, not only a manifest |
+| `buildInputs` | Toolchain, build settings, and other artifact-producing inputs |
+| `runtimeInputs` | Runtime/model identity, environment, external state, and fixture conditions |
+| `generatedInputs` | Generated code, assets, and the artifacts actually loaded |
+
+For non-file inputs, record deterministic, non-secret measurements of stable
+input values (not observation timestamps or process IDs) in files included in
+the scope and refresh those measurements for the target candidate.
+An unchanged measurement file without a fresh check of the actual runtime,
+environment, model, or external state is not correspondence evidence. If an
+input cannot be identified or measured reliably, rerun the affected scenario.
+Do not manufacture execution-time measurements after the fact or edit an old
+receipt to add them. A legacy receipt without `reuseInputs` may instead use the
+validated-source derivation below.
+
+For the final frozen candidate, run `fingerprint` again with the same claim
+input scopes and output exclusions, and all of the target's additional inputs.
+Additional inputs outside the claim scope may differ; the target's complete
+identity is still recomputed and must remain fresh. Store that new candidate
+object in a separate correspondence JSON:
+
+```json
+{
+  "schemaVersion": 1,
+  "sourceReceiptSha256": "sha256:<SHA-256 of the original receipt file>",
+  "candidate": "<replace with the new fingerprint command's JSON object>",
+  "checkedCorrespondenceEvidence": {
+    "executablePaths": "Name the compared paths and closure/caller check.",
+    "configuration": "Name the freshly compared settings and flag measurements.",
+    "dependencies": "Name the compared installed dependency identities.",
+    "buildInputs": "Name the compared toolchain and build-input measurements.",
+    "runtimeInputs": "Name the fresh runtime, model, environment, and fixture checks.",
+    "generatedInputs": "Name the compared generated assets and loaded artifacts."
+  }
+}
+```
+
+Replace every example value with actual evidence. Hash the original receipt
+file with `shasum -a 256`; prefix the resulting digest with `sha256:`.
+Then validate:
+
+```bash
+python3 "$SKILL_DIR/scripts/validate-live-proof.py" validate "$RECEIPT" \
+  --reuse /path/to/correspondence.json
+```
+
+This validates the original scenario and visual requirements, checks its
+receipt hash, recomputes the target's full fingerprint, and requires identical
+recorded input scopes and hashes. With execution-time `reuseInputs`, the original
+worktree need not still exist.
+Output identifies the target fingerprint and `reusedFrom` original fingerprint
+and receipt hash, not a new execution. Any relevant input change, removed scope,
+missing coverage evidence, or later target mutation fails closed. Ordinary
+validation without `--reuse` still requires an exact current fingerprint.
+
+### Legacy receipts with a retained original candidate
+
+Missing predeclared scope metadata alone does not require replay. If the
+original worktree is still available at its recorded path and its full
+candidate fingerprint still validates, the helper can derive a scoped baseline
+now. This route does not reconstruct repositories or accept a replacement source
+path. The original receipt bytes and execution identity remain unchanged.
+
+Build the target candidate with `fingerprint --reuse-input` as above. In its
+separate correspondence JSON, add:
+
+- `"deriveLegacyBaseline": true`;
+- `legacyCoverageEvidence`, an object with the same six keys as
+  `checkedCorrespondenceEvidence`. Describe why the original recorded inputs
+  cover the scenario, including original runtime/environment measurements, and
+  explain any inapplicable input classes.
+
+Keep `checkedCorrespondenceEvidence` for the fresh source-to-target comparison.
+Coverage must come from the original fingerprint-bound files or original direct
+evidence, not newly asserted old values. Relevant ignored inputs must already
+appear in the old candidate's `additionalInputs`. Newly measuring an ignored
+runtime, dependency, configuration, or generated input cannot establish what
+the old execution used. Unknown relevant inputs keep the gate closed.
+
+Validate and save the result separately:
+
+```bash
+python3 "$SKILL_DIR/scripts/validate-live-proof.py" validate "$RECEIPT" \
+  --reuse /path/to/correspondence.json > /path/to/applicability.json
+```
+
+The helper validates the original full candidate before deriving any baseline,
+rejects scoped files absent from that fingerprint's coverage, hashes the chosen
+scope, and checks the original candidate again. It then requires identical
+target input hashes and all ordinary receipt gates. The applicability output's
+`legacyBaseline.origin` is `derived-during-validation`, with the derived input
+hashes. It is not an execution-time snapshot or a new scenario run.
+
+Every subsequent legacy validation repeats this derivation from the exact
+original source; a supplied `legacyBaseline` is not trusted as input. Preserve
+the original worktree until final admission. A stale, unavailable, or redirected
+source, uncovered ignored/excluded inputs, or incomplete runtime correspondence
+cannot use this route. Dirty and non-ignored untracked inputs are eligible when
+the full original fingerprint still matches. Empty directories and other
+filesystem properties not established by the original evidence must not be
+treated as historical observations.
+
+### Final-campaign identity and claim scopes
+
+The complete candidate fingerprint covers the whole-tree identity and declared
+additional inputs. `reuseInputs` records separately checked claim coverage, not
+another executable candidate. Snapshots with scopes `src/a` and `src/b` therefore
+share the same target fingerprint when the complete candidate is unchanged.
+Changing either component still changes that complete fingerprint.
+
+Keep each scope and its hashes intact. Validation recomputes both the complete
+target identity and its scope records, then compares the scope to the original
+execution's inputs. A matching target fingerprint alone is not evidence of
+unchanged claim inputs. Declare relevant ignored runtime inputs as additional
+inputs rather than relying on a scope to include them in the complete identity.
+
+Maintain the complete applicable claim set outside these individual receipts:
+map every final acceptance criterion to a direct receipt or to an original
+receipt plus its checked correspondence record. Validate every referenced
+record against the same exact frozen target fingerprint. Changed and uncovered claims
+need new proof; an unchanged component's scenario need not be newly executed.
+A reused receipt covers its entire original scenario, not an invented subset
+that removes failing checkpoints.
+
+The helper checks identities and required fields, not the truth of narrative
+evidence, dependency-closure completeness, or the final acceptance inventory.
+The proof owner and reviewer must check those. Deterministic test-result reuse
+follows the same input-correspondence rule, including test code and fixtures,
+but test receipts do not become live evidence through this helper. Mocks never
+become actual model runs. Human review, merge, and release gates remain intact.

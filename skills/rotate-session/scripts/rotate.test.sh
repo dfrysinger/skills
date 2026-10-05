@@ -118,6 +118,8 @@ start_rotation() {
   local extra_new_message="${5:-}"
   local setup_user_message="${6:-}"
   local inbox_inflight="${7:-}"
+  local marker_root="${8:-}"
+  local control_root="${marker_root:-$ROOT/home/.copilot/session-control}"
   local state="$ROOT/home/.copilot/session-state/$old"
   local input="$ROOT/$label-input.txt"
   local log="$ROOT/$label.log"
@@ -130,10 +132,14 @@ start_rotation() {
       >>"$state/events.jsonl"
   fi
   touch "$state/inuse.$$.lock"
+  if [ -n "$marker_root" ]; then
+    printf '{"root":"%s","generation":"test-generation"}\n' "$marker_root" \
+      >"$state/session-control-root.json"
+  fi
   if [ -n "$inbox_inflight" ]; then
-    mkdir -p "$ROOT/home/.copilot/session-inbox/processing"
+    mkdir -p "$control_root/processing"
     printf '{"id":"inflight","target":{"sessionId":"%s"}}\n' "$old" \
-      >"$ROOT/home/.copilot/session-inbox/processing/inflight-$old.json"
+      >"$control_root/processing/inflight-$old.json"
   fi
   printf '%s' "$prompt" >"$input"
 
@@ -200,12 +206,26 @@ IFS=$'\t' read -r inbox_state inbox_log < <(
 printf '%s\n' '{"type":"assistant.turn_end","data":{}}' \
   >>"$inbox_state/events.jsonl"
 wait_for_result "$inbox_log"
-grep -Fq 'session-inbox work is in flight' "$inbox_log"
+grep -Fq 'session-control work is in flight' "$inbox_log"
 inbox_recovery="$(
   sed -n 's/^recovery snapshot: \([^ ]*\).*/\1/p' "$inbox_log" | tail -1
 )"
 [ -f "$inbox_recovery" ]
 [ ! -e "$inbox_state/rotation.barrier" ]
+
+marker_root="$ROOT/marker-selected-control"
+legacy_root_name="session""-inbox"
+mkdir -p "$ROOT/home/.copilot/$legacy_root_name"
+IFS=$'\t' read -r marker_state marker_log < <(
+  start_rotation old-marker-root marker-root \
+    'continue retired session old-marker-root' "" "" "" "yes" "$marker_root"
+)
+printf '%s\n' '{"type":"assistant.turn_end","data":{}}' \
+  >>"$marker_state/events.jsonl"
+wait_for_result "$marker_log"
+grep -Fq 'session-control work is in flight' "$marker_log"
+[ -f "$marker_root/processing/inflight-old-marker-root.json" ]
+[ ! -e "$marker_state/rotation.barrier" ]
 
 concurrent_state="$ROOT/home/.copilot/session-state/old-concurrent"
 IFS=$'\t' read -r concurrent_state concurrent_log < <(
@@ -341,6 +361,28 @@ fi
 grep -Fq 'current Copilot launch option cannot be preserved safely: --deny-tool' \
   "$ROOT/options.out"
 [ -f "$options_input" ]
+
+root_failure_input="$ROOT/root-failure-input.txt"
+root_failure_state="$ROOT/home/.copilot/session-state/old-root-failure"
+mkdir -p "$root_failure_state"
+printf '%s\n' '{"type":"assistant.turn_start","data":{}}' \
+  >"$root_failure_state/events.jsonl"
+touch "$root_failure_state/inuse.$$.lock"
+printf 'continue old-root-failure' >"$root_failure_input"
+if HOME="$ROOT/home" PATH="$ROOT/bin:$PATH" ROTATE_TMUX_BIN="$ROOT/bin/tmux" \
+  ROTATE_STATE_ROOT="$ROOT/home/.copilot/session-state" \
+  COPILOT_SESSION_CONTROL_DIR="" MOCK_TMUX_CWD="$ROOT" TMUX_PANE="%test" \
+  TMPDIR="$ROOT/tmp" \
+  "$SCRIPT" old-root-failure "$root_failure_input" --consume-prompt \
+  >"$ROOT/root-failure.out" 2>&1; then
+  exit 1
+fi
+grep -Fq 'session-control storage root could not be resolved' \
+  "$ROOT/root-failure.out"
+find "$ROOT/tmp" -maxdepth 1 -name 'copilot-rotate-recovery-old-root-failure.*' \
+  ! -name '*.launch.sh' | grep -q .
+! find "$ROOT/tmp" -maxdepth 1 \
+  -name 'copilot-rotate-recovery-old-root-failure.*.launch.sh' | grep -q .
 
 ! grep -Eq 'send-keys|capture-pane|paste-buffer|load-buffer' "$SCRIPT" "$HELPER"
 echo "rotate-session tests: pass"

@@ -23,7 +23,7 @@ test("reports requested sessions with stale heartbeats as restart required", asy
       })}\n`,
     );
     const child = spawn(process.execPath, [script, "hotel"], {
-      env: { ...process.env, COPILOT_SESSION_INBOX_DIR: root },
+      env: { ...process.env, COPILOT_SESSION_CONTROL_DIR: root },
     });
     let stdout = "";
     let stderr = "";
@@ -37,7 +37,7 @@ test("reports requested sessions with stale heartbeats as restart required", asy
       child.on("exit", (code, signal) => resolve({ code, signal }));
     });
     assert.deepEqual(exit, { code: 2, signal: null });
-    assert.match(stderr, /hotel: restart required: session-inbox heartbeat is stale/);
+    assert.match(stderr, /hotel: restart required: session-control heartbeat is stale/);
     assert.match(stdout, /Restart required: hotel/);
   } finally {
     await rm(root, { recursive: true, force: true });
