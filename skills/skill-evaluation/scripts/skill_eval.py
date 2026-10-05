@@ -15,8 +15,12 @@ import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import BinaryIO
+
+import measurement
 
 
 CASE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -107,6 +111,18 @@ answer.
 """
 
 
+JUDGE_OUTPUT_CONTRACT = """Return only JSON with:
+{
+  "verdict": "PASS | FAIL | UNANSWERABLE",
+  "confidence": "LOW | MEDIUM | HIGH",
+  "matched": [],
+  "missed": [],
+  "overcorrections": [],
+  "generalized_skill_defect": null
+}
+"""
+
+
 def judge_prompt(skill: str) -> str:
     return f"""Act as an independent behavioral judge for the `{skill}` skill.
 
@@ -115,16 +131,7 @@ evidence. Judge whether the target skill exhibited the required behavior, not
 whether it copied reference wording. Identify overcorrection, unsupported
 claims, and any evidence-backed boundary the candidate weakened.
 {JUDGE_RUNTIME_CONTRACT}
-
-Return only JSON with:
-{{
-  "verdict": "PASS | FAIL | UNANSWERABLE",
-  "confidence": "LOW | MEDIUM | HIGH",
-  "matched": [],
-  "missed": [],
-  "overcorrections": [],
-  "generalized_skill_defect": null
-}}
+{JUDGE_OUTPUT_CONTRACT}
 """
 
 
@@ -137,6 +144,9 @@ equivalent wording.
 Use `UNANSWERABLE` only when the hidden criteria's unanswerable condition is
 met, and name each decisive missing artifact or fact in `missed`; never return
 a bare `UNANSWERABLE`.
+Return exactly the six fields in the JSON output contract, with no additional
+keys. Put every observation and qualification in the existing fields; do not
+add a separate field for a requested assessment.
 """
 
 
@@ -499,6 +509,31 @@ def verify_case(root: Path, case_id: str) -> int:
     return count
 
 
+def validate_tool_allowlist(data: dict, allowed_tools: set[str] | None) -> None:
+    if allowed_tools is not None and (
+        not isinstance(data.get("toolName"), str) or data["toolName"] not in allowed_tools
+    ):
+        raise ValueError("review invoked a tool outside its read-only allowlist")
+
+
+def resolve_view(arguments: object, cwd: Path) -> tuple[str, str, bool] | None:
+    if not isinstance(arguments, dict) or not isinstance(arguments.get("path"), str):
+        return None
+    requested = arguments["path"]
+    resolved = Path(requested).expanduser()
+    if not resolved.is_absolute():
+        resolved = cwd / resolved
+    resolved = resolved.resolve()
+    return requested, str(resolved), resolved.is_relative_to(cwd.resolve())
+
+
+def successful_view_path(view: tuple[str, str, bool], cwd: Path, boundary: str) -> str:
+    requested, resolved, inside = view
+    if not inside and boundary == "prose":
+        raise ValueError(f"view escaped evaluation workdir: {requested}")
+    return Path(resolved).relative_to(cwd.resolve()).as_posix() if inside else requested
+
+
 def parse_run(
     log: Path,
     *,
@@ -507,6 +542,7 @@ def parse_run(
     cwd: Path,
     require_skill: bool | None,
     boundary: str = "prose",
+    allowed_tools: set[str] | None = None,
 ) -> dict:
     messages: list[str] = []
     result_event = None
@@ -517,68 +553,53 @@ def parse_run(
     viewed_paths: list[str] = []
     pending_views: dict[str, tuple[str, str, bool]] = {}
     tool_calls = []
-    for line in log.read_text(encoding="utf-8").splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError as error:
-            raise ValueError(f"non-JSON output in structured log: {log}") from error
-        event_type = event.get("type")
-        data = event.get("data", {})
-        if not isinstance(data, dict):
-            raise ValueError(f"{event_type} data must be an object")
-        if isinstance(data.get("model"), str):
-            models.add(data["model"])
-        if event_type == "assistant.message":
-            content = data.get("content")
-            if isinstance(content, str) and content.strip():
-                messages.append(content)
-        elif event_type == "tool.execution_start":
-            tool_calls.append(data)
-            arguments = data.get("arguments")
-            if (
-                data.get("toolName") == "skill"
-                and isinstance(arguments, dict)
-                and arguments.get("skill") == skill
-            ):
-                skill_attempted = True
-                if boundary == "prose":
-                    skill_loaded = True
-                elif isinstance(data.get("toolCallId"), str):
-                    pending_skills.add(data["toolCallId"])
-            if data.get("toolName") == "view" and isinstance(arguments, dict):
-                requested = arguments.get("path")
+    with log.open("rb") as stream:
+        records = measurement.jsonl_records(stream, grammar="telemetry")
+        for _, event in records:
+            if event is None:
+                raise ValueError("structured log event must be an object")
+            event_type = event.get("type")
+            data = event.get("data", {})
+            if not isinstance(data, dict):
+                raise ValueError(f"{event_type} data must be an object")
+            if isinstance(data.get("model"), str):
+                models.add(data["model"])
+            if event_type == "assistant.message":
+                content = data.get("content")
+                if isinstance(content, str) and content.strip():
+                    messages.append(content)
+            elif event_type == "tool.execution_start":
+                validate_tool_allowlist(data, allowed_tools)
+                tool_calls.append(data)
+                arguments = data.get("arguments")
+                if (
+                    data.get("toolName") == "skill"
+                    and isinstance(arguments, dict)
+                    and arguments.get("skill") == skill
+                ):
+                    skill_attempted = True
+                    if boundary == "prose":
+                        skill_loaded = True
+                    elif isinstance(data.get("toolCallId"), str):
+                        pending_skills.add(data["toolCallId"])
+                if data.get("toolName") == "view" and isinstance(arguments, dict):
+                    call_id = data.get("toolCallId")
+                    if isinstance(call_id, str):
+                        view = resolve_view(arguments, cwd)
+                        if view is not None:
+                            pending_views[call_id] = view
+            elif event_type == "tool.execution_complete":
                 call_id = data.get("toolCallId")
-                if isinstance(requested, str) and isinstance(call_id, str):
-                    resolved = Path(requested).expanduser()
-                    if not resolved.is_absolute():
-                        resolved = cwd / resolved
-                    resolved = resolved.resolve()
-                    try:
-                        resolved.relative_to(cwd.resolve())
-                        inside = True
-                    except ValueError:
-                        inside = False
-                    pending_views[call_id] = (requested, str(resolved), inside)
-        elif event_type == "tool.execution_complete":
-            call_id = data.get("toolCallId")
-            if isinstance(call_id, str) and call_id in pending_skills and data.get("success") is True:
-                skill_loaded = True
-            if (
-                isinstance(call_id, str)
-                and call_id in pending_views
-                and data.get("success") is True
-            ):
-                requested, resolved, inside = pending_views[call_id]
-                if not inside and boundary == "prose":
-                    raise ValueError(
-                        f"view escaped evaluation workdir: {requested}"
-                    )
-                viewed_paths.append(
-                    Path(resolved).relative_to(cwd.resolve()).as_posix()
-                    if inside else requested
-                )
-        elif event_type == "result":
-            result_event = event
+                if isinstance(call_id, str) and call_id in pending_skills and data.get("success") is True:
+                    skill_loaded = True
+                if (
+                    isinstance(call_id, str)
+                    and call_id in pending_views
+                    and data.get("success") is True
+                ):
+                    viewed_paths.append(successful_view_path(pending_views[call_id], cwd, boundary))
+            elif event_type == "result":
+                result_event = event
     if result_event is None or result_event.get("exitCode") != 0:
         raise ValueError(f"missing successful result event in {log}")
     if not messages:
@@ -607,15 +628,116 @@ def parse_run(
     }
 
 
+def parse_native_run(
+    content: BinaryIO | bytes | None, *, session_id: str, expected_model: str, cwd: Path,
+) -> dict:
+    """Validate one fresh source-quality session; the caller owns process success."""
+    measurement.session_uuid(session_id)
+    if not content:
+        raise ValueError("missing native session events")
+
+    event_digest = hashlib.sha256()
+    event_count = 0
+    started = False
+    shutdown = False
+    answer = None
+    models: set[str] = set()
+    calls: set[str] = set()
+    pending: dict[str, dict] = {}
+    viewed_paths: list[str] = []
+    for index, (raw, event) in enumerate(measurement.jsonl_records(content, grammar="native"), 1):
+        event_digest.update(raw)
+        event_count = index
+        if event is None:
+            raise ValueError("native event must be an object")
+        kind, data = event.get("type"), event.get("data")
+        if not isinstance(kind, str) or not kind or not isinstance(data, dict):
+            raise ValueError("native event requires a type and object data")
+        if shutdown:
+            raise ValueError("native events continue after session shutdown")
+        if kind == "session.start":
+            if started or index != 1:
+                raise ValueError("native session requires exactly one initial start")
+            if data.get("sessionId") != session_id:
+                raise ValueError("native session identity mismatch")
+            if data.get("selectedModel") != expected_model:
+                raise ValueError("native session selected model mismatch")
+            started = True
+        elif not started:
+            raise ValueError("native session is missing its initial start")
+        elif kind in {"session.resume", "result"}:
+            raise ValueError("native quality events must describe a fresh session")
+        elif kind == "session.shutdown":
+            if pending:
+                raise ValueError("native session has missing tool completions")
+            shutdown = True
+        elif kind == "assistant.message":
+            if data.get("model") != expected_model:
+                raise ValueError("native assistant message model mismatch")
+            models.add(data["model"])
+            if not isinstance(data.get("content"), str):
+                raise ValueError("native assistant message content must be a string")
+            if "toolRequests" in data and not isinstance(data["toolRequests"], list):
+                raise ValueError("native assistant tool requests must be an array")
+            answer = None if data.get("toolRequests") else data["content"]
+        elif kind in {"user.message", "assistant.turn_start"}:
+            answer = None
+        elif kind == "tool.execution_start":
+            validate_tool_allowlist(data, {"view"})
+            call_id = data.get("toolCallId")
+            if not isinstance(call_id, str) or not call_id.strip() or call_id in calls:
+                raise ValueError("native tool start requires a unique call identity")
+            calls.add(call_id)
+            pending[call_id] = data
+            answer = None
+        elif kind == "tool.execution_complete":
+            call_id = data.get("toolCallId")
+            if not isinstance(call_id, str) or call_id not in pending:
+                raise ValueError("native tool completion has no pending start")
+            if type(data.get("success")) is not bool:
+                raise ValueError("native tool completion requires boolean success")
+            start = pending.pop(call_id)
+            if "toolName" in data and data["toolName"] != start["toolName"]:
+                raise ValueError("native tool completion name mismatch")
+            if data["success"]:
+                view = resolve_view(start.get("arguments"), cwd)
+                if view is None or not view[0].strip():
+                    raise ValueError("successful native view requires a source path")
+                path = successful_view_path(view, cwd, "prose")
+                if not Path(view[1]).exists():
+                    raise ValueError("successful native view source is unavailable")
+                viewed_paths.append(path)
+            answer = None
+    if not started or not shutdown:
+        raise ValueError("native session is missing its terminal shutdown")
+    if models != {expected_model} or not isinstance(answer, str) or not answer.strip():
+        raise ValueError("native session requires a nonempty final assistant message")
+    return {
+        "answer": answer, "models": sorted(models), "viewed_paths": viewed_paths,
+        "tool_calls": len(calls), "event_count": event_count,
+        "event_sha256": event_digest.hexdigest(),
+    }
+
+
 def parse_json_output(content: str) -> dict:
     candidate = content.strip()
     fenced = re.search(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", candidate)
     if fenced:
         candidate = fenced.group(1)
-    value = json.loads(candidate)
+    try:
+        value = json.loads(candidate)
+    except RecursionError as error:
+        raise ValueError("JSON output nesting exceeds parser limits") from error
     if not isinstance(value, dict):
         raise ValueError("JSON output must be an object")
     return value
+
+
+def partition_fields(value: dict, fields: set[str]) -> tuple[dict, list[list[str | int]]]:
+    return (
+        {key: item for key, item in value.items() if key in fields},
+        [[key] for key in value if key not in fields],
+    )
 
 
 def copy_packet(bundle: Path, workdir: Path) -> dict:
@@ -699,7 +821,13 @@ def run_copilot(
     run_home: Path,
     timeout_seconds: int,
     allow_skill: bool,
+    measurement_path: Path | None = None,
+    role: str = "candidate",
+    phase: str = "candidate",
+    cli_version: str | None = None,
 ) -> list[str]:
+    measurement.session_uuid(session_id)
+    started_at, started_clock = utc_instant(), time.monotonic()
     available_tools = "skill,view" if allow_skill else "view"
     command = [
         str(copilot),
@@ -729,34 +857,60 @@ def run_copilot(
     else:
         command.extend(["--session-id", session_id])
     env = os.environ.copy()
-    if home_mode == "isolated":
-        if not env.get("COPILOT_GITHUB_TOKEN"):
-            raise ValueError(
-                "--home-mode isolated requires COPILOT_GITHUB_TOKEN"
-            )
-        run_home.mkdir(parents=True, exist_ok=True)
-        env["COPILOT_HOME"] = str(run_home)
+    home = run_home if home_mode == "isolated" else Path(
+        env.get("COPILOT_HOME", str(Path.home() / ".copilot")))
+    outcome = "failed"
+    previous = None
+    previous_error = None
+
+    @contextmanager
+    def capture_events():
+        if previous_error:
+            raise measurement.MeasurementError(previous_error)
+        with measurement.host_events(home, session_id) as content:
+            if previous is not None:
+                measurement.verify_prefix(content, previous)
+            yield content
+
     try:
-        completed = subprocess.run(
-            command,
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout_seconds,
-            check=False,
+        if home_mode == "isolated":
+            if not env.get("COPILOT_GITHUB_TOKEN"):
+                raise ValueError("--home-mode isolated requires COPILOT_GITHUB_TOKEN")
+            run_home.mkdir(parents=True, exist_ok=True)
+            env["COPILOT_HOME"] = str(run_home)
+        if resume:
+            try:
+                with measurement.host_events(home, session_id) as content:
+                    previous = measurement.snapshot_events(content)
+            except measurement.MeasurementError as error:
+                previous_error = str(error)
+        try:
+            completed = subprocess.run(
+                command, env=env, text=True, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, timeout=timeout_seconds, check=False,
+            )
+        except subprocess.TimeoutExpired as error:
+            outcome = "timed_out"
+            output = error.output or ""
+            if isinstance(output, bytes):
+                output = output.decode("utf-8", errors="replace")
+            log.write_text(output, encoding="utf-8")
+            raise ValueError(f"copilot timed out after {timeout_seconds}s; see {log}") from error
+        log.write_text(completed.stdout, encoding="utf-8")
+        if completed.returncode != 0:
+            raise ValueError(f"copilot exited {completed.returncode}; see {log}")
+        outcome = "completed"
+    except KeyboardInterrupt:
+        outcome = "interrupted"
+        raise
+    finally:
+        measurement.collect(
+            destination=measurement_path or log.with_suffix(".measurement.json"),
+            session_id=session_id, role=role, phase=phase, model=model, effort=effort,
+            cli_version=cli_version, log=log,
+            capture=capture_events, source="host_eventfile",
+            started_at=started_at, started_clock=started_clock, outcome=outcome,
         )
-    except subprocess.TimeoutExpired as error:
-        output = error.output or ""
-        if isinstance(output, bytes):
-            output = output.decode("utf-8", errors="replace")
-        log.write_text(output, encoding="utf-8")
-        raise ValueError(
-            f"copilot timed out after {timeout_seconds}s; see {log}"
-        ) from error
-    log.write_text(completed.stdout, encoding="utf-8")
-    if completed.returncode != 0:
-        raise ValueError(f"copilot exited {completed.returncode}; see {log}")
     return command
 
 
@@ -782,20 +936,18 @@ def command_record(command: list[str], prompt_sha256: str) -> list[str]:
     return recorded
 
 
+JUDGMENT_FIELDS = {
+    "verdict", "confidence", "matched", "missed", "overcorrections",
+    "generalized_skill_defect",
+}
+
+
 def validate_judgment(judgment: dict, model: str) -> None:
-    expected = {
-        "verdict",
-        "confidence",
-        "matched",
-        "missed",
-        "overcorrections",
-        "generalized_skill_defect",
-    }
-    if set(judgment) != expected:
+    if set(judgment) != JUDGMENT_FIELDS:
         raise ValueError(f"invalid judge fields from {model}: {sorted(judgment)}")
-    if judgment["verdict"] not in {"PASS", "FAIL", "UNANSWERABLE"}:
+    if not isinstance(judgment["verdict"], str) or judgment["verdict"] not in {"PASS", "FAIL", "UNANSWERABLE"}:
         raise ValueError(f"invalid judge verdict from {model}")
-    if judgment["confidence"] not in {"LOW", "MEDIUM", "HIGH"}:
+    if not isinstance(judgment["confidence"], str) or judgment["confidence"] not in {"LOW", "MEDIUM", "HIGH"}:
         raise ValueError(f"invalid judge confidence from {model}")
     for field in ("matched", "missed", "overcorrections"):
         if not isinstance(judgment[field], list) or not all(
@@ -826,20 +978,21 @@ def write_failure_receipt(
     stage: str,
     error: Exception,
     log: Path,
+    selected_response: dict | None = None,
 ) -> None:
-    write_json(
-        path,
-        {
-            "schema_version": 1,
-            "status": "FAILED",
-            "case_id": case_id,
-            "case_revision": case_revision,
-            "stage": stage,
-            "error_type": type(error).__name__,
-            "error": str(error),
-            "raw_log_sha256": digest(log) if log.is_file() else None,
-        },
-    )
+    receipt = {
+        "schema_version": 1,
+        "status": "FAILED",
+        "case_id": case_id,
+        "case_revision": case_revision,
+        "stage": stage,
+        "error_type": type(error).__name__,
+        "error": str(error),
+        "raw_log_sha256": digest(log) if log.is_file() else None,
+    }
+    if selected_response is not None:
+        receipt["selected_response"] = selected_response
+    write_json(path, receipt)
 
 
 def harness_identity(destination: Path | None = None) -> dict:
@@ -881,6 +1034,8 @@ def run_judges(
             prompt_body = (frozen / judge["prompt_file"]).read_text(encoding="utf-8")
             if JUDGE_RUNTIME_CONTRACT not in prompt_body:
                 prompt_body = f"{prompt_body.rstrip()}\n\n{JUDGE_RUNTIME_CONTRACT}"
+            if JUDGE_OUTPUT_CONTRACT not in prompt_body:
+                prompt_body = f"{prompt_body.rstrip()}\n\n{JUDGE_OUTPUT_CONTRACT}"
             repository_contract = ""
             if definition.get("case_type") == "repository-task":
                 repository_contract = (
@@ -901,23 +1056,35 @@ def run_judges(
             prompt_path = run_root / f"judge-{slug}-prompt.md"
             prompt_path.write_text(prompt, encoding="utf-8")
             log = run_root / f"judge-{slug}-raw.jsonl"
+            selected_response = None
             try:
                 command = run_copilot(
                     copilot=copilot, plugin_dir=pinned_plugin, cwd=workdir, prompt=prompt,
                     model=judge_model, effort="high", log=log, session_id=str(uuid.uuid4()),
                     resume=False, home_mode=home_mode, run_home=run_root / f"judge-{slug}-home",
                     timeout_seconds=timeout_seconds, allow_skill=False,
+                    measurement_path=run_root / "measurements" / f"behavioral-{slug}.json",
+                    role="behavioral_judge", phase=f"judge:{judge_model}",
+                    cli_version=read_json(run_root / "copilot-identity.json").get("version"),
                 )
                 parsed = parse_run(
                     log, skill=definition["target_skill"], expected_model=judge_model,
                     cwd=workdir, require_skill=False,
                 )
-                judgment = parse_json_output(parsed["answer"])
+                response_path = run_root / f"judge-{slug}-response.json"
+                measurement.write_once(response_path, {"answer": parsed["answer"]})
+                selected_response = {
+                    "path": response_path.relative_to(run_root).as_posix(),
+                    "sha256": digest(response_path),
+                }
+                judgment, ignored = partition_fields(
+                    parse_json_output(parsed["answer"]), JUDGMENT_FIELDS)
                 validate_judgment(judgment, judge_model)
             except (OSError, ValueError, json.JSONDecodeError) as error:
                 write_failure_receipt(
                     run_root / f"judge-{slug}-failure-receipt.json", case_id=case_id,
                     case_revision=case_revision, stage=f"judge:{judge_model}", error=error, log=log,
+                    selected_response=selected_response,
                 )
                 raise
             judgment["model"] = judge_model
@@ -935,6 +1102,8 @@ def run_judges(
                 "timeout_seconds": timeout_seconds, "observed_models": parsed["models"],
                 "result_exit_code": parsed["result_exit_code"], "viewed_paths": parsed["viewed_paths"],
                 "command": command_record(command, digest(prompt_path)),
+                "selected_response": selected_response,
+                "supplemental_fields_ignored": ignored,
                 "candidate_artifacts": [
                     {"path": artifact.relative_to(run_root).as_posix(), "sha256": digest(artifact)}
                     for artifact in candidate_artifacts
@@ -944,7 +1113,7 @@ def run_judges(
     return judgments
 
 
-def run_case(
+def _run_case(
     root: Path,
     case_id: str,
     plugin_dir: Path,
@@ -958,6 +1127,10 @@ def run_case(
     *,
     arm: str = "skill",
     expected_revision: str | None = None,
+    quality_review: bool = False,
+    run_root: Path,
+    timeline: measurement.Timeline,
+    resources: ExitStack,
 ) -> Path:
     if timeout_seconds <= 0:
         raise ValueError("timeout-seconds must be positive")
@@ -966,23 +1139,28 @@ def run_case(
     if expected_revision is not None and digest(frozen / "case-manifest.json") != expected_revision:
         raise ValueError("frozen case changed during suite; refusing a different-byte retry")
     definition = read_json(frozen / "case.json")
+    measurement.write_once(run_root / "run-context.json", {
+        "schema_version": 1, "case_revision": digest(frozen / "case-manifest.json"),
+        "case_type": definition.get("case_type", "prose"),
+        "judge_models": definition["judge"].get("models", DEFAULT_JUDGES),
+    })
     repository = definition.get("case_type") == "repository-task"
+    if quality_review and not repository:
+        raise ValueError("--quality-review requires a repository-task case")
     if arm not in {"baseline", "skill"} or (arm == "baseline" and not repository):
         raise ValueError("baseline arm requires a repository-task case")
     judge = definition["judge"]
     judge_models = judge.get("models", DEFAULT_JUDGES)
+    if not isinstance(judge_models, list) or not all(isinstance(value, str) for value in judge_models):
+        raise ValueError("judge models must be a string array")
+    judge_slugs = [re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-") for value in judge_models]
+    if len(judge_slugs) != len(set(judge_slugs)):
+        raise ValueError("judge models must have distinct artifact names")
     judge_families = {model_family(value) for value in judge_models}
     if judge_families != {"claude", "gpt"}:
         raise ValueError(
             "an evaluation requires at least one Claude and one GPT judge"
         )
-    run_root = (
-        root
-        / "runs"
-        / f"{utc_stamp()}-{uuid.uuid4().hex[:8]}"
-        / case_id
-    )
-    run_root.mkdir(parents=True)
     pinned_plugin = run_root / "target-plugin"
     case_revision = digest(frozen / "case-manifest.json")
     try:
@@ -1002,6 +1180,7 @@ def run_case(
                             "modules": running_harness["modules"]}
         write_json(run_root / "harness-identity.json", recorded_harness)
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        timeline.end_stage("failed")
         if not repository:
             raise
         invalid = {
@@ -1021,6 +1200,7 @@ def run_case(
         from repository_task import execute_repository
         result = execute_repository(
             root, case_id, frozen, run_root, pinned_plugin, model, effort, timeout_seconds, arm,
+            timeline=timeline,
         )
         if result["execution_status"] != "INVALID":
             artifacts = [
@@ -1028,6 +1208,7 @@ def run_case(
                 if path.is_file() and "target-plugin" not in path.relative_to(run_root).parts
             ]
             try:
+                timeline.switch("behavioral_judging")
                 run_judges(
                     frozen=frozen, definition=definition, run_root=run_root,
                     pinned_plugin=pinned_plugin, copilot=copilot, home_mode="isolated",
@@ -1035,7 +1216,21 @@ def run_case(
                 )
                 result["behavioral_verdict"] = result_from_run(run_root, behavioral_only=True)
             except (OSError, ValueError, json.JSONDecodeError) as error:
+                timeline.end_stage("failed")
                 result["behavioral_error"] = {"type": type(error).__name__, "message": str(error)}
+        if quality_review:
+            from quality_review import review_repository
+            timeline.switch("quality_review")
+            assessment = review_repository(
+                frozen=frozen, run_root=run_root, definition=definition, copilot=copilot,
+                timeout_seconds=timeout_seconds,
+            )
+            result["quality_assessment"] = {
+                "path": "quality/assessment.json", "complete": assessment["complete"],
+                "judgments": [item.get("judgment") for item in assessment["reviewers"]],
+            }
+            if not assessment["complete"]:
+                timeline.end_stage("failed")
         write_json(run_root / "repository-result.json", result)
         (run_root / "REPORT.md").write_text(
             f"# Repository evaluation: {case_id}\n\n"
@@ -1050,10 +1245,11 @@ def run_case(
         return run_root
     session_id = str(uuid.uuid4())
     phase_outputs = []
-    runtime = tempfile.TemporaryDirectory(prefix="skill-evaluation-")
-    runtime_root = Path(runtime.name)
+    runtime = resources.enter_context(tempfile.TemporaryDirectory(prefix="skill-evaluation-"))
+    runtime_root = Path(runtime)
 
     for phase in definition["phases"]:
+        timeline.switch("preparation")
         phase_id = phase["id"]
         workdir = runtime_root / f"{phase_id}-workdir"
         manifest = copy_packet(frozen / phase_id, workdir)
@@ -1067,6 +1263,7 @@ def run_case(
         prompt_path.write_text(prompt, encoding="utf-8")
         log = run_root / f"{phase_id}-raw.jsonl"
         try:
+            timeline.switch("candidate")
             command = run_copilot(
                 copilot=copilot,
                 plugin_dir=pinned_plugin,
@@ -1081,6 +1278,9 @@ def run_case(
                 run_home=run_root / "candidate-home",
                 timeout_seconds=timeout_seconds,
                 allow_skill=True,
+                measurement_path=run_root / "measurements" / f"candidate-{phase_id}.json",
+                role="candidate", phase=phase_id,
+                cli_version=read_json(run_root / "copilot-identity.json").get("version"),
             )
             run_result = parse_run(
                 log,
@@ -1106,7 +1306,6 @@ def run_case(
                 error=error,
                 log=log,
             )
-            runtime.cleanup()
             raise
         receipt = {
             "schema_version": 1,
@@ -1136,9 +1335,11 @@ def run_case(
         write_json(receipt_path, receipt)
         phase_outputs.append((phase_id, output_path, receipt_path))
 
+    timeline.switch("cleanup")
     for phase in definition["phases"]:
         remove_tree(runtime_root / f"{phase['id']}-workdir", runtime_root)
 
+    timeline.switch("behavioral_judging")
     judgments = run_judges(
         frozen=frozen, definition=definition, run_root=run_root,
         pinned_plugin=pinned_plugin, copilot=copilot, home_mode=home_mode,
@@ -1188,8 +1389,82 @@ def run_case(
         ]
     )
     (run_root / "REPORT.md").write_text("\n".join(report) + "\n", encoding="utf-8")
-    runtime.cleanup()
     return run_root
+
+
+def run_case(
+    root: Path, case_id: str, plugin_dir: Path, copilot: Path, model: str, effort: str,
+    home_mode: str, timeout_seconds: int, copilot_identity_record: dict | None = None,
+    harness_identity_record: dict | None = None, *, arm: str = "skill",
+    expected_revision: str | None = None, quality_review: bool = False,
+    suite_owner: dict | None = None,
+) -> Path:
+    timeline = measurement.Timeline()
+    ensure_case_id(case_id)
+    run_root = root / "runs" / f"{utc_stamp()}-{uuid.uuid4().hex[:8]}" / case_id
+    run_root.mkdir(parents=True)
+    attempt = {
+        "schema_version": 1, "run_id": run_root.parent.name, "case_id": case_id,
+        "model": model, "effort": effort, "timeout_seconds": timeout_seconds,
+        "arm": arm, "home_mode": home_mode, "quality_review": quality_review,
+        "suite_owner": suite_owner, "started_at": timeline.started_at,
+    }
+    measurement.write_once(run_root / "attempt.json", attempt)
+    status = "failed"
+    resources = ExitStack()
+    try:
+        result = _run_case(
+            root, case_id, plugin_dir, copilot, model, effort, home_mode, timeout_seconds,
+            copilot_identity_record, harness_identity_record, arm=arm,
+            expected_revision=expected_revision, quality_review=quality_review,
+            run_root=run_root, timeline=timeline, resources=resources,
+        )
+        status = "completed"
+        return result
+    except KeyboardInterrupt:
+        status = "interrupted"
+        raise
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        write_failure_receipt(
+            run_root / "attempt-failure-receipt.json", case_id=case_id,
+            case_revision=expected_revision, stage="attempt", error=error,
+            log=run_root / "absent.log",
+        )
+        # A suite can retain ownership even when no Path is returned.
+        error.run_path = str(run_root.relative_to(root))
+        raise
+    finally:
+        timeline.switch("cleanup", status=status)
+        try:
+            resources.close()
+        finally:
+            measurement.write_once(run_root / "timing.json", timeline.finish(status))
+        reporting_started, reporting_clock = utc_instant(), time.monotonic()
+        records = [read_json(path) for path in sorted((run_root / "measurements").glob("*.json"))]
+        try:
+            summary = measurement.accounting(records)
+        except measurement.MeasurementError as error:
+            summary = {"schema_version": 1, "error": str(error)}
+        measurement.write_once(run_root / "accounting.json", summary)
+        report = run_root / "REPORT.md"
+        if report.is_file():
+            timing = read_json(run_root / "timing.json")
+            total = summary.get("total", {})
+            with report.open("a", encoding="utf-8") as stream:
+                stream.write(
+                    "\n## Measurement\n\n"
+                    f"- Total attempt wall time, including cleanup: {timing['elapsed_seconds']:.3f} seconds\n"
+                    f"- Exact total credits: {total.get('credits')}; "
+                    f"observed subtotal: {total.get('observed_credits')}\n"
+                    f"- Measurement errors: {summary.get('error') or len(summary.get('errors', []))}\n"
+                    "- Role-separated usage and coverage: `accounting.json`, `measurements/`.\n"
+                    "- Quality assessment, when requested: `quality/assessment.json`.\n"
+                )
+        measurement.write_once(run_root / "reporting-timing.json", {
+            "schema_version": 1, "started_at": reporting_started, "completed_at": utc_instant(),
+            "elapsed_seconds": time.monotonic() - reporting_clock,
+            "scope": "post-execution measurement aggregation and report rendering",
+        })
 
 
 def result_from_run(run_root: Path, *, behavioral_only: bool = False) -> str:
@@ -1220,6 +1495,7 @@ def run_suite(
     max_attempts: int = 1,
     *,
     arm: str = "skill",
+    quality_review: bool = False,
 ) -> tuple[Path, bool]:
     if workers <= 0:
         raise ValueError("workers must be positive")
@@ -1277,6 +1553,10 @@ def run_suite(
                     harness_identity_record,
                     arm=arm,
                     expected_revision=revisions[case_id],
+                    quality_review=quality_review,
+                    suite_owner={"suite_path": str(suite_root.relative_to(root)),
+                                 "case_id": case_id, "attempt": attempt_number,
+                                 "max_attempts": max_attempts},
                 ): case_id
                 for case_id in pending
             }
@@ -1289,6 +1569,10 @@ def run_suite(
                         "result": result_from_run(run_root),
                         "run_path": str(run_root.relative_to(root)),
                     }
+                    for name in ("accounting", "timing"):
+                        artifact = run_root / f"{name}.json"
+                        if artifact.is_file():
+                            attempt[name] = read_json(artifact)
                     execution_path = run_root / "repository-result.json"
                     if not execution_path.is_file():
                         execution_path = run_root / "execution-result.json"
@@ -1308,6 +1592,12 @@ def run_suite(
                         "error_type": type(error).__name__,
                         "error": str(error),
                     }
+                    if getattr(error, "run_path", None):
+                        attempt["run_path"] = error.run_path
+                        for name in ("accounting", "timing"):
+                            artifact = root / error.run_path / f"{name}.json"
+                            if artifact.is_file():
+                                attempt[name] = read_json(artifact)
                     attempts_by_case[case_id].append(attempt)
                     if attempt_number < max_attempts:
                         next_pending.append(case_id)
@@ -1375,6 +1665,10 @@ def run_suite(
         "pass_at_1": first_passes / len(valid_first) if valid_first else None,
         "coverage": len(valid_first) / len(first_attempts) if first_attempts else None,
     }
+    from evaluation_history import cost_summary
+    cost_rows = [{"accounting": attempt.get("accounting", {})}
+                 for attempts in attempts_by_case.values() for attempt in attempts]
+    suite_accounting = {role: cost_summary(cost_rows, role) for role in ("candidate", "evaluation", "total")}
     write_json(
         suite_root / "suite-result.json",
         {
@@ -1388,7 +1682,10 @@ def run_suite(
             "max_attempts": max_attempts,
             "home_mode": home_mode,
             "arm": arm,
+            "quality_review": quality_review,
+            "timeout_seconds": timeout_seconds,
             "repository_executable": executable_summary,
+            "accounting": suite_accounting,
             "harness_identity": harness_identity_record,
             "plugin_dir": str(plugin_dir),
             "plugin_snapshot": str(suite_plugin),
@@ -1413,6 +1710,10 @@ def run_suite(
         f"- Cases passing after retry: "
         f"{sum(item['passed_after_retry'] for item in results)}",
         f"- Authentication home: `{home_mode}`",
+        f"- Exact total credits: {suite_accounting['total']['credits']}; "
+        f"observed subtotal: {suite_accounting['total']['observed_credits']}",
+        f"- Complete credit coverage: {suite_accounting['total']['complete_attempts']} / "
+        f"{suite_accounting['total']['attempts']} attempts",
         "",
         "## Cases",
         "",
@@ -1448,6 +1749,11 @@ def run_suite(
         "\n".join(report) + "\n", encoding="utf-8"
     )
     suite_runtime.cleanup()
+    measurement.write_once(suite_root / "suite-timing.json", {
+        "schema_version": 1, "started_at": started_at, "completed_at": utc_instant(),
+        "elapsed_seconds": time.monotonic() - started_clock,
+        "scope": "suite preparation, attempts, reporting and cleanup",
+    })
     return suite_root, passed
 
 
@@ -1491,6 +1797,7 @@ def parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--timeout-seconds", type=int, default=1200)
     run.add_argument("--arm", choices=("baseline", "skill"), default="skill")
+    run.add_argument("--quality-review", action="store_true")
 
     suite = sub.add_parser("run-suite")
     suite.add_argument("corpus", type=Path)
@@ -1508,6 +1815,13 @@ def parser() -> argparse.ArgumentParser:
     suite.add_argument("--workers", type=int, default=3)
     suite.add_argument("--max-attempts", type=int, default=1)
     suite.add_argument("--arm", choices=("baseline", "skill"), default="skill")
+    suite.add_argument("--quality-review", action="store_true")
+    history = sub.add_parser("history")
+    history.add_argument("corpus", type=Path)
+    history.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    history.add_argument("--case")
+    history.add_argument("--arm", choices=("baseline", "skill"))
+    history.add_argument("--model")
     return result
 
 
@@ -1545,6 +1859,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.home_mode,
                     args.timeout_seconds,
                     arm=args.arm,
+                    quality_review=args.quality_review,
                 )
             print(run_path)
             repository_result = run_path / "repository-result.json"
@@ -1565,10 +1880,15 @@ def main(argv: list[str] | None = None) -> int:
                 args.case,
                 args.max_attempts,
                 arm=args.arm,
+                quality_review=args.quality_review,
             )
             print(suite_root)
             if not passed:
                 return 1
+        elif args.command == "history":
+            from evaluation_history import history, markdown
+            report = history(root, case_id=args.case, arm=args.arm, model=args.model)
+            print(json.dumps(report, indent=2, allow_nan=False) if args.format == "json" else markdown(report))
     except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as error:
         print(f"skill-evaluation: {error}", file=sys.stderr)
         return 1

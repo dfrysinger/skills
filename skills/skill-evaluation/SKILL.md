@@ -145,6 +145,23 @@ invokes the unchanged skill. Their executable score, behavioral verdict, and
 first-attempt suite success are reported separately. Candidate timeouts are
 scored failures; retries do not improve pass@1.
 
+Every attempt records owned usage observations and full wall time, including
+failed invocations, judgments and cleanup. Missing credits remain unknown.
+For repository tasks, `--quality-review` adds paid, independent source-only
+shipping assessments without changing correctness or retry policy.
+
+Read local results with:
+
+```sh
+python3 "$SKILL_DIR/scripts/skill_eval.py" history CORPUS --format markdown
+python3 "$SKILL_DIR/scripts/skill_eval.py" history CORPUS --format json
+```
+
+See [`references/measurement.md`](references/measurement.md) for accounting
+coverage, resumed-session totals, quality evidence and matched history
+populations. Do not interpret a partial subtotal as a final bill or compare
+different task revisions as the same experiment.
+
 Complete when the report identifies the exact skill revision, case revision,
 candidate outputs, and independent judgments. After a skill change, completion
 also requires the maintained full suite to pass when one exists.

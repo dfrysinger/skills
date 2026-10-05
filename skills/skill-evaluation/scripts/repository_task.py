@@ -11,7 +11,11 @@ import subprocess
 import tempfile
 import time
 import uuid
+from contextlib import AbstractContextManager
 from pathlib import Path
+from typing import BinaryIO
+
+import measurement
 
 from skill_eval import (
     copy_packet, digest, frozen_case_path, read_json, resolve_under,
@@ -31,7 +35,7 @@ class InfrastructureError(RuntimeError):
 
 
 class CandidateStateError(ValueError):
-    """Candidate output cannot be represented as an ordinary source patch."""
+    """Candidate output cannot be represented as a source patch."""
 
 
 def scaffold_repository(case_dir: Path) -> None:
@@ -74,22 +78,64 @@ def scaffold_repository(case_dir: Path) -> None:
     write_json(case_dir / "case.json", definition)
 
 
-def ordinary_files(root: Path, *, skip_git: bool = False) -> list[Path]:
+def ordinary_files(root: Path, *, skip_git: bool = False,
+                   runtime_links: dict[str, str] | None = None,
+                   allow_source_links: bool = False) -> list[Path]:
     files = []
-    for directory, names, filenames in os.walk(root, followlinks=False):
-        if skip_git:
-            names[:] = [name for name in names if name != ".git"]
-            filenames = [name for name in filenames if name != ".git"]
+    directories = [root]
+    while directories:
+        # Classify nodes without os.walk's following directory-link stat.
+        with os.scandir(directories.pop()) as entries:
+            for entry in entries:
+                if skip_git and entry.name == ".git":
+                    continue
+                path = Path(entry.path)
+                mode = path.lstat().st_mode
+                relative = path.relative_to(root).as_posix()
+                if entry.name == ".git":
+                    raise ValueError(f"Git metadata is not repository evidence: {path}")
+                if stat.S_ISLNK(mode):
+                    if runtime_links is not None and relative in runtime_links:
+                        if runtime_links[relative] == os.readlink(path):
+                            continue
+                        raise ValueError(f"retargeted setup symlink: {path}")
+                    if not allow_source_links:
+                        raise ValueError(f"unsupported repository filesystem entry: {path}")
+                    files.append(path)
+                elif stat.S_ISDIR(mode):
+                    directories.append(path)
+                elif stat.S_ISREG(mode):
+                    files.append(path)
+                else:
+                    raise ValueError(f"unsupported repository filesystem entry: {path}")
+    return sorted(files)
+
+
+def observe_setup_links(frozen: Path, source: Path) -> list[dict[str, str]]:
+    frozen_paths = {
+        path.relative_to(frozen / "repository")
+        for path in ordinary_files(frozen / "repository")
+    }
+    links = []
+    for directory, names, filenames in os.walk(source, followlinks=False):
+        names[:] = [name for name in names if name != ".git"]
+        filenames = [name for name in filenames if name != ".git"]
         for name in [*names, *filenames]:
             path = Path(directory) / name
             mode = path.lstat().st_mode
-            if stat.S_ISLNK(mode) or not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+            if stat.S_ISLNK(mode):
+                relative = path.relative_to(source)
+                if any(
+                    frozen_path == relative or frozen_path.is_relative_to(relative)
+                    for frozen_path in frozen_paths
+                ):
+                    raise ValueError(
+                        f"setup-created symlink overlaps frozen source: {relative}"
+                    )
+                links.append({"path": relative.as_posix(), "target": os.readlink(path)})
+            elif not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
                 raise ValueError(f"unsupported repository filesystem entry: {path}")
-            if name == ".git":
-                raise ValueError(f"Git metadata is not repository evidence: {path}")
-            if stat.S_ISREG(mode):
-                files.append(path)
-    return sorted(files)
+    return links
 
 
 def validate_command(command: dict, *, graded: bool = False) -> None:
@@ -175,6 +221,7 @@ def validate_definition(definition: dict, root: Path, *, frozen: bool = False) -
 
 
 def command_result(command: list[str], log: Path, timeout: int) -> dict:
+    started_at = measurement.instant()
     started = time.monotonic()
     timed_out = False
     try:
@@ -191,6 +238,7 @@ def command_result(command: list[str], log: Path, timeout: int) -> dict:
         "command": command, "exit_code": code, "timed_out": timed_out,
         "elapsed_seconds": round(time.monotonic() - started, 3),
         "log": log.name, "raw_log_sha256": digest(log),
+        "started_at": started_at, "completed_at": measurement.instant(),
     }
     write_json(log.with_suffix(".receipt.json"), result)
     return result
@@ -296,6 +344,9 @@ class Container:
         self.checked(["docker", "rm", "--force", self.name], "remove")
         self.stopped = True
 
+    def usage_events(self, session_id: str) -> AbstractContextManager[BinaryIO | None]:
+        return measurement.container_events(self.name, session_id, stopped=self.stopped)
+
     def __exit__(self, exc_type, exc, traceback) -> None:
         self.close()
 
@@ -320,15 +371,25 @@ def git(repository: Path, arguments: list[str], *, input_bytes: bytes | None = N
     return result.stdout
 
 
-def copy_source(source: Path, destination: Path) -> None:
+def copy_source(source: Path, destination: Path,
+                runtime_links: dict[str, str] | None = None) -> None:
     destination.mkdir(parents=True, exist_ok=True)
-    for path in ordinary_files(source, skip_git=True):
+    for path in ordinary_files(source, skip_git=True, runtime_links=runtime_links,
+                               allow_source_links=True):
         target = destination / path.relative_to(source)
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
+        if stat.S_ISLNK(path.lstat().st_mode):
+            os.symlink(os.readlink(os.fsencode(path)), os.fsencode(target))
+        else:
+            shutil.copy2(path, target)
 
 
-def export_patch(frozen: Path, candidate: Path, patch: Path) -> None:
+def export_patch(frozen: Path, candidate: Path, patch: Path,
+                 setup_links: list[dict[str, str]] | None = None) -> None:
+    runtime_links = {
+        item["path"]: item["target"]
+        for item in setup_links or []
+    }
     with tempfile.TemporaryDirectory(prefix="skill-eval-export-") as directory:
         trusted = Path(directory) / "repository"
         copy_packet(frozen / "repository", trusted)
@@ -345,7 +406,7 @@ def export_patch(frozen: Path, candidate: Path, patch: Path) -> None:
                 else:
                     entry.unlink()
         try:
-            copy_source(candidate, trusted)
+            copy_source(candidate, trusted, runtime_links)
         except (PermissionError, ValueError) as error:
             raise CandidateStateError(f"candidate source export failed: {error}") from error
         git(trusted, ["add", "--all", "--force"])
@@ -356,7 +417,7 @@ def export_patch(frozen: Path, candidate: Path, patch: Path) -> None:
 def apply_patch(repository: Path, patch: Path) -> None:
     if patch.stat().st_size:
         git(repository, ["apply", "--binary", "--whitespace=nowarn", "-"], input_bytes=patch.read_bytes())
-    ordinary_files(repository)
+    ordinary_files(repository, allow_source_links=True)
 
 
 def completed_check(record: dict, command: dict, artifacts: Path) -> bool:
@@ -399,9 +460,7 @@ def grade(frozen: Path, task: dict, artifacts: Path, patch: Path | None = None) 
 
 
 def check_candidate_setup(frozen: Path, task: dict, artifacts: Path,
-                          patch: Path | None = None) -> list[dict]:
-    if not task["candidate_setup"]:
-        return []
+                          patch: Path | None = None) -> dict:
     artifacts.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".setup-", dir=artifacts) as directory:
         source = Path(directory) / "repository"
@@ -409,20 +468,36 @@ def check_candidate_setup(frozen: Path, task: dict, artifacts: Path,
         if patch is not None:
             apply_patch(source, patch)
         records = []
-        with Container(task["image"], [(source, "/workspace/repo", True)], artifacts) as container:
-            for index, command in enumerate(task["candidate_setup"]):
-                record = container.execute(command, f"setup-{index}")
-                records.append(record)
-                if record["exit_code"] != 0:
-                    break
-        return records
+        if task["candidate_setup"]:
+            with Container(task["image"], [(source, "/workspace/repo", True)], artifacts) as container:
+                for index, command in enumerate(task["candidate_setup"]):
+                    record = container.execute(command, f"setup-{index}")
+                    records.append(record)
+                    if record["exit_code"] != 0:
+                        raise InfrastructureError("candidate setup failed during admission")
+        links = observe_setup_links(frozen, source)
+        write_json(artifacts / "setup-runtime-links.json", {
+            "schema_version": 1,
+            "links": links,
+        })
+        exported_patch = artifacts / "candidate.patch"
+        export_patch(frozen, source, exported_patch, links)
+        return {
+            "commands": records,
+            "runtime_links": links,
+            "patch": {
+                "path": exported_patch.name,
+                "sha256": digest(exported_patch),
+            },
+        }
 
 
 def harness_sources() -> list[dict]:
     directory = Path(__file__).resolve().parent
     return [
         {"path": name, "sha256": digest(directory / name)}
-        for name in ("skill_eval.py", "repository_task.py")
+        for name in ("skill_eval.py", "repository_task.py", "measurement.py",
+                     "quality_review.py", "evaluation_history.py")
     ]
 
 
@@ -450,9 +525,14 @@ def validate_repository_case(root: Path, case_id: str) -> Path:
             frozen, task, artifacts / "candidate-setup-reference",
             frozen / task["admission"]["reference_patch"],
         )
-        base = grade(frozen, task, artifacts / "base")
-        reference = grade(frozen, task, artifacts / "reference",
-                          frozen / task["admission"]["reference_patch"])
+        base = grade(
+            frozen, task, artifacts / "base",
+            artifacts / "candidate-setup-base" / setup_base["patch"]["path"],
+        )
+        reference = grade(
+            frozen, task, artifacts / "reference",
+            artifacts / "candidate-setup-reference" / setup_reference["patch"]["path"],
+        )
         failure = task["admission"]["base_target_failure"]
         check = base["target"]["check"]
         intended_failure = bool(
@@ -463,7 +543,6 @@ def validate_repository_case(root: Path, case_id: str) -> Path:
         valid = (
             intended_failure and all(item["setup_ok"] for item in base.values())
             and base["regression"]["passed"] and all(item["passed"] for item in reference.values())
-            and all(item["exit_code"] == 0 for item in setup_base + setup_reference)
         )
         receipt.update(status="PASS" if valid else "INVALID",
                        base=base, reference=reference, intended_base_failure=intended_failure,
@@ -500,7 +579,8 @@ def require_admission(root: Path, case_id: str, binding: dict) -> Path:
     raise ValueError("matching successful admission required; run validate-case")
 
 
-def candidate_command(model: str, effort: str, prompt: str, arm: str) -> list[str]:
+def candidate_command(model: str, effort: str, prompt: str, arm: str,
+                      session_id: str | None = None) -> list[str]:
     tools = LOCAL_TOOLS + (",skill" if arm == "skill" else "")
     command = [
         "copilot", "-C", "/workspace/repo", "-p", prompt,
@@ -509,7 +589,8 @@ def candidate_command(model: str, effort: str, prompt: str, arm: str) -> list[st
         "--allow-all-paths", "--no-custom-instructions", "--disable-builtin-mcps",
         "--no-remote", "--no-remote-export", "--no-auto-update", "--no-bash-env",
         "--no-ask-user", "--no-color", "--output-format", "json", "--log-level", "error",
-        "--secret-env-vars=COPILOT_GITHUB_TOKEN", "--session-id", str(uuid.uuid4()),
+        "--secret-env-vars=COPILOT_GITHUB_TOKEN", "--session-id",
+        measurement.session_uuid(session_id or str(uuid.uuid4())),
     ]
     if arm == "skill":
         command += ["--plugin-dir", "/plugin"]
@@ -519,10 +600,13 @@ def candidate_command(model: str, effort: str, prompt: str, arm: str) -> list[st
 def execute_repository(
     root: Path, case_id: str, frozen: Path, run_root: Path, plugin: Path,
     model: str, effort: str, timeout_seconds: int, arm: str,
+    *, timeline: measurement.Timeline | None = None,
 ) -> dict:
     from skill_eval import parse_run, validate_candidate
 
     started = time.monotonic()
+    owned_timeline = timeline is None
+    timeline = timeline or measurement.Timeline()
     task = read_json(frozen / "case.json")["repository_task"]
     definition = read_json(frozen / "case.json")
     result = {
@@ -538,6 +622,8 @@ def execute_repository(
     }
     stage = "admission"
     patch = run_root / "candidate.patch"
+    setup_links: list[dict[str, str]] = []
+    candidate_started = False
     try:
         image = image_identity(task["image"])
         result["image"] = image
@@ -585,56 +671,94 @@ def execute_repository(
                         record = container.execute(command, f"setup-{index}")
                         if record["exit_code"] != 0:
                             raise ValueError("candidate setup failed before candidate execution")
+                    stage = "candidate_setup_observation"
+                    setup_links = observe_setup_links(frozen, repository)
+                    write_json(run_root / "candidate" / "setup-runtime-links.json", {
+                        "schema_version": 1,
+                        "links": setup_links,
+                    })
                     stage = "candidate"
-                    command = candidate_command(model, effort, prompt, arm)
-                    record = container.execute(
-                        {"argv": command, "timeout_seconds": timeout_seconds}, "trajectory", token=True)
-                    result["candidate"] = record
-                    if record["timed_out"]:
-                        result.update(execution_status="FAIL", failure_kind="candidate_timeout")
-                    elif record["exit_code"] != 0:
-                        raise ValueError("candidate CLI failed; inspect retained trajectory")
-                    else:
-                        parsed = parse_run(
-                            run_root / "candidate" / "trajectory.log",
-                            skill=definition["target_skill"], expected_model=model,
-                            cwd=Path("/workspace/repo"), require_skill=arm == "skill",
-                            boundary="docker-local-packets",
-                        )
-                        result.update({key: parsed[key] for key in
-                                       ("usage", "tool_calls", "input_tokens", "output_tokens")})
-                        result["observed_models"] = parsed["models"]
-                        result["skill_invoked"] = parsed["skill_loaded"]
-                        validate_candidate(parsed["answer"], phase)
-                        (run_root / "candidate-output.md").write_text(parsed["answer"] + "\n", encoding="utf-8")
-                    container.stop()
+                    timeline.switch("candidate")
+                    session_id = str(uuid.uuid4())
+                    result["candidate_session_id"] = session_id
+                    command = candidate_command(model, effort, prompt, arm, session_id)
+                    invoked_at, invoked_clock = measurement.instant(), time.monotonic()
+                    outcome = "failed"
+                    try:
+                        candidate_started = True
+                        record = container.execute(
+                            {"argv": command, "timeout_seconds": timeout_seconds}, "trajectory", token=True)
+                        result["candidate"] = record
+                        if record["timed_out"]:
+                            outcome = "timed_out"
+                            result.update(execution_status="FAIL", failure_kind="candidate_timeout")
+                        elif record["exit_code"] != 0:
+                            raise ValueError("candidate CLI failed; inspect retained trajectory")
+                        else:
+                            outcome = "completed"
+                            parsed = parse_run(
+                                run_root / "candidate" / "trajectory.log",
+                                skill=definition["target_skill"], expected_model=model,
+                                cwd=Path("/workspace/repo"), require_skill=arm == "skill",
+                                boundary="docker-local-packets",
+                            )
+                            result.update({key: parsed[key] for key in
+                                           ("usage", "tool_calls", "input_tokens", "output_tokens")})
+                            result["observed_models"] = parsed["models"]
+                            result["skill_invoked"] = parsed["skill_loaded"]
+                            validate_candidate(parsed["answer"], phase)
+                            (run_root / "candidate-output.md").write_text(parsed["answer"] + "\n", encoding="utf-8")
+                    except KeyboardInterrupt:
+                        outcome = "interrupted"
+                        raise
+                    finally:
+                        timeline.switch("cleanup", status=outcome)
+                        try:
+                            container.stop()
+                        finally:
+                            measurement.collect(
+                                destination=run_root / "measurements" / "candidate.json",
+                                session_id=session_id, role="candidate", phase=phase["id"],
+                                model=model, effort=effort, cli_version=result["candidate_cli"]["version"],
+                                log=run_root / "candidate" / "trajectory.log",
+                                capture=lambda: container.usage_events(session_id),
+                                source="container_eventfile", started_at=invoked_at,
+                                started_clock=invoked_clock, outcome=outcome,
+                            )
             finally:
                 # Export only after the context has stopped/removed its sole writer.
                 if container.created and not container.stopped:
                     raise InfrastructureError("candidate stop could not be confirmed; patch not exported")
-                export_patch(frozen, repository, patch)
-                result["patch_sha256"] = digest(patch)
+                if candidate_started:
+                    export_patch(frozen, repository, patch, setup_links)
+                    result["patch_sha256"] = digest(patch)
             if result["failure_kind"] != "candidate_timeout":
                 stage = "grading"
+                timeline.switch("deterministic_grading")
                 grades = grade(frozen, task, run_root / "grading", patch)
                 if all(item["passed"] for item in grades.values()):
                     result.update(execution_status="PASS", failure_kind=None)
                 else:
                     # Fresh controls distinguish a changed repository from broken infrastructure.
                     control = grade(frozen, task, run_root / "grading-control",
-                                    frozen / task["admission"]["reference_patch"])
+                                    admission.parent / "candidate-setup-reference" / "candidate.patch")
                     healthy = all(item["passed"] for item in control.values())
                     result.update(
                         execution_status="FAIL" if healthy else "INVALID",
                         failure_kind="candidate_grading" if healthy else "grading_environment",
                     )
     except CandidateStateError as error:
+        timeline.end_stage("failed")
         result.update(execution_status="FAIL", failure_kind="candidate_output",
                       error_type=type(error).__name__, error=str(error))
     except (OSError, ValueError, InfrastructureError, subprocess.TimeoutExpired) as error:
+        timeline.end_stage("failed")
         result.update(execution_status="INVALID", failure_kind=stage,
                       error_type=type(error).__name__, error=str(error))
     result["elapsed_seconds"] = round(time.monotonic() - started, 3)
+    if owned_timeline:
+        measurement.write_once(run_root / "execution-timing.json", timeline.finish(
+            "failed" if result["execution_status"] == "INVALID" else "completed"))
     result["artifacts"] = [
         {"path": path.relative_to(run_root).as_posix(), "sha256": digest(path)}
         for path in sorted(run_root.rglob("*"))
