@@ -2,24 +2,337 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
+import measurement
 
 from skill_eval import (
     add_case,
+    compatibility_result,
+    digest,
+    directory_identity,
     freeze_case,
     frozen_case_path,
     init_corpus,
+    parse_native_run,
+    load_treatment,
     parse_run,
     run_case,
     run_suite,
+    require_treatment_admission,
+    treatment_admission_binding,
     validate_judgment,
     verify_case,
 )
+
+
+class NativeRunTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.packet = self.root / "packet"
+        (self.packet / "candidate").mkdir(parents=True)
+        (self.packet / "candidate" / "code.py").write_text("source\n")
+        self.session_id = str(uuid.uuid4())
+        self.model = "gpt-example"
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def events(self):
+        return [
+            {"type": "session.start", "data": {
+                "sessionId": self.session_id, "selectedModel": self.model}},
+            {"type": "tool.execution_start", "data": {
+                "toolName": "view", "toolCallId": "read", "arguments": {"path": "candidate/code.py"}}},
+            {"type": "tool.execution_complete", "data": {
+                "toolCallId": "read", "success": True, "result": {"content": "source payload"}}},
+            {"type": "assistant.message", "data": {"model": self.model, "content": "answer"}},
+            {"type": "session.shutdown", "data": {}},
+        ]
+
+    def encoded(self, events):
+        return ("\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n").encode()
+
+    def parse(self, content):
+        return parse_native_run(
+            content, session_id=self.session_id, expected_model=self.model, cwd=self.packet)
+
+    def test_native_answer_models_views_and_byte_marker_without_result_event(self):
+        events = self.events()
+        events.insert(1, {"type": "assistant.message", "data": {
+            "model": self.model, "content": "", "toolRequests": [{"toolCallId": "read"}]}})
+        events.insert(-1, {"type": "session.usage_checkpoint", "data": {"totalNanoAiu": 1}})
+        # A Unicode line separator inside source text is not a JSONL record boundary.
+        events[3]["data"]["result"]["content"] = "source\u2028payload"
+        content = self.encoded(events)
+        parsed = self.parse(content)
+        self.assertEqual(parsed["answer"], "answer")
+        self.assertEqual(parsed["models"], [self.model])
+        self.assertEqual(parsed["viewed_paths"], ["candidate/code.py"])
+        self.assertEqual(parsed["tool_calls"], 1)
+        self.assertEqual(parsed["event_count"], len(events))
+        self.assertEqual(parsed["event_sha256"], hashlib.sha256(content).hexdigest())
+        self.assertNotIn("source", json.dumps(parsed))
+        self.assertNotIn("result_exit_code", parsed)
+        self.assertEqual(self.parse(content[:-1])["answer"], "answer")
+
+    def test_large_native_reader_keeps_original_digest_and_strict_terminal_checks(self):
+        events = self.events()
+        path = self.root / "large-native.jsonl"
+        with path.open("wb") as stream:
+            stream.write(self.encoded(events[:1]))
+            for index in range(2):
+                start = {**events[1], "data": {**events[1]["data"], "toolCallId": str(index)}}
+                complete = {**events[2], "data": {
+                    **events[2]["data"], "toolCallId": str(index),
+                    "result": {"content": "x" * (17 * 1024 * 1024)},
+                }}
+                stream.write(self.encoded([start, complete]))
+            stream.write(self.encoded(events[3:]).replace(b"\n", b"\r\n").rstrip(b"\r\n"))
+        self.assertGreater(path.stat().st_size, measurement.MAX_EVENT_BYTES)
+        expected = hashlib.sha256()
+        with path.open("rb") as stream:
+            while chunk := stream.read(65536):
+                expected.update(chunk)
+        with path.open("rb") as stream:
+            parsed = self.parse(stream)
+        self.assertEqual(parsed["event_sha256"], expected.hexdigest())
+        self.assertEqual(parsed["event_count"], 7)
+        self.assertEqual(parsed["answer"], "answer")
+        self.assertEqual(parsed["tool_calls"], 2)
+        self.assertEqual(parsed["viewed_paths"], ["candidate/code.py"] * 2)
+        self.assertNotIn("content", parsed)
+        with path.open("ab") as stream:
+            stream.write(b'\n{"type":"session.usage_checkpoint","data":{}}\n')
+        with path.open("rb") as stream, self.assertRaisesRegex(ValueError, "after session shutdown"):
+            self.parse(stream)
+
+    def test_native_reader_bound_is_raw_bytes_and_never_an_unbounded_read(self):
+        class BoundedReader(io.BytesIO):
+            def read(self, size=-1):
+                if not 0 < size <= 65536:
+                    raise AssertionError("unbounded native read")
+                return super().read(size)
+
+        content = self.encoded(self.events())
+        self.assertEqual(self.parse(BoundedReader(content))["event_sha256"], hashlib.sha256(content).hexdigest())
+        events = self.events()
+        events[2]["data"]["result"]["content"] = "\u00e9" * 200
+        record = self.encoded(events[2:3])
+        with mock.patch.object(measurement, "MAX_EVENT_BYTES", len(record.decode())), self.assertRaisesRegex(
+            ValueError, "record exceeds byte limit",
+        ):
+            self.parse(BoundedReader(self.encoded(events)))
+
+    def test_missing_corrupt_and_malformed_records_are_refused(self):
+        valid = self.encoded(self.events())
+        for content in (
+            None, b"", b"invalid", b"\xff", b"[]\n", b"null\n", b"1\n", b"{}\n",
+            b'{"type":[],"data":{}}\n', b'{"type":"","data":{}}\n',
+            b'{"type":"system.message","data":[]}\n',
+            b'{"type":"system.message"}\n',
+            b'{"type":"system.message","data":{},"data":{}}\n',
+            b'{"type":"system.message","data":{"value":NaN}}\n',
+            b'{"type":"system.message","data":{"value":Infinity}}\n',
+            b"[" * 2000 + b"]" * 2000,
+            valid + b"\n", valid + b"invalid", b"\n" + valid,
+        ):
+            with self.subTest(content=repr(content)[:80]), self.assertRaises(ValueError):
+                self.parse(content)
+        for data in (None, [], "", 1):
+            events = self.events()
+            events.insert(1, {"type": "system.message", "data": data})
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                self.parse(self.encoded(events))
+
+    def test_lifecycle_and_owned_session_refusals(self):
+        valid = self.events()
+        cases = [
+            valid[1:], valid[:-1], [valid[0], *valid], [*valid, valid[-1]],
+            [valid[0], valid[-1], *valid[1:-1]], [valid[0], valid[-1]],
+            [valid[3], *valid], [*valid, {"type": "user.message", "data": {}}],
+            [*valid, {"type": "session.usage_checkpoint", "data": {}}],
+            [valid[0], {"type": "session.resume", "data": {}}, *valid[1:]],
+            [valid[0], {"type": "result", "data": {}, "exitCode": 0}, *valid[1:]],
+        ]
+        for index, events in enumerate(cases):
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                self.parse(self.encoded(events))
+        for session in (str(uuid.uuid4()), None, "", [], 1):
+            events = self.events()
+            events[0]["data"]["sessionId"] = session
+            with self.subTest(session=session), self.assertRaisesRegex(ValueError, "identity"):
+                self.parse(self.encoded(events))
+
+    def test_selected_model_is_not_actual_assistant_model_evidence(self):
+        for index, field in ((0, "selectedModel"), (3, "model")):
+            for value in ("other-model", None, [], 1):
+                events = self.events()
+                events[index]["data"][field] = value
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, "model"):
+                    self.parse(self.encoded(events))
+            events = self.events()
+            del events[index]["data"][field]
+            with self.subTest(missing=field), self.assertRaisesRegex(ValueError, "model"):
+                self.parse(self.encoded(events))
+        events = self.events()
+        events.insert(1, {"type": "assistant.message", "data": {"model": "other-model", "content": ""}})
+        with self.assertRaisesRegex(ValueError, "model"):
+            self.parse(self.encoded(events))
+        with self.assertRaisesRegex(ValueError, "final assistant"):
+            self.parse(self.encoded([self.events()[0], self.events()[-1]]))
+
+    def test_tool_pairing_and_success_flags_are_strict(self):
+        valid = self.events()
+        for events in (
+            [valid[0], *valid[2:]], [*valid[:2], *valid[3:]],
+            [*valid[:2], valid[1], *valid[2:]],
+            [*valid[:3], valid[2], *valid[3:]],
+            [*valid[:3], valid[1], valid[2], *valid[3:]],
+        ):
+            with self.subTest(events=events), self.assertRaises(ValueError):
+                self.parse(self.encoded(events))
+        for index, field, values in (
+            (1, "toolCallId", (None, "", " ", 1, [])),
+            (2, "toolCallId", (None, "", "orphan", 1, [])),
+            (2, "success", (None, 0, 1, "true", [])),
+            (2, "toolName", ("bash", [], None)),
+        ):
+            for value in values:
+                events = self.events()
+                events[index]["data"][field] = value
+                with self.subTest(index=index, field=field, value=value), self.assertRaises(ValueError):
+                    self.parse(self.encoded(events))
+        for index, field in ((1, "toolCallId"), (2, "toolCallId"), (2, "success")):
+            events = self.events()
+            del events[index]["data"][field]
+            with self.subTest(missing=field), self.assertRaises(ValueError):
+                self.parse(self.encoded(events))
+
+    def test_successful_views_must_have_resolvable_packet_paths(self):
+        for arguments in (None, [], "{}", {}, {"path": None}, {"path": []},
+                          {"path": ""}, {"path": " "}, {"path": "missing.py"},
+                          {"path": "candidate/\x00"}):
+            events = self.events()
+            events[1]["data"]["arguments"] = arguments
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                self.parse(self.encoded(events))
+        for requested in ("candidate", str(self.packet / "candidate/code.py"), "candidate/../candidate/code.py"):
+            events = self.events()
+            events[1]["data"]["arguments"]["path"] = requested
+            parsed = self.parse(self.encoded(events))
+            self.assertEqual(parsed["viewed_paths"], [
+                "candidate" if requested == "candidate" else "candidate/code.py"])
+
+    def test_failed_invalid_views_are_counted_but_never_successful_reads(self):
+        for arguments in ({}, None, [], {"path": []}, {"path": "../outside"}, {"path": "\x00"}):
+            events = self.events()
+            events[1:1] = [
+                {"type": "tool.execution_start", "data": {
+                    "toolName": "view", "toolCallId": "failed", "arguments": arguments}},
+                {"type": "tool.execution_complete", "data": {"toolCallId": "failed", "success": False}},
+            ]
+            with self.subTest(arguments=arguments):
+                parsed = self.parse(self.encoded(events))
+                self.assertEqual(parsed["tool_calls"], 2)
+                self.assertEqual(parsed["viewed_paths"], ["candidate/code.py"])
+                del events[3:5]
+                parsed = self.parse(self.encoded(events))
+                self.assertEqual(parsed["tool_calls"], 1)
+                self.assertEqual(parsed["viewed_paths"], [])
+
+    def test_final_answer_must_follow_tools_and_be_nonempty(self):
+        for content in ("", " \n", None, [], 1):
+            events = self.events()
+            events[3]["data"]["content"] = content
+            with self.subTest(content=content), self.assertRaises(ValueError):
+                self.parse(self.encoded(events))
+        valid = self.events()
+        for events in (
+            [valid[0], valid[3], *valid[1:3], valid[-1]],
+            [valid[0], valid[1], valid[3], valid[2], valid[-1]],
+            [*valid[:-1], {"type": "assistant.message", "data": {"model": self.model, "content": ""}},
+             valid[-1]],
+        ):
+            with self.subTest(events=events), self.assertRaises(ValueError):
+                self.parse(self.encoded(events))
+        for requests in ([{"toolCallId": "unstarted"}], {}, None):
+            events = self.events()
+            events[3]["data"]["toolRequests"] = requests
+            with self.subTest(requests=requests), self.assertRaises(ValueError):
+                self.parse(self.encoded(events))
+
+    def test_new_activity_cannot_reuse_an_earlier_final_answer(self):
+        for kind in ("user.message", "assistant.turn_start"):
+            events = self.events()
+            events.insert(-1, {"type": kind, "data": {}})
+            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, "final assistant"):
+                self.parse(self.encoded(events))
+            events.insert(-1, {"type": "assistant.message", "data": {
+                "model": self.model, "content": "new answer"}})
+            self.assertEqual(self.parse(self.encoded(events))["answer"], "new answer")
+
+    def test_stdout_and_native_share_quality_tool_and_escape_refusals(self):
+        outside = self.root / "outside"
+        outside.write_text("outside source\n")
+        (self.packet / "escape").symlink_to(outside)
+        for name, arguments in (
+            ("bash", {"command": "true"}), ("skill", {"skill": "example-skill"}),
+            (None, {}), ([], {}), ("view", {"path": "../outside"}),
+            ("view", {"path": str(outside)}), ("view", {"path": "escape"}),
+        ):
+            events = self.events()
+            events[1]["data"].update(toolName=name, arguments=arguments)
+            stdout = self.root / "stdout.jsonl"
+            stdout.write_bytes(self.encoded([*events[1:-1], {"type": "result", "exitCode": 0}]))
+            with self.subTest(name=name, arguments=arguments):
+                with self.assertRaises(ValueError):
+                    self.parse(self.encoded(events))
+                with self.assertRaises(ValueError):
+                    parse_run(stdout, skill="example-skill", expected_model=self.model,
+                              cwd=self.packet, require_skill=False, allowed_tools={"view"})
+
+    def test_stdout_still_requires_result_and_its_own_model_evidence(self):
+        stdout = self.root / "stdout.jsonl"
+        for events in (
+            self.events(),
+            [{"type": "assistant.message", "data": {"content": "answer", "model": self.model}},
+             {"type": "result", "exitCode": 1}],
+            [{"type": "session.start", "data": {"selectedModel": self.model}},
+             {"type": "assistant.message", "data": {"content": "answer"}},
+             {"type": "result", "exitCode": 0}],
+        ):
+            stdout.write_bytes(self.encoded(events))
+            with self.subTest(events=events), self.assertRaises(ValueError):
+                parse_run(stdout, skill="example-skill", expected_model=self.model,
+                          cwd=self.packet, require_skill=False, allowed_tools={"view"})
+
+    def test_stdout_reader_bounds_records_without_materializing_the_complete_log(self):
+        stdout = self.root / "large-stdout.jsonl"
+        events = [
+            {"type": "system.message", "data": {"ignored": "x" * 40000}},
+            {"type": "system.message", "data": {"ignored": "y" * 40000}},
+            {"type": "assistant.message", "data": {"content": "answer", "model": self.model}},
+            {"type": "result", "exitCode": 0},
+        ]
+        stdout.write_bytes(self.encoded(events))
+        with mock.patch.object(measurement, "MAX_EVENT_BYTES", 50000), mock.patch.object(
+            Path, "read_text", side_effect=AssertionError("stdout parser materialized the complete log"),
+        ):
+            parsed = parse_run(
+                stdout, skill="example-skill", expected_model=self.model,
+                cwd=self.packet, require_skill=False, allowed_tools={"view"},
+            )
+        self.assertEqual(parsed["answer"], "answer")
+        self.assertEqual(parsed["models"], [self.model])
 
 
 class SkillEvalTests(unittest.TestCase):
@@ -57,6 +370,242 @@ class SkillEvalTests(unittest.TestCase):
             "candidate must react correctly\n", encoding="utf-8"
         )
         return case_dir
+
+    def make_treatment(self, entry_skill: str = "alternate-skill") -> Path:
+        path = Path(self.temp.name) / "treatment.json"
+        write = {
+            "schema_version": 1,
+            "id": "alternate-workflow",
+            "source": {
+                "repository": "https://example.invalid/workflow",
+                "revision": "a" * 40,
+                "license": "MIT",
+                "retrieved_at": "2026-09-16T00:00:00Z",
+            },
+            "runner": {"kind": "direct-copilot"},
+            "compatibility": {
+                "language": ["python"],
+                "preapproved_plan": True,
+            },
+            "entry_skill": entry_skill,
+            "intervention_policy": "approved-plan-v1",
+            "adapter": {"digest": "0" * 64, "description": "No upstream changes."},
+        }
+        path.write_text(json.dumps(write, indent=2) + "\n")
+        return path
+
+    def test_treatment_descriptor_is_strict_and_compatibility_is_explicit(self) -> None:
+        path = self.make_treatment()
+        treatment = load_treatment(path)
+        admitted = compatibility_result(
+            {"compatibility": {"language": "python", "preapproved_plan": True}},
+            treatment,
+        )
+        self.assertEqual(admitted["status"], "ADMITTED")
+        blocked = compatibility_result(
+            {"compatibility": {"language": "typescript", "preapproved_plan": True}},
+            treatment,
+        )
+        self.assertEqual(blocked["status"], "BLOCKED")
+        value = json.loads(path.read_text())
+        value["unexpected"] = True
+        path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "unknown fields"):
+            load_treatment(path)
+
+    def test_treatment_source_rejects_moving_revisions_and_versions(self) -> None:
+        path = self.make_treatment()
+        value = json.loads(path.read_text())
+        value["source"]["revision"] = "main"
+        path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "immutable commit digest"):
+            load_treatment(path)
+        value["source"].pop("revision")
+        value["source"]["version"] = "latest"
+        path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "exact semantic version"):
+            load_treatment(path)
+
+    def test_custom_judge_prompt_receives_required_json_contract(self) -> None:
+        from skill_eval import JUDGE_OUTPUT_CONTRACT, JUDGE_RUNTIME_CONTRACT
+
+        custom = "Judge the behavior and return PASS, FAIL, or UNANSWERABLE."
+        if JUDGE_RUNTIME_CONTRACT not in custom:
+            custom = f"{custom.rstrip()}\n\n{JUDGE_RUNTIME_CONTRACT}"
+        if JUDGE_OUTPUT_CONTRACT not in custom:
+            custom = f"{custom.rstrip()}\n\n{JUDGE_OUTPUT_CONTRACT}"
+
+        self.assertIn('"verdict": "PASS | FAIL | UNANSWERABLE"', custom)
+        self.assertIn('"confidence": "LOW | MEDIUM | HIGH"', custom)
+
+    def test_sandcastle_descriptor_accepts_only_frozen_runner(self) -> None:
+        adapter = Path(self.temp.name) / "sandcastle-adapter"
+        adapter.mkdir()
+        (adapter / "main.mjs").write_text("// frozen adapter\n")
+        (adapter / "__pycache__").mkdir()
+        (adapter / "__pycache__" / "ignored.pyc").write_bytes(b"ignored")
+        (adapter / ".git").mkdir()
+        (adapter / ".git" / "config").write_text("ignored\n")
+        treatment_dir = Path(self.temp.name) / "sandcastle-treatment"
+        treatment_dir.mkdir()
+        path = treatment_dir / "treatment.json"
+        value = {
+            "schema_version": 1,
+            "id": "sandcastle-sequential-reviewer-copilot-outer-isolated",
+            "source": {
+                "package": "@ai-hero/sandcastle",
+                "revision": "e99f832f26dc9d245c019a9ddd19fa5dee792427",
+                "version": "0.12.0",
+                "license": "MIT",
+                "retrieved_at": "2026-09-16T00:00:00Z",
+            },
+            "runner": {
+                "kind": "sandcastle-sequential-reviewer-copilot-outer-isolated",
+                "command": ["node", "/treatment-adapter/main.mjs"],
+                "model": "gpt-5.6-sol-fast",
+                "session_subroles": ["candidate_implementer", "candidate_reviewer"],
+            },
+            "compatibility": {
+                "language": ["typescript"],
+                "package_system": ["npm"],
+                "remote_side_effects_allowed": False,
+            },
+            "entry_skill": None,
+            "intervention_policy": "fixture-local-one-issue",
+            "adapter": {
+                "digest": directory_identity(adapter)["sha256"],
+                "description": "Copilot provider, outer isolation, one issue.",
+            },
+        }
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        treatment = load_treatment(path, sandcastle=True, adapter_dir=adapter)
+        self.assertEqual(treatment["descriptor"]["runner"]["command"],
+                         ["node", "/treatment-adapter/main.mjs"])
+        value["runner"]["command"] = ["node", "/treatment-adapter/other.mjs"]
+        path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "frozen command"):
+            load_treatment(path, sandcastle=True, adapter_dir=adapter)
+
+    def test_treatment_admission_binding_is_required_and_artifact_checked(self) -> None:
+        binding = {"treatment_fingerprint": "f" * 64}
+        run = self.root / "treatment-admission-runs" / "admission" / "example-case"
+        run.mkdir(parents=True)
+        receipt_path = run / "treatment-admission-receipt.json"
+        receipt_path.write_text(json.dumps({
+            "schema_version": 1, "status": "PASS", "binding": binding, "artifacts": [],
+        }))
+        with self.assertRaisesRegex(ValueError, "matching successful"):
+            require_treatment_admission(self.root, binding)
+        names = {
+            "treatment-identity.json": {},
+            "skill-identity.json": {},
+            "plugin-identity.json": {},
+            "harness-identity.json": {},
+            "compatibility.json": {},
+            "execution-result.json": {"execution_status": "PASS"},
+            "repository-result.json": {"behavioral_verdict": "PASS"},
+        }
+        for name, value in names.items():
+            (run / name).write_text(json.dumps(value) + "\n")
+        (run / "candidate.patch").write_text("patch\n")
+        artifacts = [
+            {"path": path.name, "sha256": digest(path)}
+            for path in sorted(run.iterdir())
+            if path != receipt_path
+        ]
+        receipt_path.write_text(json.dumps({
+            "schema_version": 1,
+            "status": "PASS",
+            "binding": binding,
+            "artifacts": artifacts,
+        }))
+        self.assertEqual(require_treatment_admission(self.root, binding), receipt_path)
+        (run / "treatment-identity.json").write_text('{"changed":true}\n')
+        with self.assertRaisesRegex(ValueError, "artifact digest mismatch"):
+            require_treatment_admission(self.root, binding)
+        (run / "treatment-identity.json").unlink()
+        (run / "treatment-identity.json").symlink_to(run / "skill-identity.json")
+        with self.assertRaisesRegex(ValueError, "must not be a symlink"):
+            require_treatment_admission(self.root, binding)
+
+    def test_treatment_admission_binds_complete_plugin_snapshot(self) -> None:
+        common = {
+            "case_revision": "case",
+            "treatment": {
+                "fingerprint": "f" * 64,
+                "source_identity": None,
+                "adapter_identity": None,
+                "descriptor": {"runner": {"kind": "direct-copilot"}},
+            },
+            "skill": {"name": "entry", "files": []},
+            "harness": {"modules": []},
+            "model": "model",
+            "effort": "high",
+        }
+        first = treatment_admission_binding(
+            **common, plugin={"sha256": "a" * 64}
+        )
+        second = treatment_admission_binding(
+            **common, plugin={"sha256": "b" * 64}
+        )
+        self.assertNotEqual(first, second)
+
+    def test_direct_treatment_entry_skill_overrides_case_target(self) -> None:
+        case_dir = self.make_case()
+        definition_path = case_dir / "case.json"
+        definition = json.loads(definition_path.read_text())
+        definition["compatibility"] = {"language": "python", "preapproved_plan": True}
+        for phase in definition["phases"]:
+            phase["must_include"] = ["candidate-result"]
+        definition_path.write_text(json.dumps(definition, indent=2) + "\n")
+        freeze_case(self.root, "example-case", replace=False)
+
+        plugin = Path(self.temp.name) / "entry-plugin"
+        for name in ("example-skill", "alternate-skill"):
+            skill = plugin / "skills" / name
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(f"# {name}\n")
+        fake = Path(self.temp.name) / "entry-copilot"
+        fake.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json,sys\n"
+            "if '--version' in sys.argv:\n print('fake-copilot 1.0'); raise SystemExit(0)\n"
+            "prompt=sys.argv[sys.argv.index('-p')+1]\n"
+            "model=sys.argv[sys.argv.index('--model')+1]\n"
+            "if 'independent behavioral judge' in prompt:\n"
+            " out=json.dumps({'verdict':'PASS','confidence':'HIGH','matched':['claim'],"
+            "'missed':[],'overcorrections':[],'generalized_skill_defect':None})\n"
+            "else:\n"
+            " print(json.dumps({'type':'tool.execution_start','data':{'toolName':'skill',"
+            "'arguments':{'skill':'alternate-skill'},'model':model}}))\n"
+            " out='candidate-result'\n"
+            "print(json.dumps({'type':'assistant.message','data':{'content':out,'model':model}}))\n"
+            "print(json.dumps({'type':'result','exitCode':0}))\n"
+        )
+        os.chmod(fake, 0o755)
+        run = run_case(
+            self.root,
+            "example-case",
+            plugin,
+            fake,
+            "fake-model",
+            "high",
+            "existing",
+            60,
+            treatment_file=self.make_treatment(),
+        )
+        receipt = json.loads((run / "candidate-pass-1-receipt.json").read_text())
+        self.assertTrue(receipt["skill_invoked"])
+        self.assertEqual(
+            json.loads((run / "skill-identity.json").read_text())["name"],
+            "alternate-skill",
+        )
+        plugin_identity = json.loads((run / "plugin-identity.json").read_text())
+        self.assertEqual(plugin_identity["sha256"], directory_identity(plugin)["sha256"])
+        self.assertEqual(
+            json.loads((run / "compatibility.json").read_text())["status"],
+            "ADMITTED",
+        )
 
     def test_freeze_and_verify(self) -> None:
         self.make_case()
@@ -232,6 +781,15 @@ class SkillEvalTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_judgment({"verdict": "PASS"}, "claude-opus-5")
 
+    def test_additional_judgment_fields_are_rejected(self) -> None:
+        judgment = {
+            "verdict": "PASS", "confidence": "HIGH", "matched": ["criterion"],
+            "missed": [], "overcorrections": [], "generalized_skill_defect": None,
+            "additional_assessment": "An otherwise valid observation",
+        }
+        with self.assertRaisesRegex(ValueError, "invalid judge fields"):
+            validate_judgment(judgment, "claude-opus-5")
+
     def test_bare_unanswerable_judgment_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "decisive missing evidence"):
             validate_judgment(
@@ -251,6 +809,13 @@ class SkillEvalTests(unittest.TestCase):
         (case_dir / "judge-reference" / "gold.md").unlink()
         with self.assertRaises(ValueError):
             freeze_case(self.root, "example-case", replace=False)
+
+    def test_scaffolded_judge_prompt_has_one_json_contract(self) -> None:
+        case_dir = self.make_case()
+        prompt = (case_dir / "prompts" / "judge.md").read_text()
+        self.assertEqual(prompt.count("Return only JSON with:"), 1)
+        self.assertIn("Return exactly the six fields", prompt)
+        self.assertIn("Put every observation and qualification in the existing fields", prompt)
 
     def test_candidate_validation_failure_has_receipt(self) -> None:
         case_dir = self.make_case()
@@ -304,11 +869,19 @@ class SkillEvalTests(unittest.TestCase):
             )
         )
         self.assertEqual(len(receipts), 1)
+        run = receipts[0].parent
+        timing = json.loads((run / "timing.json").read_text())
+        self.assertEqual(timing["status"], "failed")
+        self.assertEqual(timing["stages"][-1]["name"], "cleanup")
+        accounting = json.loads((run / "accounting.json").read_text())
+        self.assertEqual(accounting["candidate"]["sessions"], 1)
+        self.assertIsNone(accounting["candidate"]["credits"])
 
     def test_run_with_fake_copilot(self) -> None:
         case_dir = self.make_case()
         (case_dir / "prompts" / "judge.md").write_text(
-            "Act as an independent behavioral judge for the `example-skill` skill.\n",
+            "Act as an independent behavioral judge for the `example-skill` skill.\n"
+            "Preserve this custom prose criterion.\n",
             encoding="utf-8",
         )
         definition_path = case_dir / "case.json"
@@ -337,9 +910,12 @@ class SkillEvalTests(unittest.TestCase):
             "prompt=sys.argv[sys.argv.index('-p')+1]\n"
             "model=sys.argv[sys.argv.index('--model')+1]\n"
             "if 'independent behavioral judge' in prompt:\n"
-            " out=json.dumps({'verdict':'PASS','confidence':'HIGH',"
-            "'matched':['claim'],'missed':[],'overcorrections':[],"
-            "'generalized_skill_defect':None})\n"
+            " if 'Return only JSON with:' in prompt:\n"
+            "  out=json.dumps({'verdict':'PASS','confidence':'HIGH',"
+            "  'matched':['claim'],'missed':[],'overcorrections':[],"
+            "  'generalized_skill_defect':None})\n"
+            " else:\n"
+            "  out='PASS\\nThe custom criterion was met.'\n"
             "else:\n"
             " print(json.dumps({'type':'tool.execution_start','data':"
             "{'toolName':'skill','arguments':{'skill':'example-skill'},"
@@ -374,9 +950,20 @@ class SkillEvalTests(unittest.TestCase):
             "never return\na bare `UNANSWERABLE`",
             (run / "judge-claude-opus-5-prompt.md").read_text(),
         )
+        judge_prompt = (run / "judge-claude-opus-5-prompt.md").read_text()
+        self.assertIn("Preserve this custom prose criterion.", judge_prompt)
+        self.assertEqual(judge_prompt.count("Return only JSON with:"), 1)
         self.assertFalse((run / "criteria.md").exists())
         identity = json.loads((run / "skill-identity.json").read_text())
         self.assertIn("target-plugin", identity["plugin_dir"])
+        accounting = json.loads((run / "accounting.json").read_text())
+        self.assertEqual(accounting["candidate"]["sessions"], 1)
+        self.assertEqual(accounting["evaluation"]["sessions"], 2)
+        self.assertEqual(len(list((run / "measurements").glob("*.json"))), 4)
+        timing = json.loads((run / "timing.json").read_text())
+        self.assertEqual(timing["status"], "completed")
+        self.assertIn("behavioral_judging", {stage["name"] for stage in timing["stages"]})
+        self.assertTrue((run / "reporting-timing.json").is_file())
 
     def test_run_suite_with_fake_copilot(self) -> None:
         for case_id in ("first-case", "second-case"):
@@ -456,6 +1043,12 @@ class SkillEvalTests(unittest.TestCase):
             Path(harnesses[0]["path"]).parent.resolve(),
             suite_root.resolve(),
         )
+        for case in result["cases"]:
+            for prompt_path in (self.root / case["run_path"]).glob("judge-*-prompt.md"):
+                self.assertEqual(
+                    prompt_path.read_text().count("Return only JSON with:"),
+                    1,
+                )
 
     def test_run_suite_rejects_invalid_selection(self) -> None:
         plugin = Path(self.temp.name) / "unused-plugin"

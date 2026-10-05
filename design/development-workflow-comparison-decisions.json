@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "revision": "workflow-comparison-decisions-r1",
+  "objective": "Compare complete and specialist development workflows with neutral executable tasks, attributable cost, and safely parallel isolated execution.",
+  "events": [
+    {
+      "event_id": "user-2026-09-16-scope",
+      "question": "Should the program run the complete recommended comparator set rather than selecting only one external workflow?",
+      "recommended_answer": "Yes. Keep a no-skill baseline, current development-loop, Superpowers, Compound Engineering, Sandcastle sequential-reviewer, and the Matt Pocock TDD and diagnosing-bugs specialist ablations.",
+      "user_answer": "yes lets do all that, lets not worry about the budget but lets parallelize what we can here so it doesnt take too long to run all of them, we can run them each in their own vm in parallel right?",
+      "context": "Reply to the proposed complete-process and specialist-ablation evaluation program.",
+      "authority": "top-level scope and priority decision",
+      "resolved": true
+    },
+    {
+      "event_id": "user-2026-09-16-budget",
+      "question": "Should evaluator cost constrain which approved treatments are run?",
+      "recommended_answer": "No budget ceiling should remove an approved treatment, while all cost remains measured and reported.",
+      "user_answer": "yes lets do all that, lets not worry about the budget but lets parallelize what we can here so it doesnt take too long to run all of them, we can run them each in their own vm in parallel right?",
+      "context": "The same approval explicitly removes budget as the selection constraint but prioritizes wall-clock reduction.",
+      "authority": "top-level resource tradeoff",
+      "resolved": true
+    },
+    {
+      "event_id": "user-2026-09-16-parallelism",
+      "question": "May independent attempts execute concurrently on separate virtual machines?",
+      "recommended_answer": "Yes. Use one mutating attempt per isolated VM, retain immutable attempt identities, and keep only admission, per-VM mutation, and final aggregation serial where causally required.",
+      "user_answer": "yes lets do all that, lets not worry about the budget but lets parallelize what we can here so it doesnt take too long to run all of them, we can run them each in their own vm in parallel right?",
+      "context": "The user proposed one VM per concurrent treatment to reduce campaign wall time.",
+      "authority": "top-level execution strategy",
+      "resolved": true
+    },
+    {
+      "event_id": "user-prior-sol-fast-reviewers",
+      "question": "Which model families should implement and judge the new comparisons?",
+      "recommended_answer": "Use Sol Fast for candidates and GPT-family judges, while retaining Claude as the independent cross-family judge.",
+      "user_answer": "why does it remove te cross check? just change the gpt reviewers to sol fast, not claude",
+      "context": "Earlier model-routing decision for this evaluation program after discussing Sol Fast versus Astra.",
+      "authority": "top-level evaluator model policy",
+      "resolved": true
+    }
+  ],
+  "repository_evidence_decisions": [
+    {
+      "event_id": "repo-existing-evaluator",
+      "question": "Should this create a separate evaluation harness?",
+      "recommended_answer": "No. Extend the existing skill-evaluation repository-task runner and immutable history contracts.",
+      "evidence": [
+        "skills/skill-evaluation/scripts/skill_eval.py",
+        "skills/skill-evaluation/scripts/repository_task.py",
+        "skills/skill-evaluation/scripts/measurement.py",
+        "skills/skill-evaluation/scripts/evaluation_history.py"
+      ],
+      "authority": "current repository architecture",
+      "resolved": true
+    },
+    {
+      "event_id": "repo-vm-boundary",
+      "question": "Should public evaluator code provision cloud VMs?",
+      "recommended_answer": "No. The evaluator should emit and consume immutable attempt bundles; a private campaign layer owns provider-specific VM lifecycle.",
+      "evidence": [
+        "skills/skill-evaluation/references/repository-tasks.md",
+        "skills/skill-evaluation/references/measurement.md"
+      ],
+      "authority": "separation of generic evaluator logic from environment-specific operations",
+      "resolved": true
+    }
+  ],
+  "unresolved_event_ids": []
+}

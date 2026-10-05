@@ -30,6 +30,9 @@ Choose the case shape:
 - one candidate phase for a reaction or routing skill;
 - ordered resumed phases when later evidence must remain hidden from an earlier
   blind pass;
+- an editable `repository-task` for a coding task with independent executable
+  target and regression checks; follow
+  [`references/repository-tasks.md`](references/repository-tasks.md);
 - hidden judge evidence for the correction, accepted result, or failure that
   must not influence the candidate.
 
@@ -196,8 +199,71 @@ Use `--home-mode isolated` when `COPILOT_GITHUB_TOKEN` is available. The default
 disabling custom instructions and built-in MCP servers; its receipt states that
 the authentication home was shared.
 
+Repository tasks require successful `validate-case` admission and caller-supplied
+`COPILOT_GITHUB_TOKEN`. They always use an isolated Docker candidate and
+isolated judge homes. `--arm baseline` exposes no target plugin; `--arm skill`
+invokes the unchanged skill. Their executable score, behavioral verdict, and
+first-attempt suite success are reported separately. Candidate timeouts are
+scored failures; retries do not improve pass@1.
+
+Frozen workflow comparisons may add a strict direct treatment descriptor:
+
+```sh
+python3 "$SKILL_DIR/scripts/skill_eval.py" run CORPUS \
+  --case CASE_ID --plugin-dir /path/to/complete/plugin \
+  --arm skill --treatment-file /path/to/treatment.json
+```
+
+The descriptor records immutable source, adapter, intervention, compatibility,
+and entry-skill identity. Its `entry_skill` overrides the case's historical
+`target_skill` for candidate invocation without changing the case or plugin
+snapshot. Unsupported fields, runner kinds, compatibility predicates, and
+incompatible case/treatment pairs fail before model execution.
+
+Before a reportable repository run, execute the same command once with
+`--treatment-admission`. Admission attempts are retained under
+`treatment-admission-runs/`, excluded from comparison history, and bind the
+case, treatment and adapter snapshots, complete plugin snapshot, plugin entry
+skill, harness, model, and effort. A later reportable run refuses to start
+without the matching successful admission receipt.
+
+The only external candidate runner is the reviewed Sandcastle sequential
+reviewer adapter:
+
+```sh
+python3 "$SKILL_DIR/scripts/skill_eval.py" run CORPUS \
+  --case TYPESCRIPT_CASE --plugin-dir /path/to/plugin \
+  --arm skill --model gpt-5.6-sol-fast \
+  --sandcastle-treatment-file /path/to/frozen/treatment.json \
+  --sandcastle-adapter-dir /path/to/frozen/adapter
+```
+
+Its ID, package revision, version, command, model, adapter digest, and
+implementer/reviewer subroles are fixed in the evaluator. The evaluator
+preallocates both possible session UUIDs. Missing, malformed, duplicate,
+wrong-model, or undeclared session evidence remains incomplete and cannot
+produce exact candidate credits.
+
+Every attempt records owned usage observations and full wall time, including
+failed invocations, judgments and cleanup. Missing credits remain unknown.
+For repository tasks, `--quality-review` adds paid, independent source-only
+shipping assessments without changing correctness or retry policy.
+
+Read local results with:
+
+```sh
+python3 "$SKILL_DIR/scripts/skill_eval.py" history CORPUS --format markdown
+python3 "$SKILL_DIR/scripts/skill_eval.py" history CORPUS --format json
+```
+
+See [`references/measurement.md`](references/measurement.md) for accounting
+coverage, resumed-session totals, quality evidence and matched history
+populations. Do not interpret a partial subtotal as a final bill or compare
+different task revisions as the same experiment.
+
 Complete when the report identifies the exact skill revision, case revision,
-candidate outputs, and independent judgments. After a skill change, completion
+candidate outputs, treatment and compatibility identity, and independent
+judgments. After a skill change, completion
 also requires the maintained full suite to pass when one exists.
 
 ## 6. Interpret and improve
@@ -211,6 +277,13 @@ For a suite with bounded retries, each attempt keeps those semantics. The case
 passes when one identical-byte attempt reaches unanimous `PASS`; otherwise its
 last completed attempt determines the case result. Never discard failed
 attempts or describe a retry-assisted pass as deterministic.
+
+For a separately scoped release, declare its repeated-run qualification rule
+before dispatch. Report qualification separately from each original outcome,
+instruction uptake, and causal or generalization claims. Retain every failure;
+do not change the threshold after seeing results or call a qualified artifact
+deterministic. This is distinct from the suite runner's retry-until-one-`PASS`
+policy and does not alter any attempt's verdict.
 
 For an experiment that changes a skill, compare two layers separately:
 
@@ -248,15 +321,22 @@ for every task to be solved. When the integrated candidate conquers a previously
 failed full-product task, compare it with the published baseline on the same
 frozen case and execution contract, using predeclared repetitions when outcomes
 vary. Check that the applicable new rules were used and that the advantage is
-not explained by a model, packet, tool, or evaluator change. Launch held-out
-transfer, every maintained passing task and newly conquered task, structural
-checks, and independent review in parallel on the exact integrated bytes.
+not explained by a model, packet, tool, or evaluator change. Run applicable
+held-out transfer, maintained-task and newly conquered-task acceptance on the
+exact integrated bytes, concurrently where independent. Follow the target
+skill's prerequisite gates: when runtime proof must precede implementation
+review or broad checks, complete that proof first, then review the same frozen
+candidate. A separately authorized check-contract review is not implementation
+review.
 Publish that revision as soon as those gates pass; unsolved tasks remain open
 for the next increment, and independent lanes can continue on isolated
 candidates. Record the shared candidate's pass rates, retry dependence, and
 remaining failures, then use the published revision as the control for the next
-comparison. A task pass without an attributable advantage stays experimental
-rather than becoming a release.
+comparison. A newly claimed tactic without an attributable advantage stays
+experimental rather than becoming a proven improvement. For explicitly scoped
+consolidation or minimization of existing successes, use the corresponding
+release branch in the cumulative hill climb; do not invent a new-task campaign
+or claim individual-rule causality from artifact qualification.
 
 Before attributing a repeated behavior to the target skill, audit the complete
 candidate-visible instruction stack: task wording, repository and custom
@@ -338,7 +418,8 @@ The evaluation is complete only when:
   skill change;
 - a new case does not change any older case root digest; and
 - a maintained regression suite runs through one command and every included
-  case passes after a target-skill change; and
+  case meets its predeclared qualification rule after a target-skill change,
+  with complete original attempt outcomes retained; and
 - no evaluation repair introduces case-specific hints into the target skill.
 - a large distributed campaign, when used, has one checksum-bound effective
   result per expected attempt ID, with no missing, extra, or duplicate
