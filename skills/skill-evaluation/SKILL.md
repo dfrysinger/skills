@@ -170,6 +170,12 @@ Use the local suite runner for ordinary corpora. When the corpus contains full
 repositories, native builds, product exercises, multiple treatments, or enough
 observations that one host would become the bottleneck, follow
 [`references/large-actions-campaign.md`](references/large-actions-campaign.md).
+Choose execution, experiment recording, and candidate proposal tools separately.
+Adopt or extend one only when a bounded comparison with the current method shows
+a concrete benefit in results, feedback time, total cost, or coordination work.
+Keep qualification unchanged, record differences in model, tools and environment,
+and include integration overhead. A faster launch alone does not prove faster
+evaluation; use an approved data destination before sending private evidence.
 Use the reusable scripts and workflow template described in
 [`references/distributed-campaign-tooling.md`](references/distributed-campaign-tooling.md)
 rather than copying a historical campaign repository.
