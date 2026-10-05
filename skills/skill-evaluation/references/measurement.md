@@ -4,6 +4,17 @@ Correctness, resource use and shipping quality are separate results. Usage or
 review failures never turn executable `PASS`, `FAIL` or `INVALID` into a
 different correctness result. Quality assessments do not change retry policy.
 
+Markdown history begins with a population scorecard, followed by every retained
+attempt and each population's complete identity and spending details. First
+outcomes show passes, valid originals and requested originals; behavioral
+outcomes separately show reported passes and judgment coverage. Neither summary
+is a release qualification. Credits distinguish exact totals from observed
+subtotals. Known trial-wall sums include retries and unsuccessful work and show
+timing coverage; they are not parallel campaign elapsed time or billed runner
+time. Missing full-wall measurements remain unknown rather than borrowing the
+narrower execution duration. The scorecard is a view over JSON history, not a
+new result artifact.
+
 ## Usage and timing
 
 Every run has evaluator-owned attempt metadata, a pinned case revision, plugin

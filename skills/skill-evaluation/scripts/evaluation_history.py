@@ -381,7 +381,39 @@ def markdown(report: dict) -> str:
     def cell(value: object) -> str:
         return ("unknown" if value is None else str(value)).replace("|", "\\|").replace("\n", " ")
 
+    rows_by_population: dict[str, list[dict]] = {}
+    for row in report["attempts"]:
+        rows_by_population.setdefault(fingerprint(row["population"]), []).append(row)
     lines = ["# Evaluation history", "", report["interpretation"], "",
+             "## Population scorecard", "",
+             "First outcomes are passes / valid / requested originals. Behavioral outcomes are "
+             "reported passes / judged / requested originals, not release qualification. "
+             "AI credits are exact / observed totals. Spending and known trial-wall sums include "
+             "retries, failures and invalid attempts; the sum is not parallel campaign elapsed time "
+             "or billed runner time. Compare only matched populations; numbered details follow.", "",
+             "| Population | First outcomes | Behavioral originals | AI credits | "
+             "Known trial-wall sum (s) | Timed attempts |",
+             "| --- | --- | --- | --- | --- | --- |"]
+    for ordinal, group in enumerate(report["populations"], 1):
+        rows = rows_by_population[group["identity"]]
+        first = [row for row in rows if row["attempt"] == 1]
+        judged = [row for row in first if row["behavioral_verdict"] in {"PASS", "FAIL", "UNANSWERABLE"}]
+        timed = [row["elapsed_seconds"] for row in rows if row["elapsed_seconds"] is not None]
+        wall_sum = measurement.number(sum(timed), "summed trial wall seconds") if timed else None
+        population = group["population"]
+        label = f"{ordinal}: " + " / ".join(
+            str(population[field]) if population[field] is not None else "unknown"
+            for field in ("case_id", "treatment_id", "model")
+        )
+        cost = group["total_spend"]
+        lines.append("| " + " | ".join(map(cell, (
+            label,
+            f"{group['first_attempt_passes']} / {group['valid_first_attempts']} / {group['first_attempts']}",
+            f"{sum(row['behavioral_verdict'] == 'PASS' for row in judged)} / {len(judged)} / {len(first)}",
+            f"{cell(cost['credits'])} / {cell(cost['observed_credits'])}",
+            wall_sum, f"{len(timed)} / {len(rows)}",
+        ))) + " |")
+    lines += ["",
              "| Attempt | Treatment | Result | Behavioral | Quality | Wall seconds | "
              "Candidate credits | Evaluator credits | Intervention | Compatibility |",
              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
@@ -402,8 +434,9 @@ def markdown(report: dict) -> str:
             row["population"]["intervention_policy"],
             row["population"]["compatibility_status"],
         ))) + " |")
-    for group in report["populations"]:
+    for ordinal, group in enumerate(report["populations"], 1):
         lines += ["", f"## Population `{group['identity']}`", "",
+                  f"Scorecard population {ordinal}.", "",
                   "```json", json.dumps(group["population"], indent=2), "```", "",
                   f"- First-attempt passes: {group['first_attempt_passes']} / "
                   f"{group['valid_first_attempts']} valid; {group['invalid_first_attempts']} invalid/error.",

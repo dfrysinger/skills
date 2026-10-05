@@ -82,7 +82,7 @@ class MeasurementTests(unittest.TestCase):
 
     def test_known_mapping_breakdowns_and_identity_are_not_additive(self):
         content = events(
-            session_id="forged", role="external", case_id="forged", secret="must-not-persist",
+            session_id="forged", role="external", case_id="forged", secret="<redacted>",
             modelMetrics={"gpt-example": {"totalNanoAiu": 1_000_000_000,
                                           "usage": {"inputTokens": 2, "secret": "excluded"}}},
             agentMetrics={"child": {"totalNanoAiu": 900_000_000}},
@@ -1483,6 +1483,67 @@ class HistoryTests(unittest.TestCase):
             if command == "run":
                 arguments += ["--case", "example"]
             self.assertTrue(skill_eval.parser().parse_args(arguments).quality_review)
+
+    def test_markdown_scorecard_separates_originals_retries_and_behavioral_outcomes(self):
+        for suite, values in (
+            ("retry", [("FAIL", 3, 12, "FAIL"), ("PASS", 4, 20, "PASS")]),
+            ("judge-fail", [("PASS", 2, 8, "FAIL")]),
+            ("invalid", [("INVALID", 1, None, None)]),
+        ):
+            for ordinal, (status, credits, elapsed, behavioral) in enumerate(values, 1):
+                owner = {"suite_path": f"suite-runs/{suite}", "case_id": "example",
+                         "attempt": ordinal, "max_attempts": 2}
+                path = self.run_fixture(f"{suite}-{ordinal}", status, credits, owner=owner)
+                if elapsed is not None:
+                    skill_eval.write_json(path / "timing.json", {
+                        "schema_version": 1, "elapsed_seconds": elapsed,
+                        "status": "completed", "stages": [],
+                    })
+                if behavioral:
+                    skill_eval.write_json(path / "judgment-example.json", {"verdict": behavioral})
+        report = evaluation_history.history(self.root)
+        before = json.dumps(report, sort_keys=True)
+        text = evaluation_history.markdown(report)
+        self.assertLess(text.index("## Population scorecard"), text.index("| Attempt |"))
+        self.assertIn(
+            "| 1: example / legacy-skill / gpt-example | "
+            "1 / 2 / 3 | 0 / 2 / 3 | 10.0 / 10.0 | 40 | 3 / 4 |",
+            text,
+        )
+        self.assertIn("not parallel campaign elapsed time", text)
+        self.assertIn("retry-assisted: 1", text)
+        self.assertIn("runs/retry-2/example", text)
+        self.assertIn("runs/invalid-1/example", text)
+        self.assertEqual(json.dumps(report, sort_keys=True), before)
+
+    def test_markdown_scorecard_preserves_unknown_wall_time_and_partial_credits(self):
+        self.run_fixture("legacy", "FAIL", old=True)
+        partial = self.run_fixture("partial", "PASS", 2, complete=False)
+        execution = skill_eval.read_json(partial / "execution-result.json")
+        execution["case_revision"] = "other"
+        skill_eval.write_json(partial / "execution-result.json", execution)
+        report = evaluation_history.history(self.root)
+        text = evaluation_history.markdown(report)
+        self.assertEqual(len(report["populations"]), 2)
+        self.assertIn("| unknown / unknown | unknown | 0 / 1 |", text)
+        self.assertIn("| unknown / 2.0 | unknown | 0 / 1 |", text)
+        self.assertTrue(all(row["elapsed_seconds"] is None for row in report["attempts"]))
+        self.assertTrue(all(row["legacy_execution_elapsed_seconds"] == 2 for row in report["attempts"]))
+        for ordinal, group in enumerate(report["populations"], 1):
+            self.assertIn(f"## Population `{group['identity']}`", text)
+            self.assertIn(f"Scorecard population {ordinal}.", text)
+
+    def test_markdown_scorecard_keeps_zero_duration_and_empty_history_honest(self):
+        path = self.run_fixture("zero", "PASS", 0)
+        skill_eval.write_json(path / "timing.json", {
+            "schema_version": 1, "elapsed_seconds": 0, "status": "completed", "stages": [],
+        })
+        report = evaluation_history.history(self.root)
+        self.assertIn("| 0 | 1 / 1 |", evaluation_history.markdown(report))
+        empty = evaluation_history.history(self.root, model="unrequested")
+        self.assertEqual(empty["attempts"], [])
+        self.assertEqual(empty["populations"], [])
+        self.assertIn("## Population scorecard", evaluation_history.markdown(empty))
 
 
 if __name__ == "__main__":
