@@ -61,9 +61,85 @@ overwritten. No output is created until every requested run has been verified.
 Errors return a nonzero exit code and an explicit refusal on stderr, not a
 success-shaped fallback. GitHub CLI error output is not relayed.
 
+## Observe only known originals
+
+`--direct-known-runs` is an opt-in alternative to repository enumeration. It
+performs one sequential exact-ID GET per requested original using the same
+host, authentication, metadata projection, timeout and call budget. Without
+the flag, the input and complete-listing behavior remain unchanged.
+
+For this mode, add a caller-frozen `workflow_path` to every input entry:
+
+```json
+[
+  {
+    "id": 123,
+    "workflow_id": 456,
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "head_branch": "main",
+    "run_attempt": 1,
+    "event": "workflow_dispatch",
+    "repository": {
+      "id": 789,
+      "full_name": "example/evaluation",
+      "private": false
+    },
+    "workflow_path": ".github/workflows/evaluation.yml"
+  }
+]
+```
+
+Freeze the expected path from authoritative original-run evidence, not from
+the response being checked. It must be nonempty text without control
+characters and a safe relative path: no leading slash, backslash, colon, empty
+component, `.` or `..` component. The returned `path` must match exactly,
+without trimming or normalization, in addition to every original binding.
+The default input does not accept `workflow_path`.
+
+```sh
+python3 skills/skill-evaluation/scripts/observe_campaign_runs.py \
+  --repository example/evaluation \
+  --runs known-runs-with-paths.json \
+  --output known-run-observation.json \
+  --direct-known-runs \
+  --max-calls 4 \
+  --timeout 30
+```
+
+Every input is validated before any GET. The requested count must fit
+`--max-calls`; otherwise the invocation refuses without a GET. `--max-pages`
+is still validated but no pages are retrieved in this mode. The first failed,
+missing, timed-out, malformed or mismatched response stops further reads with
+an explicit refusal. No retry, confirmed absence or partial-success snapshot
+is produced.
+
+Selected-mode output uses `schema_version: 2` and adds:
+
+```json
+"coverage": {
+  "scope": "requested-runs-only",
+  "repository_enumerated": false
+}
+```
+
+All other output fields retain their meanings. Observations remain in input
+order with direct-GET provenance and one-based call indices. `run.path` is
+returned metadata; the input's `workflow_path` is not echoed as another output
+field. `non_atomic: true` remains explicit. The default output remains
+`schema_version: 1` without the coverage extension.
+
+Choose this mode only for requested-run observations, never repository
+membership or capacity checks. One GET per original may avoid unrelated
+history, but a short complete listing can be cheaper for many originals.
+Compare actual calls, projected bytes and total observation work, including
+preparing expected paths and verifying results. Client timing and projected
+stdout bytes are not wire-byte or billing measurements, and an offline
+substituted-transport check does not establish native speed or evaluation
+efficacy.
+
 ## Retrieval and identity
 
-The observer enumerates repository runs in pages of 100, projecting only
+By default, the observer enumerates repository runs in pages of 100, projecting only
 `id`, `workflow_id`, `path`, `event`, `head_sha`, `head_branch`, `run_attempt`,
 `status`, `conclusion`, and repository `id`, `full_name`, `private`. Actor and
 avatar URLs are not requested in the projection or retained in the output.
@@ -90,7 +166,7 @@ Known statuses are `queued`, `in_progress`, `completed`, `waiting`, `requested`,
 and `pending`. `completed` requires a nonempty string conclusion; all other
 statuses require a null conclusion. Nonterminal runs can be successfully
 observed without being completed. A `failure` conclusion is also a valid
-metadata observation.
+metadata observation. These validation rules also apply to direct-only reads.
 
 ## Reading the snapshot
 
@@ -119,4 +195,6 @@ The tests invoke the actual CLI with a local `gh` substitute that records
 arguments and serves synthetic JSON. They make no network or model calls and
 cover batched listing, direct fallback, identity mismatches, malformed
 membership, changing counts, budgets, nonterminal states, and refusal paths.
+They also cover direct-only path binding, whole-input validation, explicit
+coverage, stop-first-failure and controlled pending-response checkpoints.
 Live host/authentication behavior requires a separate read-only canary.

@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -35,6 +36,11 @@ def requested(*rows):
     return [{key: row[key] for key in (*observer.BINDINGS, "repository")} for row in rows]
 
 
+def direct_requested(*rows):
+    return [dict(value, workflow_path=row["path"])
+            for value, row in zip(requested(*rows), rows)]
+
+
 def page(*rows, total=None):
     return {"total_count": len(rows) if total is None else total, "workflow_runs": list(rows)}
 
@@ -56,6 +62,13 @@ if index >= len(fixtures):
     print("unexpected call", file=sys.stderr)
     sys.exit(99)
 fixture = fixtures[index]
+if fixture.get("hold"):
+    (root / "held").touch()
+    deadline = time.monotonic() + 8
+    while not (root / "release").exists():
+        if time.monotonic() >= deadline:
+            sys.exit(98)
+        time.sleep(0.01)
 if fixture.get("create_output"):
     (root / "result.json").write_text("racing creator")
 time.sleep(fixture.get("sleep", 0))
@@ -312,6 +325,181 @@ class ObserverCLITests(unittest.TestCase):
         result, _, output = self.invoke(requested(row), [{"body": page(row)}])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(output["observations"][0]["run"]["conclusion"], "failure")
+
+    def test_direct_known_runs_exact_path_order_and_accounting(self):
+        rows = [run(2, status="queued", conclusion=None), run(1, conclusion="failure")]
+        result, calls, output = self.invoke(
+            direct_requested(*rows), [{"body": row} for row in rows],
+            "--direct-known-runs", "--max-calls", "2", "--host", "api.example.org")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output["schema_version"], 2)
+        self.assertEqual(output["coverage"], {
+            "scope": "requested-runs-only", "repository_enumerated": False,
+        })
+        self.assertTrue(output["non_atomic"])
+        self.assertEqual([entry["run"] for entry in output["observations"]], rows)
+        for index, row in enumerate(rows, 1):
+            self.assertEqual(calls[index - 1], [
+                "api", "--hostname", "api.example.org", "--method", "GET",
+                f"repos/{REPOSITORY}/actions/runs/{row['id']}", "--jq", observer.ROW_PROJECTION,
+            ])
+            self.assertEqual(output["observations"][index - 1]["provenance"],
+                             {"source": "direct", "call": index})
+        self.assertEqual(output["call_count"], 2)
+        self.assertEqual(output["projected_response_bytes"],
+                         sum(len((json.dumps(row) + "\n").encode()) for row in rows))
+        self.assertEqual(output["projected_response_bytes"],
+                         sum(call["projected_response_bytes"] for call in output["calls"]))
+        self.assertNotIn("workflow_path", json.dumps(output))
+        self.assertNotIn("PASS", json.dumps(output))
+        self.assertGreaterEqual(output["client_wall_seconds"], 0)
+
+    def test_direct_known_runs_validates_every_input_before_get(self):
+        good = direct_requested(run(), run(2))
+        for field, value in (
+            ("workflow_path", None), ("workflow_path", ""), ("workflow_path", " "),
+            ("workflow_path", "/workflow.yml"), ("workflow_path", "../workflow.yml"),
+            ("workflow_path", "folder//workflow.yml"), ("workflow_path", "folder/./workflow.yml"),
+            ("workflow_path", "folder\\workflow.yml"), ("workflow_path", "file:workflow.yml"),
+            ("workflow_path", "workflow\n.yml"), ("id", True), ("workflow_id", 0),
+            ("run_attempt", 0), ("head_sha", "z" * 40), ("head_branch", ""),
+            ("event", None), ("repository", None),
+        ):
+            inputs = copy.deepcopy(good)
+            inputs[1][field] = value
+            with self.subTest(field=field, value=value):
+                self.refuse(inputs, [], "--direct-known-runs", expected_calls=0)
+        for inputs in (requested(run()), good * 2, [], {}):
+            self.refuse(inputs, [], "--direct-known-runs", expected_calls=0)
+        extra = copy.deepcopy(good)
+        extra[1]["path"] = "unexpected.yml"
+        self.refuse(extra, [], "--direct-known-runs", expected_calls=0)
+        inconsistent = copy.deepcopy(good)
+        inconsistent[1]["repository"]["id"] = 10
+        self.refuse(inconsistent, [], "--direct-known-runs", expected_calls=0)
+        self.refuse(good, [], "--direct-known-runs", "--max-calls", "1", expected_calls=0)
+        for raw in ('[{"id":1,"id":2}]', '[NaN]', '{'):
+            self.refuse(good, [], "--direct-known-runs", raw_input=raw, expected_calls=0)
+        self.refuse(direct_requested(run()), [], expected_calls=0)
+        for option in ("--max-pages=0", "--max-calls=0", "--timeout=301",
+                       "--host=https://example.org", "--repository=../repo"):
+            self.refuse(good, [], "--direct-known-runs", option, expected_calls=0)
+
+    def test_direct_known_runs_all_binding_and_safe_path_mismatches(self):
+        original = run()
+        for field, value in {
+            "id": 99, "workflow_id": 99, "head_sha": "b" * 40, "head_branch": "other",
+            "run_attempt": 2, "event": "push", "path": ".github/workflows/other.yml",
+            "repository": {"id": 10, "full_name": REPOSITORY, "private": False},
+        }.items():
+            with self.subTest(field=field):
+                self.refuse(direct_requested(original, run(2), run(3)), [
+                    {"body": original}, {"body": run(2, **{field: value})},
+                ], "--direct-known-runs", expected_calls=2)
+        for repository in (
+            {"id": 9, "full_name": "other/repository", "private": False},
+            {"id": 9, "full_name": REPOSITORY, "private": True},
+        ):
+            self.refuse(direct_requested(original), [{"body": run(repository=repository)}],
+                        "--direct-known-runs", expected_calls=1)
+
+    def test_direct_known_runs_response_errors_stop_without_retry(self):
+        for failed in (
+            {"error": True}, {"sleep": 2, "body": run(2)}, {"body": None},
+            {"raw": "not json"}, {"raw": '{"id":1,"id":2}'},
+            {"body": run(2, status="unknown")}, {"body": run(2, conclusion=None)},
+            {"body": run(2, path="../workflow.yml")},
+            {"body": dict(run(2), unexpected=True)},
+        ):
+            with self.subTest(failed=failed):
+                result, _ = self.refuse(direct_requested(run(), run(2), run(3)), [
+                    {"body": run()}, failed,
+                ], "--direct-known-runs", "--timeout", "1", expected_calls=2)
+                self.assertNotIn("not-a-real-secret", result.stderr)
+        self.refuse(direct_requested(run(), run(2)), [{"error": True}],
+                    "--direct-known-runs", expected_calls=1)
+
+    def test_direct_known_runs_all_valid_statuses(self):
+        for status in observer.STATUSES:
+            row = run(status=status, conclusion="failure" if status == "completed" else None)
+            result, _, output = self.invoke(direct_requested(row), [{"body": row}],
+                                           "--direct-known-runs")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(output["observations"][0]["run"], row)
+        private = run(repository={"id": 9, "full_name": REPOSITORY, "private": True})
+        result, _, output = self.invoke(direct_requested(private), [{"body": private}],
+                                       "--direct-known-runs")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(output["observations"][0]["run"]["repository"]["private"])
+
+    def test_direct_known_runs_output_ownership(self):
+        inputs = direct_requested(run())
+        result, calls, _ = self.invoke(inputs, [], "--direct-known-runs",
+                                       existing_output="preserved")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+        self.assertEqual((self.root / "result.json").read_text(), "preserved")
+        result, calls, _ = self.invoke(inputs, [{"body": run(), "create_output": True}],
+                                       "--direct-known-runs", read_output=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual((self.root / "result.json").read_text(), "racing creator")
+        owned = self.root / "owned-output"
+        owned.symlink_to(self.root / "missing")
+        result, calls, _ = self.invoke(inputs, [], "--direct-known-runs",
+                                       "--output", str(owned))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+        self.assertTrue(owned.is_symlink())
+        self.assertFalse((self.root / "missing").exists())
+        result, calls, _ = self.invoke(inputs, [], "--direct-known-runs",
+                                       "--output", str(self.root / "missing-parent" / "result.json"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+
+    def test_direct_known_runs_pending_response_has_no_snapshot_or_later_get(self):
+        for failure in (False, True):
+            with self.subTest(failure=failure):
+                for name in ("calls.jsonl", "result.json", "held", "release"):
+                    (self.root / name).unlink(missing_ok=True)
+                (self.root / "runs.json").write_text(json.dumps(direct_requested(run(), run(2))))
+                (self.root / "responses.json").write_text(json.dumps([
+                    {"hold": True, "body": run(), "error": failure}, {"body": run(2)},
+                ]))
+                env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ.get("PATH", ""),
+                           OBSERVER_TEST_ROOT=str(self.root))
+                process = subprocess.Popen([
+                    sys.executable, str(Path(observer.__file__).resolve()),
+                    "--repository", REPOSITORY, "--runs", str(self.root / "runs.json"),
+                    "--output", str(self.root / "result.json"), "--direct-known-runs",
+                ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+                try:
+                    deadline = time.monotonic() + 5
+                    while not (self.root / "held").exists() and time.monotonic() < deadline:
+                        if process.poll() is not None:
+                            break
+                        time.sleep(0.01)
+                    self.assertTrue((self.root / "held").exists())
+                    self.assertIsNone(process.poll())
+                    self.assertFalse((self.root / "result.json").exists())
+                    self.assertEqual(len((self.root / "calls.jsonl").read_text().splitlines()), 1)
+                    (self.root / "release").touch()
+                    _, stderr = process.communicate(timeout=5)
+                    calls = (self.root / "calls.jsonl").read_text().splitlines()
+                    if failure:
+                        self.assertNotEqual(process.returncode, 0)
+                        self.assertIn("observation refused", stderr)
+                        self.assertNotIn("not-a-real-secret", stderr)
+                        self.assertEqual(len(calls), 1)
+                        self.assertFalse((self.root / "result.json").exists())
+                    else:
+                        self.assertEqual(process.returncode, 0, stderr)
+                        self.assertEqual(len(calls), 2)
+                        self.assertEqual(json.loads((self.root / "result.json").read_text())["call_count"], 2)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                    process.communicate()
 
 
 class ObserverUnitTests(unittest.TestCase):

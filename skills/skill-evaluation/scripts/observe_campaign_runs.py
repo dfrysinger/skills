@@ -62,14 +62,19 @@ def binding(row: object, repository: str) -> dict:
     return row
 
 
+def workflow_path(value: object, name: str = "path") -> str:
+    path = text(value, name)
+    if (path.startswith("/") or "\\" in path or ":" in path
+            or any(part in {"", ".", ".."} for part in path.split("/"))):
+        raise ObservationError("workflow path must be a safe relative path")
+    return path
+
+
 def run_record(row: object, repository: str) -> dict:
     binding(row, repository)
     if set(row) != set(FIELDS):
         raise ObservationError("run metadata has missing or unexpected fields")
-    path = text(row["path"], "path")
-    if (path.startswith("/") or "\\" in path or ":" in path
-            or any(part in {"", ".", ".."} for part in path.split("/"))):
-        raise ObservationError("workflow path must be a safe relative path")
+    workflow_path(row["path"])
     if not isinstance(row["status"], str) or row["status"] not in STATUSES:
         raise ObservationError("unknown run status")
     if row["status"] == "completed":
@@ -120,15 +125,22 @@ def validate_options(args: argparse.Namespace) -> list[dict]:
     if not isinstance(rows, list) or not rows:
         raise ObservationError("runs must be a nonempty JSON array")
     seen = set()
+    input_fields = set(BINDINGS) | {"repository"}
+    if args.direct_known_runs:
+        input_fields.add("workflow_path")
     for row in rows:
         binding(row, args.repository)
-        if set(row) != set(BINDINGS) | {"repository"}:
+        if set(row) != input_fields:
             raise ObservationError("input run has unexpected fields")
+        if args.direct_known_runs:
+            workflow_path(row["workflow_path"], "workflow_path")
         if row["id"] in seen:
             raise ObservationError("duplicate requested run id")
         seen.add(row["id"])
         if row["repository"] != rows[0]["repository"]:
             raise ObservationError("inconsistent requested repository records")
+    if args.direct_known_runs and len(rows) > args.max_calls:
+        raise ObservationError("requested runs exceed call budget; observation is UNKNOWN")
     return rows
 
 
@@ -178,36 +190,40 @@ def observe(args: argparse.Namespace, requested: list[dict]) -> dict:
         expected = wanted.get(row["id"])
         if expected is not None and any(row[key] != expected[key] for key in BINDINGS):
             raise ObservationError("requested run binding mismatch; reruns cannot replace originals")
+        if (args.direct_known_runs and expected is not None
+                and row["path"] != expected["workflow_path"]):
+            raise ObservationError("requested workflow path mismatch; observation is UNKNOWN")
 
-    for page in range(1, args.max_pages + 1):
-        endpoint = f"repos/{args.repository}/actions/runs?per_page=100&page={page}"
-        response = reader.get(endpoint, LIST_PROJECTION, "list")
-        if not isinstance(response, dict) or set(response) != {"total_count", "workflow_runs"}:
-            raise ObservationError("list response requires total_count and workflow_runs")
-        count = integer(response["total_count"], "total_count", 0)
-        if total is None:
-            total = count
-            if total > args.max_pages * 100:
-                raise ObservationError("listing incomplete within max-pages; observation is UNKNOWN")
-        elif count != total:
-            raise ObservationError("listing total_count drift; observation is UNKNOWN")
-        rows = response["workflow_runs"]
-        if not isinstance(rows, list) or len(rows) != min(100, total - len(seen)):
-            raise ObservationError("list page length does not match declared membership")
-        for row in rows:
-            run_record(row, args.repository)
-            if row["id"] in seen:
-                raise ObservationError("duplicate listed run id")
-            seen.add(row["id"])
-            verify(row)
-            if row["id"] in wanted:
-                observed[row["id"]] = {
-                    "run": row, "provenance": {"source": "list", "page": page, "call": len(reader.calls)}
-                }
-        if len(seen) == total:
-            break
-    else:
-        raise ObservationError("listing incomplete; observation is UNKNOWN")
+    if not args.direct_known_runs:
+        for page in range(1, args.max_pages + 1):
+            endpoint = f"repos/{args.repository}/actions/runs?per_page=100&page={page}"
+            response = reader.get(endpoint, LIST_PROJECTION, "list")
+            if not isinstance(response, dict) or set(response) != {"total_count", "workflow_runs"}:
+                raise ObservationError("list response requires total_count and workflow_runs")
+            count = integer(response["total_count"], "total_count", 0)
+            if total is None:
+                total = count
+                if total > args.max_pages * 100:
+                    raise ObservationError("listing incomplete within max-pages; observation is UNKNOWN")
+            elif count != total:
+                raise ObservationError("listing total_count drift; observation is UNKNOWN")
+            rows = response["workflow_runs"]
+            if not isinstance(rows, list) or len(rows) != min(100, total - len(seen)):
+                raise ObservationError("list page length does not match declared membership")
+            for row in rows:
+                run_record(row, args.repository)
+                if row["id"] in seen:
+                    raise ObservationError("duplicate listed run id")
+                seen.add(row["id"])
+                verify(row)
+                if row["id"] in wanted:
+                    observed[row["id"]] = {
+                        "run": row, "provenance": {"source": "list", "page": page, "call": len(reader.calls)}
+                    }
+            if len(seen) == total:
+                break
+        else:
+            raise ObservationError("listing incomplete; observation is UNKNOWN")
 
     for expected in requested:
         if expected["id"] in observed:
@@ -221,14 +237,18 @@ def observe(args: argparse.Namespace, requested: list[dict]) -> dict:
         observed[row["id"]] = {
             "run": row, "provenance": {"source": "direct", "call": len(reader.calls)}
         }
-    return {
-        "schema_version": 1, "repository": args.repository, "host": args.host,
+    result = {
+        "schema_version": 2 if args.direct_known_runs else 1,
+        "repository": args.repository, "host": args.host,
         "non_atomic": True,
         "observations": [observed[row["id"]] for row in requested],
         "calls": reader.calls, "call_count": len(reader.calls),
         "projected_response_bytes": sum(call["projected_response_bytes"] for call in reader.calls),
         "client_wall_seconds": time.monotonic() - started,
     }
+    if args.direct_known_runs:
+        result["coverage"] = {"scope": "requested-runs-only", "repository_enumerated": False}
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -240,6 +260,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-pages", type=int, default=10)
     parser.add_argument("--max-calls", type=int, default=20)
     parser.add_argument("--timeout", type=int, default=30, help="seconds per gh GET (1-300)")
+    parser.add_argument("--direct-known-runs", action="store_true",
+                        help="read only exact known IDs; requires workflow_path on each input")
     args = parser.parse_args(argv)
     try:
         requested = validate_options(args)
