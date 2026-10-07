@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import fnmatch
 import gzip
 import hashlib
@@ -25,40 +26,56 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
-def inventory(root: Path) -> list[dict]:
-    return [
-        {
+def map_paths(function, paths: list[Path], workers: int) -> list[dict]:
+    if type(workers) is not int or not 1 <= workers <= 32:
+        raise ValueError("hash workers must be between 1 and 32")
+    if workers == 1:
+        return [function(path) for path in paths]
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        return list(executor.map(function, paths))
+
+
+def inventory(root: Path, *, workers: int = 1) -> list[dict]:
+    def record(path):
+        return {
             "bytes": path.stat().st_size,
             "path": path.relative_to(root).as_posix(),
             "sha256": sha256(path),
         }
-        for path in sorted(root.rglob("*"))
-        if path.is_file() and path.name != "package-inventory.json"
-    ]
+
+    return map_paths(
+        record,
+        [
+            path
+            for path in sorted(root.rglob("*"))
+            if path.is_file() and path.name != "package-inventory.json"
+        ],
+        workers,
+    )
 
 
-def tree_sha256(root: Path) -> str:
-    records = []
-    for path in sorted(root.rglob("*")):
+def tree_sha256(root: Path, *, workers: int = 1) -> str:
+    def record(path):
         relative = path.relative_to(root).as_posix()
         if path.is_symlink():
-            records.append(
-                {
-                    "kind": "symlink",
-                    "mode": path.lstat().st_mode & 0o777,
-                    "path": relative,
-                    "sha256": hashlib.sha256(os.readlink(path).encode()).hexdigest(),
-                }
-            )
-        elif path.is_file():
-            records.append(
-                {
-                    "kind": "file",
-                    "mode": path.lstat().st_mode & 0o777,
-                    "path": relative,
-                    "sha256": sha256(path),
-                }
-            )
+            return {
+                "kind": "symlink",
+                "mode": path.lstat().st_mode & 0o777,
+                "path": relative,
+                "sha256": hashlib.sha256(os.readlink(path).encode()).hexdigest(),
+            }
+        return {
+            "kind": "file",
+            "mode": path.lstat().st_mode & 0o777,
+            "path": relative,
+            "sha256": sha256(path),
+        }
+
+    records = map_paths(
+        record,
+        [path for path in sorted(root.rglob("*")) if path.is_symlink() or path.is_file()],
+        workers,
+    )
     payload = json.dumps(records, separators=(",", ":"), sort_keys=True).encode()
     return hashlib.sha256(payload).hexdigest()
 
@@ -119,7 +136,11 @@ def package_campaign(
     receipt_path: Path,
     completion_path: Path,
     hidden_patterns: list[str],
+    *,
+    hash_workers: int = 1,
 ) -> dict:
+    if type(hash_workers) is not int or not 1 <= hash_workers <= 32:
+        raise ValueError("hash workers must be between 1 and 32")
     source = source.resolve()
     outputs = (
         full_root,
@@ -139,14 +160,14 @@ def package_campaign(
     shutil.copytree(source, full_root, symlinks=True)
     for cache in full_root.rglob("__pycache__"):
         shutil.rmtree(cache)
-    write_json(full_root / "package-inventory.json", inventory(full_root))
+    write_json(full_root / "package-inventory.json", inventory(full_root, workers=hash_workers))
     write_archive(full_root, full_archive)
 
     shutil.copytree(full_root, candidate_root, symlinks=True)
     removed = remove_matches(candidate_root, hidden_patterns)
     if not removed:
         raise ValueError("hidden-path patterns removed no files or directories")
-    write_json(candidate_root / "package-inventory.json", inventory(candidate_root))
+    write_json(candidate_root / "package-inventory.json", inventory(candidate_root, workers=hash_workers))
     write_archive(candidate_root, candidate_archive)
 
     manifest_sha = sha256(full_root / "package-manifest.json")
@@ -154,6 +175,7 @@ def package_campaign(
         raise ValueError("candidate and full package manifests differ")
     receipt = {
         "schemaVersion": 1,
+        "hashWorkers": hash_workers,
         "source": str(source),
         "hiddenPatterns": hidden_patterns,
         "removedPaths": removed,
@@ -162,13 +184,13 @@ def package_campaign(
             "archive": str(full_archive),
             "archiveSha256": sha256(full_archive),
             "inventorySha256": sha256(full_root / "package-inventory.json"),
-            "treeSha256": tree_sha256(full_root),
+            "treeSha256": tree_sha256(full_root, workers=hash_workers),
         },
         "candidate": {
             "archive": str(candidate_archive),
             "archiveSha256": sha256(candidate_archive),
             "inventorySha256": sha256(candidate_root / "package-inventory.json"),
-            "treeSha256": tree_sha256(candidate_root),
+            "treeSha256": tree_sha256(candidate_root, workers=hash_workers),
         },
     }
     write_json(receipt_path, receipt)
@@ -199,6 +221,10 @@ def main() -> None:
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--completion", type=Path, required=True)
     parser.add_argument(
+        "--hash-workers", type=int, choices=range(1, 33), default=1,
+        help="Concurrent file hash readers; default 1 preserves serial scheduling.",
+    )
+    parser.add_argument(
         "--hidden-pattern",
         action="append",
         default=[],
@@ -214,6 +240,7 @@ def main() -> None:
         args.receipt,
         args.completion,
         args.hidden_pattern,
+        hash_workers=args.hash_workers,
     )
     print(json.dumps(receipt, indent=2, sort_keys=True))
 

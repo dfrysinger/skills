@@ -2078,6 +2078,41 @@ def validate_stage_dispatch(
     return dispatch
 
 
+def validate_finalization_stage(
+    package_root: Path,
+    attempt_id: str,
+    run_root: Path,
+    dispatch_evidence: Path,
+    supplied_identity: dict,
+    source_run_id: str | None = None,
+    source_sha: str | None = None,
+) -> dict:
+    package_root = package_root.resolve()
+    run_root = run_root.resolve()
+    package, attempt, indexed_case = select_attempt(package_root, attempt_id, supplied_identity)
+    stage = load_or_recover_macos_stage_receipt(run_root)
+    require(stage.get("route") == "macos-native-stage", "Artifact is not a macOS stage")
+    require({key: stage.get(key) for key in IDENTITY_KEYS} == attempt_identity(attempt),
+            "macOS stage attempt identity mismatch")
+    require(stage.get("packageArchiveSha256") == PACKAGE_ARCHIVE_SHA256
+            and stage.get("packageManifestSha256") == PACKAGE_MANIFEST_SHA256,
+            "macOS stage package identity mismatch")
+    require(
+        stage.get("candidatePackageArchiveSha256")
+        == CANDIDATE_PACKAGE_ARCHIVE_SHA256,
+        "macOS stage candidate package identity mismatch",
+    )
+    require(stage.get("candidateRerunRequired") is False, "Stage requests a candidate rerun")
+    validate_stage_dispatch(dispatch_evidence, attempt, source_run_id, source_sha)
+    validate_product_evidence(run_root, stage)
+    return {
+        "package": package,
+        "attempt": attempt,
+        "case": indexed_case,
+        "stage": stage,
+    }
+
+
 def finalize_linux(
     package_root: Path,
     attempt_id: str,
@@ -2095,22 +2130,12 @@ def finalize_linux(
         os.environ.get("COPILOT_EVAL_MODEL_TOKEN"),
         "COPILOT_EVAL_MODEL_TOKEN is required",
     )
-    package, attempt, indexed_case = select_attempt(package_root, attempt_id, supplied_identity)
-    stage = load_or_recover_macos_stage_receipt(run_root)
-    require(stage.get("route") == "macos-native-stage", "Artifact is not a macOS stage")
-    require({key: stage.get(key) for key in IDENTITY_KEYS} == attempt_identity(attempt),
-            "macOS stage attempt identity mismatch")
-    require(stage.get("packageArchiveSha256") == PACKAGE_ARCHIVE_SHA256
-            and stage.get("packageManifestSha256") == PACKAGE_MANIFEST_SHA256,
-            "macOS stage package identity mismatch")
-    require(
-        stage.get("candidatePackageArchiveSha256")
-        == CANDIDATE_PACKAGE_ARCHIVE_SHA256,
-        "macOS stage candidate package identity mismatch",
+    validated = validate_finalization_stage(
+        package_root, attempt_id, run_root, dispatch_evidence, supplied_identity,
+        source_run_id, source_sha,
     )
-    require(stage.get("candidateRerunRequired") is False, "Stage requests a candidate rerun")
-    validate_stage_dispatch(dispatch_evidence, attempt, source_run_id, source_sha)
-    validate_product_evidence(run_root, stage)
+    package, attempt = validated["package"], validated["attempt"]
+    indexed_case, stage = validated["case"], validated["stage"]
     runner = load_runner(package_root)
     loaded_package, case_root, case = case_root_for(runner, package_root, attempt["caseId"])
     require(loaded_package == package and case == indexed_case, "Sealed runner case view mismatch")
@@ -2867,6 +2892,13 @@ def build_parser() -> argparse.ArgumentParser:
     finalize.add_argument("--source-run-id")
     finalize.add_argument("--source-sha")
 
+    preflight = commands.add_parser(
+        "preflight-finalize",
+        help="Validate retained macOS stage lineage before provisioning grading resources.",
+        parents=[finalize],
+        add_help=False,
+    )
+
     retain = commands.add_parser("retain")
     retain.add_argument("--run-root", type=Path, required=True)
     retain.add_argument("--evidence", type=Path, required=True)
@@ -3012,6 +3044,21 @@ def main() -> int:
             supplied_identity(args),
         )
         print(json.dumps(value, indent=2, sort_keys=True))
+    elif args.command == "preflight-finalize":
+        value = validate_finalization_stage(
+            args.package_root, args.attempt_id, args.run_root, args.dispatch_evidence,
+            supplied_identity(args), args.source_run_id, args.source_sha,
+        )
+        print(json.dumps({
+            "schemaVersion": 1,
+            "status": "READY_FOR_FINALIZATION",
+            **attempt_identity(value["attempt"]),
+            "packageArchiveSha256": value["stage"]["packageArchiveSha256"],
+            "candidatePackageArchiveSha256": value["stage"]["candidatePackageArchiveSha256"],
+            "packageManifestSha256": value["stage"]["packageManifestSha256"],
+            "productPassed": value["stage"]["product"]["passed"],
+            "qualification": "NOT_EVALUATED",
+        }, sort_keys=True))
     elif args.command == "finalize-linux":
         value = finalize_linux(
             args.package_root,
