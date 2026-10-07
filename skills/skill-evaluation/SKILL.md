@@ -179,7 +179,11 @@ evaluation; use an approved data destination before sending private evidence.
 Use the reusable scripts and workflow template described in
 [`references/distributed-campaign-tooling.md`](references/distributed-campaign-tooling.md)
 rather than copying a historical campaign repository.
-That procedure seals one immutable campaign release with separately addressed
+Use the bounded [run observer](references/run-observation.md) for batched
+read-only metadata collection when it reduces the measured individual-read
+cost. Preserve exact run and attempt bindings; an absent, incomplete or
+mismatched observation is not a completed attempt.
+The distributed campaign procedure seals one immutable release with separately addressed
 candidate and hidden payloads, fans unfinished attempts out through private
 GitHub Actions, preserves first model outcomes, resumes only invalid downstream
 stages, checksum-verifies retained artifacts, and reconciles one exact

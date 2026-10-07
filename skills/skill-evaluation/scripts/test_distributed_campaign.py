@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -933,6 +934,135 @@ class FullProductMatrixTests(unittest.TestCase):
         dependency_path = root / "dependencies.json"
         dependency_path.write_text(json.dumps({"schemaVersion": 1, "dependencies": []}))
         return completion_path, image_path, dependency_path
+
+    def make_finalization_fixture(self, root):
+        package_root = root / "inputs"
+        attempts, manifest_sha = self.make_package(package_root)
+        attempt = attempts[1]
+        run_root = root / "stage/run-root"
+        evidence = root / "stage/evidence"
+        evidence.mkdir(parents=True)
+        workflow = SCRIPT.parent.parent / "templates/distributed-campaign.yml"
+        (evidence / "workflow.yml").write_bytes(workflow.read_bytes())
+        (evidence / "distributed_campaign.py").write_bytes(SCRIPT.read_bytes())
+        product = {"schemaVersion": 1, "passed": False, "records": [], "evidenceFiles": []}
+        stage = {
+            **matrix.attempt_identity(attempt),
+            "route": "macos-native-stage",
+            "packageArchiveSha256": "a" * 64,
+            "candidatePackageArchiveSha256": "b" * 64,
+            "packageManifestSha256": manifest_sha,
+            "candidateRerunRequired": False,
+            "product": product,
+        }
+        matrix.write_json(run_root / "macos-stage-receipt.json", stage)
+        matrix.write_json(run_root / "product/receipt.json", product)
+        environment = {
+            **{key: value for key, value in os.environ.items()
+               if key not in matrix.SECRET_ENV_NAMES and not key.startswith("GITHUB_")},
+            "DISTRIBUTED_EVAL_PACKAGE_ARCHIVE_SHA256": "a" * 64,
+            "CANDIDATE_PACKAGE_SHA256": "b" * 64,
+            "DISTRIBUTED_EVAL_PACKAGE_MANIFEST_SHA256": manifest_sha,
+            "DISTRIBUTED_EVAL_CAMPAIGN_ID": matrix.CAMPAIGN_ID,
+            "DISTRIBUTED_EVAL_WORKFLOW_PATH": str(workflow),
+            "GITHUB_RUN_ID": "10",
+            "GITHUB_SHA": "c" * 40,
+            "GITHUB_WORKFLOW_SHA": "d" * 40,
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_SERVER_URL": "https://github.example.com",
+            "GITHUB_REPOSITORY": "example/evaluations",
+        }
+        for name in (
+            "PACKAGE_RELEASE", "PACKAGE_ASSET", "COMPLETION_RELEASE",
+            "COMPLETION_ASSET", "COMPLETION_SHA256", "CANDIDATE_PACKAGE_RELEASE",
+            "CANDIDATE_PACKAGE_ASSET", "MACOS_SOURCE_RUN_ID", "MACOS_SOURCE_SHA",
+        ):
+            environment[name] = ""
+        matrix.write_json(evidence / "dispatch.json", {
+            "schemaVersion": 1,
+            "attempt": attempt,
+            "controls": {"CANDIDATE_PACKAGE_SHA256": "b" * 64},
+            "github": {key: value for key, value in environment.items()
+                       if key.startswith("GITHUB_")},
+        })
+        return attempt, environment
+
+    def run_finalization_preflight_step(self, root, attempt, environment):
+        workflow = SCRIPT.parent.parent / "templates/distributed-campaign.yml"
+        block = workflow.read_text().split(
+            "      - name: Validate retained stage before grading provisioning\n", 1
+        )[1].split("      - name:", 1)[0].split("        run: |\n", 1)[1]
+        command = "\n".join(line[10:] for line in block.splitlines())
+        for key in matrix.IDENTITY_KEYS:
+            command = command.replace("${{ matrix." + key + " }}", str(attempt[key]))
+        scripts = root / "skills/skill-evaluation"
+        scripts.mkdir(parents=True)
+        (scripts / "scripts").symlink_to(SCRIPT.parent, target_is_directory=True)
+        (root / "evidence").mkdir()
+        return subprocess.run(
+            ["bash", "-c", command + "\nprintf ready > provisioning-started\n"],
+            cwd=root, env=environment, capture_output=True, text=True,
+        )
+
+    def test_finalization_preflight_uses_primary_receipt_and_keeps_failed_product(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            attempt, environment = self.make_finalization_fixture(root)
+            (root / "stage/run-root/macos-candidate-stage-receipt.json").write_text("obsolete")
+            result = self.run_finalization_preflight_step(root, attempt, environment)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            receipt = matrix.read_json(root / "evidence/finalization-preflight.json")
+            self.assertFalse(receipt["productPassed"])
+            self.assertEqual(receipt["qualification"], "NOT_EVALUATED")
+            self.assertTrue((root / "provisioning-started").is_file())
+
+    def test_finalization_preflight_refuses_bad_inputs_before_provisioning(self):
+        for scenario, message in (
+            ("missing", "macos-candidate-stage-receipt"),
+            ("identity", "stage attempt identity mismatch"),
+            ("product", "product receipt differs"),
+            ("lineage", "belongs to another workflow run"),
+        ):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                attempt, environment = self.make_finalization_fixture(root)
+                path = root / "stage/run-root/macos-stage-receipt.json"
+                if scenario == "missing":
+                    path.unlink()
+                elif scenario == "identity":
+                    stage = matrix.read_json(path)
+                    stage["repetition"] = 2
+                    matrix.write_json(path, stage)
+                elif scenario == "product":
+                    matrix.write_json(root / "stage/run-root/product/receipt.json", {})
+                elif scenario == "lineage":
+                    environment["GITHUB_RUN_ID"] = "11"
+                result = self.run_finalization_preflight_step(root, attempt, environment)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertFalse((root / "provisioning-started").exists())
+
+    def test_finalization_preflight_recovers_split_product_without_candidate_rerun(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            attempt, environment = self.make_finalization_fixture(root)
+            run_root = root / "stage/run-root"
+            (run_root / "macos-stage-receipt.json").unlink()
+            candidate = {
+                **matrix.attempt_identity(attempt),
+                "route": "macos-candidate-stage",
+                "candidatePackageArchiveSha256": "b" * 64,
+                "candidate": {"boundaryAudit": {"passed": True}},
+                "sources": [], "gradingGitIdentity": [],
+                "deterministicExecution": "container",
+            }
+            matrix.write_json(run_root / "macos-candidate-stage-receipt.json", candidate)
+            matrix.write_json(run_root / "dependency-runtime.json", [])
+            result = self.run_finalization_preflight_step(root, attempt, environment)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            recovered = matrix.read_json(run_root / "macos-stage-receipt.json")
+            self.assertFalse(recovered["candidateRerunRequired"])
+            self.assertFalse(recovered["product"]["passed"])
 
     def test_plan_excludes_completed_and_routes_remaining_mac(self):
         with tempfile.TemporaryDirectory() as directory:

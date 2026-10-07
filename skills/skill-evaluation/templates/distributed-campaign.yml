@@ -691,6 +691,24 @@ jobs:
           python3 -B skills/skill-evaluation/scripts/distributed_campaign.py unpack-package \
             --archive "downloads/package/$PACKAGE_ASSET" \
             --destination inputs > evidence/package-identity.json
+      - name: Validate retained stage before grading provisioning
+        run: |
+          set -euo pipefail
+          source=()
+          if [[ -n "$MACOS_SOURCE_RUN_ID" ]]; then
+            source+=(--source-run-id "$MACOS_SOURCE_RUN_ID")
+            source+=(--source-sha "$MACOS_SOURCE_SHA")
+          fi
+          python3 -B skills/skill-evaluation/scripts/distributed_campaign.py preflight-finalize \
+            --package-root inputs \
+            --attempt-id "${{ matrix.attemptId }}" \
+            --case-id "${{ matrix.caseId }}" \
+            --case-revision "${{ matrix.caseRevision }}" \
+            --treatment-id "${{ matrix.treatmentId }}" \
+            --repetition "${{ matrix.repetition }}" \
+            --run-root stage/run-root \
+            --dispatch-evidence stage/evidence/dispatch.json \
+            "${source[@]}" > evidence/finalization-preflight.json
       - name: Preserve exact image IDs with the containerd image store
         if: matrix.imageAsset != ''
         run: |

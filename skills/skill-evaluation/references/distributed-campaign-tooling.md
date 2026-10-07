@@ -8,6 +8,8 @@ full repositories, container graders, or many parallel attempts:
 - `scripts/distributed_campaign.py` validates the frozen matrix, routes work by
   platform, executes or resumes stages, verifies artifact lineage, and retains
   checksum-addressed evidence.
+- `scripts/observe_campaign_runs.py` retrieves bounded, projected Actions run
+  metadata for exact known bindings with checked direct fallback.
 - `templates/distributed-campaign.yml` is a GitHub Actions workflow template.
 - `templates/distributed-eval-images.example.json` and
   `templates/distributed-eval-dependencies.example.json` document the external
@@ -17,6 +19,19 @@ These files are infrastructure, not a bundled corpus. Candidate repositories,
 hidden graders, reference answers, package archives, dependency archives, and
 result artifacts remain in the operator's private evaluation repository or
 private release.
+
+## Observe known attempts
+
+Use [`run-observation.md`](run-observation.md) to prepare exact run bindings and
+collect one read-only snapshot. Batching can replace individual metadata GETs
+when the requested runs share a small repository listing. Older runs missing
+from a complete listing use direct GETs; an incomplete or mismatched listing
+fails explicitly instead of proving absence.
+
+Record the tool's call count, projected bytes and elapsed time against the
+individual-read baseline before choosing it for a large repository. Listing
+every run can cost more than a few direct reads. The snapshot is non-atomic and
+does not grant dispatch capacity or turn workflow success into product PASS.
 
 ## Prepare the carrier repository
 
@@ -66,6 +81,18 @@ The command refuses existing outputs, requires at least one removed hidden
 path, preserves one package manifest across both payloads, and records archive,
 inventory, and tree digests.
 
+For large packages, `--hash-workers 4` schedules independent file reads in
+parallel while retaining sorted inventory and tree records. The default is one
+worker; the accepted range is 1 through 32. Worker count is recorded in the
+packaging receipt, not in either payload, so changing it does not change archive
+bytes or completion identities for unchanged inputs. Hash-read errors still
+fail packaging. Keep source inputs unchanged during packaging.
+
+Choose the worker count with a representative local comparison. Concurrent
+hashing can shorten the file-reading stage, but small files, slow storage or
+contention can make it slower. This option does not parallelize compression,
+upload or model work, and does not establish a full-feedback or cost saving.
+
 Publish both archives and `completion.json` as private release assets. Supply
 their exact SHA-256 values when dispatching the workflow.
 
@@ -96,6 +123,27 @@ evaluation run in different GitHub Actions jobs:
 Process cleanup and transcript auditing remain defense-in-depth. The job
 boundary is the control that prevents candidate-created processes from
 observing hidden bytes.
+
+## Check retained stages before provisioning
+
+The Linux finalization job runs `preflight-finalize` after verifying and
+extracting its macOS artifact and sealed package, but before changing Docker,
+downloading a grading image or installing the judge CLI. It uses the same
+stage, package, attempt, dispatch-lineage and product-evidence checks that
+finalization repeats before grading.
+
+A complete primary stage receipt takes precedence over an obsolete candidate
+receipt. When the primary receipt is missing, the existing split product-stage
+recovery rules still apply: a valid candidate receipt, empty dependency runtime
+and completed product evidence can reconstruct it without another candidate
+model call. Missing or mismatched evidence stops the job before provisioning.
+
+The preflight requires no model token and does not grade the attempt. A valid
+failed product result remains eligible for finalization and is not relabeled
+as success. `READY_FOR_FINALIZATION` means only that retained inputs passed
+these checks; product success and skill qualification remain separate.
+Preflight recovery may write the derived `macos-stage-receipt.json` inside the
+owned retained run directory. No live candidate source is changed.
 
 ## Package runtime contract
 
@@ -137,10 +185,11 @@ a resumed attempt.
 Run:
 
 ```sh
-python3 -m unittest \
+PYTHONPATH=skills/skill-evaluation/scripts python3 -B -m unittest \
   skills/skill-evaluation/scripts/test_skill_eval.py \
   skills/skill-evaluation/scripts/test_distributed_campaign.py \
-  skills/skill-evaluation/scripts/test_package_distributed_campaign.py
+  skills/skill-evaluation/scripts/test_package_distributed_campaign.py \
+  skills/skill-evaluation/scripts/test_observe_campaign_runs.py
 ```
 
 Before a full fan-out, dispatch one attempt and verify that the candidate
