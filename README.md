@@ -123,6 +123,147 @@ The process scales with risk. A bounded fix should stay bounded. A systemic chan
 
 <img width="5056" height="8704" alt="Development flow from exploration through implementation, proof, and review" src="https://github.com/user-attachments/assets/ad75e933-cd7b-48a3-ba59-aa418dc4f481" />
 
+## Evaluate and hill-climb skills
+
+[`skill-evaluation`](./skills/skill-evaluation/SKILL.md) tests what an agent
+actually does with a skill, then helps improve that skill through controlled
+experiments. Use it for any skill, not just the skills in this repository.
+A **hill climb** is a repeated cycle of measuring failures, testing competing
+improvements, and carrying supported gains into one shared revision.
+
+The plugin includes the evaluator scripts, experiment procedures, and an
+Actions workflow template. It does not include a task corpus, hidden answers,
+model access, or hosted runners. You supply the tasks and acceptance criteria.
+Candidate and judge model calls consume your model allowance; native builds
+and Actions runs can add runner and storage costs.
+
+### Start with one task
+
+Install the plugin above, then ask your agent:
+
+```text
+Use skill-evaluation to evaluate my development-loop skill against a task
+in this repository. Define observable acceptance criteria, keep reference
+answers hidden from the candidate, and freeze the case before running.
+Compare the unchanged skill with proposed improvements under the same
+model and limits. Agree on the attempt budget before paid execution.
+```
+
+Use a historical failure with its original request and available context, or a
+synthetic task with independently defined acceptance criteria. For coding
+tasks, use the [repository-task guide](./skills/skill-evaluation/references/repository-tasks.md)
+to supply an editable checkout, executable target checks, and regression checks.
+Do not put the expected fix into the candidate's prompt or the skill.
+
+For direct script use, you need Python 3, Git, and an authenticated Copilot CLI.
+The local evaluator runs candidates and judges through Copilot CLI even if
+another agent host helps prepare the experiment. Repository tasks also require
+Docker, successful `validate-case` admission, and `COPILOT_GITHUB_TOKEN`.
+Point `PLUGIN_DIR` at a complete installed plugin or a clone of this repository:
+
+```sh
+PLUGIN_DIR=/path/to/skills
+EVAL="$PLUGIN_DIR/skills/skill-evaluation/scripts/skill_eval.py"
+CORPUS="$PWD/my-skill-corpus"
+
+python3 "$EVAL" init "$CORPUS"
+python3 "$EVAL" add-case "$CORPUS" first-task \
+  --skill development-loop --phase candidate
+```
+
+Fill the generated case definition, candidate prompt, candidate-visible
+evidence, hidden criteria, and judge reference files. The scaffold is not a
+ready-to-run task. Then freeze and run it:
+
+```sh
+python3 "$EVAL" freeze "$CORPUS" --case first-task
+python3 "$EVAL" verify "$CORPUS" --case first-task
+python3 "$EVAL" run "$CORPUS" --case first-task \
+  --plugin-dir "$PLUGIN_DIR"
+python3 "$EVAL" history "$CORPUS" --format markdown
+```
+
+When `COPILOT_GITHUB_TOKEN` is available, add `--home-mode isolated` to workflow
+runs to avoid sharing your authentication home. See the
+[case contract](./skills/skill-evaluation/references/case-contract.md) for
+evidence boundaries and the [skill protocol](./skills/skill-evaluation/SKILL.md)
+for repository-task admission and treatment comparisons.
+
+### How evaluation works
+
+The evaluator freezes and checksums each case, snapshots the exact plugin
+bytes, and gives the candidate only the evidence available for its task or
+phase. Hidden references go to separate judge sessions. It retains candidate
+outputs, logs, model settings, receipts, and a `REPORT.md`.
+
+Independent Claude and GPT judges must unanimously return `PASS`. Repository
+tasks also have executable product and regression results, reported separately
+from behavioral judgments. A completed command or green Actions workflow is
+not proof that the skill solved the task. Failed attempts remain in history;
+a pass obtained after retries is not a first-attempt pass.
+
+### Improve the skill across a corpus
+
+Ask your agent to use the
+[cumulative hill climb](./skills/skill-evaluation/references/cumulative-skill-hill-climb.md)
+and [parallel treatment search](./skills/skill-evaluation/references/parallel-treatment-search.md):
+
+```text
+Use skill-evaluation to improve this skill across my frozen corpus.
+Start from the published skill and preserve its existing wins. Test distinct
+general hypotheses against an unchanged control, with a fixed attempt budget,
+repetitions, and a selection rule declared before execution. Integrate
+supported changes into one shared candidate, verify its combined behavior,
+then ablate it toward the smallest version that preserves the gains.
+Keep held-out tasks for transfer testing and report all failed attempts.
+```
+
+Each experiment changes a general instruction, not a task-specific answer.
+Hold the task, model, tools, grading, and limits fixed when comparing variants.
+Independent ideas can run in parallel up to actual capacity. Check whether
+the agent followed the new rule separately from whether product behavior
+improved. When progress stalls, inspect task achievability and the earliest
+wrong decision before generating more wording.
+
+Combine compatible improvements and retest the exact combined revision.
+Passing different tasks with different variants does not prove that one skill
+passes the corpus. Only after the declared task set works, run **ablations**:
+remove instructions and retest the exact shortened combination. Qualify
+release candidates against maintained tasks and held-out transfer evidence;
+report the minimum among tested variants, not a universal optimum.
+
+Run the maintained local corpus with bounded parallelism:
+
+```sh
+python3 "$EVAL" run-suite "$CORPUS" \
+  --plugin-dir "$PLUGIN_DIR" --workers 2
+```
+
+### Scale execution and measure cost
+
+Start locally. For full repositories, native builds, or large experiment
+matrices, use the [large Actions campaign guide](./skills/skill-evaluation/references/large-actions-campaign.md)
+and [distributed tooling guide](./skills/skill-evaluation/references/distributed-campaign-tooling.md).
+These require a configured private evaluation repository, packaged task
+runtime, dependencies, model token, and suitable runners. The workflow is a
+template, not a one-command hosted evaluation service.
+
+The distributed tooling provides candidate-safe and hidden payloads,
+checksum-verified artifacts, downstream-stage recovery, optional parallel
+package hashing, and early retained-evidence validation before grading setup.
+The [run observer](./skills/skill-evaluation/references/run-observation.md)
+batches read-only Actions metadata for exact known attempts; it does not grade
+results or grant dispatch capacity.
+
+Measure the full feedback cycle: packaging, upload, queue, build, candidate and
+judge calls, download, and result consumption. Batching or parallel hashing
+can help some workloads and slow others. Use the
+[measurement guide](./skills/skill-evaluation/references/measurement.md) to
+compare like-for-like runs, preserve missing costs as unknown, and avoid
+counting reused evidence as a new model attempt. Use
+[`unattended-run`](./skills/unattended-run/SKILL.md) when a campaign needs durable
+ownership, progress reminders, and a verifiable stopping condition.
+
 ## Skill catalog
 
 ### Development and delivery
