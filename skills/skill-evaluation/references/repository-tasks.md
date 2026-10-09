@@ -60,6 +60,7 @@ cases/CASE/
   judge-reference/
     provenance.json
     reference.patch
+    judgment-environment-fit.md
     grading-partition.md
     grader/
       target.py
@@ -86,6 +87,15 @@ discovery. Each graded command must exit zero **and** emit its declared
 alone is not an adequate oracle. Document which original tests remain
 regressions and which expectations intentionally change as part of the target
 contract. Do not remove conflicting tests to make the reference green.
+
+Before implementing graders, complete the
+[`judgment environment fit`](judgment-environment-fit.md) ledger. Graders may
+enforce only candidate-observable behavior and independently authorized exact
+values. Treat exact dates, identifiers, file paths, allocation modes, worker
+SKUs, dashboards, metric tokens, and accepted-patch structure as mechanisms
+unless their exact form has separate authority. Admission proves that one
+reference implementation satisfies the grader; it does not prove that the
+grader permits every valid solution or fits the candidate environment.
 
 Setup commands use `argv` and `timeout_seconds`, without a success marker.
 Commands run directly as argument arrays. Select a shell explicitly when

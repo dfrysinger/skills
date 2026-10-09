@@ -36,8 +36,18 @@ Choose the case shape:
 - hidden judge evidence for the correction, accepted result, or failure that
   must not influence the candidate.
 
+Before freezing a material case, validate that its judgment contract fits the
+candidate's actual test environment. Follow
+[`judgment environment fit`](references/judgment-environment-fit.md) when the
+case has an accepted implementation, offline or sandboxed execution, live
+operator handoffs, exact infrastructure choices, or source-quality review.
+Hard pass/fail criteria must be observable inside the declared candidate
+boundary; unavailable live facts belong to the handoff or a later
+qualification stage.
+
 Complete when the claim can be judged from behavior rather than similarity to a
-reference answer.
+reference answer and every hard criterion fits the declared observability
+boundary.
 
 ## 2. Scaffold the case
 
@@ -107,7 +117,8 @@ receipts before selecting candidate and judge packets.
 Complete when the candidate task passes the text-packet audit, a candidate
 cannot read the expected answer, every named candidate-visible file is
 readable through the staged boundary, and a judge can trace every required
-behavior to frozen evidence.
+behavior to frozen evidence. For a material case, completion also requires the
+environment-fit criteria ledger and its applicable challenge/review gate.
 
 ## 4. Freeze and verify
 
@@ -367,6 +378,16 @@ situation. If a faithful real-world packet reliably induces the wrong result,
 improve the skill or another genuine operating control; changing the case
 would only make the evaluation easier.
 
+Do not convert a reference implementation, reviewer preference, or unavailable
+production fact into a behavioral failure. Reconcile surprising judgments
+against the frozen environment-fit ledger before editing the skill. A quality
+finding changes behavioral correctness only after evidence shows that its
+reachable defect violates a hard criterion. When the judgment contract itself
+is wrong, publish a new frozen case revision, retain the old result, and reuse
+the retained candidate patch for regrading or rejudging when the evaluator can
+bind it safely; do not spend another candidate run solely to repair downstream
+criteria.
+
 Classify a failure before editing:
 
 - **Skill defect:** general instructions omit or misstate a reusable reasoning
@@ -424,6 +445,9 @@ The evaluation is complete only when:
 - hidden judge evidence is absent from candidate workdirs and structured logs
   prove candidate reads stayed inside those workdirs;
 - every run has raw output and a receipt;
+- every material case classifies hard criteria as candidate-observable,
+  handoff-owned, or post-environment and completes its applicable
+  constraint-challenge or dual-review gate;
 - at least two independent judges assess behavioral correctness for a material
   skill change;
 - a new case does not change any older case root digest; and
