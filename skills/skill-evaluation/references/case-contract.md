@@ -80,6 +80,14 @@ Judge the behavioral claim, not matching words. Criteria should state:
 - overcorrections or unsafe shortcuts that fail the case; and
 - when missing evidence makes the case `UNANSWERABLE`.
 
+Every material case also carries the criterion classification described in
+[`judgment environment fit`](judgment-environment-fit.md). Behavioral
+correctness may depend only on candidate-observable evidence and the honesty
+and completeness of required handoffs. Post-environment facts such as live
+capacity, deployment, authentication, production traffic, or runtime belong to
+later qualification unless the candidate environment can actually observe
+them.
+
 The judges include at least one Claude and one GPT model. Each judge reads
 candidate outputs, receipts, and hidden evidence, but not another judge's
 result. A final `PASS` requires unanimous `PASS`; any `FAIL` yields `FAIL`; with
