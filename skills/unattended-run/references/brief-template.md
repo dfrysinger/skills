@@ -17,14 +17,17 @@ it to establish native autopilot. Event-driven re-briefs, the charter check,
 and the hourly progress nudge continue to restore working rules and advance
 ready work, but they do not replace the persistent objective.
 
-Persist a complete work order, not a compressed slogan. Autopilot re-reads it
-on every continuation, so include enough context to resume correctly after
-compaction. Store only this objective body in a dedicated file such as
+Apply [Objective maintenance: replace, don't accumulate](../SKILL.md#objective-maintenance-replace-dont-accumulate)
+when drafting or updating this file. Autopilot re-reads the work order on every
+continuation; link to the authoritative plan and charter instead of copying
+their history. Store only this objective body in a dedicated file such as
 `docs/<run>-autopilot-objective.md`; the handoff helper preserves its interior
 line structure and removes only trailing line endings to match the native
 command parser:
 
 > Work from `<PLAN_DOC>`[ for `<SCOPE>`] in `<WORKSPACE>`.
+> Read the charter at `<CHARTER_DOC>` for standing rules and the plan's
+> current baton for state and evidence.
 >
 > Outcome: `<OUTCOME>`.
 >
@@ -39,6 +42,8 @@ command parser:
 Objective slots:
 
 - **`<PLAN_DOC>`** — the durable, committed plan the run executes and updates.
+- **`<CHARTER_DOC>`** — the charter containing standing rules, grants and
+  reminder registry.
 - **`<SCOPE>`** — the whole plan, or a bound like "phase E"; omit the clause for
   the whole plan.
 - **`<DOD_REF>`** — the exact, unique heading of the Definition of Done that

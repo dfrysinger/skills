@@ -85,6 +85,32 @@ coordination, standing grants) and
 the **objective** (plan doc, scope, outcome, boundaries, and observable
 done-condition).
 
+#### Objective maintenance: replace, don't accumulate
+
+Keep the objective a concise current work order, aiming for 150-300 words.
+Include the outcome, workspace, plan and charter paths, critical boundaries,
+the exact Definition-of-Done heading, and a next action or exclusive wait
+when needed to resume safely. Essential authority or safety constraints may
+justify more words; brevity must not weaken the contract.
+
+Read the linked plan and charter on resumption. Keep detailed state, source
+and runtime identities, receipts, schedules, exact owner quotes and historical
+decisions in their authoritative plan, baton or ledger, not in the objective.
+
+Update the objective when owner direction or a material change to scope,
+boundaries, workspace or the resumable next action makes it inaccurate.
+First reconcile the plan and charter, then rewrite the objective in place
+and refresh the active native objective through the SDK handoff. Replace
+superseded clauses instead of prepending amendments or retaining old
+objectives underneath. Routine progress belongs in the baton and does not
+require re-sending an unchanged objective.
+
+Before each handoff, check that there is one current instruction per decision,
+every pointer resolves, and no historical override chain or transcript dump
+remains. Preserve evidence in the linked records before pruning it here.
+The outcome and completion heading must still cover the whole granted run;
+a shorter objective is not permission to narrow acceptance.
+
 Derive the push policy from the repository's instructions. If agents have
 owned branch namespaces and a pull-request workflow, publishing reviewed work
 to that owned branch is the default. A local-only charter requires an explicit
