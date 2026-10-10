@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "revision": "skill-evaluation-ui-decisions-r1",
+  "objective": "Give every skill-evaluation session a local read-only view of campaign progress, active execution, exact skill lineage, spend, outcomes, and ablation.",
+  "events": [
+    {
+      "event_id": "user-direction-2026-10-10-001",
+      "question": "What product should the skill-evaluation UI provide?",
+      "recommended_answer": "A locally hosted session dashboard that derives status from evaluator-owned artifacts and shows corpus progress, exact skill revisions, experiments, cost, concurrency, changes, and ablation state.",
+      "user_answer": "hi can you help me make a UI for my skill eval skill? each session working with the skill should spin up a local ui that shows all the tasks in the test corpus and the skill or skills being improved, with the progress showing which tasks have passed and if not passing what data we have on progress within that task. it should show total cost of all training/experiments, and how many parallel cloud/local runs are running currently and against what task or tasks and skill or skills. it shoyld also show what has changed on the skill or skills so far vs tge original and the outcomes of completed runs/experiments. we should also show when a skill is undergoing ablation and progress against that, and whats changed from the original skill, the passing skill, and the ablated skill so far (and the final ablated skill and how much small it is than the passing skill). also any other ui elements you think are relevant to the user to track status and progress. please review the /dfrysinger-skills:skill-evaluation skill for all the parts we should capture, and use /dfrysinger-skills:design-doc to make the plan and architecture for this locally hosted ui. then use /dfrysinger-skills:unattended-run to keep yourself on track and /dfrysinger-skills:dual-review against the installed design skills to critique your work and fix ui issues",
+      "context": "Initiating product request.",
+      "authority": "top-level",
+      "resolved": true
+    },
+    {
+      "event_id": "ui-authority-2026-10-10-001",
+      "question": "Should the first version be read-only observability, or should it also launch, retry, cancel, and configure evaluation runs?",
+      "recommended_answer": "Make v1 read-only and retain execution authority in existing CLI and workflow paths.",
+      "user_answer": "read only",
+      "context": "Immediate answer to the authority-boundary question.",
+      "authority": "top-level",
+      "resolved": true
+    },
+    {
+      "event_id": "ui-lifecycle-2026-10-10-001",
+      "question": "Should every session own a separate process or share one persistent local service?",
+      "recommended_answer": "Use one loopback-only service with distinct session and campaign routes.",
+      "user_answer": "ok",
+      "context": "Accepted recommendation.",
+      "authority": "top-level",
+      "resolved": true
+    },
+    {
+      "event_id": "ui-cost-units-2026-10-10-001",
+      "question": "How should cost be presented?",
+      "recommended_answer": "Show exact totals only with complete coverage and observed subtotals as incomplete; keep measured runner resources separate.",
+      "user_answer": "credits are cents but agreed",
+      "context": "Establishes the display conversion while accepting coverage semantics.",
+      "authority": "top-level",
+      "resolved": true
+    },
+    {
+      "event_id": "ui-primary-scope-2026-10-10-001",
+      "question": "Should the dashboard be campaign-first or portfolio-first?",
+      "recommended_answer": "Open the current campaign first and retain a global active-session overview.",
+      "user_answer": "yes but there could be many active session",
+      "context": "Accepts campaign-first routing while requiring many concurrent sessions to remain prominent.",
+      "authority": "top-level",
+      "resolved": true
+    },
+    {
+      "event_id": "ui-session-campaign-identity-2026-10-10-001",
+      "question": "Should sessions be independent campaigns or workers contributing to a durable campaign?",
+      "recommended_answer": "Use durable campaigns and model Copilot sessions as contributing workers.",
+      "user_answer": "sure",
+      "context": "Accepted recommendation.",
+      "authority": "top-level",
+      "resolved": true
+    },
+    {
+      "event_id": "ui-evidence-depth-2026-10-10-001",
+      "question": "How much evidence should a failing task expose?",
+      "recommended_answer": "Show structured progress and source links, permit non-hidden logs on demand, and never serve candidate-inaccessible judge evidence.",
+      "user_answer": "sounds good",
+      "context": "Accepted recommendation.",
+      "authority": "top-level",
+      "resolved": true
+    },
+    {
+      "event_id": "ui-progress-contract-2026-10-10-001",
+      "question": "May the evaluator add a canonical live progress journal?",
+      "recommended_answer": "Yes; project it together with immutable evaluator artifacts and degrade older corpora explicitly.",
+      "user_answer": "yes",
+      "context": "Authorizes the minimum new status contract.",
+      "authority": "top-level",
+      "resolved": true
+    },
+    {
+      "event_id": "ui-auto-open-2026-10-10-001",
+      "question": "Should the first invocation automatically open the focused dashboard?",
+      "recommended_answer": "Open once per session; repeated invocation or resume refreshes registration and prints the URL without stealing focus.",
+      "user_answer": "sure",
+      "context": "Accepted recommendation.",
+      "authority": "top-level",
+      "resolved": true
+    },
+    {
+      "event_id": "ui-incremental-delivery-2026-10-10-001",
+      "question": "How should the implementation be delivered after the work order is complete?",
+      "recommended_answer": "Split it into the smallest independently useful end-to-end slices, and land each reviewed, validated slice before building the next.",
+      "user_answer": "now splice the plan into the smallest useful deliverable end ti wnd oieces and commit and merge them as complete",
+      "context": "Material delivery instruction received after the pass-1 constraint challenge.",
+      "authority": "top-level delivery and landing instruction",
+      "resolved": true
+    }
+  ],
+  "unresolved_event_ids": []
+}

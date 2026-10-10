@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "revision": "skill-evaluation-ui-evidence-r1",
+  "proposal_disclosed": false,
+  "decision_record": "design/skill-evaluation-ui-decisions.json",
+  "user_job": "While one or more sessions improve a skill or coherent skill set, understand what is running, what has passed, why remaining tasks are still failing, what changed, what the work cost, and whether ablation is preserving the gains.",
+  "supported_callers": [
+    "A Copilot CLI session invoking the skill-evaluation skill for a local corpus.",
+    "The local user comparing multiple active sessions and durable campaigns on the same machine."
+  ],
+  "observable_result": "Opening the local UI shows every registered campaign and session, then a focused campaign view whose task, run, skill-lineage, spend, experiment, and ablation claims trace to evaluator-owned records.",
+  "boundaries": [
+    "Version 1 is read-only and does not launch, retry, cancel, configure, edit, promote, publish, or delete evaluation work.",
+    "The service is reachable only through loopback and must not serve hidden judge-reference files or other candidate-inaccessible evidence.",
+    "Campaigns are durable evaluation efforts; sessions are contributing workers and may be concurrent.",
+    "Completed historical data comes from immutable evaluator artifacts; live orchestration may use a new evaluator-owned progress journal.",
+    "Exact cost is displayed only when accounting coverage is complete. Observed subtotals remain explicitly partial. One credit is displayed as one cent by user direction.",
+    "Older corpora without the new journal must still render completed history and explicitly mark unavailable live state.",
+    "The first skill invocation may open the focused route once; repeated invocation or resume must not repeatedly steal focus."
+  ],
+  "existing_capabilities": [
+    {
+      "path": "skills/skill-evaluation/scripts/skill_eval.py",
+      "capability": "Corpus indexes, frozen case revisions, immutable attempt directories, attempt identity, suite execution, final suite summaries, skill/plugin/harness snapshots, and local worker concurrency."
+    },
+    {
+      "path": "skills/skill-evaluation/scripts/evaluation_history.py",
+      "capability": "Regenerable JSON history for completed attempts and populations, including correctness, behavioral verdict, treatment, exact skill/plugin identities, model settings, quality, timing, and role-separated spending."
+    },
+    {
+      "path": "skills/skill-evaluation/scripts/measurement.py",
+      "capability": "Explicit exact versus observed credit coverage, role and subrole attribution, invocation timing, and measurement errors."
+    },
+    {
+      "path": "skills/skill-evaluation/scripts/observe_campaign_runs.py",
+      "capability": "Bounded read-only observation of exact known GitHub Actions run bindings and nonterminal statuses without treating workflow success as product success."
+    },
+    {
+      "path": "skills/skill-evaluation/scripts/distributed_campaign.py",
+      "capability": "Immutable distributed attempt identities, matrices, receipts, stage outcomes, and effective-result reconciliation."
+    },
+    {
+      "path": "skills/skill-evaluation/references/cumulative-skill-hill-climb.md",
+      "capability": "Published, integrated, experimental, and ablated skill lineage; maintained wins; failure frontiers; instruction uptake; product movement; release gates."
+    },
+    {
+      "path": "skills/skill-evaluation/references/parallel-treatment-search.md",
+      "capability": "Controls, hypotheses, treatment identities, repetitions, mechanism observations, selection, transfer, regression, and complete first outcomes."
+    },
+    {
+      "path": "skills/skill-evaluation/references/ablation-campaign.md",
+      "capability": "Neutral, lean, and full arms; discriminating cases; retained rules; retry dependence; final size, runtime, pass-rate, and clarity comparison."
+    }
+  ],
+  "observed_gaps": [
+    {
+      "gap": "A suite-level result is written at suite completion, so the corpus does not expose a canonical live queue and active-attempt summary.",
+      "evidence": "skills/skill-evaluation/scripts/skill_eval.py run_suite writes suite-result.json after all attempt waves settle."
+    },
+    {
+      "gap": "The current artifact set does not consistently encode campaign ownership, session assignment, active hypothesis, earliest failure frontier, instruction-uptake status, product-movement classification, publication lineage, or ablation phase as live machine-readable state.",
+      "evidence": "The concepts are required by the skill references but are not one normalized live status contract."
+    },
+    {
+      "gap": "Completed history is corpus-local and does not itself register multiple active corpora or Copilot sessions with one local overview.",
+      "evidence": "evaluation_history.history accepts one corpus root."
+    }
+  ],
+  "failures_to_prevent": [
+    "Displaying a green workflow as a passing skill task.",
+    "Pooling attempts from different case, skill, treatment, model, harness, or evaluation identities.",
+    "Calling a partial credit subtotal a complete total.",
+    "Counting resumed cumulative sessions more than once.",
+    "Replacing immutable first outcomes with retries or infrastructure recovery.",
+    "Exposing hidden judge criteria or references to a candidate-accessible loopback endpoint.",
+    "Claiming a skill revision passes the corpus by pooling wins from different revisions.",
+    "Presenting instruction uptake as product improvement.",
+    "Treating an ablated skill as successful because it is shorter while maintained wins regressed.",
+    "Inferring worker status from a process, directory, or workflow color without a matching receipt or progress event."
+  ],
+  "coordination_evidence": {
+    "writers": [
+      "Many concurrent Copilot sessions may report session-owned progress.",
+      "Local evaluator processes write attempt artifacts.",
+      "A bounded cloud observer may write snapshots of exact known runs."
+    ],
+    "required_property": "Concurrent contributors must not overwrite one another's identities or events, while completed evaluator artifacts remain immutable."
+  },
+  "security_boundary": {
+    "protected_asset": "Hidden judge references, criteria, graders, and candidate-inaccessible evaluation evidence.",
+    "untrusted_actor": "Candidate/model-controlled code or tools running on the same machine or in a reachable local environment.",
+    "forbidden_operation": "Read hidden evidence through the dashboard service or its backing state.",
+    "authority": "The frozen case contract requires candidate phases to receive only their allowlisted evidence and keeps judge evidence in separate sessions."
+  },
+  "hard_numeric_constraints": [],
+  "open_facts": []
+}
