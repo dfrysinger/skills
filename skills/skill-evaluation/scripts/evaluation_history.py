@@ -29,13 +29,35 @@ def fingerprint(value: object) -> str:
 def cost_summary(rows: list[dict], role: str = "total") -> dict:
     costs = [row["accounting"].get(role, {}) for row in rows]
     known = [cost["observed_credits"] for cost in costs if cost.get("observed_credits") is not None]
+    premiums = [
+        cost["observed_premium_requests"]
+        for cost in costs
+        if cost.get("observed_premium_requests") is not None
+    ]
     complete = all(cost.get("complete") and cost.get("credits") is not None for cost in costs)
+    premium_complete = all(
+        cost.get("complete") and cost.get("premium_requests") is not None
+        for cost in costs
+    )
     return {
         "credits": sum(cost["credits"] for cost in costs) if complete else None,
         "observed_credits": sum(known) if known or not rows else None,
+        "premium_requests": (
+            sum(cost["premium_requests"] for cost in costs)
+            if premium_complete
+            else None
+        ),
+        "observed_premium_requests": (
+            sum(premiums) if premiums or not rows else None
+        ),
         "complete": complete, "attempts": len(rows),
         "complete_attempts": sum(bool(cost.get("complete")) for cost in costs),
         "known_subtotal_attempts": len(known),
+        "known_premium_attempts": len(premiums),
+        "complete_premium_attempts": sum(
+            bool(cost.get("complete") and cost.get("premium_requests") is not None)
+            for cost in costs
+        ),
     }
 
 

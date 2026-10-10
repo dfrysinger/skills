@@ -222,10 +222,13 @@ relabeled completed by the service. Missing or moved corpus roots remain
 registered as `unavailable`, and replacement paths are never guessed.
 
 `stop` validates the owner-local service receipt and terminates only its exact
-generation. A replacement service uses a new generation, port, and capability.
-An old browser receives `401 generation_replaced` and an instruction to invoke
-`dashboard_cli.py open`; it receives no data from the replacement. Service
-replacement cannot add registered roots or change result authority.
+generation. A replacement service uses a new generation and capabilities. It
+reuses the released prior port when available so an old browser receives
+`401 generation_replaced` and an instruction to invoke `dashboard_cli.py open`;
+it receives no data from the replacement. If another process owns that port,
+the replacement chooses a new loopback port and the old browser reports the
+service unavailable. Service replacement cannot add registered roots or change
+result authority.
 
 ### Capability policy
 
@@ -711,7 +714,7 @@ cannot reconstruct hidden or cross-attempt evidence.
 | History parity test | Criteria 2-4 and 10 | Compare raw dashboard credits, premium requests, populations, outcomes, and coverage with `evaluation_history.history()`; include premium-only and partial fixtures before applying the optional display transform | Raw outcomes, populations, units, and coverage agree | UI has become a second correctness/accounting interpreter or invented a currency total |
 | Concurrent writer test | Criteria 5 | Many processes write distinct session files and event envelopes, including same-session concurrent emits, evaluator threads, duplicate IDs, and interrupted writes | No lost events or false conflicts; differing duplicate IDs conflict deterministically | Shared state is unsafe under the required session concurrency |
 | Reconciliation test | Criteria 3 and 5-9 | Publish local live events, retries, conflicts, and then immutable results | Authority order, complete identity tuples, and first outcomes remain intact | Live metadata can rewrite evaluator truth |
-| Service lifecycle test | Criteria 13-14 | Concurrent ensure, stop, replacement, PID reuse, stale sessions, moved roots, old browser token | Exactly one current service; stale/unavailable/replaced states are explicit | Shared lifecycle can broaden roots, retain authority, or fabricate state |
+| Service lifecycle test | Criteria 13-14 | Concurrent ensure, stop, crash replacement on the released port, occupied-port fallback, PID reuse, stale sessions, moved roots, old browser token | Exactly one current service; an old token on a reused port receives `generation_replaced`; occupied-port fallback and stale/unavailable states are explicit | Shared lifecycle can broaden roots, retain authority, or fabricate state |
 | Candidate tool-boundary integration | Criteria 1, 11, 13, and 15 | Launch a prose candidate with the exact `skill,view` tool contract; attempt dashboard API access and an absolute view of the root secret; inspect tool audit, service generation, and judgment admission | No network operation exists; the out-of-boundary view fails the attempt; the generation rotates before output admission; no dashboard JSON reaches the candidate | The new service creates candidate authority beyond the evaluator's existing boundary |
 | Browser behavior test | Criteria 7, 10, 12, and 14 | First start, repeat invocation, resume, replacement, fragment stripping, and browser-open failure | Open occurs once; later calls return only token-free URLs or retry commands; legacy and replaced states are explicit | Session entry leaks capability material, is disruptive, or reports unavailable state dishonestly |
 | Slice-1 installed-plugin proof | Slice-1 criteria only | Installed plugin, completed corpus, legacy corpus, manual ensure/open/status/stop, service replacement, token refusal | Completed-history journey works independently before any session/event schema exists | Slice 1 is not independently useful or relies on Slice 2 |
@@ -756,9 +759,10 @@ history, distributed tooling, and skill invocation work without the service.
 
 ## Current baton
 
-- **Phase:** design landing.
+- **Phase:** Foundation Slice 1 landing.
 - **Workspace:** isolated worktree for
-  `dfrysinger/skill-eval-ui-design`, based on `origin/main`.
+  `dfrysinger/skill-eval-ui-slice1`, based on merged design commit
+  `fc8cb1d268d3b80320f0fa9dc00a48dd80158207`.
 - **Decision record:** complete; no unresolved user event.
 - **Pass-1 challenge:** `NARROW`, incorporated in this proposal.
 - **Pass-2 challenge:** `NARROW`; ten required edits are incorporated in the
@@ -768,9 +772,19 @@ history, distributed tooling, and skill invocation work without the service.
   and capability rotation on audited boundary violations is specified.
 - **Dual design review:** complete; both model families applied the design
   scope lens and closed every material finding.
-- **Next action:** commit, push, review, and merge the work order; then begin
-  Slice 1 from merged main.
+- **Slice 1 evidence:** 315 deterministic tests pass; installed lifecycle,
+  completed-history, and browser receipts pass against candidate fingerprint
+  `sha256:d3e3b7d78753f52b854663451d92712804df4c20b15a56b7bdde44cd6c1bb421`.
+  Light, dark, mobile, overview, missing-capability, and legacy-unknown states
+  were inspected. Round-2 dual review closed all findings with no remaining
+  must-fix or follow-up.
+- **Next action:** commit, push, review the pull request checks, and merge
+  Slice 1 before creating the Slice 2 worktree from merged `main`.
 - **Open revisit condition:** none.
+- **Observed mechanism correction:** live proof showed that a new-port
+  replacement cannot answer an old-port browser with `generation_replaced`.
+  Slice 1 therefore reuses the released prior port when available and reports
+  unavailable when another process owns it.
 
 ## Definition of Done: Skill Evaluation UI Foundation
 

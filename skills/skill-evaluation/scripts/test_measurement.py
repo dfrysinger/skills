@@ -1303,7 +1303,15 @@ class HistoryTests(unittest.TestCase):
         summary = first["populations"][0]
         self.assertIsNone(summary["credits_per_successful_first_attempt"])
         self.assertEqual(summary["total_spend"]["observed_credits"], 6)
+        self.assertAlmostEqual(
+            summary["total_spend"]["observed_premium_requests"],
+            0.99,
+        )
         self.assertEqual(summary["invalid_spend"]["credits"], 1)
+        self.assertEqual(
+            summary["invalid_spend"]["premium_requests"],
+            0.33,
+        )
         self.assertEqual(summary["unsuccessful_spend"]["observed_credits"], 4)
         old = next(row for row in first["attempts"] if row["run_path"] == "runs/old/example")
         self.assertIsNone(old["elapsed_seconds"])
