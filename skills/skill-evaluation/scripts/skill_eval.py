@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack, contextmanager
@@ -887,6 +888,13 @@ def resolve_view(arguments: object, cwd: Path) -> tuple[str, str, bool] | None:
 def successful_view_path(view: tuple[str, str, bool], cwd: Path, boundary: str) -> str:
     requested, resolved, inside = view
     if not inside and boundary == "prose":
+        from dashboard_cli import invalidate_on_boundary_violation
+        try:
+            invalidate_on_boundary_violation(Path(resolved))
+        except (OSError, ValueError, urllib.error.URLError) as error:
+            raise ValueError(
+                f"view escaped evaluation workdir and dashboard rotation failed: {requested}"
+            ) from error
         raise ValueError(f"view escaped evaluation workdir: {requested}")
     return Path(resolved).relative_to(cwd.resolve()).as_posix() if inside else requested
 
@@ -2386,12 +2394,18 @@ def parser() -> argparse.ArgumentParser:
     history.add_argument("--case")
     history.add_argument("--arm", choices=("baseline", "skill"))
     history.add_argument("--model")
+    from dashboard_cli import configure_parser
+    configure_parser(sub)
     return result
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
+        if args.command == "dashboard":
+            from dashboard_cli import dispatch
+            print(json.dumps(dispatch(args), indent=2, allow_nan=False))
+            return 0
         root = args.corpus.expanduser().resolve()
         if args.command == "init":
             init_corpus(root)

@@ -252,3 +252,50 @@ shared global append lock.
 
 Run dual-review round 2 against the exact fix delta and runner evidence. Do not
 start implementation until both review families report no must-fix finding.
+
+## Slice 1 replacement-port reconciliation
+
+**Trigger:** live proof established that a browser still addressing an old port
+cannot receive `generation_replaced` from a replacement bound to a new port.
+
+**Decision:** `NARROW`
+**Gate status:** `CLEAR`
+
+The user needs an old browser to receive no stale evaluation data and to show an
+explicit replacement or unavailable state. No user decision, external policy,
+or platform obligation requires every replacement to choose a new port.
+
+### Keep
+
+- Every replacement rotates the service generation, root secret, and browser
+  capabilities. This prevents old authority from reading replacement data.
+- Reuse the released prior port when available. This is the smallest mechanism
+  that lets the replacement answer an old token with `generation_replaced`.
+- If another process owns the prior port, bind a new loopback port and let the
+  old browser report the service unavailable. Do not kill or displace the
+  unrelated owner.
+
+The protected asset is safe evaluation projection data. The untrusted actor is
+any process or old browser holding stale browser authority. The unauthorized
+operation is reading replacement-generation data. Generation-scoped
+capabilities and refusal on mismatch control only that authority expansion;
+they do not restrict deliberate owner grants. No external policy constrains
+owner grants.
+
+### Remove
+
+- The unsupported requirement that every replacement use a new port.
+- A redirector, tombstone service, or second stable front-door process solely
+  to preserve that requirement.
+
+### Unresolved
+
+None. The corrected lifecycle has one service writer and multiple management
+callers, but port selection itself has no conflicting writer and needs no new
+coordination mechanism. The existing startup lock remains justified by
+concurrent `ensure` callers that could otherwise start multiple services.
+
+### Smallest next step
+
+Implement prior-port reuse after confirmed process exit, retain occupied-port
+fallback, and prove old-token refusal plus unrelated-port-owner preservation.

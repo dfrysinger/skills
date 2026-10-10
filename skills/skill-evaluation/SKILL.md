@@ -18,6 +18,25 @@ pooled count of passes from different experiments. Follow the
 [`cumulative skill hill climb`](references/cumulative-skill-hill-climb.md)
 for the complete process.
 
+## Local completed-history dashboard
+
+Use the read-only local dashboard when you need a browser view of completed
+corpus history. It preserves the same result, population, accounting, and
+unknown-state semantics as `history`; it does not launch or change evaluation
+work.
+
+```sh
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard ensure CORPUS
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard open CORPUS
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard status
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard stop
+```
+
+This foundation shows registered corpora, completed attempts, exact observed
+skill identities, outcomes, timing, AI credits, and premium requests. Live
+sessions, active attempts, cloud work, lineage, experiments, and ablation are
+explicitly unavailable.
+
 ## 1. Define the behavioral claim
 
 Name the target skill, the behavior being tested, the user-visible failure that

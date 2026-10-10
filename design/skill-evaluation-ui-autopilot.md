@@ -69,9 +69,8 @@ orders, challenge gates, objectives, and charters.
 
 ## Required process skills
 
-- **Governing:** `/dfrysinger-skills:design-doc` until the reviewed work order
-  is presented; then update this charter so
-  `/dfrysinger-skills:development-loop` governs implementation and landing.
+- **Governing:** `/dfrysinger-skills:development-loop` for implementation,
+  proof, review, and landing against the merged work order.
 - **Execution:** `/dfrysinger-skills:constraint-challenge`,
   `/dfrysinger-skills:dual-review`, `/dfrysinger-skills:skill-evaluation`, and
   `/dfrysinger-skills:visual-proof`, only in the phases they own.

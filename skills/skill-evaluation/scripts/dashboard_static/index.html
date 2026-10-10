@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Skill Evaluation</title>
+    <link rel="stylesheet" href="/dashboard.css">
+    <script src="/dashboard.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Skill Evaluation overview">
+          <span class="brand-mark" aria-hidden="true">SE</span>
+          <span>
+            <strong>Skill Evaluation</strong>
+            <small>Local read-only dashboard</small>
+          </span>
+        </a>
+        <div class="service-state" id="service-state">Connecting</div>
+      </header>
+      <main id="app" aria-live="polite">
+        <section class="loading-state">
+          <div class="skeleton title-skeleton"></div>
+          <div class="metric-skeletons">
+            <div class="skeleton"></div>
+            <div class="skeleton"></div>
+            <div class="skeleton"></div>
+          </div>
+          <div class="skeleton table-skeleton"></div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>
