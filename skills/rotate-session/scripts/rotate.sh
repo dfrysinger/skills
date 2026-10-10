@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Replace the current tmux pane's Copilot session with one fresh seeded session.
 #
-#   rotate.sh <old-session-id> <prompt-file> [--consume-prompt]
+#   rotate.sh <old-session-id> <prompt-file> [--consume-prompt] [--mode autopilot]
 
 set -uo pipefail
 umask 077
@@ -9,19 +9,38 @@ umask 077
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELPER="$SCRIPT_DIR/rotate-after-turn.sh"
 STORAGE_ROOT_CLI="$SCRIPT_DIR/../../../extensions/session-control/storage-root.mjs"
-USAGE="usage: rotate.sh <old-session-id> <prompt-file> [--consume-prompt]"
+USAGE="usage: rotate.sh <old-session-id> <prompt-file> [--consume-prompt] [--mode autopilot]"
 OLD="${1:?$USAGE}"
 PROMPT_FILE="${2:?$USAGE}"
-CONSUME_PROMPT="${3:-}"
+shift 2
+CONSUME_PROMPT=""
+AGENT_MODE=""
 STATE="${ROTATE_STATE_ROOT:-$HOME/.copilot/session-state}"
 LOG="${ROTATE_LOG:-/tmp/rotate-session-$OLD.log}"
 TMP_ROOT="${TMPDIR:-/tmp}"
 TMUX_BIN="${ROTATE_TMUX_BIN:-$(command -v tmux 2>/dev/null || true)}"
 
-case "$CONSUME_PROMPT" in
-  ""|--consume-prompt) ;;
-  *) echo "rotate.sh: $USAGE" >&2; exit 1 ;;
-esac
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --consume-prompt)
+      [ -z "$CONSUME_PROMPT" ] || { echo "rotate.sh: $USAGE" >&2; exit 1; }
+      CONSUME_PROMPT="$1"
+      shift
+      ;;
+    --mode)
+      [ "${2:-}" = "autopilot" ] && [ -z "$AGENT_MODE" ] || {
+        echo "rotate.sh: $USAGE" >&2
+        exit 1
+      }
+      AGENT_MODE="$2"
+      shift 2
+      ;;
+    *)
+      echo "rotate.sh: $USAGE" >&2
+      exit 1
+      ;;
+  esac
+done
 
 [ -n "${TMUX_PANE:-}" ] && [ -x "$TMUX_BIN" ] || {
   echo "rotate.sh: automated rotation requires the current Copilot session to run in tmux" >&2
@@ -125,6 +144,19 @@ while [ "$#" -gt 0 ]; do
       PERMISSION_FLAG="--allow-all"
       shift
       ;;
+    --mode)
+      [ "$#" -ge 2 ] || {
+        echo "rotate.sh: current Copilot launch has an incomplete --mode option" >&2
+        exit 1
+      }
+      case "$2" in
+        interactive|plan|autopilot) shift 2 ;;
+        *) echo "rotate.sh: current Copilot launch mode is invalid: $2" >&2; exit 1 ;;
+      esac
+      ;;
+    --mode=interactive|--mode=plan|--mode=autopilot|--autopilot)
+      shift
+      ;;
     --session-id|--name|-C)
       [ "$#" -ge 2 ] || {
         echo "rotate.sh: current Copilot launch has an incomplete $1 option" >&2
@@ -190,6 +222,7 @@ LAUNCHER="$RECOVERY_FILE.launch.sh"
   printf 'exec %q --session-id=%q --name=%q' "$COPILOT_BIN" "$NEW" "$PANE_NAME"
   [ -z "$REMOTE_FLAG" ] || printf ' %q' "$REMOTE_FLAG"
   [ -z "$PERMISSION_FLAG" ] || printf ' %q' "$PERMISSION_FLAG"
+  [ -z "$AGENT_MODE" ] || printf ' --mode %q' "$AGENT_MODE"
   printf ' -C %q --interactive "$prompt"\n' "$PANE_CWD"
 } >"$LAUNCHER" || {
   exec 3>&-

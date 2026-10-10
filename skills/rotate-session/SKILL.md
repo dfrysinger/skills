@@ -30,16 +30,74 @@ while [ "$p" -gt 1 ]; do
 done
 ```
 
-### 2. Carry the schedules over yourself
+### 2. Inventory mode, objective, and schedules independently
 
 Rotation starts a **new session**. The old one's `plan.md`, `checkpoints/`,
 `files/`, SQL tables, and transcript stay on disk and get read back in step 3,
-but **armed `/every` schedules do not carry over**. They stay bound to the old
-session, and the fresh session cannot re-arm what it cannot see.
+but **selected agent mode, native `/autopilot` objective, and armed `/every`
+schedules do not carry over**. Do not require an active charter to preserve
+mode or unrelated schedules.
 
-So run `manage_schedule action=list` first, and if anything is live, append its
-interval and prompt text to the seed prompt below with an instruction to re-arm
-it. Tell the user which ones you carried.
+Run `manage_schedule action=list` first and record every live interval and
+exact prompt and whether it is an unattended-run charter check or progress
+nudge. Identify those reminders by their live prompts and reconcile their
+charter path, plan, Definition of Done, and registry against the persisted
+charter. The fresh session re-arms every unrelated live schedule with its
+recorded cadence and prompt. Give charter reminders to `unattended-run` to
+reconcile and re-arm instead of replaying their old prompts first; otherwise
+duplicates can result. Old schedule IDs never transfer. Tell the user which
+schedules were carried.
+
+Read the last root `user.message` agent mode and **only the status** of the
+native objective from this session's own state. Do not print objective text
+while inventorying. The latest user-message mode is a recorded selection,
+not proof that the user has not switched modes since that message; confirm
+against the currently visible CLI mode before rotation. If neither source
+establishes the selected mode, ask rather than guessing. An active native
+objective and a visibly disabled autopilot mode are conflicting signals;
+resolve that conflict before rotating. A `completed` objective does not
+become active again just because autopilot mode is still selected.
+
+```sh
+OLD='<old-session-id>'
+python3 - "$HOME/.copilot/session-state/$OLD" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+folder = Path(sys.argv[1])
+mode = "unknown"
+with (folder / "events.jsonl").open() as events:
+    for line in events:
+        event = json.loads(line)
+        if event.get("type") == "user.message" and not event.get("agentId"):
+            mode = event.get("data", {}).get("agentMode") or mode
+path = folder / "autopilot-objective.json"
+status = "missing"
+if path.exists():
+    try:
+        state = json.loads(path.read_text())
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"invalid native objective state: {error.msg}")
+    current = state.get("current") if isinstance(state, dict) else None
+    status = current.get("status", "missing") if isinstance(current, dict) else "missing"
+print(f"mode={mode} objective={status}")
+PY
+```
+
+When the selected mode is autopilot, pass `--mode autopilot` to the rotation
+script; otherwise omit it. A recorded `current.status` of `active` means
+the objective needs an autonomous refresh through `unattended-run` even if
+no matching charter schedule exists. Include the plan/charter paths and
+objective-file path if known; if no persisted brief exists, the fresh session
+must recover scope from the retired native objective and create the brief
+before refreshing it. A missing or completed objective is **not** a reason
+to invent a new one. A malformed or unreadable objective state is a blocker
+to objective migration; do not silently replace it.
+
+**Complete when** the seed has the confirmed selected mode, objective status,
+exact live schedule inventory, and resolvable pointers for anything it must
+refresh.
 
 ### 3. Rotate
 
@@ -69,6 +127,49 @@ summarize where things stand and what you believe the next step is, and wait
 for my go-ahead before acting.
 ```
 
+Always add this state inventory to the seed, replacing its last sentence with
+the applicable recovery instruction below:
+
+```
+Retired state: selected mode <MODE>; native objective <STATUS>; plan
+<PLAN_PATH_OR_NOT_RECORDED>; charter <CHARTER_PATH_OR_NOT_RECORDED>;
+objective file <OBJECTIVE_PATH_OR_NOT_RECORDED>; Definition of Done
+<HEADING_OR_NOT_RECORDED>. Live schedules (interval and exact prompt):
+<SCHEDULES_OR_NONE>. After rebuilding context, confirm the rotation log
+and recheck the retired objective status and latest plan baton. If any
+brief or schedule prompt points inside the retired session, copy that
+artifact to a durable path owned by this session and update its pointers
+before scheduling. Re-arm unrelated schedules at their recorded cadences
+and prompts, using new IDs; do not duplicate charter reminders.
+
+If the objective remains active and its Definition of Done is not met,
+invoke /dfrysinger-skills:unattended-run. Reconcile the existing plan and
+charter or create a brief if none was recorded. Read the retired native
+objective only if needed to recover its scope and boundaries. Derive a
+new concise objective from the latest baton and current progress, not a
+copy of the retired objective. Use unattended-run to reconcile and arm
+exactly one four-hour charter check and one hourly progress nudge with NEW
+schedule IDs, then hand the new objective to native /autopilot through
+its SDK helper as the final action of that turn. End the turn so work
+continues autonomously; do not wait for another go-ahead.
+
+If the retired objective has completed or the Definition of Done is met,
+do not restart it. Preserve the selected mode independently and reconcile
+all live schedules. For a live charter whose work is not done, invoke
+unattended-run only to rebind its reminders and registry; do not establish
+a new native objective. Apply the charter's normal off-switch when
+completion is verified. With no active objective, do not invent one.
+Summarize the current state and wait for my go-ahead before starting new
+work.
+If migration fails, state the exact missing predicate rather than silently
+discarding state or running a stale objective.
+```
+
+The fresh session must confirm the replacement session's seed and rotation
+result before arming anything. If the selected mode was autopilot, the
+launcher preserves it independently of objective status. Do not pass an
+active objective to the launcher as raw prompt text.
+
 The template asks only for `todos`, so name any custom SQL tables that matter.
 The fresh session reads recorded state, not live state.
 
@@ -84,8 +185,11 @@ Automated rotation is supported only from the current Copilot tmux pane.
 Outside tmux, the script fails before consuming or snapshotting the prompt.
 Never replace this with FIFO submission or terminal input injection.
 
-```sh
+```bash
 OLD='<old-session-id>'
+SELECTED_MODE='<confirmed-mode>'
+MODE_ARGS=()
+if [ "$SELECTED_MODE" = autopilot ]; then MODE_ARGS=(--mode autopilot); fi
 SEED=$(mktemp "${TMPDIR:-/tmp}/copilot-rotate-input-${OLD}.XXXXXX") || exit 1
 trap 'rm -f -- "$SEED"' EXIT
 if ! cat >"$SEED" <<'PROMPT'
@@ -98,7 +202,7 @@ fi
 [ -s "$SEED" ] || { echo "Rotation seed is empty" >&2; exit 1; }
 
 ~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/rotate-session/scripts/rotate.sh \
-  "$OLD" "$SEED" --consume-prompt
+  "$OLD" "$SEED" --consume-prompt "${MODE_ARGS[@]}"
 ```
 
 Use the unique `mktemp` path exactly as shown. A fixed `/tmp/rotate-seed.txt`

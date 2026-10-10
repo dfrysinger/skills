@@ -82,7 +82,7 @@ writeFileSync(
   join(state, "events.jsonl"),
   `${JSON.stringify({
     type: "user.message",
-    data: { content: prompt, delivery: "idle" },
+    data: { content: prompt, delivery: "idle", agentMode: value("--mode") ?? "interactive" },
   })}\n${
     process.env.MOCK_NEW_SESSION_EXTRA_MESSAGE
       ? `${JSON.stringify({
@@ -119,6 +119,7 @@ start_rotation() {
   local setup_user_message="${6:-}"
   local inbox_inflight="${7:-}"
   local marker_root="${8:-}"
+  local agent_mode="${9:-}"
   local control_root="${marker_root:-$ROOT/home/.copilot/session-control}"
   local state="$ROOT/home/.copilot/session-state/$old"
   local input="$ROOT/$label-input.txt"
@@ -143,6 +144,8 @@ start_rotation() {
   fi
   printf '%s' "$prompt" >"$input"
 
+  local mode_args=()
+  if [ -n "$agent_mode" ]; then mode_args=(--mode "$agent_mode"); fi
   HOME="$ROOT/home" TMPDIR="$ROOT/tmp" PATH="$ROOT/bin:$PATH" \
     ROTATE_STATE_ROOT="$ROOT/home/.copilot/session-state" \
     ROTATE_LOG="$log" ROTATE_TMUX_BIN="$ROOT/bin/tmux" \
@@ -150,7 +153,7 @@ start_rotation() {
     MOCK_NEW_SESSION_EXTRA_MESSAGE="$extra_new_message" \
     MOCK_TMUX_PID_FILE="$ROOT/$label-helper.pid" \
     MOCK_TMUX_CALLS="$ROOT/$label-tmux.calls" TMUX_PANE="%test" \
-    "$SCRIPT" "$old" "$input" --consume-prompt >"$ROOT/$label.out"
+    "$SCRIPT" "$old" "$input" --consume-prompt "${mode_args[@]}" >"$ROOT/$label.out"
 
   [ ! -e "$input" ]
   printf '%s\t%s\n' "$state" "$log"
@@ -173,6 +176,19 @@ grep -Fq 'continue retired session old-success' \
   "$ROOT/home/.copilot/session-state/$success_new/events.jsonl"
 ! find "$ROOT/tmp" -maxdepth 1 -name 'copilot-rotate-recovery-old-success.*' |
   grep -q .
+
+export MOCK_PS_COMMAND="$ROOT/bin/copilot --mode autopilot --remote --yolo --session-id old-autopilot-mode"
+IFS=$'\t' read -r mode_state mode_log < <(
+  start_rotation old-autopilot-mode autopilot-mode \
+    'continue retired session old-autopilot-mode' "" "" "" "" "" autopilot
+)
+unset MOCK_PS_COMMAND
+printf '%s\n' '{"type":"assistant.turn_end","data":{}}' >>"$mode_state/events.jsonl"
+wait_for_result "$mode_log"
+grep -Fq 'seeded through tmux process replacement' "$mode_log"
+mode_new="$(sed -n 's/^replacement session: //p' "$mode_log" | tail -1)"
+grep -Fq '"agentMode":"autopilot"' \
+  "$ROOT/home/.copilot/session-state/$mode_new/events.jsonl"
 
 IFS=$'\t' read -r cancel_state cancel_log < <(
   start_rotation old-cancel cancel
