@@ -846,6 +846,32 @@ def configure_parser(sub: argparse._SubParsersAction) -> None:
     progress.add_argument("--event-id")
     progress.add_argument("--observed-at")
     progress.add_argument("--state-root", type=Path)
+    activity = commands.add_parser("experiment-activity")
+    activity.add_argument("corpus", type=Path)
+    activity.add_argument("source", type=Path)
+    activity.add_argument(
+        "--writer-kind",
+        choices=(
+            "session",
+            "distributed_coordinator",
+            "cloud_observer",
+        ),
+        required=True,
+    )
+    activity.add_argument("--writer-id", required=True)
+    activity.add_argument("--writer-generation", required=True)
+    activity.add_argument("--event-id")
+    activity.add_argument("--observed-at")
+    activity.add_argument("--state-root", type=Path)
+    selection = commands.add_parser("experiment-selection")
+    selection.add_argument("corpus", type=Path)
+    selection.add_argument("--declaration-event", required=True)
+    selection.add_argument("--result-event", action="append", default=[])
+    selection.add_argument("--writer-id", required=True)
+    selection.add_argument("--writer-generation", required=True)
+    selection.add_argument("--event-id")
+    selection.add_argument("--observed-at")
+    selection.add_argument("--state-root", type=Path)
     for name in ("status", "stop"):
         command = commands.add_parser(name)
         command.add_argument("--state-root", type=Path)
@@ -918,6 +944,28 @@ def dispatch(args: argparse.Namespace) -> dict:
                 {"kind": kind, "id": identifier}
                 for kind, identifier in (args.source or [])
             ],
+            event_id=args.event_id,
+            observed_at=args.observed_at,
+            root=args.state_root,
+        )
+    if args.dashboard_command == "experiment-activity":
+        return experiment_activity_dashboard(
+            args.corpus,
+            args.source.expanduser().resolve(),
+            writer_kind=args.writer_kind,
+            writer_id=args.writer_id,
+            writer_generation=args.writer_generation,
+            event_id=args.event_id,
+            observed_at=args.observed_at,
+            root=args.state_root,
+        )
+    if args.dashboard_command == "experiment-selection":
+        return experiment_selection_dashboard(
+            args.corpus,
+            args.declaration_event,
+            args.result_event,
+            writer_id=args.writer_id,
+            writer_generation=args.writer_generation,
             event_id=args.event_id,
             observed_at=args.observed_at,
             root=args.state_root,

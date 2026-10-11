@@ -8,7 +8,12 @@ import unittest
 import uuid
 from pathlib import Path
 
-from dashboard_cli import experiment_activity_dashboard
+from dashboard_cli import (
+    dispatch as dashboard_dispatch,
+    experiment_activity_dashboard,
+    parser as dashboard_parser,
+)
+from dashboard_projection import campaign_index_projection, campaign_projection
 from dashboard_state import (
     EXPERIMENT_EVENT_TYPES,
     capture_skill_snapshot,
@@ -21,7 +26,13 @@ from dashboard_state import (
     validate_experiment_activity_event,
     writer_directory,
 )
-from skill_eval import add_case, init_corpus
+from skill_eval import (
+    add_case,
+    digest,
+    freeze_case,
+    frozen_case_path,
+    init_corpus,
+)
 
 
 class DashboardExperimentStateTests(unittest.TestCase):
@@ -32,6 +43,37 @@ class DashboardExperimentStateTests(unittest.TestCase):
         self.corpus = self.root / "corpus"
         init_corpus(self.corpus)
         add_case(self.corpus, "case-a", "example-skill", ["candidate"])
+        definition_path = self.corpus / "cases" / "case-a" / "case.json"
+        definition = json.loads(definition_path.read_text(encoding="utf-8"))
+        definition["behavioral_claim"] = "The skill preserves evaluator authority."
+        definition["authority_kind"] = "synthetic"
+        definition_path.write_text(
+            json.dumps(definition, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (self.corpus / "cases" / "case-a" / "criteria.md").write_text(
+            "- The result preserves evaluator authority.\n",
+            encoding="utf-8",
+        )
+        (
+            self.corpus
+            / "cases"
+            / "case-a"
+            / "evidence"
+            / "candidate"
+            / "input.md"
+        ).write_text("candidate evidence\n", encoding="utf-8")
+        (
+            self.corpus
+            / "cases"
+            / "case-a"
+            / "judge-reference"
+            / "expected.md"
+        ).write_text("Preserve evaluator authority.\n", encoding="utf-8")
+        freeze_case(self.corpus, "case-a", replace=False)
+        self.case_revision = digest(
+            frozen_case_path(self.corpus, "case-a") / "case-manifest.json"
+        )
         self.registration = create_campaign(self.state_root, self.corpus)
         self.plugin = self.root / "plugin"
         skill = self.plugin / "skills" / "example-skill"
@@ -62,7 +104,7 @@ class DashboardExperimentStateTests(unittest.TestCase):
         self.temp.cleanup()
 
     def declaration_payload(self, *, tied: bool = False):
-        case_revision = "a" * 64
+        case_revision = self.case_revision
         metrics = [{
             "name": "terminal_pass_rate",
             "direction": "descending",
@@ -482,6 +524,53 @@ class DashboardExperimentStateTests(unittest.TestCase):
                 root=self.state_root,
             )
 
+    def test_cli_routes_owner_selected_activity_and_selection(self):
+        payload = self.declaration_payload()
+        source = self.root / "declaration.json"
+        source.write_text(json.dumps({
+            "schema_version": 1,
+            "event_type": "experiment_declared",
+            "experiment_id": "experiment-a",
+            "experiment_fingerprint": experiment_plan_fingerprint(payload),
+            "attempt_id": None,
+            "run_binding_fingerprint": None,
+            "payload": payload,
+        }), encoding="utf-8")
+        args = dashboard_parser().parse_args([
+            "dashboard",
+            "experiment-activity",
+            str(self.corpus),
+            str(source),
+            "--writer-kind",
+            "session",
+            "--writer-id",
+            self.session_writer["id"],
+            "--writer-generation",
+            self.session_writer["generation"],
+            "--event-id",
+            "4" * 32,
+            "--state-root",
+            str(self.state_root),
+        ])
+        receipt = dashboard_dispatch(args)
+        self.assertEqual(receipt["event_type"], "experiment_declared")
+
+        selection_args = dashboard_parser().parse_args([
+            "dashboard",
+            "experiment-selection",
+            str(self.corpus),
+            "--declaration-event",
+            receipt["event_id"],
+            "--writer-id",
+            self.evaluator_writer["id"],
+            "--writer-generation",
+            self.evaluator_writer["generation"],
+            "--state-root",
+            str(self.state_root),
+        ])
+        incomplete = dashboard_dispatch(selection_args)
+        self.assertEqual(incomplete["status"], "selection_incomplete")
+
     def test_cross_campaign_publication_is_refused_without_a_record(self):
         payload = self.declaration_payload()
         with self.assertRaisesRegex(ValueError, "campaign identity"):
@@ -498,6 +587,294 @@ class DashboardExperimentStateTests(unittest.TestCase):
                 recorded_at="2026-01-01T00:00:01+00:00",
             )
         self.assertEqual(experiment_activity_records(self.corpus), ([], [], []))
+
+    def test_projection_separates_terminal_selection_and_unknown_cost(self):
+        declaration = self.publish_declaration()
+        results = self.publish_results(declaration)
+        emit_experiment_selection(
+            self.corpus,
+            campaign_id=self.registration["campaign_id"],
+            writer=self.evaluator_writer,
+            declaration=declaration,
+            terminal_results=results,
+            event_id="7" * 32,
+            observed_at="2026-01-01T00:02:00+00:00",
+            recorded_at="2026-01-01T00:02:01+00:00",
+        )
+
+        projection = campaign_projection(
+            self.state_root,
+            self.registration["campaign_id"],
+        )
+        experiments = projection["experiments"]
+        self.assertEqual(experiments["status"], "available")
+        self.assertEqual(experiments["counts"]["terminal"], 2)
+        self.assertEqual(projection["availability"]["cloud_activity"], "available")
+        item = experiments["items"][0]
+        self.assertEqual(item["selection"]["status"], "selected")
+        self.assertEqual(
+            item["selection"]["selected_treatment_id"],
+            "candidate",
+        )
+        self.assertFalse(item["cost"]["complete"])
+        self.assertIsNone(item["cost"]["credits"])
+        self.assertEqual(
+            {row["state"] for row in item["activity"]},
+            {"terminal"},
+        )
+        self.assertEqual(
+            len(projection["task_details"][0]["experiment_attempts"]),
+            2,
+        )
+        encoded = json.dumps(projection, sort_keys=True)
+        for private_field in (
+            "repository",
+            "workflow_path",
+            "run_id",
+            "artifact_path",
+        ):
+            self.assertNotIn(private_field, encoded)
+
+        index = campaign_index_projection(self.state_root)
+        self.assertEqual(index["cloud_counts"]["terminal"], 2)
+        self.assertEqual(index["availability"]["cloud_activity"], "available")
+
+    def test_projection_keeps_transport_stage_and_result_authority_distinct(self):
+        declaration = self.publish_declaration()
+        self.plan_fingerprint = declaration["subject"]["experiment_fingerprint"]
+        jobs = sorted([
+            {
+                "job_name": "plan",
+                "attempt_id": None,
+                "stage_kind": "plan",
+            },
+            {
+                "job_name": "linux-final / attempt-candidate",
+                "attempt_id": "attempt-candidate",
+                "stage_kind": "linux-final",
+            },
+            {
+                "job_name": "linux-final / attempt-control",
+                "attempt_id": "attempt-control",
+                "stage_kind": "linux-final",
+            },
+        ], key=lambda item: item["job_name"])
+        run_binding = "d" * 64
+        emit_experiment_activity_event(
+            self.corpus,
+            campaign_id=self.registration["campaign_id"],
+            writer=self.coordinator_writer,
+            event_type="cloud_dispatch_bound",
+            experiment_id="experiment-a",
+            experiment_fingerprint=self.plan_fingerprint,
+            run_binding_fingerprint=run_binding,
+            payload={
+                "plan_fingerprint": self.plan_fingerprint,
+                "package_archive_sha256": "5" * 64,
+                "candidate_package_archive_sha256": "6" * 64,
+                "package_manifest_sha256": "7" * 64,
+                "workflow_revision_fingerprint": "8" * 64,
+                "jobs": jobs,
+                "opaque_source_id": "dispatch-source",
+            },
+            event_id="b" * 32,
+            observed_at="2026-01-01T00:01:00+00:00",
+            recorded_at="2026-01-01T00:01:01+00:00",
+        )
+        observer = {
+            "kind": "cloud_observer",
+            "id": "observer-a",
+            "generation": "c" * 32,
+        }
+        emit_experiment_activity_event(
+            self.corpus,
+            campaign_id=self.registration["campaign_id"],
+            writer=observer,
+            event_type="cloud_transport_observed",
+            experiment_id="experiment-a",
+            experiment_fingerprint=self.plan_fingerprint,
+            run_binding_fingerprint=run_binding,
+            payload={
+                "observer_snapshot_fingerprint": "9" * 64,
+                "observations": [
+                    {
+                        "source_index": index,
+                        "job_name": job["job_name"],
+                        "attempt_id": job["attempt_id"],
+                        "stage_kind": job["stage_kind"],
+                        "status": (
+                            "completed"
+                            if job["attempt_id"] != "attempt-control"
+                            else "in_progress"
+                        ),
+                        "conclusion": (
+                            "success"
+                            if job["attempt_id"] != "attempt-control"
+                            else None
+                        ),
+                        "started_at": "2026-01-01T00:01:00+00:00",
+                        "completed_at": (
+                            "2026-01-01T00:01:30+00:00"
+                            if job["attempt_id"] != "attempt-control"
+                            else None
+                        ),
+                    }
+                    for index, job in enumerate(jobs)
+                ],
+                "coverage": {"expected": 3, "observed": 3},
+                "non_atomic": True,
+                "provenance": "exact-known-jobs",
+                "call_count": 2,
+                "projected_response_bytes": 1024,
+                "client_wall_seconds": 1.5,
+                "opaque_source_id": "observer-source",
+            },
+            event_id="c" * 32,
+            observed_at="2026-01-01T00:02:00+00:00",
+            recorded_at="2026-01-01T00:02:01+00:00",
+        )
+        attempt = declaration["payload"]["attempts"][0]
+        emit_experiment_activity_event(
+            self.corpus,
+            campaign_id=self.registration["campaign_id"],
+            writer=self.coordinator_writer,
+            event_type="distributed_stage_recorded",
+            experiment_id="experiment-a",
+            experiment_fingerprint=self.plan_fingerprint,
+            attempt_id=attempt["attempt_id"],
+            payload={
+                "attempt": {
+                    key: attempt[key]
+                    for key in (
+                        "attempt_id",
+                        "case_id",
+                        "case_revision",
+                        "treatment_id",
+                        "repetition",
+                    )
+                },
+                "execution": {
+                    "plan_fingerprint": self.plan_fingerprint,
+                    "candidate_model": "model-a",
+                    "candidate_timeout_seconds": 120,
+                    "treatment_fingerprint": "c" * 64,
+                    "target_skill_identities": [{
+                        "name": "example-skill",
+                        "evaluator_fingerprint": self.snapshot["skills"][0][
+                            "evaluator_skill_identity"
+                        ],
+                    }],
+                    "target_os": "linux",
+                    "architecture": "x86_64",
+                    "route": "direct",
+                    "grading_route": "direct",
+                    "package_archive_sha256": "5" * 64,
+                    "candidate_package_archive_sha256": "6" * 64,
+                    "package_manifest_sha256": "7" * 64,
+                    "image_identity": "8" * 64,
+                    "dependency_identity": "9" * 64,
+                },
+                "stage_kind": "linux-final",
+                "status": "PENDING_LINUX_FINALIZATION",
+                "terminal": False,
+                "candidate_rerun_required": False,
+                "summaries": {
+                    "candidate": "Complete",
+                    "deterministic": "Complete",
+                    "product": None,
+                    "judge": None,
+                },
+                "retention_manifest_sha256": "a" * 64,
+                "source_artifact_sha256": "b" * 64,
+                "source_ids": ["stage-source"],
+            },
+            event_id="d" * 32,
+            observed_at="2026-01-01T00:03:00+00:00",
+            recorded_at="2026-01-01T00:03:01+00:00",
+        )
+
+        projection = campaign_projection(
+            self.state_root,
+            self.registration["campaign_id"],
+        )
+        rows = {
+            item["attempt_id"]: item
+            for item in projection["experiments"]["activity"]
+        }
+        self.assertEqual(
+            rows["attempt-candidate"]["state"],
+            "distributed_pending",
+        )
+        self.assertEqual(
+            rows["attempt-candidate"]["transport_conclusions"],
+            ["success"],
+        )
+        self.assertIsNone(rows["attempt-candidate"]["evaluator_result"])
+        self.assertEqual(
+            rows["attempt-control"]["state"],
+            "cloud_nonterminal",
+        )
+        self.assertTrue(rows["attempt-control"]["non_atomic"])
+        self.assertEqual(
+            projection["experiments"]["counts"]["distributed_pending"],
+            1,
+        )
+        self.assertEqual(
+            projection["experiments"]["counts"]["cloud_nonterminal"],
+            1,
+        )
+
+        emit_experiment_activity_event(
+            self.corpus,
+            campaign_id=self.registration["campaign_id"],
+            writer=observer,
+            event_type="cloud_transport_observed",
+            experiment_id="experiment-a",
+            experiment_fingerprint=self.plan_fingerprint,
+            run_binding_fingerprint=run_binding,
+            payload={
+                "observer_snapshot_fingerprint": "e" * 64,
+                "observations": [
+                    {
+                        "source_index": index,
+                        "job_name": job["job_name"],
+                        "attempt_id": job["attempt_id"],
+                        "stage_kind": job["stage_kind"],
+                        "status": "completed",
+                        "conclusion": "success",
+                        "started_at": "2026-01-01T00:01:00+00:00",
+                        "completed_at": "2026-01-01T00:03:30+00:00",
+                    }
+                    for index, job in enumerate(jobs)
+                ],
+                "coverage": {"expected": 3, "observed": 3},
+                "non_atomic": True,
+                "provenance": "exact-known-jobs",
+                "call_count": 2,
+                "projected_response_bytes": 1024,
+                "client_wall_seconds": 1.5,
+                "opaque_source_id": "observer-source-later",
+            },
+            event_id="e" * 32,
+            observed_at="2026-01-01T00:04:00+00:00",
+            recorded_at="2026-01-01T00:04:01+00:00",
+        )
+        updated = campaign_projection(
+            self.state_root,
+            self.registration["campaign_id"],
+        )
+        updated_rows = {
+            item["attempt_id"]: item
+            for item in updated["experiments"]["activity"]
+        }
+        self.assertEqual(
+            updated_rows["attempt-control"]["state"],
+            "cloud_completed_awaiting_result",
+        )
+        self.assertEqual(
+            updated_rows["attempt-control"]["transport_statuses"],
+            ["completed"],
+        )
 
 
 if __name__ == "__main__":

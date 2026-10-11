@@ -806,10 +806,20 @@ render after rollback.
   records complete Claude Opus 5.5 and GPT 5.6 Terra review. Both applied the
   architecture and scope lens. Finding-scoped closure reports zero unresolved
   material findings.
-- **Delegated owners:** all review and trace assignments are complete; no
-  delegate owns the worktree
-- **Next action:** implement the versioned distributed identity, immutable
-  experiment/activity records, and deterministic selection state.
+- **Delegated owners:**
+  - `59409653-8621-4d7d-bb3b-c80918395db0` owns distributed schema v2,
+    packaging, workflow job naming, exact job observation, and their tests in
+    `skill-eval-ui-slice4-distributed` on
+    `dfrysinger/slice4-distributed`; integration requires one committed tested
+    handoff.
+  - `b16eafb6-2a1b-451e-8d6b-7aa5f6a1d56b` owns experiment/activity journal
+    state, trusted publishers, deterministic selection, and their tests in
+    `skill-eval-ui-slice4-state` on `dfrysinger/slice4-state`; integration
+    requires one committed tested handoff.
+  - the coordinator exclusively owns this worktree, projection, UI,
+    documentation, integration, proof, and landing.
+- **Next action:** trace the existing projection/UI seams while the two
+  non-overlapping foundation commits are built.
 
 ## Definition of Done: Skill Evaluation UI Slice 4
 

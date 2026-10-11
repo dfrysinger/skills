@@ -81,6 +81,42 @@ python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard task-progress CORPUS \
   --source review_receipt REVIEW_ID
 ```
 
+For a distributed treatment experiment, publish each bounded projection only
+after its owning producer validates the source artifact. The source file has a
+strict event-specific schema and may contain only dashboard-safe fields.
+Repository, workflow, run, branch, URL, artifact path, log, and credential
+fields are refused.
+
+```sh
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard experiment-activity CORPUS \
+  /path/to/validated-dashboard-event.json \
+  --writer-kind distributed_coordinator \
+  --writer-id COORDINATOR_ID \
+  --writer-generation GENERATION
+```
+
+Use a session writer for the immutable experiment declaration, a distributed
+coordinator for dispatch, stage, and result records, and a cloud observer for
+one complete exact-known-jobs snapshot. Generate the private dispatch binding
+with `distributed_campaign.py bind-dispatch`; observe only its complete
+expected job set with `observe_campaign_runs.py --direct-known-jobs`. The
+dashboard record retains the binding fingerprint, safe job mapping, statuses,
+timestamps, coverage, and opaque source ID, not the private binding fields.
+
+After every required terminal result is admitted, run deterministic selection:
+
+```sh
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard experiment-selection CORPUS \
+  --declaration-event DECLARATION_EVENT_ID \
+  --result-event RESULT_EVENT_ID \
+  --writer-id EXPERIMENT_EVALUATOR_ID \
+  --writer-generation GENERATION
+```
+
+The evaluator recomputes eligibility, metrics, disqualifiers, ties, and the
+selected or no-selection result. Incomplete coverage returns
+`selection_incomplete` and writes no terminal selection.
+
 Bind an evaluator run to the snapshot whose bytes it is meant to exercise:
 
 ```sh
@@ -107,9 +143,12 @@ python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard stop
 The dashboard shows registered corpora, completed attempts, local sessions,
 active or stale attempts, exact observed skill identities, outcomes, timing,
 AI credits, premium requests, admitted skill lineage, exact relevant
-comparisons, task progress, and derived attention. AI credits are interpreted
-as cents by user convention; premium requests remain a separate evaluator
-unit. Cloud work, experiments, and ablation remain explicitly unavailable.
+comparisons, task progress, predeclared distributed experiments, exact-known
+cloud observations, first outcomes, recovery, effective results, deterministic
+selection, and derived attention. AI credits are interpreted as cents by user
+convention; premium requests remain a separate evaluator unit. Distributed
+cost without canonical accounting remains incomplete. Ablation remains
+explicitly unavailable.
 
 ## 1. Define the behavioral claim
 

@@ -128,6 +128,30 @@ returned metadata; the input's `workflow_path` is not echoed as another output
 field. `non_atomic: true` remains explicit. The default output remains
 `schema_version: 1` without the coverage extension.
 
+### Observe one complete exact job set
+
+Use `--direct-known-jobs` when one caller-frozen workflow run fans out multiple
+attempts or stages. Each input entry adds `expected_jobs`, the complete unique
+job-name set from the immutable dispatch plan. The original run must have
+`run_attempt: 1`.
+
+```sh
+python3 skills/skill-evaluation/scripts/observe_campaign_runs.py \
+  --repository example/evaluation \
+  --runs known-runs-with-exact-jobs.json \
+  --output exact-job-observation.json \
+  --direct-known-jobs \
+  --max-calls 4 \
+  --timeout 30
+```
+
+The observer performs one exact run GET and the bounded complete jobs listing
+for that run. It refuses missing, extra, duplicate, renamed, wrong-run, or
+rerun jobs and writes no partial output. Output uses `schema_version: 3`,
+retains run and job provenance, and reports coverage scope
+`requested-runs-and-exact-jobs-only`. Workflow and job success remain transport
+metadata and never become evaluator PASS.
+
 Choose this mode only for requested-run observations, never repository
 membership or capacity checks. One GET per original may avoid unrelated
 history, but a short complete listing can be cheaper for many originals.
