@@ -16,10 +16,20 @@ import urllib.error
 import urllib.request
 import webbrowser
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from dashboard_state import create_campaign, ensure_state_root, regular_json
+from dashboard_state import (
+    create_campaign,
+    ensure_state_root,
+    mark_session_opened,
+    read_session,
+    register_session,
+    regular_json,
+    session_event,
+    update_session,
+)
 
 
 DEFAULT_STATE_ROOT = Path.home() / ".copilot" / "skill-evaluation-ui"
@@ -310,6 +320,117 @@ def open_dashboard(
     }
 
 
+def register_dashboard(
+    corpus: Path,
+    session_id: str,
+    root: Path | None = None,
+    *,
+    browser_open=webbrowser.open,
+) -> dict:
+    root = state_root(root)
+    session, created = register_session(root, corpus, session_id)
+    service, started = ensure_service(root)
+    opened = False
+    if session["opened_at"] is None:
+        response = control_request(
+            service,
+            read_root_secret(root),
+            "/_control/open",
+            method="POST",
+            payload={"campaign_id": session["campaign_id"]},
+        )
+        capability = response.get("capability")
+        route = response.get("route")
+        if not isinstance(capability, str) or not isinstance(route, str):
+            raise ValueError("dashboard open response is malformed")
+        browser_url = (
+            f"http://127.0.0.1:{service['port']}{route}"
+            f"#cap={quote(capability, safe='')}"
+        )
+        if not browser_open(browser_url):
+            raise ValueError("browser open failed; run dashboard register again")
+        session, opened = mark_session_opened(
+            corpus,
+            session_id,
+            session["writer_generation"],
+        )
+    return {
+        "schema_version": 1,
+        "campaign_id": session["campaign_id"],
+        "session_id": session["session_id"],
+        "writer_generation": session["writer_generation"],
+        "session_created": created,
+        "service_started": started,
+        "url": (
+            f"http://127.0.0.1:{service['port']}"
+            f"/campaign/{session['campaign_id']}"
+        ),
+        "opened": opened,
+    }
+
+
+def heartbeat_dashboard(
+    corpus: Path,
+    session_id: str,
+    state: str,
+    root: Path | None = None,
+) -> dict:
+    registration = create_campaign(state_root(root), corpus)
+    session = read_session(corpus, session_id)
+    if session is None or session["campaign_id"] != registration["campaign_id"]:
+        raise ValueError("dashboard session is not registered")
+    updated = update_session(
+        corpus,
+        session_id,
+        session["writer_generation"],
+        heartbeat_at=datetime.now(timezone.utc).isoformat(),
+        state=state,
+    )
+    return {
+        "schema_version": 1,
+        "campaign_id": updated["campaign_id"],
+        "session_id": updated["session_id"],
+        "state": updated["state"],
+        "heartbeat_at": updated["heartbeat_at"],
+    }
+
+
+def assignment_dashboard(
+    corpus: Path,
+    session_id: str,
+    event_type: str,
+    case_id: str,
+    summary: str,
+    *,
+    skill_identity: str | None = None,
+    root: Path | None = None,
+) -> dict:
+    registration = create_campaign(state_root(root), corpus)
+    session = read_session(corpus, session_id)
+    if session is None or session["campaign_id"] != registration["campaign_id"]:
+        raise ValueError("dashboard session is not registered")
+    from skill_eval import digest, frozen_case_path
+
+    revision = digest(frozen_case_path(corpus, case_id) / "case-manifest.json")
+    event = session_event(
+        corpus,
+        session_id,
+        session["writer_generation"],
+        event_type=event_type,
+        case_id=case_id,
+        case_revision=revision,
+        skill_identity=skill_identity,
+        summary=summary,
+    )
+    return {
+        "schema_version": 1,
+        "campaign_id": registration["campaign_id"],
+        "session_id": session_id,
+        "event_id": event["event_id"],
+        "event_type": event["event_type"],
+    }
+
+
 def service_status(root: Path | None = None) -> dict:
     root = state_root(root)
     service = healthy_service(root)
@@ -353,12 +474,27 @@ def invalidate_on_boundary_violation(path: Path) -> bool:
             str(DEFAULT_STATE_ROOT),
         )
     ).expanduser()
-    if not configured.exists():
-        return False
-    root = configured.resolve()
-    try:
-        path.resolve().relative_to(root)
-    except ValueError:
+    resolved = path.resolve()
+    roots = []
+    if configured.exists():
+        roots.append(configured.resolve())
+    roots.extend(
+        parent
+        for parent in resolved.parents
+        if (parent / "service.json").is_file()
+        and not (parent / "service.json").is_symlink()
+        and (parent / "root-secret").is_file()
+        and not (parent / "root-secret").is_symlink()
+    )
+    root = next(
+        (
+            candidate
+            for candidate in roots
+            if resolved == candidate or resolved.is_relative_to(candidate)
+        ),
+        None,
+    )
+    if root is None:
         return False
     stopped = stop_service(root)
     if not stopped["stopped"]:
@@ -374,6 +510,35 @@ def configure_parser(sub: argparse._SubParsersAction) -> None:
         command = commands.add_parser(name)
         command.add_argument("corpus", type=Path)
         command.add_argument("--state-root", type=Path)
+    register = commands.add_parser("register")
+    register.add_argument("corpus", type=Path)
+    register.add_argument("--session-id", required=True)
+    register.add_argument("--state-root", type=Path)
+    heartbeat = commands.add_parser("heartbeat")
+    heartbeat.add_argument("corpus", type=Path)
+    heartbeat.add_argument("--session-id", required=True)
+    heartbeat.add_argument(
+        "--state",
+        choices=("active", "blocked", "idle"),
+        default="active",
+    )
+    heartbeat.add_argument("--state-root", type=Path)
+    event = commands.add_parser("event")
+    event.add_argument("corpus", type=Path)
+    event.add_argument("--session-id", required=True)
+    event.add_argument(
+        "--event-type",
+        choices=(
+            "assignment_started",
+            "assignment_blocked",
+            "assignment_completed",
+        ),
+        required=True,
+    )
+    event.add_argument("--case", required=True)
+    event.add_argument("--summary", required=True)
+    event.add_argument("--skill-identity")
+    event.add_argument("--state-root", type=Path)
     for name in ("status", "stop"):
         command = commands.add_parser(name)
         command.add_argument("--state-root", type=Path)
@@ -384,6 +549,29 @@ def dispatch(args: argparse.Namespace) -> dict:
         return ensure_dashboard(args.corpus, args.state_root)
     if args.dashboard_command == "open":
         return open_dashboard(args.corpus, args.state_root)
+    if args.dashboard_command == "register":
+        return register_dashboard(
+            args.corpus,
+            args.session_id,
+            args.state_root,
+        )
+    if args.dashboard_command == "heartbeat":
+        return heartbeat_dashboard(
+            args.corpus,
+            args.session_id,
+            args.state,
+            args.state_root,
+        )
+    if args.dashboard_command == "event":
+        return assignment_dashboard(
+            args.corpus,
+            args.session_id,
+            args.event_type,
+            args.case,
+            args.summary,
+            skill_identity=args.skill_identity,
+            root=args.state_root,
+        )
     if args.dashboard_command == "status":
         return service_status(args.state_root)
     if args.dashboard_command == "stop":

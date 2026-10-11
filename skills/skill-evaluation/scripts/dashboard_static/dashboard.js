@@ -72,17 +72,18 @@ function renderIndex(data) {
   const available = data.campaigns.filter(
     (campaign) => campaign.availability === "available",
   ).length;
+  const liveAvailable = data.availability.live_sessions === "available";
   app.innerHTML = `
     <section class="page-heading">
       <div>
         <h1>Evaluation campaigns</h1>
-        <p>Completed evaluator artifacts remain authoritative. Live work arrives in the next foundation slice.</p>
+        <p>Completed evaluator artifacts remain authoritative. Live local work is labeled separately.</p>
       </div>
     </section>
     <section class="metrics">
       ${metric("Registered campaigns", formatNumber(data.campaigns.length, 0), "Local corpus registrations")}
       ${metric("Available", formatNumber(available, 0), "Corpus identity verified")}
-      ${metric("Live sessions", "Unavailable", "Not part of this slice")}
+      ${metric("Live sessions", liveAvailable ? formatNumber(data.session_counts.active + data.session_counts.blocked, 0) : "Unavailable", liveAvailable ? `${data.session_counts.stale} stale | ${data.active_attempts} active attempts` : "No registered corpus has live session state")}
       ${metric("Cloud activity", "Unavailable", "Deferred by design")}
     </section>
     ${
@@ -93,7 +94,7 @@ function renderIndex(data) {
                 (campaign) => `
                   <a class="campaign-link" href="/campaign/${escapeHtml(campaign.campaign_id)}#cap=${encodeURIComponent(capability)}">
                     <strong>${escapeHtml(campaign.corpus_name)}</strong>
-                    <span>${escapeHtml(campaign.target_skills.join(", ") || "No target skills")} | ${escapeHtml(campaign.availability)}</span>
+                    <span>${escapeHtml(campaign.target_skills.join(", ") || "No target skills")} | ${escapeHtml(campaign.availability)} | ${escapeHtml(campaign.session_counts.active)} active sessions</span>
                   </a>`,
               )
               .join("")}
@@ -129,6 +130,47 @@ function observedDetail(summary, unit) {
   return `Partial: ${summary.known} of ${summary.total} populations observed`;
 }
 
+function stateBadge(state) {
+  return `<span class="badge state-${escapeHtml(state)}">${escapeHtml(state)}</span>`;
+}
+
+function liveSessionRows(data) {
+  return data.sessions
+    .map(
+      (item) => `
+        <tr>
+          <td><a href="/campaign/${escapeHtml(data.campaign.campaign_id)}/session/${escapeHtml(item.session_id)}#cap=${encodeURIComponent(capability)}"><span class="identity mono">${escapeHtml(item.session_id)}</span></a></td>
+          <td>${stateBadge(item.state)}</td>
+          <td>${escapeHtml(item.case_id || "Unassigned")}</td>
+          <td><span class="identity mono">${escapeHtml(item.skill_identity || "Unknown")}</span></td>
+          <td>${escapeHtml(item.summary || "No current summary")}</td>
+          <td>${escapeHtml(formatNumber(item.age_seconds, 0))}s ago</td>
+          <td><span class="identity">${escapeHtml(item.source)}</span></td>
+        </tr>`,
+    )
+    .join("");
+}
+
+function liveAttemptRows(items) {
+  return items
+    .map(
+      (item) => `
+        <tr>
+          <td>${escapeHtml(item.case_id)}</td>
+          <td>${stateBadge(item.state)}</td>
+          <td>${escapeHtml(item.model)}</td>
+          <td>${escapeHtml(item.effort)}</td>
+          <td>${escapeHtml(item.arm)}</td>
+          <td><span class="identity mono">${escapeHtml(item.treatment_identity)}</span></td>
+          <td><span class="identity mono">${escapeHtml(item.skill_identity || "Unknown")}</span></td>
+          <td>${escapeHtml(item.location)} / ${escapeHtml(item.platform)}</td>
+          <td><span class="identity">${escapeHtml(item.run_path)}</span></td>
+          <td>${escapeHtml(item.authority)}</td>
+        </tr>`,
+    )
+    .join("");
+}
+
 function renderCampaign(data) {
   const totalSpend = observedTotal(data.populations, "observed_credits");
   const premium = observedTotal(
@@ -149,8 +191,34 @@ function renderCampaign(data) {
     <section class="metrics">
       ${metric("Corpus tasks", formatNumber(data.cases.length, 0), "Every indexed case")}
       ${metric("Completed attempts", formatNumber(data.attempts.length, 0), `${passes} executable passes`)}
+      ${metric("Active sessions", formatNumber(data.sessions.filter((item) => ["active", "blocked"].includes(item.state)).length, 0), `${data.sessions.filter((item) => item.state === "stale").length} stale`)}
+      ${metric("Active attempts", formatNumber(data.live_attempts.filter((item) => item.state === "active").length, 0), "Live events never upgrade results")}
+    </section>
+    <section class="metrics secondary-metrics">
       ${metric("Observed credits", formatNumber(totalSpend.value, 4), totalSpend.value === null ? observedDetail(totalSpend, "credit") : `${formatNumber(totalSpend.value, 4)} cents by user convention | ${observedDetail(totalSpend, "credit")}`)}
       ${metric("Premium requests", formatNumber(premium.value, 4), `Separate evaluator-native unit | ${observedDetail(premium, "premium request")}`)}
+    </section>
+    <section class="panel">
+      <div class="panel-header">
+        <div><h2>Local sessions</h2><p>Session-owned heartbeats and assignments; stale is never completed.</p></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Session</th><th>State</th><th>Task</th><th>Skill identity</th><th>Current work</th><th>Freshness</th><th>Authority</th></tr></thead>
+          <tbody>${liveSessionRows(data) || '<tr><td colspan="7">Live session registration unavailable or not started.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-header">
+        <div><h2>Local attempts</h2><p>Immutable artifacts supersede matching live attempts.</p></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Task</th><th>State</th><th>Model</th><th>Effort</th><th>Arm</th><th>Treatment</th><th>Skill</th><th>Location</th><th>Run</th><th>Authority</th></tr></thead>
+          <tbody>${liveAttemptRows(data.live_attempts) || '<tr><td colspan="10">No local attempt events yet.</td></tr>'}</tbody>
+        </table>
+      </div>
     </section>
     <section class="panel">
       <div class="panel-header">
@@ -234,17 +302,75 @@ function renderCampaign(data) {
     <section class="notice"><strong>Accounting note:</strong> ${escapeHtml(data.interpretation)}</section>`;
 }
 
+function renderSession(data) {
+  const item = data.session;
+  app.innerHTML = `
+    <section class="page-heading">
+      <div>
+        <h1>Session ${escapeHtml(item.session_id.slice(0, 8))}</h1>
+        <p>${escapeHtml(data.campaign.corpus_name)} | ${escapeHtml(item.summary || "No current assignment")}</p>
+      </div>
+      <a href="/campaign/${escapeHtml(data.campaign.campaign_id)}#cap=${encodeURIComponent(capability)}">Campaign</a>
+    </section>
+    <section class="metrics">
+      ${metric("State", item.state, `Reported ${item.reported_state}`)}
+      ${metric("Current task", item.case_id || "Unassigned", item.case_revision || "No active revision")}
+      ${metric("Skill identity", item.skill_identity || "Unknown", "Exact when supplied by the session")}
+      ${metric("Heartbeat", `${formatNumber(item.age_seconds, 0)}s ago`, item.source)}
+    </section>
+    <section class="panel">
+      <div class="panel-header"><div><h2>Assignment timeline</h2><p>Non-final session events, newest recorded last.</p></div></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Recorded</th><th>Event</th><th>Task</th><th>State</th><th>Summary</th><th>Source</th></tr></thead>
+          <tbody>
+            ${data.assignments
+              .map(
+                (event) => `
+                  <tr>
+                    <td>${escapeHtml(event.recorded_at)}</td>
+                    <td>${escapeHtml(event.event_type)}</td>
+                    <td>${escapeHtml(event.entity.case_id)}</td>
+                    <td>${stateBadge(event.payload.state)}</td>
+                    <td>${escapeHtml(event.payload.summary)}</td>
+                    <td>${escapeHtml(event.source)}</td>
+                  </tr>`,
+              )
+              .join("") || '<tr><td colspan="6">No assignment events yet.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-header"><div><h2>Related local attempts</h2><p>Shown only for the current exact task.</p></div></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Task</th><th>State</th><th>Model</th><th>Effort</th><th>Arm</th><th>Treatment</th><th>Skill</th><th>Location</th><th>Run</th><th>Authority</th></tr></thead>
+          <tbody>${liveAttemptRows(data.attempts) || '<tr><td colspan="10">No related local attempts.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </section>`;
+}
+
 async function start() {
   if (!capability) {
     throw new Error("Missing browser capability. Run the dashboard open command again.");
   }
+  const sessionMatch = window.location.pathname.match(
+    /^\/campaign\/([0-9a-f]{32})\/session\/([0-9a-f-]{36})$/,
+  );
   const match = window.location.pathname.match(/^\/campaign\/([0-9a-f]{32})$/);
   const data = await loadJson(
-    match ? `/api/campaign/${match[1]}` : "/api/index",
+    sessionMatch
+      ? `/api/campaign/${sessionMatch[1]}/session/${sessionMatch[2]}`
+      : match
+        ? `/api/campaign/${match[1]}`
+        : "/api/index",
   );
   serviceState.textContent = "Read only";
   serviceState.classList.add("available");
-  if (match) renderCampaign(data);
+  if (sessionMatch) renderSession(data);
+  else if (match) renderCampaign(data);
   else renderIndex(data);
 }
 

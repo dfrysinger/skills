@@ -18,12 +18,36 @@ pooled count of passes from different experiments. Follow the
 [`cumulative skill hill climb`](references/cumulative-skill-hill-climb.md)
 for the complete process.
 
-## Local completed-history dashboard
+## Local evaluation dashboard
 
-Use the read-only local dashboard when you need a browser view of completed
-corpus history. It preserves the same result, population, accounting, and
-unknown-state semantics as `history`; it does not launch or change evaluation
-work.
+After choosing or initializing the corpus, ensure at least one case identifies
+the target skill, then register this Copilot session once using its exact
+session UUID. The first registration opens the focused read-only dashboard;
+resumption refreshes the same session without opening another browser window.
+Additional cases may add target skills to the same campaign later.
+
+```sh
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard register CORPUS \
+  --session-id SESSION_UUID
+```
+
+Publish a short non-final assignment event when work starts, blocks, or
+completes. Use the frozen case ID; the command resolves its exact revision.
+Refresh the heartbeat during long work that has no assignment transition.
+
+```sh
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard event CORPUS \
+  --session-id SESSION_UUID --event-type assignment_started \
+  --case CASE_ID --summary "Running the baseline attempt"
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard heartbeat CORPUS \
+  --session-id SESSION_UUID --state active
+```
+
+The evaluator publishes its own planned, started, and artifact-available
+attempt events when the corpus is registered. These live records are
+non-final: immutable evaluator artifacts always supersede them.
+
+Manual lifecycle commands remain available:
 
 ```sh
 python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard ensure CORPUS
@@ -32,10 +56,10 @@ python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard status
 python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard stop
 ```
 
-This foundation shows registered corpora, completed attempts, exact observed
-skill identities, outcomes, timing, AI credits, and premium requests. Live
-sessions, active attempts, cloud work, lineage, experiments, and ablation are
-explicitly unavailable.
+The foundation shows registered corpora, completed attempts, local sessions,
+active or stale attempts, exact observed skill identities, outcomes, timing,
+AI credits, and premium requests. Cloud work, lineage, experiments, and
+ablation remain explicitly unavailable.
 
 ## 1. Define the behavioral claim
 

@@ -14,8 +14,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from dashboard_projection import campaign_index_projection, campaign_projection
-from dashboard_state import ensure_state_root, validate_campaign_id
+from dashboard_projection import (
+    campaign_index_projection,
+    campaign_projection,
+    session_projection,
+)
+from dashboard_state import (
+    ensure_state_root,
+    validate_campaign_id,
+    validate_session_id,
+)
 
 
 STATIC_ROOT = Path(__file__).with_name("dashboard_static")
@@ -189,6 +197,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.refusal(HTTPStatus.FORBIDDEN, "capability_scope")
                     return
                 value = campaign_index_projection(self.server.state_root)
+            elif "/session/" in path and path.startswith("/api/campaign/"):
+                remainder = path.removeprefix("/api/campaign/")
+                campaign_part, separator, session_part = remainder.partition(
+                    "/session/"
+                )
+                if not separator:
+                    raise ValueError("dashboard session route is malformed")
+                campaign_id = validate_campaign_id(campaign_part)
+                session_id = validate_session_id(session_part)
+                if scope not in {None, campaign_id}:
+                    self.refusal(HTTPStatus.FORBIDDEN, "capability_scope")
+                    return
+                value = session_projection(
+                    self.server.state_root,
+                    campaign_id,
+                    session_id,
+                )
             elif path.startswith("/api/campaign/"):
                 campaign_id = validate_campaign_id(path.removeprefix("/api/campaign/"))
                 if scope not in {None, campaign_id}:
