@@ -1144,6 +1144,91 @@ class SkillEvalTests(unittest.TestCase):
                 "authority": "immutable-suite",
             },
         )
+        first_attempt_path = first_run / "attempt.json"
+        original_attempt = first_attempt_path.read_text(encoding="utf-8")
+        attempt_value = json.loads(original_attempt)
+        attempt_value.pop("suite_owner")
+        first_attempt_path.write_text(
+            json.dumps(attempt_value, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        historical = evaluation_history.history(self.root)
+        self.assertEqual(historical["lineage_suites"], [])
+        self.assertEqual(
+            historical["invalid_lineage_suites"],
+            [{
+                "source": str(suite_root.relative_to(self.root)),
+                "reason": "lineage_suite_invalid",
+            }],
+        )
+        from dashboard_projection import campaign_projection
+        projected = campaign_projection(
+            dashboard_state_root,
+            json.loads(
+                (
+                    self.root
+                    / ".skill-evaluation-ui"
+                    / "campaign.json"
+                ).read_text()
+            )["campaign_id"],
+        )
+        self.assertEqual(
+            projected["lineage"]["roles"]["passing"]["status"],
+            "unavailable",
+        )
+        self.assertIn(
+            {
+                "source": str(suite_root.relative_to(self.root)),
+                "reason": "lineage_suite_invalid",
+            },
+            projected["lineage"]["invalid"],
+        )
+        first_attempt_path.write_text(original_attempt, encoding="utf-8")
+
+        suite_result_path = suite_root / "suite-result.json"
+        suite_value = json.loads(suite_result_path.read_text())
+        first_case = next(
+            item for item in suite_value["cases"]
+            if item["case_id"] == result["cases"][0]["case_id"]
+        )
+        first_claim = first_case["attempts"][0]
+        first_claim["result"] = "ERROR"
+        first_claim.pop("execution_status", None)
+        first_claim.pop("behavioral_verdict", None)
+        first_case["result"] = "FAIL"
+        first_case["run_path"] = None
+        first_case["behavioral_verdict"] = None
+        first_case["passed_after_retry"] = False
+        suite_value["result"] = "FAIL"
+        suite_result_path.write_text(
+            json.dumps(suite_value, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        timing_path = first_run / "timing.json"
+        timing_value = json.loads(timing_path.read_text())
+        timing_value["status"] = "failed"
+        timing_path.write_text(
+            json.dumps(timing_value, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        historical = evaluation_history.history(self.root)
+        self.assertEqual(historical["invalid_lineage_suites"], [])
+        self.assertEqual(historical["lineage_suites"][0]["result"], "FAIL")
+        suite_value["lineage_identity"]["plugin_identity"] = "e" * 64
+        suite_result_path.write_text(
+            json.dumps(suite_value, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        historical = evaluation_history.history(self.root)
+        self.assertEqual(historical["lineage_suites"], [])
+        self.assertEqual(
+            historical["invalid_lineage_suites"],
+            [{
+                "source": str(suite_root.relative_to(self.root)),
+                "reason": "lineage_suite_invalid",
+            }],
+        )
+        self.assertEqual(len(historical["attempts"]), 2)
 
     def test_lineage_suite_summary_cannot_manufacture_pass(self) -> None:
         case_dir = self.make_case("failing-case")
@@ -1219,11 +1304,87 @@ class SkillEvalTests(unittest.TestCase):
         result["failures"] = []
         result_path.write_text(json.dumps(result, indent=2) + "\n")
         import evaluation_history
+        historical = evaluation_history.history(self.root)
+        self.assertEqual(historical["lineage_suites"], [])
+        self.assertEqual(
+            historical["invalid_lineage_suites"],
+            [{
+                "source": str(suite_root.relative_to(self.root)),
+                "reason": "lineage_suite_invalid",
+            }],
+        )
+
+    def test_lineage_suite_rejects_default_treatment_pooling(self) -> None:
+        import evaluation_history
+        suite_path = "suite-runs/example"
+        modules = []
+        suite = {
+            "result": "PASS",
+            "model": "model",
+            "effort": "high",
+            "arm": "skill",
+            "treatment": None,
+            "quality_review": False,
+            "timeout_seconds": 60,
+            "harness_identity": {"modules": modules},
+            "case_revisions": {"first": "a" * 64, "second": "b" * 64},
+            "failures": [],
+            "cases": [
+                {
+                    "case_id": case_id,
+                    "result": "PASS",
+                    "run_path": f"runs/{case_id}/run",
+                    "behavioral_verdict": None,
+                    "passed_after_retry": False,
+                    "attempt_count": 1,
+                    "attempts": [{
+                        "attempt": 1,
+                        "result": "PASS",
+                        "run_path": f"runs/{case_id}/run",
+                    }],
+                }
+                for case_id in ("first", "second")
+            ],
+        }
+        rows = []
+        for case_id, revision, treatment_id, treatment_identity in (
+            ("first", "a" * 64, "legacy-skill", "1" * 64),
+            ("second", "b" * 64, "alternate-workflow", "2" * 64),
+        ):
+            rows.append({
+                "suite_path": suite_path,
+                "attempt": 1,
+                "run_path": f"runs/{case_id}/run",
+                "correctness": "PASS",
+                "suite_result": "PASS",
+                "behavioral_verdict": "PASS",
+                "population": {
+                    "case_id": case_id,
+                    "case_revision": revision,
+                    "case_type": "prose",
+                    "model": "model",
+                    "effort": "high",
+                    "arm": "skill",
+                    "quality_review": False,
+                    "timeout_seconds": 60,
+                    "harness_identity": evaluation_history.fingerprint(modules),
+                    "treatment_id": treatment_id,
+                    "treatment_identity": treatment_identity,
+                    "runner_kind": "direct-copilot",
+                    "intervention_policy": "legacy-case-contract",
+                    "adapter_digest": None,
+                },
+            })
         with self.assertRaisesRegex(
             ValueError,
-            "case result disagrees with run artifacts",
+            "default treatment_id disagrees",
         ):
-            evaluation_history.history(self.root)
+            evaluation_history.validated_lineage_suite(
+                suite_path,
+                suite,
+                {"snapshot_id": "3" * 64},
+                rows,
+            )
 
     def test_dashboard_snapshot_binding_rejects_mutated_source_before_execution(self):
         case_dir = self.make_case("lineage-case")

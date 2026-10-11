@@ -456,6 +456,7 @@ def lineage_projection(
     live_attempts: list[dict],
 ) -> tuple[dict, list[dict], list[dict]]:
     snapshots, invalid = snapshot_manifests(corpus_root)
+    invalid.extend(report.get("invalid_lineage_suites", []))
     records, record_conflicts, invalid_records = extension_records(corpus_root)
     invalid.extend(invalid_records)
     records = [
