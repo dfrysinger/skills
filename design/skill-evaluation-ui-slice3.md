@@ -515,10 +515,10 @@ The acceptance fixtures must additionally prove:
   `/Users/dfrysinger/.copilot/session-state/6f7726ad-c851-4da9-bd16-ffbd015dd0f1/files/skill-eval-ui-slice3-worktree`
 - **Branch:** `dfrysinger/skill-eval-ui-slice3`
 - **Base:** `68f289a098286f8980161097e64ee53e21feba53`
-- **Critical path:** implementation -> installed proof -> dual implementation
-  review -> landing
-- **Phase:** dual implementation review
-- **Implementation gate:** open
+- **Critical path:** landing -> merged-byte verification -> schedule cleanup
+- **Phase:** landing
+- **Implementation gate:** closed; implementation review has no unresolved
+  material finding.
 - **Last constraint challenge:** focused reconciliation and completed dual
   design review permit the exact bounded implementation.
 - **Event trigger:** none unserviced
@@ -529,11 +529,16 @@ The acceptance fixtures must additionally prove:
 - **Design review:** Claude Opus 5.5 and GPT 5.6 Terra completed three bounded
   rounds. Round 3 verified the pinned-byte authority repair; no material
   finding remains.
+- **Implementation review:** the initial review identified five material
+  defects in snapshot capture, passing authority, ordering, projection
+  disclosure, and timestamp comparison. Fix verification identified two
+  remaining suite-ownership and invalid-suite isolation defects. Both reviewer
+  families verified the final bounded fixes with no remaining finding.
 - **Implementation evidence:** immutable snapshot and extension state,
-  pinned-byte evaluator binding, independently validated history, lineage and
-  task projection, trusted CLI producers, campaign and task UI, and 77 focused
-  tests are complete.
-- **Deterministic evidence:** the eight-module matrix passes 387 tests with 49
+  pinned-byte evaluator binding, independently validated owned-suite history,
+  lineage and task projection, trusted CLI producers, campaign and task UI,
+  and 81 focused tests are complete.
+- **Deterministic evidence:** the eight-module matrix passes 391 tests with 49
   skipped; Python compilation, JavaScript syntax, and diff checks pass.
 - **Installed proof:** four validator-accepted receipts under
   `files/slice3-lineage-proof-commit/` cover campaign lineage, exact task
@@ -541,11 +546,16 @@ The acceptance fixtures must additionally prove:
   Desktop dark, mobile light, task light, conflict dark, legacy light, and
   refusal light captures were opened and passed pixel-spread and overflow
   checks.
-- **Implementation commit:** `bbb312fdfb6ea2c67e77b2e44ca2dab13ed8007b`
+- **Implementation commits:** `bbb312fdfb6ea2c67e77b2e44ca2dab13ed8007b`,
+  `89353f901f9c89512f4a99cfd6c87d0a520d67b9`, and
+  `8a5f50e178fbb659dcafc835f5f43c7140c3af82`.
 - **Committed proof identity:** the four live-proof receipts carry the canonical
-  whole-candidate fingerprint and installed-tree match.
-- **Next action:** run dual implementation review against the exact committed
-  candidate, close any verified material findings, then push and open the PR.
+  whole-candidate fingerprint
+  `sha256:6ddbd597cbcdb15fc42b9ba2d20d73a2fa798a162732aff14626177f8d24fce5`
+  and installed-tree match.
+- **Next action:** commit this baton, replay final acceptance against that
+  documentation-inclusive candidate, push, open the PR, pass required checks,
+  merge, verify merged bytes, and stop both schedules.
 
 ## Definition of Done: Skill Evaluation UI Slice 3
 
@@ -572,7 +582,7 @@ The acceptance fixtures must additionally prove:
       comparison, conflict, recovery, browser, and security boundaries.
 - [x] Light, dark, mobile, unavailable, conflicted, and invalid-capability
       states are visually inspected and accepted.
-- [ ] Dual implementation review reports no unresolved material finding
+- [x] Dual implementation review reports no unresolved material finding
       against the exact committed candidate.
 - [ ] The slice is committed, pushed, reviewed in a PR, passes required checks,
       is merged, and merged bytes match the reviewed candidate.
