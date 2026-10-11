@@ -512,11 +512,11 @@ The acceptance fixtures must additionally prove:
 ## Current baton
 
 - **Workspace:**
-  `/Users/dfrysinger/.copilot/session-state/6f7726ad-c851-4da9-bd16-ffbd015dd0f1/files/skill-eval-ui-slice3-worktree`
-- **Branch:** `dfrysinger/skill-eval-ui-slice3`
-- **Base:** `68f289a098286f8980161097e64ee53e21feba53`
-- **Critical path:** landing -> merged-byte verification -> schedule cleanup
-- **Phase:** landing
+  `/Users/dfrysinger/.copilot/session-state/6f7726ad-c851-4da9-bd16-ffbd015dd0f1/files/skill-eval-ui-slice3-merged-worktree`
+- **Branch:** `dfrysinger/skill-eval-ui-slice3-closeout`
+- **Base:** `305219add389b8875dec27a6fbd2ba75e44eedc0`
+- **Critical path:** complete
+- **Phase:** complete
 - **Implementation gate:** closed; implementation review has no unresolved
   material finding.
 - **Last constraint challenge:** focused reconciliation and completed dual
@@ -538,24 +538,30 @@ The acceptance fixtures must additionally prove:
   pinned-byte evaluator binding, independently validated owned-suite history,
   lineage and task projection, trusted CLI producers, campaign and task UI,
   and 81 focused tests are complete.
-- **Deterministic evidence:** the eight-module matrix passes 391 tests with 49
-  skipped; Python compilation, JavaScript syntax, and diff checks pass.
+- **Deterministic evidence:** the actual merge commit passes the eight-module
+  matrix with 391 tests and 49 skips; Python compilation, JavaScript syntax,
+  and diff checks also pass.
 - **Installed proof:** four validator-accepted receipts under
   `files/slice3-lineage-proof-commit/` cover campaign lineage, exact task
   detail, conflict plus legacy behavior, and invalid capability refusal.
-  Desktop dark, mobile light, task light, conflict dark, legacy light, and
-  refusal light captures were opened and passed pixel-spread and overflow
-  checks.
+  The `*-merged.json` receipts and six `*-merged.png` captures were produced
+  from the installed actual-merge bytes. Desktop dark, mobile light, task
+  light, conflict dark, legacy light, and refusal light captures were opened
+  and passed pixel-spread and overflow checks.
 - **Implementation commits:** `bbb312fdfb6ea2c67e77b2e44ca2dab13ed8007b`,
   `89353f901f9c89512f4a99cfd6c87d0a520d67b9`, and
-  `8a5f50e178fbb659dcafc835f5f43c7140c3af82`.
-- **Committed proof identity:** the four live-proof receipts carry the canonical
+  `8a5f50e178fbb659dcafc835f5f43c7140c3af82`; review closure is recorded in
+  `04d7a122b179f272629c3f72773684e7d41b0e92`.
+- **Landing:** PR 90 passed its required check and merged as
+  `305219add389b8875dec27a6fbd2ba75e44eedc0`.
+- **Merged proof identity:** the four actual-merge receipts carry the canonical
   whole-candidate fingerprint
-  `sha256:6ddbd597cbcdb15fc42b9ba2d20d73a2fa798a162732aff14626177f8d24fce5`
+  `sha256:ada8e72cdf2ae9a937b31105f2661d0837fd62b71370f2c463bbde34e75acce4`
   and installed-tree match.
-- **Next action:** commit this baton, replay final acceptance against that
-  documentation-inclusive candidate, push, open the PR, pass required checks,
-  merge, verify merged bytes, and stop both schedules.
+- **Schedule cleanup:** unattended schedules 5 and 6 were stopped, and the
+  active schedule list was verified empty.
+- **Next action:** Slice 3 is complete. Do not begin Slice 4 without separate
+  authorization and a new bounded work order.
 
 ## Definition of Done: Skill Evaluation UI Slice 3
 
@@ -584,8 +590,8 @@ The acceptance fixtures must additionally prove:
       states are visually inspected and accepted.
 - [x] Dual implementation review reports no unresolved material finding
       against the exact committed candidate.
-- [ ] The slice is committed, pushed, reviewed in a PR, passes required checks,
+- [x] The slice is committed, pushed, reviewed in a PR, passes required checks,
       is merged, and merged bytes match the reviewed candidate.
-- [ ] The plan baton records the final commit, proof receipts, review receipts,
+- [x] The plan baton records the final commit, proof receipts, review receipts,
       PR, merge commit, and schedule cleanup.
-- [ ] Both unattended schedules are stopped and verified absent.
+- [x] Both unattended schedules are stopped and verified absent.

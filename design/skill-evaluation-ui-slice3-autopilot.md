@@ -74,10 +74,12 @@ schedule_registry:
     kind: charter_check
     id: 5
     interval: 4h
-    status: live
+    status: stopped
+    verification: no_active_scheduled_prompts
   progress:
     kind: progress
     id: 6
     interval: 1h
-    status: live
+    status: stopped
+    verification: no_active_scheduled_prompts
 ```
