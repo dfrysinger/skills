@@ -789,10 +789,11 @@ render after rollback.
   `/Users/dfrysinger/.copilot/session-state/6f7726ad-c851-4da9-bd16-ffbd015dd0f1/files/skill-eval-ui-slice4-worktree`
 - **Branch:** `dfrysinger/skill-eval-ui-slice4`
 - **Base:** `898ae893b59219a0640e90d6d7365fc13b6d8780`
-- **Critical path:** commit reviewed design -> distributed identity and state
-  implementation -> projection and UI -> proof -> review -> landing
-- **Phase:** reviewed design publication
-- **Implementation gate:** opens when the reviewed design commit is frozen
+- **Reviewed design commit:** `ba70ab6da30d8cdf29249ac5d326861945ea71e8`
+- **Critical path:** distributed identity and state implementation -> projection
+  and UI -> proof -> review -> landing
+- **Phase:** implementation
+- **Implementation gate:** open
 - **Last constraint challenge:** the workflow-job, distributed-identity, and
   deterministic-selection deltas returned `NARROW`; all required corrections
   are applied and the gate is `CLEAR`.
@@ -807,8 +808,8 @@ render after rollback.
   material findings.
 - **Delegated owners:** all review and trace assignments are complete; no
   delegate owns the worktree
-- **Next action:** commit the reviewed work order, charter, decisions, evidence,
-  constraint record, and review receipt before implementation.
+- **Next action:** implement the versioned distributed identity, immutable
+  experiment/activity records, and deterministic selection state.
 
 ## Definition of Done: Skill Evaluation UI Slice 4
 
@@ -817,7 +818,7 @@ render after rollback.
 - [x] The independent two-pass constraint challenge permits the exact work
       order.
 - [x] Dual design review has no unresolved material finding.
-- [ ] The reviewed work order and charter are committed before implementation.
+- [x] The reviewed work order and charter are committed before implementation.
 - [ ] Typed experiment and activity records are implemented with fail-closed
       writer ownership and additive compatibility.
 - [ ] Distributed plan binding, exact-known Actions observation, distributed
