@@ -1,0 +1,504 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+import uuid
+from pathlib import Path
+
+from dashboard_cli import experiment_activity_dashboard
+from dashboard_state import (
+    EXPERIMENT_EVENT_TYPES,
+    capture_skill_snapshot,
+    compute_experiment_selection,
+    create_campaign,
+    emit_experiment_activity_event,
+    emit_experiment_selection,
+    experiment_activity_records,
+    experiment_plan_fingerprint,
+    validate_experiment_activity_event,
+    writer_directory,
+)
+from skill_eval import add_case, init_corpus
+
+
+class DashboardExperimentStateTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.state_root = self.root / "state"
+        self.corpus = self.root / "corpus"
+        init_corpus(self.corpus)
+        add_case(self.corpus, "case-a", "example-skill", ["candidate"])
+        self.registration = create_campaign(self.state_root, self.corpus)
+        self.plugin = self.root / "plugin"
+        skill = self.plugin / "skills" / "example-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Example\n", encoding="utf-8")
+        self.snapshot = capture_skill_snapshot(
+            self.corpus,
+            self.plugin,
+            ["example-skill"],
+        )
+        self.session_writer = {
+            "kind": "session",
+            "id": str(uuid.uuid4()),
+            "generation": "1" * 32,
+        }
+        self.coordinator_writer = {
+            "kind": "distributed_coordinator",
+            "id": "coordinator-a",
+            "generation": "2" * 32,
+        }
+        self.evaluator_writer = {
+            "kind": "experiment_evaluator",
+            "id": "evaluator-a",
+            "generation": "3" * 32,
+        }
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def declaration_payload(self, *, tied: bool = False):
+        case_revision = "a" * 64
+        metrics = [{
+            "name": "terminal_pass_rate",
+            "direction": "descending",
+        }]
+        return {
+            "title": "Candidate comparison",
+            "summary": "Compare one candidate with one control",
+            "snapshot_id": self.snapshot["snapshot_id"],
+            "cases": [{
+                "case_id": "case-a",
+                "case_revision": case_revision,
+            }],
+            "candidate_model": "model-a",
+            "candidate_timeout_seconds": 120,
+            "target_os": "linux",
+            "architecture": "x86_64",
+            "route": "direct",
+            "treatments": [
+                {
+                    "treatment_id": "candidate",
+                    "role": "candidate",
+                    "hypothesis": "Candidate improves terminal outcomes",
+                    "snapshot_id": self.snapshot["snapshot_id"],
+                    "treatment_identity": "b" * 64,
+                    "content_fingerprint": "c" * 64,
+                    "target_skill_identities": [{
+                        "name": "example-skill",
+                        "evaluator_fingerprint": self.snapshot["skills"][0][
+                            "evaluator_skill_identity"
+                        ],
+                    }],
+                    "provenance_ids": ["candidate-source"],
+                },
+                {
+                    "treatment_id": "control",
+                    "role": "control",
+                    "hypothesis": "Control preserves the baseline",
+                    "snapshot_id": self.snapshot["snapshot_id"],
+                    "treatment_identity": "e" * 64,
+                    "content_fingerprint": "f" * 64,
+                    "target_skill_identities": [{
+                        "name": "example-skill",
+                        "evaluator_fingerprint": self.snapshot["skills"][0][
+                            "evaluator_skill_identity"
+                        ],
+                    }],
+                    "provenance_ids": ["control-source"],
+                },
+            ],
+            "attempts": [
+                {
+                    "attempt_id": "attempt-candidate",
+                    "case_id": "case-a",
+                    "case_revision": case_revision,
+                    "treatment_id": "candidate",
+                    "repetition": 1,
+                    "target_os": "linux",
+                    "architecture": "x86_64",
+                    "route": "direct",
+                    "candidate_model": "model-a",
+                    "snapshot_id": self.snapshot["snapshot_id"],
+                },
+                {
+                    "attempt_id": "attempt-control",
+                    "case_id": "case-a",
+                    "case_revision": case_revision,
+                    "treatment_id": "control",
+                    "repetition": 1,
+                    "target_os": "linux",
+                    "architecture": "x86_64",
+                    "route": "direct",
+                    "candidate_model": "model-a",
+                    "snapshot_id": self.snapshot["snapshot_id"],
+                },
+            ],
+            "selection_rule": {
+                "metrics": metrics,
+                "coverage": [
+                    {
+                        "kind": "all_planned_attempts_terminal",
+                        "value": None,
+                    },
+                    {
+                        "kind": "field_present",
+                        "value": "terminal_status",
+                    },
+                    {
+                        "kind": "minimum_valid_repetitions_per_treatment",
+                        "value": 1,
+                    },
+                ],
+                "disqualifiers": [] if tied else [{
+                    "kind": "product_failure",
+                    "field": None,
+                    "bound": None,
+                }],
+            },
+        }
+
+    def publish_declaration(self, *, tied: bool = False, event_id: str = "4" * 32):
+        payload = self.declaration_payload(tied=tied)
+        return emit_experiment_activity_event(
+            self.corpus,
+            campaign_id=self.registration["campaign_id"],
+            writer=self.session_writer,
+            event_type="experiment_declared",
+            experiment_id="experiment-a",
+            experiment_fingerprint=experiment_plan_fingerprint(payload),
+            payload=payload,
+            event_id=event_id,
+            observed_at="2026-01-01T00:00:00+00:00",
+            recorded_at="2026-01-01T00:00:01+00:00",
+        )
+
+    def result_payload(self, attempt: dict, *, passed: bool):
+        return {
+            "attempt": {
+                key: attempt[key]
+                for key in (
+                    "attempt_id",
+                    "case_id",
+                    "case_revision",
+                    "treatment_id",
+                    "repetition",
+                )
+            },
+            "execution": {
+                "plan_fingerprint": self.plan_fingerprint,
+                "candidate_model": "model-a",
+                "candidate_timeout_seconds": 120,
+                "treatment_fingerprint": (
+                    "c" * 64 if attempt["treatment_id"] == "candidate" else "f" * 64
+                ),
+                "target_skill_identities": [{
+                    "name": "example-skill",
+                    "evaluator_fingerprint": self.snapshot["skills"][0][
+                        "evaluator_skill_identity"
+                    ],
+                }],
+                "target_os": "linux",
+                "architecture": "x86_64",
+                "route": "direct",
+                "grading_route": "direct",
+                "package_archive_sha256": "5" * 64,
+                "candidate_package_archive_sha256": "6" * 64,
+                "package_manifest_sha256": "7" * 64,
+                "image_identity": "8" * 64,
+                "dependency_identity": "9" * 64,
+            },
+            "terminal_status": "PASS" if passed else "FAIL",
+            "summaries": {
+                "candidate": "Candidate completed",
+                "deterministic": "Deterministic checks completed",
+                "product": "Product check completed",
+                "judge": "Behavioral judgment completed",
+            },
+            "first_stage_id": f"stage-{attempt['attempt_id']}",
+            "source_lineage": None,
+            "candidate_rerun": False,
+            "effective_result_id": f"result-{attempt['attempt_id']}",
+            "selection_fields": {
+                "terminal_status": "PASS" if passed else "FAIL",
+                "deterministic_target_pass": passed,
+                "deterministic_regression_pass": True,
+                "product_pass": passed,
+                "independent_behavioral_verdicts": [
+                    "PASS" if passed else "FAIL",
+                    "PASS" if passed else "FAIL",
+                ],
+            },
+            "source_ids": [f"source-{attempt['attempt_id']}"],
+        }
+
+    def publish_results(self, declaration: dict, *, tied: bool = False):
+        self.plan_fingerprint = declaration["subject"]["experiment_fingerprint"]
+        results = []
+        for index, attempt in enumerate(declaration["payload"]["attempts"], 5):
+            passed = tied or attempt["treatment_id"] == "candidate"
+            results.append(emit_experiment_activity_event(
+                self.corpus,
+                campaign_id=self.registration["campaign_id"],
+                writer=self.coordinator_writer,
+                event_type="distributed_result_recorded",
+                experiment_id="experiment-a",
+                experiment_fingerprint=self.plan_fingerprint,
+                attempt_id=attempt["attempt_id"],
+                payload=self.result_payload(attempt, passed=passed),
+                event_id=str(index) * 32,
+                observed_at=f"2026-01-01T00:01:0{index}+00:00",
+                recorded_at=f"2026-01-01T00:01:1{index}+00:00",
+            ))
+        return results
+
+    def test_writer_ownership_is_exact_for_every_variant(self):
+        owner_by_type = {
+            "experiment_declared": "session",
+            "cloud_dispatch_bound": "distributed_coordinator",
+            "cloud_transport_observed": "cloud_observer",
+            "distributed_stage_recorded": "distributed_coordinator",
+            "distributed_result_recorded": "distributed_coordinator",
+            "experiment_selection_recorded": "experiment_evaluator",
+        }
+        for event_type in EXPERIMENT_EVENT_TYPES:
+            wrong_kind = (
+                "cloud_observer"
+                if owner_by_type[event_type] != "cloud_observer"
+                else "experiment_evaluator"
+            )
+            event = {
+                "schema_version": 1,
+                "event_id": "a" * 32,
+                "event_type": event_type,
+                "campaign_id": self.registration["campaign_id"],
+                "writer": {
+                    "kind": wrong_kind,
+                    "id": "wrong-owner",
+                    "generation": "b" * 32,
+                },
+                "observed_at": "2026-01-01T00:00:00+00:00",
+                "recorded_at": "2026-01-01T00:00:01+00:00",
+                "subject": {
+                    "experiment_id": "experiment-a",
+                    "experiment_fingerprint": "c" * 64,
+                    "attempt_id": None,
+                    "run_binding_fingerprint": None,
+                    "selection_rule_fingerprint": None,
+                },
+                "payload": {},
+            }
+            with self.subTest(event_type=event_type):
+                with self.assertRaisesRegex(ValueError, "does not own"):
+                    validate_experiment_activity_event(event)
+
+    def test_selection_is_computed_exactly_and_premature_writes_nothing(self):
+        declaration = self.publish_declaration()
+        before = experiment_activity_records(self.corpus)[0]
+        incomplete = emit_experiment_selection(
+            self.corpus,
+            campaign_id=self.registration["campaign_id"],
+            writer=self.evaluator_writer,
+            declaration=declaration,
+            terminal_results=[],
+            event_id="7" * 32,
+            observed_at="2026-01-01T00:02:00+00:00",
+            recorded_at="2026-01-01T00:02:01+00:00",
+        )
+        self.assertEqual(incomplete["status"], "selection_incomplete")
+        self.assertEqual(experiment_activity_records(self.corpus)[0], before)
+
+        results = self.publish_results(declaration)
+        computed = compute_experiment_selection(declaration, results)
+        self.assertEqual(computed["status"], "selected")
+        self.assertEqual(computed["selected_treatment_id"], "candidate")
+        self.assertEqual(
+            computed["metrics"]["candidate"]["terminal_pass_rate"],
+            {"numerator": 1, "denominator": 1},
+        )
+
+        with self.assertRaisesRegex(ValueError, "must be computed"):
+            emit_experiment_activity_event(
+                self.corpus,
+                campaign_id=self.registration["campaign_id"],
+                writer=self.evaluator_writer,
+                event_type="experiment_selection_recorded",
+                experiment_id="experiment-a",
+                experiment_fingerprint=self.plan_fingerprint,
+                payload={**computed, "selected_treatment_id": "control"},
+            )
+
+    def test_tie_is_no_selection_and_identical_rerun_is_byte_idempotent(self):
+        declaration = self.publish_declaration(tied=True)
+        results = self.publish_results(declaration, tied=True)
+        kwargs = {
+            "campaign_id": self.registration["campaign_id"],
+            "writer": self.evaluator_writer,
+            "declaration": declaration,
+            "terminal_results": results,
+            "event_id": "7" * 32,
+            "observed_at": "2026-01-01T00:02:00+00:00",
+            "recorded_at": "2026-01-01T00:02:01+00:00",
+        }
+        first = emit_experiment_selection(self.corpus, **kwargs)
+        second = emit_experiment_selection(self.corpus, **kwargs)
+        self.assertEqual(second, first)
+        self.assertEqual(first["payload"]["status"], "no_selection")
+        self.assertIsNone(first["payload"]["selected_treatment_id"])
+        self.assertEqual(first["payload"]["reasons"], ["metric_tie"])
+
+    def test_terminal_records_from_different_writers_remain_conflicted(self):
+        declaration = self.publish_declaration()
+        results = self.publish_results(declaration)
+        for index, writer_id in enumerate(("evaluator-a", "evaluator-b"), 7):
+            emit_experiment_selection(
+                self.corpus,
+                campaign_id=self.registration["campaign_id"],
+                writer={
+                    "kind": "experiment_evaluator",
+                    "id": writer_id,
+                    "generation": str(index) * 32,
+                },
+                declaration=declaration,
+                terminal_results=results,
+                event_id=str(index) * 32,
+                observed_at=f"2026-01-01T00:02:0{index}+00:00",
+                recorded_at=f"2026-01-01T00:02:1{index}+00:00",
+            )
+        records, conflicts, invalid = experiment_activity_records(self.corpus)
+        self.assertEqual(
+            len([
+                item for item in records
+                if item["event_type"] == "experiment_selection_recorded"
+            ]),
+            2,
+        )
+        self.assertEqual(
+            {item["reason"] for item in conflicts},
+            {"terminal_selection_conflicted"},
+        )
+        self.assertEqual(invalid, [])
+
+    def test_malformed_foreign_and_altered_selection_are_isolated(self):
+        declaration = self.publish_declaration()
+        results = self.publish_results(declaration)
+        selection = emit_experiment_selection(
+            self.corpus,
+            campaign_id=self.registration["campaign_id"],
+            writer=self.evaluator_writer,
+            declaration=declaration,
+            terminal_results=results,
+            event_id="7" * 32,
+            observed_at="2026-01-01T00:02:00+00:00",
+            recorded_at="2026-01-01T00:02:01+00:00",
+        )
+        root = writer_directory(self.corpus, self.evaluator_writer)
+        extension = root / "extensions" / "experiment-activity-v1"
+        (extension / f"{'8' * 32}.json").write_text(
+            '{"schema_version":1,"broken":true}\n',
+            encoding="utf-8",
+        )
+        foreign = {**selection, "event_id": "9" * 32, "campaign_id": "f" * 32}
+        (extension / f"{'9' * 32}.json").write_text(
+            json.dumps(foreign) + "\n",
+            encoding="utf-8",
+        )
+        altered = json.loads(json.dumps(selection))
+        altered["event_id"] = "a" * 32
+        altered["payload"]["selected_treatment_id"] = "control"
+        (extension / f"{'a' * 32}.json").write_text(
+            json.dumps(altered) + "\n",
+            encoding="utf-8",
+        )
+
+        records, _, invalid = experiment_activity_records(self.corpus)
+        self.assertEqual(
+            len([
+                item for item in records
+                if item["event_type"] == "experiment_selection_recorded"
+            ]),
+            1,
+        )
+        self.assertEqual(len(invalid), 3)
+        self.assertIn("experiment_selection_invalid", {
+            item["reason"] for item in invalid
+        })
+        self.assertEqual(
+            len([
+                item for item in records
+                if item["event_type"] == "experiment_declared"
+            ]),
+            1,
+        )
+
+    def test_owner_selected_source_does_not_persist_paths_or_private_metadata(self):
+        payload = self.declaration_payload()
+        source = self.root / "PRIVATE-SOURCE-PATH.json"
+        selected = {
+            "schema_version": 1,
+            "event_type": "experiment_declared",
+            "experiment_id": "experiment-a",
+            "experiment_fingerprint": experiment_plan_fingerprint(payload),
+            "attempt_id": None,
+            "run_binding_fingerprint": None,
+            "payload": payload,
+        }
+        source.write_text(json.dumps(selected), encoding="utf-8")
+        receipt = experiment_activity_dashboard(
+            self.corpus,
+            source,
+            writer_kind="session",
+            writer_id=self.session_writer["id"],
+            writer_generation=self.session_writer["generation"],
+            event_id="4" * 32,
+            observed_at="2026-01-01T00:00:00+00:00",
+            root=self.state_root,
+        )
+        self.assertEqual(receipt["event_type"], "experiment_declared")
+        encoded = json.dumps(experiment_activity_records(self.corpus))
+        self.assertNotIn(str(source), encoded)
+        for marker in (
+            "repository",
+            "workflow",
+            "run_id",
+            "url",
+            "artifact_path",
+        ):
+            self.assertNotIn(marker, encoded)
+
+        selected["repository"] = "private/repository"
+        source.write_text(json.dumps(selected), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            experiment_activity_dashboard(
+                self.corpus,
+                source,
+                writer_kind="session",
+                writer_id=self.session_writer["id"],
+                writer_generation=self.session_writer["generation"],
+                root=self.state_root,
+            )
+
+    def test_cross_campaign_publication_is_refused_without_a_record(self):
+        payload = self.declaration_payload()
+        with self.assertRaisesRegex(ValueError, "campaign identity"):
+            emit_experiment_activity_event(
+                self.corpus,
+                campaign_id="f" * 32,
+                writer=self.session_writer,
+                event_type="experiment_declared",
+                experiment_id="experiment-a",
+                experiment_fingerprint=experiment_plan_fingerprint(payload),
+                payload=payload,
+                event_id="4" * 32,
+                observed_at="2026-01-01T00:00:00+00:00",
+                recorded_at="2026-01-01T00:00:01+00:00",
+            )
+        self.assertEqual(experiment_activity_records(self.corpus), ([], [], []))
+
+
+if __name__ == "__main__":
+    unittest.main()

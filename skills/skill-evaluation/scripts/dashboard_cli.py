@@ -23,9 +23,12 @@ from urllib.parse import quote
 from dashboard_state import (
     capture_skill_snapshot,
     create_campaign,
+    emit_experiment_activity_event,
+    emit_experiment_selection,
     emit_lineage_event,
     emit_task_progress_event,
     ensure_state_root,
+    experiment_activity_records,
     mark_session_opened,
     read_session,
     register_session,
@@ -38,6 +41,15 @@ from dashboard_state import (
 DEFAULT_STATE_ROOT = Path.home() / ".copilot" / "skill-evaluation-ui"
 SERVICE_FIELDS = {"schema_version", "generation", "pid", "port", "started_at"}
 STARTED_PROCESSES: dict[int, subprocess.Popen] = {}
+EXPERIMENT_ACTIVITY_SOURCE_FIELDS = {
+    "schema_version",
+    "event_type",
+    "experiment_id",
+    "experiment_fingerprint",
+    "attempt_id",
+    "run_binding_fingerprint",
+    "payload",
+}
 
 
 def state_root(value: Path | None = None) -> Path:
@@ -538,6 +550,103 @@ def task_progress_dashboard(
         "case_revision": revision,
         "snapshot_id": snapshot_id,
         "event_id": event["event_id"],
+    }
+
+
+def experiment_activity_dashboard(
+    corpus: Path,
+    source: Path,
+    *,
+    writer_kind: str,
+    writer_id: str,
+    writer_generation: str,
+    event_id: str | None = None,
+    observed_at: str | None = None,
+    root: Path | None = None,
+) -> dict:
+    registration = create_campaign(state_root(root), corpus)
+    selected = regular_json(source, "experiment activity source")
+    if (
+        set(selected) != EXPERIMENT_ACTIVITY_SOURCE_FIELDS
+        or selected.get("schema_version") != 1
+    ):
+        raise ValueError("unsupported experiment activity source")
+    event = emit_experiment_activity_event(
+        corpus,
+        campaign_id=registration["campaign_id"],
+        writer={
+            "kind": writer_kind,
+            "id": writer_id,
+            "generation": writer_generation,
+        },
+        event_type=selected["event_type"],
+        experiment_id=selected["experiment_id"],
+        experiment_fingerprint=selected["experiment_fingerprint"],
+        attempt_id=selected["attempt_id"],
+        run_binding_fingerprint=selected["run_binding_fingerprint"],
+        payload=selected["payload"],
+        event_id=event_id,
+        observed_at=observed_at,
+    )
+    return {
+        "schema_version": 1,
+        "campaign_id": registration["campaign_id"],
+        "event_id": event["event_id"],
+        "event_type": event["event_type"],
+        "experiment_id": event["subject"]["experiment_id"],
+    }
+
+
+def experiment_selection_dashboard(
+    corpus: Path,
+    declaration_event_id: str,
+    result_event_ids: list[str],
+    *,
+    writer_id: str,
+    writer_generation: str,
+    event_id: str | None = None,
+    observed_at: str | None = None,
+    root: Path | None = None,
+) -> dict:
+    registration = create_campaign(state_root(root), corpus)
+    records, conflicts, _ = experiment_activity_records(corpus)
+    conflicted_ids = {item["event_id"] for item in conflicts}
+    selected_ids = [declaration_event_id, *result_event_ids]
+    if len(selected_ids) != len(set(selected_ids)):
+        raise ValueError("experiment selection source IDs are duplicated")
+    by_id = {item["event_id"]: item for item in records}
+    if any(identifier in conflicted_ids for identifier in selected_ids):
+        raise ValueError("experiment selection source is conflicted")
+    try:
+        declaration = by_id[declaration_event_id]
+        results = [by_id[identifier] for identifier in result_event_ids]
+    except KeyError:
+        raise ValueError("experiment selection source is unavailable") from None
+    selection = emit_experiment_selection(
+        corpus,
+        campaign_id=registration["campaign_id"],
+        writer={
+            "kind": "experiment_evaluator",
+            "id": writer_id,
+            "generation": writer_generation,
+        },
+        declaration=declaration,
+        terminal_results=results,
+        event_id=event_id,
+        observed_at=observed_at,
+    )
+    if selection["status"] == "selection_incomplete":
+        return {
+            "schema_version": 1,
+            **selection,
+        }
+    return {
+        "schema_version": 1,
+        "campaign_id": registration["campaign_id"],
+        "event_id": selection["event_id"],
+        "event_type": selection["event_type"],
+        "experiment_id": selection["subject"]["experiment_id"],
+        "status": selection["payload"]["status"],
     }
 
 
