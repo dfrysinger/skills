@@ -790,9 +790,8 @@ render after rollback.
 - **Branch:** `dfrysinger/skill-eval-ui-slice4`
 - **Base:** `898ae893b59219a0640e90d6d7365fc13b6d8780`
 - **Reviewed design commit:** `ba70ab6da30d8cdf29249ac5d326861945ea71e8`
-- **Critical path:** authority-repair proof -> implementation review -> landing
-  -> merged-byte proof
-- **Phase:** landing
+- **Critical path:** complete
+- **Phase:** complete
 - **Implementation gate:** clear
 - **Integrated implementation commits:**
   - `cea9c1e` experiment activity state and deterministic selection
@@ -835,11 +834,19 @@ render after rollback.
   fix-verification both completed within budget. Both verified the generic
   importer finding and caller-selected result-subset finding as resolved, with
   zero new findings and no unresolved material defect.
+- **Landing:** [PR 92](https://github.com/dfrysinger/skills/pull/92) merged as
+  `d3ecd5d1822d105cad5592ed012a37528b603800`. Required checks passed, and
+  the merged design and skill bytes are identical to reviewed head
+  `6fe3776747402bb8d0fa1854cf56cde483eeee5e`.
+- **Installed identity:** the installed skill tree matches the reviewed and
+  merged skill bytes. The four proof receipts validate against candidate
+  `sha256:4a18d3c3646d08629c97d08c4af4f5fe800fa8cd09e8a1126d15fee072463453`.
+- **Schedule cleanup:** unattended schedules 7 and 8 were stopped; the active
+  schedule list is empty.
 - **Delegated owners:** both implementation handoffs are integrated and closed.
   The coordinator owns final review, PR, merge, merged-byte verification, and
   schedule cleanup.
-- **Next action:** push the reviewed candidate, open and merge the Slice 4 PR
-  after required checks, then verify merged bytes and current installed proof.
+- **Next action:** none. Slice 4 is complete.
 
 ## Definition of Done: Skill Evaluation UI Slice 4
 
@@ -864,8 +871,8 @@ render after rollback.
       incomplete-cost states are visually inspected and accepted.
 - [x] Dual implementation review reports no unresolved material finding
       against the exact proved candidate.
-- [ ] The slice is committed, pushed, reviewed in a PR, passes required checks,
+- [x] The slice is committed, pushed, reviewed in a PR, passes required checks,
       is merged, and actual merged bytes retain the accepted behavior.
-- [ ] The baton records final commits, receipts, reviews, PR, merge identity,
+- [x] The baton records final commits, receipts, reviews, PR, merge identity,
       installed identity, and schedule cleanup.
-- [ ] Both unattended schedules are stopped and verified absent.
+- [x] Both unattended schedules are stopped and verified absent.
