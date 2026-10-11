@@ -1167,6 +1167,7 @@ def lineage_identity(
             for item in plugin["files"]
             if item["path"].startswith(prefix)
         ]
+        files.sort(key=lambda item: item["path"])
         if not files:
             raise ValueError(f"dashboard snapshot skill is absent: {skill_name}")
         identity = json_fingerprint({"name": skill_name, "files": files})

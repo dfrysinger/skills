@@ -15,6 +15,7 @@ from dashboard_state import (
     event_records,
     extension_records,
     live_state_enabled,
+    parse_instant,
     read_skill_snapshot,
     regular_json,
     session_records,
@@ -247,10 +248,10 @@ def snapshot_manifests(corpus_root: Path) -> tuple[dict[str, dict], list[dict]]:
         try:
             manifest = read_skill_snapshot(corpus_root, path.name)
             snapshots[manifest["snapshot_id"]] = manifest
-        except (OSError, ValueError, json.JSONDecodeError) as error:
+        except (OSError, ValueError, json.JSONDecodeError):
             invalid.append({
                 "source": f"snapshots/{path.name}",
-                "reason": str(error),
+                "reason": "snapshot_invalid",
             })
     return snapshots, invalid
 
@@ -662,10 +663,10 @@ def lineage_projection(
             "case_revision": revision,
         }
         if matching:
-            newest = max(record["observed_at"] for record in matching)
+            newest = max(parse_instant(record["observed_at"]) for record in matching)
             current = [
                 record for record in matching
-                if record["observed_at"] == newest
+                if parse_instant(record["observed_at"]) == newest
             ]
             payloads = {
                 evaluation_history.fingerprint(record["payload"])

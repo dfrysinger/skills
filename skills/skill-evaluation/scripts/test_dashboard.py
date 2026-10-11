@@ -53,6 +53,7 @@ import evaluation_history
 from skill_eval import (
     add_case,
     digest,
+    directory_identity,
     freeze_case,
     frozen_case_path,
     init_corpus,
@@ -309,6 +310,7 @@ class DashboardHiddenBoundaryTests(unittest.TestCase):
         (skill / "references").mkdir(parents=True)
         (skill / "SKILL.md").write_text("# Example\n", encoding="utf-8")
         (skill / "references" / "guide.md").write_text("guide\n", encoding="utf-8")
+        (skill / "z-last.md").write_text("last\n", encoding="utf-8")
         (skill / ".DS_Store").write_bytes(b"ignored")
         (skill / "__pycache__").mkdir()
         (skill / "__pycache__" / "cache.pyc").write_bytes(b"ignored")
@@ -326,7 +328,24 @@ class DashboardHiddenBoundaryTests(unittest.TestCase):
         files = snapshot["skills"][0]["files"]
         self.assertEqual(
             [item["path"] for item in files],
-            ["SKILL.md", "references/guide.md"],
+            ["SKILL.md", "references/guide.md", "z-last.md"],
+        )
+        plugin_identity = directory_identity(plugin)
+        evaluator_files = [
+            {
+                "path": item["path"].removeprefix("skills/example-skill/"),
+                "sha256": item["sha256"],
+            }
+            for item in plugin_identity["files"]
+            if item["path"].startswith("skills/example-skill/")
+        ]
+        evaluator_files.sort(key=lambda item: item["path"])
+        self.assertEqual(
+            snapshot["skills"][0]["evaluator_skill_identity"],
+            json_fingerprint({
+                "name": "example-skill",
+                "files": evaluator_files,
+            }),
         )
         self.assertEqual(
             snapshot["skills"][0]["evaluator_skill_identity"],
@@ -375,6 +394,78 @@ class DashboardHiddenBoundaryTests(unittest.TestCase):
                 capture_skill_snapshot(self.corpus, plugin, ["example-skill"])
         snapshots = self.corpus / ".skill-evaluation-ui" / "snapshots"
         self.assertEqual(list(snapshots.iterdir()), [])
+
+        with mock.patch(
+            "dashboard_state.validate_skill_snapshot",
+            side_effect=ValueError("invalid manifest"),
+        ), mock.patch("dashboard_state.os.rename") as rename:
+            with self.assertRaisesRegex(ValueError, "invalid manifest"):
+                capture_skill_snapshot(self.corpus, plugin, ["example-skill"])
+        rename.assert_not_called()
+        self.assertEqual(list(snapshots.iterdir()), [])
+
+    def test_skill_snapshot_does_not_follow_file_replaced_during_capture(self):
+        create_campaign(self.state_root, self.corpus)
+        plugin = self.root / "plugin"
+        skill = plugin / "skills" / "example-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Example\n", encoding="utf-8")
+        payload = skill / "payload.txt"
+        payload.write_text("bounded\n", encoding="utf-8")
+        outside = self.root / "outside.txt"
+        outside.write_text("must not be captured\n", encoding="utf-8")
+        real_open = os.open
+        replaced = False
+
+        def replace_before_open(path, flags, mode=0o777, *, dir_fd=None):
+            nonlocal replaced
+            if path == "payload.txt" and dir_fd is not None and not replaced:
+                replaced = True
+                payload.unlink()
+                payload.symlink_to(outside)
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        with mock.patch("dashboard_state.os.open", side_effect=replace_before_open):
+            with self.assertRaises(OSError):
+                capture_skill_snapshot(self.corpus, plugin, ["example-skill"])
+        self.assertTrue(replaced)
+        snapshots = self.corpus / ".skill-evaluation-ui" / "snapshots"
+        self.assertTrue(
+            not snapshots.exists() or list(snapshots.iterdir()) == []
+        )
+
+    def test_invalid_snapshot_projection_uses_path_safe_reason(self):
+        registration = create_campaign(self.state_root, self.corpus)
+        plugin = self.root / "plugin"
+        skill = plugin / "skills" / "example-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Example\n", encoding="utf-8")
+        snapshot = capture_skill_snapshot(
+            self.corpus,
+            plugin,
+            ["example-skill"],
+        )
+        stored = (
+            self.corpus
+            / ".skill-evaluation-ui"
+            / "snapshots"
+            / snapshot["snapshot_id"]
+            / "files"
+            / "example-skill"
+            / "SKILL.md"
+        )
+        stored.unlink()
+        projection = campaign_projection(
+            self.state_root,
+            registration["campaign_id"],
+        )
+        self.assertEqual(
+            projection["lineage"]["invalid"][0]["reason"],
+            "snapshot_invalid",
+        )
+        serialized = json.dumps(projection)
+        for path in (self.corpus, plugin, self.state_root, stored.parent):
+            self.assertNotIn(str(path), serialized)
 
     def test_lineage_extension_reuses_writer_conflicts_and_old_readers_ignore_it(self):
         registration = create_campaign(self.state_root, self.corpus)
@@ -443,7 +534,16 @@ class DashboardHiddenBoundaryTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(len(conflicts), 1)
         self.assertEqual(len(invalid), 1)
-        self.assertIn("unsupported lineage extension event", invalid[0]["reason"])
+        self.assertEqual(invalid[0]["reason"], "extension_event_invalid")
+        leaked = extension_root / f"{'7' * 32}.json"
+        leaked.symlink_to(self.root / "outside.json")
+        _, _, invalid = extension_records(self.corpus)
+        self.assertEqual(
+            {item["reason"] for item in invalid},
+            {"extension_event_invalid"},
+        )
+        self.assertNotIn(str(self.root), json.dumps(invalid))
+        leaked.unlink()
         self.assertEqual(event_records(self.corpus), ([], []))
 
         progress = emit_task_progress_event(
@@ -727,7 +827,10 @@ class DashboardHiddenBoundaryTests(unittest.TestCase):
         revision = digest(
             frozen_case_path(self.corpus, "example-case") / "case-manifest.json"
         )
-        for event_id, movement in (("a" * 32, "Mixed"), ("b" * 32, "Regression")):
+        for event_id, movement, observed_at in (
+            ("a" * 32, "Mixed", "2026-01-02T00:01:00+00:00"),
+            ("b" * 32, "Regression", "2026-01-01T19:01:00-05:00"),
+        ):
             emit_task_progress_event(
                 self.corpus,
                 campaign_id=registration["campaign_id"],
@@ -740,7 +843,7 @@ class DashboardHiddenBoundaryTests(unittest.TestCase):
                 movement=movement,
                 summary=f"Observation {movement}",
                 event_id=event_id,
-                observed_at="2026-01-02T00:01:00+00:00",
+                observed_at=observed_at,
             )
         projection = campaign_projection(
             self.state_root,
@@ -751,6 +854,33 @@ class DashboardHiddenBoundaryTests(unittest.TestCase):
             "conflicted",
         )
         self.assertEqual(projection["attention"][0]["kind"], "conflicted")
+
+        emit_task_progress_event(
+            self.corpus,
+            campaign_id=registration["campaign_id"],
+            writer=writer,
+            snapshot_id=second["snapshot_id"],
+            case_id="example-case",
+            case_revision=revision,
+            frontier="release",
+            classification="skill_defect",
+            movement="Strict improvement",
+            summary="A later absolute instant resolves the conflict",
+            event_id="c" * 32,
+            observed_at="2026-01-01T20:00:00-05:00",
+        )
+        projection = campaign_projection(
+            self.state_root,
+            registration["campaign_id"],
+        )
+        self.assertEqual(
+            projection["task_details"][0]["progress"]["status"],
+            "available",
+        )
+        self.assertEqual(
+            projection["task_details"][0]["progress"]["movement"],
+            "Strict improvement",
+        )
 
     def test_lineage_and_progress_cli_producers_bind_registered_session(self):
         definition_path = (

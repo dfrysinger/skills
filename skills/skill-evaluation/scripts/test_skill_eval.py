@@ -1145,6 +1145,86 @@ class SkillEvalTests(unittest.TestCase):
             },
         )
 
+    def test_lineage_suite_summary_cannot_manufacture_pass(self) -> None:
+        case_dir = self.make_case("failing-case")
+        definition_path = case_dir / "case.json"
+        definition = json.loads(definition_path.read_text())
+        for phase in definition["phases"]:
+            phase["must_include"] = ["required-result"]
+        definition_path.write_text(json.dumps(definition, indent=2) + "\n")
+        freeze_case(self.root, "failing-case", replace=False)
+
+        plugin = Path(self.temp.name) / "failing-suite-plugin"
+        skill = plugin / "skills" / "example-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: example-skill\n"
+            "description: Test examples. Use when evaluating an example.\n---\n"
+            "# example-skill\n",
+            encoding="utf-8",
+        )
+        fake = Path(self.temp.name) / "failing-suite-copilot"
+        fake.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json,sys\n"
+            "if '--version' in sys.argv:\n"
+            " print('fake-copilot 1.0')\n"
+            " raise SystemExit(0)\n"
+            "prompt=sys.argv[sys.argv.index('-p')+1]\n"
+            "model=sys.argv[sys.argv.index('--model')+1]\n"
+            "if 'independent behavioral judge' in prompt:\n"
+            " out=json.dumps({'verdict':'PASS','confidence':'HIGH',"
+            "'matched':['claim'],'missed':[],'overcorrections':[],"
+            "'generalized_skill_defect':None})\n"
+            "else:\n"
+            " print(json.dumps({'type':'tool.execution_start','data':"
+            "{'toolName':'skill','arguments':{'skill':'example-skill'},"
+            "'model':model}}))\n"
+            " out='wrong-result'\n"
+            "print(json.dumps({'type':'assistant.message','data':"
+            "{'content':out,'model':model}}))\n"
+            "print(json.dumps({'type':'result','exitCode':0}))\n",
+            encoding="utf-8",
+        )
+        os.chmod(fake, 0o755)
+        from dashboard_state import capture_skill_snapshot, create_campaign
+        dashboard_state_root = Path(self.temp.name) / "dashboard-failing-state"
+        create_campaign(dashboard_state_root, self.root)
+        snapshot = capture_skill_snapshot(
+            self.root,
+            plugin,
+            ["example-skill"],
+        )
+        with mock.patch(
+            "skill_eval.copilot_identity",
+            return_value={"version": "fake-copilot 1.0"},
+        ):
+            suite_root, passed = run_suite(
+                self.root,
+                plugin,
+                fake,
+                "fake-model",
+                "high",
+                "existing",
+                60,
+                workers=1,
+                dashboard_snapshot_id=snapshot["snapshot_id"],
+            )
+        self.assertFalse(passed)
+        result_path = suite_root / "suite-result.json"
+        result = json.loads(result_path.read_text())
+        self.assertEqual(result["result"], "FAIL")
+        result["result"] = "PASS"
+        result["cases"][0]["result"] = "PASS"
+        result["failures"] = []
+        result_path.write_text(json.dumps(result, indent=2) + "\n")
+        import evaluation_history
+        with self.assertRaisesRegex(
+            ValueError,
+            "case result disagrees with run artifacts",
+        ):
+            evaluation_history.history(self.root)
+
     def test_dashboard_snapshot_binding_rejects_mutated_source_before_execution(self):
         case_dir = self.make_case("lineage-case")
         freeze_case(self.root, "lineage-case", replace=False)

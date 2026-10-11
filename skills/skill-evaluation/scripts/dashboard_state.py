@@ -8,6 +8,7 @@ import hashlib
 import os
 import re
 import shutil
+import stat
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -203,9 +204,7 @@ def validate_safe_id(value: str | None, label: str) -> str | None:
     return value
 
 
-def instant(value: str | None = None) -> str:
-    if value is None:
-        return datetime.now(timezone.utc).isoformat()
+def parse_instant(value: str) -> datetime:
     if not isinstance(value, str):
         raise ValueError("timestamp must be an ISO-8601 string")
     try:
@@ -214,6 +213,13 @@ def instant(value: str | None = None) -> str:
         raise ValueError("timestamp must be an ISO-8601 string") from None
     if parsed.tzinfo is None:
         raise ValueError("timestamp must include a timezone")
+    return parsed
+
+
+def instant(value: str | None = None) -> str:
+    if value is None:
+        return datetime.now(timezone.utc).isoformat()
+    parse_instant(value)
     return value
 
 
@@ -282,30 +288,64 @@ def _snapshot_files(
     plugin_dir: Path,
 ) -> list[tuple[str, bytes, int]]:
     _refuse_symlink_ancestry(skill_root, plugin_dir, "snapshot capture")
-    if skill_root.is_symlink() or not skill_root.is_dir():
-        raise ValueError(f"snapshot skill root must be a directory: {skill_root}")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     result = []
-    for root, directories, names in os.walk(skill_root):
-        for name in [*directories, *names]:
-            path = Path(root) / name
-            if path.is_symlink():
-                raise ValueError(f"snapshot capture refuses symlink: {path}")
-        directories[:] = sorted(
-            name for name in directories if name not in {".git", "__pycache__"}
-        )
-        for name in sorted(names):
-            if name == ".DS_Store" or name.endswith(".pyc"):
-                continue
-            path = Path(root) / name
-            if not path.is_file():
-                raise ValueError(f"snapshot capture refuses non-regular file: {path}")
-            result.append((
-                path.relative_to(skill_root).as_posix(),
-                path.read_bytes(),
-                path.stat().st_mode & 0o777,
-            ))
+    plugin_fd = os.open(plugin_dir, directory_flags)
+    skill_fd = plugin_fd
+    try:
+        for component in skill_root.relative_to(plugin_dir).parts:
+            next_fd = os.open(component, directory_flags, dir_fd=skill_fd)
+            if skill_fd != plugin_fd:
+                os.close(skill_fd)
+            skill_fd = next_fd
+
+        def walk(directory_fd: int, prefix: str = "") -> None:
+            for name in sorted(os.listdir(directory_fd)):
+                relative = f"{prefix}/{name}" if prefix else name
+                entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                if stat.S_ISLNK(entry.st_mode):
+                    raise ValueError(f"snapshot capture refuses symlink: {relative}")
+                if stat.S_ISDIR(entry.st_mode):
+                    if name in {".git", "__pycache__"}:
+                        continue
+                    child_fd = os.open(name, directory_flags, dir_fd=directory_fd)
+                    try:
+                        if not stat.S_ISDIR(os.fstat(child_fd).st_mode):
+                            raise ValueError(
+                                f"snapshot capture refuses non-directory: {relative}"
+                            )
+                        walk(child_fd, relative)
+                    finally:
+                        os.close(child_fd)
+                    continue
+                if name == ".DS_Store" or name.endswith(".pyc"):
+                    continue
+                if not stat.S_ISREG(entry.st_mode):
+                    raise ValueError(
+                        f"snapshot capture refuses non-regular file: {relative}"
+                    )
+                file_fd = os.open(name, file_flags, dir_fd=directory_fd)
+                try:
+                    opened = os.fstat(file_fd)
+                    if not stat.S_ISREG(opened.st_mode):
+                        raise ValueError(
+                            f"snapshot capture refuses non-regular file: {relative}"
+                        )
+                    with os.fdopen(os.dup(file_fd), "rb") as source:
+                        content = source.read()
+                    result.append((relative, content, opened.st_mode & 0o777))
+                finally:
+                    os.close(file_fd)
+
+        walk(skill_fd)
+    finally:
+        if skill_fd != plugin_fd:
+            os.close(skill_fd)
+        os.close(plugin_fd)
     if not result or not any(path == "SKILL.md" for path, _, _ in result):
         raise ValueError(f"snapshot skill is missing SKILL.md: {skill_root}")
+    result.sort(key=lambda item: item[0])
     return result
 
 
@@ -398,6 +438,7 @@ def capture_skill_snapshot(
         "skills": skill_records,
     }
     manifest["snapshot_id"] = _snapshot_identity(manifest)
+    validate_skill_snapshot(manifest)
     root = _snapshot_root(corpus_root)
     destination = root / manifest["snapshot_id"]
     if destination.exists():
@@ -1494,13 +1535,13 @@ def extension_records(
                         "lineage extension filename and identity disagree"
                     )
                 records.append(event)
-            except (OSError, ValueError, json.JSONDecodeError) as error:
+            except (OSError, ValueError, json.JSONDecodeError):
                 invalid.append({
                     "source": (
                         f"events/{writer.name}/extensions/{EXTENSION_NAME}/"
                         f"{path.name}"
                     ),
-                    "reason": str(error),
+                    "reason": "extension_event_invalid",
                 })
         conflict_root = extension / "conflicts"
         if conflict_root.exists():
@@ -1519,13 +1560,17 @@ def extension_records(
                             f"conflicts/{path.name}"
                         ),
                     })
-                except (OSError, ValueError, json.JSONDecodeError) as error:
+                except (OSError, ValueError, json.JSONDecodeError):
                     invalid.append({
                         "source": (
                             f"events/{writer.name}/extensions/{EXTENSION_NAME}/"
                             f"conflicts/{path.name}"
                         ),
-                        "reason": str(error),
+                        "reason": "extension_conflict_invalid",
                     })
-    records.sort(key=lambda item: (item["observed_at"], item["event_id"]))
+    records.sort(key=lambda item: (
+        parse_instant(item["observed_at"]),
+        parse_instant(item["recorded_at"]),
+        item["event_id"],
+    ))
     return records, conflicts, invalid

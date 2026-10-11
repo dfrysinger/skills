@@ -78,6 +78,7 @@ def validated_lineage_identity(value: dict, plugin: dict) -> dict:
             for item in plugin["files"]
             if item["path"].startswith(prefix)
         ]
+        files.sort(key=lambda item: item["path"])
         if (
             not files
             or fingerprint({"name": name, "files": files}) != identity
@@ -192,6 +193,8 @@ def run_row(root: Path, path: Path, owner: dict | None, suite: dict) -> dict:
     if any(item.get("status") == "FAILED" and str(item.get("stage", "")).startswith("judge:")
            for item in receipts):
         behavioral = None
+    if result.get("behavioral_verdict") not in {None, behavioral}:
+        raise ValueError(f"repository summary changed behavioral correctness: {run_path}")
     status = execution.get("execution_status")
     if execution and status not in {"PASS", "FAIL", "INVALID", "BLOCKED"}:
         raise ValueError(f"invalid execution status: {run_path}")
@@ -356,13 +359,196 @@ def run_row(root: Path, path: Path, owner: dict | None, suite: dict) -> dict:
     }
 
 
+def validated_lineage_suite(
+    suite_path: str,
+    suite: dict,
+    lineage_identity: dict,
+    rows: list[dict],
+) -> dict:
+    suite_rows = [row for row in rows if row["suite_path"] == suite_path]
+    cases = suite.get("cases")
+    if not isinstance(cases, list) or not cases:
+        raise ValueError("lineage suite cases are invalid")
+    case_map = {}
+    for case in cases:
+        case_id = case.get("case_id") if isinstance(case, dict) else None
+        if not isinstance(case_id, str) or not case_id or case_id in case_map:
+            raise ValueError("lineage suite case identities are invalid")
+        case_map[case_id] = case
+    row_case_ids = {row["population"]["case_id"] for row in suite_rows}
+    if set(case_map) != row_case_ids:
+        raise ValueError("lineage suite case membership disagrees with run artifacts")
+
+    expected_revisions = suite.get("case_revisions")
+    if not isinstance(expected_revisions, dict) or set(expected_revisions) != set(case_map):
+        raise ValueError("lineage suite revisions are invalid")
+    derived_cases = []
+    for case_id, case in sorted(case_map.items()):
+        case_rows = sorted(
+            (
+                row for row in suite_rows
+                if row["population"]["case_id"] == case_id
+            ),
+            key=lambda row: row["attempt"],
+        )
+        attempts = case.get("attempts")
+        if not isinstance(attempts, list) or len(attempts) != len(case_rows):
+            raise ValueError("lineage suite attempts disagree with run artifacts")
+        attempts_by_ordinal = {
+            item.get("attempt"): item
+            for item in attempts
+            if isinstance(item, dict) and type(item.get("attempt")) is int
+        }
+        if set(attempts_by_ordinal) != {row["attempt"] for row in case_rows}:
+            raise ValueError("lineage suite attempt ordinals disagree with run artifacts")
+        for row in case_rows:
+            claim = attempts_by_ordinal[row["attempt"]]
+            if claim.get("run_path") != row["run_path"]:
+                raise ValueError("lineage suite attempt path disagrees with run artifact")
+            if claim.get("result") != row["correctness"]:
+                raise ValueError("lineage suite attempt result disagrees with run artifact")
+            if (
+                "execution_status" in claim
+                and claim["execution_status"] != row["correctness"]
+            ):
+                raise ValueError("lineage suite execution result disagrees with run artifact")
+            if (
+                "behavioral_verdict" in claim
+                and claim["behavioral_verdict"] != row["behavioral_verdict"]
+            ):
+                raise ValueError("lineage suite behavioral result disagrees with run artifact")
+
+        revisions = {
+            row["population"]["case_revision"]
+            for row in case_rows
+            if row["run_path"] is not None
+        }
+        if revisions != {expected_revisions[case_id]}:
+            raise ValueError("lineage suite case revision disagrees with run artifacts")
+        successful = next(
+            (
+                row for row in case_rows
+                if row["correctness"] == "PASS"
+                and (
+                    row["population"]["case_type"] != "repository-task"
+                    or row["behavioral_verdict"] == "PASS"
+                )
+            ),
+            None,
+        )
+        completed = [row for row in case_rows if row["correctness"] != "ERROR"]
+        final = successful or (completed[-1] if completed else None)
+        expected_result = (
+            "PASS" if successful else
+            final["correctness"] if final is not None else "FAIL"
+        )
+        expected_run_path = final["run_path"] if final is not None else None
+        expected_behavioral = (
+            final["behavioral_verdict"]
+            if final is not None
+            and final["population"]["case_type"] == "repository-task"
+            else None
+        )
+        if (
+            case.get("result") != expected_result
+            or case.get("run_path") != expected_run_path
+            or case.get("behavioral_verdict") != expected_behavioral
+            or case.get("attempt_count") != len(case_rows)
+            or case.get("passed_after_retry")
+            != bool(successful and successful["attempt"] > 1)
+        ):
+            raise ValueError("lineage suite case result disagrees with run artifacts")
+        derived_cases.append({
+            "case_id": case_id,
+            "result": expected_result,
+            "behavioral_verdict": expected_behavioral,
+        })
+
+    completed_rows = [row for row in suite_rows if row["run_path"] is not None]
+    if not completed_rows:
+        raise ValueError("lineage suite has no validated run artifacts")
+    contract_checks = {
+        "model": "model",
+        "effort": "effort",
+        "arm": "arm",
+        "quality_review": "quality_review",
+        "timeout_seconds": "timeout_seconds",
+    }
+    for suite_field, population_field in contract_checks.items():
+        values = {
+            row["population"][population_field]
+            for row in completed_rows
+        }
+        if values != {suite.get(suite_field)}:
+            raise ValueError(f"lineage suite {suite_field} disagrees with run artifacts")
+    harness = suite.get("harness_identity")
+    harness_identity = (
+        fingerprint(harness["modules"])
+        if isinstance(harness, dict) and isinstance(harness.get("modules"), list)
+        else None
+    )
+    if {
+        row["population"]["harness_identity"]
+        for row in completed_rows
+    } != {harness_identity}:
+        raise ValueError("lineage suite harness disagrees with run artifacts")
+    treatment = suite.get("treatment")
+    if isinstance(treatment, dict):
+        treatment_identity = fingerprint(treatment)
+        if {
+            row["population"]["treatment_identity"]
+            for row in completed_rows
+        } != {treatment_identity}:
+            raise ValueError("lineage suite treatment disagrees with run artifacts")
+
+    derived_result = (
+        "PASS"
+        if all(
+            case["result"] == "PASS"
+            and (
+                next(
+                    row["population"]["case_type"]
+                    for row in completed_rows
+                    if row["population"]["case_id"] == case["case_id"]
+                ) != "repository-task"
+                or case["behavioral_verdict"] == "PASS"
+            )
+            for case in derived_cases
+        )
+        else "FAIL"
+    )
+    if suite.get("result") != derived_result:
+        raise ValueError("lineage suite result disagrees with run artifacts")
+    if derived_result == "PASS" and suite.get("failures") != []:
+        raise ValueError("passing lineage suite retains failures")
+    return {
+        "suite_path": suite_path,
+        "result": derived_result,
+        "lineage_identity": lineage_identity,
+        "case_revisions": dict(sorted(expected_revisions.items())),
+        "cases": derived_cases,
+        "contract": {
+            field: suite.get(field)
+            for field in (
+                "model",
+                "effort",
+                "arm",
+                "treatment",
+                "quality_review",
+                "timeout_seconds",
+                "harness_identity",
+            )
+        },
+    }
+
+
 def _history(root: Path, *, case_id: str | None = None, arm: str | None = None,
              model: str | None = None) -> dict:
     root = root.resolve()
     load_corpus(root)
     paths: dict[Path, tuple[dict | None, dict]] = {}
     missing = []
-    lineage_suites = []
+    lineage_suite_sources = []
     for suite_file in sorted((root / "suite-runs").glob("*/suite-result.json")):
         suite = object_file(suite_file)
         if not isinstance(suite.get("cases"), list):
@@ -380,32 +566,9 @@ def _history(root: Path, *, case_id: str | None = None, arm: str | None = None,
             )
             if suite_lineage != embedded_lineage:
                 raise ValueError("suite lineage artifact changed")
-            lineage_suites.append({
-                "suite_path": suite_path,
-                "result": suite.get("result"),
-                "lineage_identity": suite_lineage,
-                "case_revisions": suite.get("case_revisions", {}),
-                "cases": [
-                    {
-                        "case_id": item.get("case_id"),
-                        "result": item.get("result"),
-                        "behavioral_verdict": item.get("behavioral_verdict"),
-                    }
-                    for item in suite.get("cases", [])
-                ],
-                "contract": {
-                    field: suite.get(field)
-                    for field in (
-                        "model",
-                        "effort",
-                        "arm",
-                        "treatment",
-                        "quality_review",
-                        "timeout_seconds",
-                        "harness_identity",
-                    )
-                },
-            })
+            lineage_suite_sources.append(
+                (suite_path, suite, suite_lineage)
+            )
         for case in suite["cases"]:
             if not isinstance(case, dict) or not isinstance(case.get("attempts"), list):
                 raise ValueError("invalid suite attempt list")
@@ -484,6 +647,10 @@ def _history(root: Path, *, case_id: str | None = None, arm: str | None = None,
             "legacy_execution_elapsed_seconds": None, "timing_status": "unavailable",
             "behavioral_verdict": None,
         })
+    lineage_suites = [
+        validated_lineage_suite(suite_path, suite, lineage, rows)
+        for suite_path, suite, lineage in lineage_suite_sources
+    ]
     rows = [row for row in rows if (case_id is None or row["population"]["case_id"] == case_id)
             and (arm is None or row["population"]["arm"] == arm)
             and (model is None or row["population"]["model"] == model)]
