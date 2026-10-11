@@ -7,12 +7,14 @@ import fcntl
 import hashlib
 import os
 import re
+import shutil
+import stat
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from skill_eval import load_corpus, read_json
+from skill_eval import json_fingerprint, load_corpus, read_json
 
 
 CAMPAIGN_ID_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -83,6 +85,85 @@ ALLOWLISTED_LIVE_ARTIFACTS = {
     "timing.json",
 }
 LIVE_STATE = {"schema_version": 1, "live_contract": 1}
+SNAPSHOT_FIELDS = {"schema_version", "campaign_id", "snapshot_id", "skills"}
+SNAPSHOT_SKILL_FIELDS = {
+    "name",
+    "sha256",
+    "evaluator_skill_identity",
+    "files",
+}
+SNAPSHOT_FILE_FIELDS = {
+    "path",
+    "sha256",
+    "mode",
+    "bytes",
+    "text",
+    "lines",
+}
+EXTENSION_NAME = "skill-lineage-v1"
+EXTENSION_EVENT_TYPES = {"lineage_declared", "task_progress_recorded"}
+EXTENSION_EVENT_FIELDS = {
+    "schema_version",
+    "event_id",
+    "event_type",
+    "campaign_id",
+    "writer",
+    "observed_at",
+    "recorded_at",
+    "subject",
+    "payload",
+}
+EXTENSION_SUBJECT_FIELDS = {"snapshot_id", "case_id", "case_revision"}
+LINEAGE_PAYLOAD_FIELDS = {
+    "roles",
+    "parents",
+    "summary",
+    "provenance_kind",
+    "source_revision",
+}
+LINEAGE_ROLES = {"original", "published", "integrated", "experimental", "released"}
+LINEAGE_RELATIONS = {"derived_from", "integrates", "releases"}
+PROGRESS_PAYLOAD_FIELDS = {
+    "frontier",
+    "classification",
+    "movement",
+    "summary",
+    "uptake",
+    "blocker",
+    "next_action",
+    "comparison_snapshot_id",
+    "sources",
+}
+PROGRESS_FRONTIERS = {
+    "admission",
+    "candidate",
+    "executable",
+    "behavioral",
+    "quality",
+    "qualification",
+    "release",
+    "unknown",
+}
+PROGRESS_CLASSIFICATIONS = {
+    "skill_defect",
+    "instruction_interaction",
+    "execution_variance",
+    "packet_defect",
+    "harness_defect",
+    "grading_defect",
+    "authority_limit",
+    "product_limit",
+    "unknown",
+}
+PROGRESS_MOVEMENTS = {
+    "Conquered",
+    "Strict improvement",
+    "Mixed",
+    "No signal",
+    "Regression",
+    "Unknown",
+}
+UPTAKE_STATUSES = {"OBSERVED", "PARTIAL", "ABSENT", "NOT_APPLICABLE"}
 
 
 def validate_campaign_id(value: str) -> str:
@@ -123,9 +204,7 @@ def validate_safe_id(value: str | None, label: str) -> str | None:
     return value
 
 
-def instant(value: str | None = None) -> str:
-    if value is None:
-        return datetime.now(timezone.utc).isoformat()
+def parse_instant(value: str) -> datetime:
     if not isinstance(value, str):
         raise ValueError("timestamp must be an ISO-8601 string")
     try:
@@ -134,6 +213,13 @@ def instant(value: str | None = None) -> str:
         raise ValueError("timestamp must be an ISO-8601 string") from None
     if parsed.tzinfo is None:
         raise ValueError("timestamp must include a timezone")
+    return parsed
+
+
+def instant(value: str | None = None) -> str:
+    if value is None:
+        return datetime.now(timezone.utc).isoformat()
+    parse_instant(value)
     return value
 
 
@@ -165,6 +251,359 @@ def local_dashboard_root(corpus_root: Path) -> Path:
     if root.is_symlink() or not root.is_dir():
         raise ValueError(f"dashboard corpus state must be a directory: {root}")
     return root
+
+
+def local_campaign_registration(corpus_root: Path) -> dict:
+    return validate_registration(
+        regular_json(
+            local_dashboard_root(corpus_root) / "campaign.json",
+            "corpus campaign",
+        )
+    )
+
+
+def _snapshot_root(corpus_root: Path) -> Path:
+    root = local_dashboard_root(corpus_root) / "snapshots"
+    if root.exists() and (root.is_symlink() or not root.is_dir()):
+        raise ValueError(f"dashboard snapshots path is invalid: {root}")
+    root.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(root, 0o700)
+    return root
+
+
+def _refuse_symlink_ancestry(path: Path, boundary: Path, label: str) -> None:
+    current = boundary
+    try:
+        relative = path.relative_to(boundary)
+    except ValueError:
+        raise ValueError(f"{label} escapes its boundary: {path}") from None
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            raise ValueError(f"{label} refuses symlink ancestry: {current}")
+
+
+def _snapshot_files(
+    skill_root: Path,
+    plugin_dir: Path,
+) -> list[tuple[str, bytes, int]]:
+    _refuse_symlink_ancestry(skill_root, plugin_dir, "snapshot capture")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    result = []
+    plugin_fd = os.open(plugin_dir, directory_flags)
+    skill_fd = plugin_fd
+    try:
+        for component in skill_root.relative_to(plugin_dir).parts:
+            next_fd = os.open(component, directory_flags, dir_fd=skill_fd)
+            if skill_fd != plugin_fd:
+                os.close(skill_fd)
+            skill_fd = next_fd
+
+        def walk(directory_fd: int, prefix: str = "") -> None:
+            for name in sorted(os.listdir(directory_fd)):
+                relative = f"{prefix}/{name}" if prefix else name
+                entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                if stat.S_ISLNK(entry.st_mode):
+                    raise ValueError(f"snapshot capture refuses symlink: {relative}")
+                if stat.S_ISDIR(entry.st_mode):
+                    if name in {".git", "__pycache__"}:
+                        continue
+                    child_fd = os.open(name, directory_flags, dir_fd=directory_fd)
+                    try:
+                        if not stat.S_ISDIR(os.fstat(child_fd).st_mode):
+                            raise ValueError(
+                                f"snapshot capture refuses non-directory: {relative}"
+                            )
+                        walk(child_fd, relative)
+                    finally:
+                        os.close(child_fd)
+                    continue
+                if name == ".DS_Store" or name.endswith(".pyc"):
+                    continue
+                if not stat.S_ISREG(entry.st_mode):
+                    raise ValueError(
+                        f"snapshot capture refuses non-regular file: {relative}"
+                    )
+                file_fd = os.open(name, file_flags, dir_fd=directory_fd)
+                try:
+                    opened = os.fstat(file_fd)
+                    if not stat.S_ISREG(opened.st_mode):
+                        raise ValueError(
+                            f"snapshot capture refuses non-regular file: {relative}"
+                        )
+                    with os.fdopen(os.dup(file_fd), "rb") as source:
+                        content = source.read()
+                    result.append((relative, content, opened.st_mode & 0o777))
+                finally:
+                    os.close(file_fd)
+
+        walk(skill_fd)
+    finally:
+        if skill_fd != plugin_fd:
+            os.close(skill_fd)
+        os.close(plugin_fd)
+    if not result or not any(path == "SKILL.md" for path, _, _ in result):
+        raise ValueError(f"snapshot skill is missing SKILL.md: {skill_root}")
+    result.sort(key=lambda item: item[0])
+    return result
+
+
+def _snapshot_file_record(path: str, content: bytes, mode: int) -> dict:
+    try:
+        decoded = content.decode("utf-8")
+        is_text = "\x00" not in decoded
+    except UnicodeDecodeError:
+        decoded = ""
+        is_text = False
+    return {
+        "path": path,
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "mode": mode,
+        "bytes": len(content),
+        "text": is_text,
+        "lines": len(decoded.splitlines()) if is_text else None,
+    }
+
+
+def _snapshot_identity(manifest: dict) -> str:
+    return json_fingerprint({
+        "schema_version": manifest["schema_version"],
+        "campaign_id": manifest["campaign_id"],
+        "skills": manifest["skills"],
+    })
+
+
+def _write_snapshot_file(path: Path, content: bytes, mode: int) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        if path.exists():
+            os.chmod(path, mode)
+
+
+def capture_skill_snapshot(
+    corpus_root: Path,
+    plugin_dir: Path,
+    skills: list[str],
+) -> dict:
+    registration = local_campaign_registration(corpus_root)
+    plugin_dir = plugin_dir.expanduser().absolute()
+    if plugin_dir.is_symlink() or not plugin_dir.is_dir():
+        raise ValueError(f"snapshot plugin must be a directory: {plugin_dir}")
+    skill_names = sorted(set(skills))
+    if (
+        not skill_names
+        or len(skill_names) != len(skills)
+        or any(validate_safe_id(skill, "skill name") != skill for skill in skill_names)
+        or not set(skill_names).issubset(set(registration["target_skills"]))
+    ):
+        raise ValueError("snapshot skills must be unique campaign target skills")
+
+    captured = []
+    skill_records = []
+    for skill_name in skill_names:
+        files = _snapshot_files(
+            plugin_dir / "skills" / skill_name,
+            plugin_dir,
+        )
+        records = [
+            _snapshot_file_record(path, content, mode)
+            for path, content, mode in files
+        ]
+        evaluator_files = [
+            {"path": item["path"], "sha256": item["sha256"]}
+            for item in records
+        ]
+        skill_records.append({
+            "name": skill_name,
+            "sha256": json_fingerprint(records),
+            "evaluator_skill_identity": json_fingerprint({
+                "name": skill_name,
+                "files": evaluator_files,
+            }),
+            "files": records,
+        })
+        captured.append((skill_name, files))
+
+    manifest = {
+        "schema_version": 1,
+        "campaign_id": registration["campaign_id"],
+        "snapshot_id": None,
+        "skills": skill_records,
+    }
+    manifest["snapshot_id"] = _snapshot_identity(manifest)
+    validate_skill_snapshot(manifest)
+    root = _snapshot_root(corpus_root)
+    destination = root / manifest["snapshot_id"]
+    if destination.exists():
+        existing = read_skill_snapshot(corpus_root, manifest["snapshot_id"])
+        if existing != manifest:
+            raise ValueError("snapshot identity conflicts with different content")
+        return existing
+
+    staging = root / f".{manifest['snapshot_id']}.{uuid.uuid4().hex}.tmp"
+    staging.mkdir(mode=0o700)
+    try:
+        for skill_name, files in captured:
+            for relative, content, mode in files:
+                _write_snapshot_file(
+                    staging / "files" / skill_name / relative,
+                    content,
+                    mode,
+                )
+        manifest_path = staging / "manifest.json"
+        descriptor = os.open(
+            manifest_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(manifest, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.rename(staging, destination)
+        except OSError:
+            if not destination.exists():
+                raise
+            existing = read_skill_snapshot(corpus_root, manifest["snapshot_id"])
+            if existing != manifest:
+                raise ValueError(
+                    "snapshot identity conflicts with different content"
+                ) from None
+            shutil.rmtree(staging)
+            return existing
+    except BaseException:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
+    return read_skill_snapshot(corpus_root, manifest["snapshot_id"])
+
+
+def validate_skill_snapshot(value: dict) -> dict:
+    if not isinstance(value, dict) or set(value) != SNAPSHOT_FIELDS:
+        raise ValueError("unsupported skill snapshot")
+    if value.get("schema_version") != 1:
+        raise ValueError("unsupported skill snapshot")
+    validate_campaign_id(value.get("campaign_id"))
+    validate_sha256(value.get("snapshot_id"), "snapshot ID")
+    skills = value.get("skills")
+    if (
+        not isinstance(skills, list)
+        or not skills
+        or [item.get("name") for item in skills]
+        != sorted({item.get("name") for item in skills})
+    ):
+        raise ValueError("skill snapshot skills are invalid")
+    for skill in skills:
+        if not isinstance(skill, dict) or set(skill) != SNAPSHOT_SKILL_FIELDS:
+            raise ValueError("skill snapshot entry is invalid")
+        validate_safe_id(skill.get("name"), "skill name")
+        validate_sha256(skill.get("sha256"), "snapshot skill digest")
+        validate_sha256(
+            skill.get("evaluator_skill_identity"),
+            "evaluator skill identity",
+        )
+        files = skill.get("files")
+        if (
+            not isinstance(files, list)
+            or not files
+            or [item.get("path") for item in files]
+            != sorted({item.get("path") for item in files})
+        ):
+            raise ValueError("skill snapshot files are invalid")
+        for item in files:
+            if not isinstance(item, dict) or set(item) != SNAPSHOT_FILE_FIELDS:
+                raise ValueError("skill snapshot file is invalid")
+            relative = Path(item.get("path", ""))
+            if (
+                relative.is_absolute()
+                or not relative.parts
+                or ".." in relative.parts
+                or relative.as_posix() != item["path"]
+            ):
+                raise ValueError("skill snapshot path is invalid")
+            validate_sha256(item.get("sha256"), "snapshot file digest")
+            if (
+                type(item.get("mode")) is not int
+                or item["mode"] < 0
+                or item["mode"] > 0o777
+                or type(item.get("bytes")) is not int
+                or item["bytes"] < 0
+                or type(item.get("text")) is not bool
+                or (
+                    item["lines"] is not None
+                    and (type(item["lines"]) is not int or item["lines"] < 0)
+                )
+                or (item["text"] is False and item["lines"] is not None)
+            ):
+                raise ValueError("skill snapshot file metadata is invalid")
+        evaluator_files = [
+            {"path": item["path"], "sha256": item["sha256"]}
+            for item in files
+        ]
+        if skill["sha256"] != json_fingerprint(files):
+            raise ValueError("snapshot skill digest does not match files")
+        if skill["evaluator_skill_identity"] != json_fingerprint({
+            "name": skill["name"],
+            "files": evaluator_files,
+        }):
+            raise ValueError("evaluator skill identity does not match files")
+    if value["snapshot_id"] != _snapshot_identity(value):
+        raise ValueError("snapshot ID does not match manifest")
+    return value
+
+
+def read_skill_snapshot(corpus_root: Path, snapshot_id: str) -> dict:
+    snapshot_id = validate_sha256(snapshot_id, "snapshot ID")
+    root = _snapshot_root(corpus_root) / snapshot_id
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError(f"skill snapshot must be a directory: {root}")
+    manifest = validate_skill_snapshot(
+        regular_json(root / "manifest.json", "skill snapshot manifest")
+    )
+    registration = local_campaign_registration(corpus_root)
+    if (
+        manifest["campaign_id"] != registration["campaign_id"]
+        or manifest["snapshot_id"] != snapshot_id
+    ):
+        raise ValueError("skill snapshot campaign or filename disagrees")
+    expected = set()
+    for skill in manifest["skills"]:
+        for item in skill["files"]:
+            relative = Path("files") / skill["name"] / item["path"]
+            expected.add(relative.as_posix())
+            path = root / relative
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(f"snapshot file must be regular: {path}")
+            content = path.read_bytes()
+            if (
+                hashlib.sha256(content).hexdigest() != item["sha256"]
+                or len(content) != item["bytes"]
+                or path.stat().st_mode & 0o777 != item["mode"]
+            ):
+                raise ValueError(f"snapshot file does not match manifest: {path}")
+    actual = set()
+    files_root = root / "files"
+    if files_root.is_symlink() or not files_root.is_dir():
+        raise ValueError("snapshot files root must be a directory")
+    for path in files_root.rglob("*"):
+        if path.is_symlink():
+            raise ValueError(f"snapshot files refuse symlink: {path}")
+        if path.is_file():
+            actual.add(path.relative_to(root).as_posix())
+        elif not path.is_dir():
+            raise ValueError(f"snapshot files refuse non-regular entry: {path}")
+    if actual != expected:
+        raise ValueError("snapshot files do not match manifest membership")
+    return manifest
 
 
 def enable_live_state(corpus_root: Path) -> None:
@@ -562,6 +1001,38 @@ def writer_directory(corpus_root: Path, writer: dict) -> Path:
     return root
 
 
+def _publish_writer_record(
+    root: Path,
+    value: dict,
+    validator,
+    *,
+    label: str,
+) -> dict:
+    event_id = validate_hex_id(value.get("event_id"), f"{label} ID")
+    path = root / f"{event_id}.json"
+    encoded = (json.dumps(value, indent=2) + "\n").encode()
+    try:
+        write_exclusive(path, value)
+    except FileExistsError:
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"{label} destination is invalid") from None
+        existing = path.read_bytes()
+        if existing == encoded:
+            return validator(json.loads(existing))
+        conflicts = root / "conflicts"
+        if conflicts.exists() and (conflicts.is_symlink() or not conflicts.is_dir()):
+            raise ValueError(f"{label} conflict path is invalid") from None
+        conflicts.mkdir(mode=0o700, exist_ok=True)
+        digest = hashlib.sha256(encoded).hexdigest()
+        conflict = conflicts / f"{event_id}-{digest}.json"
+        try:
+            write_exclusive(conflict, value)
+        except FileExistsError:
+            pass
+        raise ValueError(f"{label} ID conflicts with different content") from None
+    return value
+
+
 def emit_event(
     corpus_root: Path,
     *,
@@ -591,28 +1062,307 @@ def emit_event(
     })
     enable_live_state(corpus_root)
     root = writer_directory(corpus_root, writer)
-    path = root / f"{event['event_id']}.json"
-    encoded = (json.dumps(event, indent=2) + "\n").encode()
-    try:
-        write_exclusive(path, event)
-    except FileExistsError:
-        if path.is_symlink() or not path.is_file():
-            raise ValueError("dashboard event destination is invalid") from None
-        existing = path.read_bytes()
-        if existing == encoded:
-            return validate_event(json.loads(existing))
-        conflicts = root / "conflicts"
-        if conflicts.exists() and (conflicts.is_symlink() or not conflicts.is_dir()):
-            raise ValueError("dashboard event conflict path is invalid") from None
-        conflicts.mkdir(mode=0o700, exist_ok=True)
-        digest = hashlib.sha256(encoded).hexdigest()
-        conflict = conflicts / f"{event['event_id']}-{digest}.json"
-        try:
-            write_exclusive(conflict, event)
-        except FileExistsError:
-            pass
-        raise ValueError("dashboard event ID conflicts with different content") from None
-    return event
+    return _publish_writer_record(
+        root,
+        event,
+        validate_event,
+        label="dashboard event",
+    )
+
+
+def _bounded_text(value: object, label: str, *, required: bool = True) -> str | None:
+    if value is None and not required:
+        return None
+    if not isinstance(value, str) or not value.strip() or len(value) > 240:
+        raise ValueError(f"{label} is invalid")
+    return value
+
+
+def validate_extension_event(value: dict) -> dict:
+    if (
+        not isinstance(value, dict)
+        or set(value) != EXTENSION_EVENT_FIELDS
+        or value.get("schema_version") != 1
+    ):
+        raise ValueError("unsupported lineage extension event")
+    validate_hex_id(value.get("event_id"), "lineage extension event ID")
+    if value.get("event_type") not in EXTENSION_EVENT_TYPES:
+        raise ValueError("lineage extension event type is invalid")
+    validate_campaign_id(value.get("campaign_id"))
+    validate_writer(value.get("writer"))
+    instant(value.get("observed_at"))
+    instant(value.get("recorded_at"))
+    subject = value.get("subject")
+    if not isinstance(subject, dict) or set(subject) != EXTENSION_SUBJECT_FIELDS:
+        raise ValueError("lineage extension subject is invalid")
+    validate_sha256(subject.get("snapshot_id"), "snapshot ID")
+    validate_safe_id(subject.get("case_id"), "case ID")
+    validate_sha256(subject.get("case_revision"), "case revision")
+    payload = value.get("payload")
+    if not isinstance(payload, dict):
+        raise ValueError("lineage extension payload must be an object")
+
+    if value["event_type"] == "lineage_declared":
+        if set(payload) != LINEAGE_PAYLOAD_FIELDS:
+            raise ValueError("lineage declaration payload is invalid")
+        roles = payload.get("roles")
+        if (
+            not isinstance(roles, list)
+            or not roles
+            or roles != sorted(set(roles))
+            or not set(roles).issubset(LINEAGE_ROLES)
+        ):
+            raise ValueError("lineage declaration roles are invalid")
+        parents = payload.get("parents")
+        if not isinstance(parents, list):
+            raise ValueError("lineage declaration parents are invalid")
+        normalized = []
+        for parent in parents:
+            if not isinstance(parent, dict) or set(parent) != {
+                "snapshot_id",
+                "relation",
+            }:
+                raise ValueError("lineage declaration parent is invalid")
+            validate_sha256(parent.get("snapshot_id"), "parent snapshot ID")
+            if parent.get("relation") not in LINEAGE_RELATIONS:
+                raise ValueError("lineage declaration relation is invalid")
+            normalized.append((parent["snapshot_id"], parent["relation"]))
+        if normalized != sorted(set(normalized)):
+            raise ValueError("lineage declaration parents are invalid")
+        _bounded_text(payload.get("summary"), "lineage declaration summary")
+        _bounded_text(
+            payload.get("provenance_kind"),
+            "lineage provenance kind",
+            required=False,
+        )
+        _bounded_text(
+            payload.get("source_revision"),
+            "lineage source revision",
+            required=False,
+        )
+        if subject["case_id"] is not None or subject["case_revision"] is not None:
+            raise ValueError("lineage declaration cannot target a case")
+    else:
+        if set(payload) != PROGRESS_PAYLOAD_FIELDS:
+            raise ValueError("task progress payload is invalid")
+        if (
+            subject["case_id"] is None
+            or subject["case_revision"] is None
+            or payload.get("frontier") not in PROGRESS_FRONTIERS
+            or payload.get("classification") not in PROGRESS_CLASSIFICATIONS
+            or payload.get("movement") not in PROGRESS_MOVEMENTS
+        ):
+            raise ValueError("task progress classification is invalid")
+        _bounded_text(payload.get("summary"), "task progress summary")
+        _bounded_text(payload.get("blocker"), "task progress blocker", required=False)
+        _bounded_text(
+            payload.get("next_action"),
+            "task progress next action",
+            required=False,
+        )
+        validate_sha256(
+            payload.get("comparison_snapshot_id"),
+            "comparison snapshot ID",
+        )
+        uptake = payload.get("uptake")
+        if not isinstance(uptake, list):
+            raise ValueError("task progress uptake is invalid")
+        rule_ids = []
+        for item in uptake:
+            if not isinstance(item, dict) or set(item) != {
+                "rule_id",
+                "status",
+                "summary",
+            }:
+                raise ValueError("task progress uptake row is invalid")
+            rule_ids.append(validate_safe_id(item.get("rule_id"), "rule ID"))
+            if item.get("status") not in UPTAKE_STATUSES:
+                raise ValueError("task progress uptake status is invalid")
+            _bounded_text(item.get("summary"), "task progress uptake summary")
+        if rule_ids != sorted(set(rule_ids)):
+            raise ValueError("task progress uptake rows are invalid")
+        sources = payload.get("sources")
+        if not isinstance(sources, list):
+            raise ValueError("task progress sources are invalid")
+        source_ids = []
+        for item in sources:
+            if not isinstance(item, dict) or set(item) != {"kind", "id"}:
+                raise ValueError("task progress source is invalid")
+            if item.get("kind") not in {
+                "attempt",
+                "report",
+                "session_event",
+                "review_receipt",
+            }:
+                raise ValueError("task progress source kind is invalid")
+            source_ids.append((
+                item["kind"],
+                validate_safe_id(item.get("id"), "source ID"),
+            ))
+        if source_ids != sorted(set(source_ids)):
+            raise ValueError("task progress sources are invalid")
+    return value
+
+
+def _extension_directory(corpus_root: Path, writer: dict) -> Path:
+    root = writer_directory(corpus_root, writer) / "extensions"
+    if root.exists() and (root.is_symlink() or not root.is_dir()):
+        raise ValueError("dashboard event extensions path is invalid")
+    root.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(root, 0o700)
+    extension = root / EXTENSION_NAME
+    if extension.exists() and (extension.is_symlink() or not extension.is_dir()):
+        raise ValueError("lineage extension path is invalid")
+    extension.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(extension, 0o700)
+    return extension
+
+
+def emit_extension_event(
+    corpus_root: Path,
+    *,
+    campaign_id: str,
+    writer: dict,
+    event_type: str,
+    snapshot_id: str,
+    case_id: str | None,
+    case_revision: str | None,
+    payload: dict,
+    event_id: str | None = None,
+    observed_at: str | None = None,
+    recorded_at: str | None = None,
+) -> dict:
+    event = validate_extension_event({
+        "schema_version": 1,
+        "event_id": event_id or uuid.uuid4().hex,
+        "event_type": event_type,
+        "campaign_id": campaign_id,
+        "writer": writer,
+        "observed_at": instant(observed_at),
+        "recorded_at": instant(recorded_at),
+        "subject": {
+            "snapshot_id": snapshot_id,
+            "case_id": case_id,
+            "case_revision": case_revision,
+        },
+        "payload": payload,
+    })
+    registration = local_campaign_registration(corpus_root)
+    if registration["campaign_id"] != event["campaign_id"]:
+        raise ValueError("lineage extension campaign identity changed")
+    read_skill_snapshot(corpus_root, event["subject"]["snapshot_id"])
+    enable_live_state(corpus_root)
+    return _publish_writer_record(
+        _extension_directory(corpus_root, writer),
+        event,
+        validate_extension_event,
+        label="lineage extension event",
+    )
+
+
+def emit_lineage_event(
+    corpus_root: Path,
+    *,
+    campaign_id: str,
+    writer: dict,
+    snapshot_id: str,
+    roles: list[str],
+    parents: list[dict],
+    summary: str,
+    provenance_kind: str | None = None,
+    source_revision: str | None = None,
+    event_id: str | None = None,
+    observed_at: str | None = None,
+    recorded_at: str | None = None,
+) -> dict:
+    snapshot = read_skill_snapshot(corpus_root, snapshot_id)
+    registration = local_campaign_registration(corpus_root)
+    declared_roles = set(roles)
+    if declared_roles - {"experimental"} and (
+        [item["name"] for item in snapshot["skills"]]
+        != registration["target_skills"]
+    ):
+        raise ValueError("campaign lineage roles require every target skill")
+    for parent in parents:
+        if parent.get("snapshot_id") == snapshot_id:
+            raise ValueError("lineage snapshot cannot parent itself")
+        read_skill_snapshot(corpus_root, parent.get("snapshot_id"))
+    return emit_extension_event(
+        corpus_root,
+        campaign_id=campaign_id,
+        writer=writer,
+        event_type="lineage_declared",
+        snapshot_id=snapshot_id,
+        case_id=None,
+        case_revision=None,
+        payload={
+            "roles": sorted(roles),
+            "parents": sorted(
+                parents,
+                key=lambda item: (item["snapshot_id"], item["relation"]),
+            ),
+            "summary": summary,
+            "provenance_kind": provenance_kind,
+            "source_revision": source_revision,
+        },
+        event_id=event_id,
+        observed_at=observed_at,
+        recorded_at=recorded_at,
+    )
+
+
+def emit_task_progress_event(
+    corpus_root: Path,
+    *,
+    campaign_id: str,
+    writer: dict,
+    snapshot_id: str,
+    case_id: str,
+    case_revision: str,
+    frontier: str,
+    classification: str,
+    movement: str,
+    summary: str,
+    uptake: list[dict] | None = None,
+    blocker: str | None = None,
+    next_action: str | None = None,
+    comparison_snapshot_id: str | None = None,
+    sources: list[dict] | None = None,
+    event_id: str | None = None,
+    observed_at: str | None = None,
+    recorded_at: str | None = None,
+) -> dict:
+    if comparison_snapshot_id is not None:
+        read_skill_snapshot(corpus_root, comparison_snapshot_id)
+    return emit_extension_event(
+        corpus_root,
+        campaign_id=campaign_id,
+        writer=writer,
+        event_type="task_progress_recorded",
+        snapshot_id=snapshot_id,
+        case_id=case_id,
+        case_revision=case_revision,
+        payload={
+            "frontier": frontier,
+            "classification": classification,
+            "movement": movement,
+            "summary": summary,
+            "uptake": sorted(
+                uptake or [],
+                key=lambda item: item["rule_id"],
+            ),
+            "blocker": blocker,
+            "next_action": next_action,
+            "comparison_snapshot_id": comparison_snapshot_id,
+            "sources": sorted(
+                sources or [],
+                key=lambda item: (item["kind"], item["id"]),
+            ),
+        },
+        event_id=event_id,
+        observed_at=observed_at,
+        recorded_at=recorded_at,
+    )
 
 
 def mark_session_opened(
@@ -752,3 +1502,75 @@ def event_records(corpus_root: Path) -> tuple[list[dict], list[dict]]:
                 })
     events.sort(key=lambda item: (item["recorded_at"], item["event_id"]))
     return events, conflicts
+
+
+def extension_records(
+    corpus_root: Path,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    root = local_dashboard_root(corpus_root) / "events"
+    if not root.exists():
+        return [], [], []
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("dashboard events path is invalid")
+    records = []
+    conflicts = []
+    invalid = []
+    for writer in sorted(root.iterdir()):
+        if writer.is_symlink() or not writer.is_dir() or not SHA256_RE.fullmatch(
+            writer.name
+        ):
+            raise ValueError("dashboard event writer directory is invalid")
+        extension = writer / "extensions" / EXTENSION_NAME
+        if not extension.exists():
+            continue
+        if extension.is_symlink() or not extension.is_dir():
+            raise ValueError("lineage extension path is invalid")
+        for path in sorted(extension.glob("*.json")):
+            try:
+                event = validate_extension_event(
+                    regular_json(path, "lineage extension event")
+                )
+                if path.stem != event["event_id"]:
+                    raise ValueError(
+                        "lineage extension filename and identity disagree"
+                    )
+                records.append(event)
+            except (OSError, ValueError, json.JSONDecodeError):
+                invalid.append({
+                    "source": (
+                        f"events/{writer.name}/extensions/{EXTENSION_NAME}/"
+                        f"{path.name}"
+                    ),
+                    "reason": "extension_event_invalid",
+                })
+        conflict_root = extension / "conflicts"
+        if conflict_root.exists():
+            if conflict_root.is_symlink() or not conflict_root.is_dir():
+                raise ValueError("lineage extension conflicts path is invalid")
+            for path in sorted(conflict_root.glob("*.json")):
+                try:
+                    event = validate_extension_event(
+                        regular_json(path, "lineage extension event conflict")
+                    )
+                    conflicts.append({
+                        "event_id": event["event_id"],
+                        "writer": event["writer"],
+                        "source": (
+                            f"events/{writer.name}/extensions/{EXTENSION_NAME}/"
+                            f"conflicts/{path.name}"
+                        ),
+                    })
+                except (OSError, ValueError, json.JSONDecodeError):
+                    invalid.append({
+                        "source": (
+                            f"events/{writer.name}/extensions/{EXTENSION_NAME}/"
+                            f"conflicts/{path.name}"
+                        ),
+                        "reason": "extension_conflict_invalid",
+                    })
+    records.sort(key=lambda item: (
+        parse_instant(item["observed_at"]),
+        parse_instant(item["recorded_at"]),
+        item["event_id"],
+    ))
+    return records, conflicts, invalid

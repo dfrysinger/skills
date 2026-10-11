@@ -18,10 +18,12 @@ from unittest import mock
 
 from dashboard_cli import (
     ensure_dashboard,
+    lineage_snapshot_dashboard,
     open_dashboard,
     register_dashboard,
     service_status,
     stop_service,
+    task_progress_dashboard,
 )
 from dashboard_projection import (
     campaign_index_projection,
@@ -31,11 +33,16 @@ from dashboard_projection import (
 )
 from dashboard_server import DashboardHTTPServer
 from dashboard_state import (
+    capture_skill_snapshot,
     campaign_registration,
     create_campaign,
     enable_live_state,
     emit_event,
+    emit_lineage_event,
+    emit_task_progress_event,
     event_records,
+    extension_records,
+    read_skill_snapshot,
     read_session,
     register_session,
     session_event,
@@ -43,7 +50,16 @@ from dashboard_state import (
     validate_campaign_id,
 )
 import evaluation_history
-from skill_eval import add_case, init_corpus, successful_view_path
+from skill_eval import (
+    add_case,
+    digest,
+    directory_identity,
+    freeze_case,
+    frozen_case_path,
+    init_corpus,
+    json_fingerprint,
+    successful_view_path,
+)
 import test_measurement
 
 
@@ -286,6 +302,643 @@ class DashboardHiddenBoundaryTests(unittest.TestCase):
         events, conflicts = event_records(self.corpus)
         self.assertEqual(len(events), 1)
         self.assertEqual(conflicts, [])
+
+    def test_skill_snapshot_is_bounded_immutable_and_evaluator_compatible(self):
+        registration = create_campaign(self.state_root, self.corpus)
+        plugin = self.root / "plugin"
+        skill = plugin / "skills" / "example-skill"
+        (skill / "references").mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Example\n", encoding="utf-8")
+        (skill / "references" / "guide.md").write_text("guide\n", encoding="utf-8")
+        (skill / "z-last.md").write_text("last\n", encoding="utf-8")
+        (skill / ".DS_Store").write_bytes(b"ignored")
+        (skill / "__pycache__").mkdir()
+        (skill / "__pycache__" / "cache.pyc").write_bytes(b"ignored")
+        sibling = plugin / "skills" / "other-skill"
+        sibling.mkdir(parents=True)
+        (sibling / "SKILL.md").write_text("secret sibling\n", encoding="utf-8")
+
+        snapshot = capture_skill_snapshot(
+            self.corpus,
+            plugin,
+            ["example-skill"],
+        )
+        self.assertEqual(snapshot["campaign_id"], registration["campaign_id"])
+        self.assertEqual([item["name"] for item in snapshot["skills"]], ["example-skill"])
+        files = snapshot["skills"][0]["files"]
+        self.assertEqual(
+            [item["path"] for item in files],
+            ["SKILL.md", "references/guide.md", "z-last.md"],
+        )
+        plugin_identity = directory_identity(plugin)
+        evaluator_files = [
+            {
+                "path": item["path"].removeprefix("skills/example-skill/"),
+                "sha256": item["sha256"],
+            }
+            for item in plugin_identity["files"]
+            if item["path"].startswith("skills/example-skill/")
+        ]
+        evaluator_files.sort(key=lambda item: item["path"])
+        self.assertEqual(
+            snapshot["skills"][0]["evaluator_skill_identity"],
+            json_fingerprint({
+                "name": "example-skill",
+                "files": evaluator_files,
+            }),
+        )
+        self.assertEqual(
+            snapshot["skills"][0]["evaluator_skill_identity"],
+            json_fingerprint({
+                "name": "example-skill",
+                "files": [
+                    {"path": item["path"], "sha256": item["sha256"]}
+                    for item in files
+                ],
+            }),
+        )
+        snapshot_root = (
+            self.corpus
+            / ".skill-evaluation-ui"
+            / "snapshots"
+            / snapshot["snapshot_id"]
+        )
+        self.assertFalse((snapshot_root / "files" / "other-skill").exists())
+
+        (skill / "SKILL.md").write_text("# Mutated\n", encoding="utf-8")
+        reread = read_skill_snapshot(self.corpus, snapshot["snapshot_id"])
+        self.assertEqual(reread, snapshot)
+        self.assertEqual(
+            (snapshot_root / "files" / "example-skill" / "SKILL.md").read_text(
+                encoding="utf-8"
+            ),
+            "# Example\n",
+        )
+
+    def test_skill_snapshot_refuses_symlinks_and_atomic_publish_failure(self):
+        create_campaign(self.state_root, self.corpus)
+        plugin = self.root / "plugin"
+        skill = plugin / "skills" / "example-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Example\n", encoding="utf-8")
+        (skill / "escape").symlink_to(self.root / "outside")
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            capture_skill_snapshot(self.corpus, plugin, ["example-skill"])
+
+        (skill / "escape").unlink()
+        with mock.patch(
+            "dashboard_state.os.rename",
+            side_effect=OSError("interrupted snapshot publish"),
+        ):
+            with self.assertRaisesRegex(OSError, "interrupted snapshot publish"):
+                capture_skill_snapshot(self.corpus, plugin, ["example-skill"])
+        snapshots = self.corpus / ".skill-evaluation-ui" / "snapshots"
+        self.assertEqual(list(snapshots.iterdir()), [])
+
+        with mock.patch(
+            "dashboard_state.validate_skill_snapshot",
+            side_effect=ValueError("invalid manifest"),
+        ), mock.patch("dashboard_state.os.rename") as rename:
+            with self.assertRaisesRegex(ValueError, "invalid manifest"):
+                capture_skill_snapshot(self.corpus, plugin, ["example-skill"])
+        rename.assert_not_called()
+        self.assertEqual(list(snapshots.iterdir()), [])
+
+    def test_skill_snapshot_does_not_follow_file_replaced_during_capture(self):
+        create_campaign(self.state_root, self.corpus)
+        plugin = self.root / "plugin"
+        skill = plugin / "skills" / "example-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Example\n", encoding="utf-8")
+        payload = skill / "payload.txt"
+        payload.write_text("bounded\n", encoding="utf-8")
+        outside = self.root / "outside.txt"
+        outside.write_text("must not be captured\n", encoding="utf-8")
+        real_open = os.open
+        replaced = False
+
+        def replace_before_open(path, flags, mode=0o777, *, dir_fd=None):
+            nonlocal replaced
+            if path == "payload.txt" and dir_fd is not None and not replaced:
+                replaced = True
+                payload.unlink()
+                payload.symlink_to(outside)
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        with mock.patch("dashboard_state.os.open", side_effect=replace_before_open):
+            with self.assertRaises(OSError):
+                capture_skill_snapshot(self.corpus, plugin, ["example-skill"])
+        self.assertTrue(replaced)
+        snapshots = self.corpus / ".skill-evaluation-ui" / "snapshots"
+        self.assertTrue(
+            not snapshots.exists() or list(snapshots.iterdir()) == []
+        )
+
+    def test_invalid_snapshot_projection_uses_path_safe_reason(self):
+        registration = create_campaign(self.state_root, self.corpus)
+        plugin = self.root / "plugin"
+        skill = plugin / "skills" / "example-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Example\n", encoding="utf-8")
+        snapshot = capture_skill_snapshot(
+            self.corpus,
+            plugin,
+            ["example-skill"],
+        )
+        stored = (
+            self.corpus
+            / ".skill-evaluation-ui"
+            / "snapshots"
+            / snapshot["snapshot_id"]
+            / "files"
+            / "example-skill"
+            / "SKILL.md"
+        )
+        stored.unlink()
+        projection = campaign_projection(
+            self.state_root,
+            registration["campaign_id"],
+        )
+        self.assertEqual(
+            projection["lineage"]["invalid"][0]["reason"],
+            "snapshot_invalid",
+        )
+        serialized = json.dumps(projection)
+        for path in (self.corpus, plugin, self.state_root, stored.parent):
+            self.assertNotIn(str(path), serialized)
+
+    def test_lineage_extension_reuses_writer_conflicts_and_old_readers_ignore_it(self):
+        registration = create_campaign(self.state_root, self.corpus)
+        session_id = str(uuid.uuid4())
+        session, _ = register_session(
+            self.state_root,
+            self.corpus,
+            session_id,
+        )
+        plugin = self.root / "plugin"
+        skill = plugin / "skills" / "example-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Example\n", encoding="utf-8")
+        snapshot = capture_skill_snapshot(
+            self.corpus,
+            plugin,
+            ["example-skill"],
+        )
+        writer = {
+            "kind": "session",
+            "id": session_id,
+            "generation": session["writer_generation"],
+        }
+        kwargs = {
+            "campaign_id": registration["campaign_id"],
+            "writer": writer,
+            "snapshot_id": snapshot["snapshot_id"],
+            "roles": ["experimental"],
+            "parents": [],
+            "summary": "First bounded snapshot",
+            "event_id": "9" * 32,
+            "observed_at": "2026-01-01T00:00:00+00:00",
+            "recorded_at": "2026-01-01T00:00:01+00:00",
+        }
+        first = emit_lineage_event(self.corpus, **kwargs)
+        self.assertEqual(emit_lineage_event(self.corpus, **kwargs), first)
+        self.assertEqual(event_records(self.corpus), ([], []))
+
+        records, conflicts, invalid = extension_records(self.corpus)
+        self.assertEqual([item["event_id"] for item in records], ["9" * 32])
+        self.assertEqual(conflicts, [])
+        self.assertEqual(invalid, [])
+
+        with self.assertRaisesRegex(ValueError, "conflicts"):
+            emit_lineage_event(
+                self.corpus,
+                **{**kwargs, "summary": "Conflicting declaration"},
+            )
+        records, conflicts, invalid = extension_records(self.corpus)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(conflicts[0]["event_id"], "9" * 32)
+        self.assertEqual(invalid, [])
+
+        extension_root = next(
+            (
+                self.corpus
+                / ".skill-evaluation-ui"
+                / "events"
+            ).iterdir()
+        ) / "extensions" / "skill-lineage-v1"
+        (extension_root / f"{'8' * 32}.json").write_text(
+            '{"schema_version": 1, "broken": true}\n',
+            encoding="utf-8",
+        )
+        records, conflicts, invalid = extension_records(self.corpus)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(len(invalid), 1)
+        self.assertEqual(invalid[0]["reason"], "extension_event_invalid")
+        leaked = extension_root / f"{'7' * 32}.json"
+        leaked.symlink_to(self.root / "outside.json")
+        _, _, invalid = extension_records(self.corpus)
+        self.assertEqual(
+            {item["reason"] for item in invalid},
+            {"extension_event_invalid"},
+        )
+        self.assertNotIn(str(self.root), json.dumps(invalid))
+        leaked.unlink()
+        self.assertEqual(event_records(self.corpus), ([], []))
+
+        progress = emit_task_progress_event(
+            self.corpus,
+            campaign_id=registration["campaign_id"],
+            writer=writer,
+            snapshot_id=snapshot["snapshot_id"],
+            case_id="example-case",
+            case_revision="a" * 64,
+            frontier="behavioral",
+            classification="skill_defect",
+            movement="Strict improvement",
+            summary="Executable checks pass; behavior remains incomplete",
+            uptake=[{
+                "rule_id": "preserve-authority",
+                "status": "OBSERVED",
+                "summary": "The candidate retained immutable outcome authority",
+            }],
+            blocker="Behavioral judgment still fails",
+            next_action="Refine the general instruction",
+            sources=[{"kind": "attempt", "id": "attempt-1"}],
+            event_id="7" * 32,
+            observed_at="2026-01-01T00:02:00+00:00",
+            recorded_at="2026-01-01T00:02:01+00:00",
+        )
+        self.assertEqual(progress["event_type"], "task_progress_recorded")
+        records, _, invalid = extension_records(self.corpus)
+        self.assertEqual(
+            [item["event_type"] for item in records],
+            ["lineage_declared", "task_progress_recorded"],
+        )
+        self.assertEqual(len(invalid), 1)
+        self.assertEqual(event_records(self.corpus), ([], []))
+
+        with self.assertRaisesRegex(ValueError, "classification"):
+            emit_task_progress_event(
+                self.corpus,
+                campaign_id=registration["campaign_id"],
+                writer=writer,
+                snapshot_id=snapshot["snapshot_id"],
+                case_id="example-case",
+                case_revision="a" * 64,
+                frontier="behavioral",
+                classification="invented",
+                movement="Strict improvement",
+                summary="Invalid classification",
+            )
+
+    def test_campaign_projects_lineage_diff_task_progress_and_attention(self):
+        definition_path = (
+            self.corpus / "cases" / "example-case" / "case.json"
+        )
+        definition = json.loads(definition_path.read_text(encoding="utf-8"))
+        definition["behavioral_claim"] = "The skill preserves evaluator authority."
+        definition["authority_kind"] = "synthetic"
+        definition_path.write_text(
+            json.dumps(definition, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (
+            self.corpus
+            / "cases"
+            / "example-case"
+            / "evidence"
+            / "candidate"
+            / "input.md"
+        ).write_text("candidate evidence\n", encoding="utf-8")
+        freeze_case(self.corpus, "example-case", replace=False)
+        registration = create_campaign(self.state_root, self.corpus)
+        session_id = str(uuid.uuid4())
+        session, _ = register_session(
+            self.state_root,
+            self.corpus,
+            session_id,
+        )
+        writer = {
+            "kind": "session",
+            "id": session_id,
+            "generation": session["writer_generation"],
+        }
+        plugin = self.root / "plugin"
+        skill = plugin / "skills" / "example-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Original\n", encoding="utf-8")
+        original = capture_skill_snapshot(
+            self.corpus,
+            plugin,
+            ["example-skill"],
+        )
+        (skill / "SKILL.md").write_text("# Integrated\n", encoding="utf-8")
+        integrated = capture_skill_snapshot(
+            self.corpus,
+            plugin,
+            ["example-skill"],
+        )
+        emit_lineage_event(
+            self.corpus,
+            campaign_id=registration["campaign_id"],
+            writer=writer,
+            snapshot_id=original["snapshot_id"],
+            roles=["original", "published"],
+            parents=[],
+            summary="Published baseline",
+            event_id="1" * 32,
+            observed_at="2026-01-01T00:00:00+00:00",
+            recorded_at="2026-01-01T00:00:01+00:00",
+        )
+        emit_lineage_event(
+            self.corpus,
+            campaign_id=registration["campaign_id"],
+            writer=writer,
+            snapshot_id=integrated["snapshot_id"],
+            roles=["integrated"],
+            parents=[{
+                "snapshot_id": original["snapshot_id"],
+                "relation": "derived_from",
+            }],
+            summary="Integrated the general fix",
+            event_id="2" * 32,
+            observed_at="2026-01-01T00:01:00+00:00",
+            recorded_at="2026-01-01T00:01:01+00:00",
+        )
+        case_revision = digest(
+            frozen_case_path(self.corpus, "example-case")
+            / "case-manifest.json"
+        )
+        emit_task_progress_event(
+            self.corpus,
+            campaign_id=registration["campaign_id"],
+            writer=writer,
+            snapshot_id=integrated["snapshot_id"],
+            comparison_snapshot_id=original["snapshot_id"],
+            case_id="example-case",
+            case_revision=case_revision,
+            frontier="behavioral",
+            classification="skill_defect",
+            movement="Strict improvement",
+            summary="The known defect moved to behavioral review",
+            uptake=[{
+                "rule_id": "preserve-authority",
+                "status": "OBSERVED",
+                "summary": "The candidate preserved immutable authority",
+            }],
+            blocker="One behavioral criterion still fails",
+            next_action="Refine the general rule",
+            sources=[{"kind": "review_receipt", "id": "review-1"}],
+            event_id="3" * 32,
+            observed_at="2026-01-01T00:02:00+00:00",
+            recorded_at="2026-01-01T00:02:01+00:00",
+        )
+
+        projection = campaign_projection(
+            self.state_root,
+            registration["campaign_id"],
+        )
+        self.assertEqual(projection["availability"]["lineage"], "available")
+        self.assertEqual(
+            projection["lineage"]["roles"]["integrated"]["snapshot_id"],
+            integrated["snapshot_id"],
+        )
+        self.assertEqual(
+            projection["lineage"]["roles"]["passing"]["status"],
+            "unavailable",
+        )
+        comparison = projection["lineage"]["comparisons"][0]
+        self.assertEqual(comparison["from_snapshot_id"], original["snapshot_id"])
+        self.assertEqual(comparison["to_snapshot_id"], integrated["snapshot_id"])
+        self.assertEqual(comparison["summary"]["modified_files"], 1)
+        self.assertIn("-# Original", comparison["files"][0]["diff"])
+        self.assertIn("+# Integrated", comparison["files"][0]["diff"])
+
+        detail = projection["task_details"][0]
+        self.assertEqual(detail["case_id"], "example-case")
+        self.assertEqual(
+            detail["associated_snapshot_id"],
+            integrated["snapshot_id"],
+        )
+        self.assertEqual(detail["progress"]["frontier"], "behavioral")
+        self.assertEqual(detail["progress"]["classification"], "skill_defect")
+        self.assertEqual(detail["progress"]["movement"], "Strict improvement")
+        self.assertEqual(detail["progress"]["status"], "available")
+        self.assertEqual(
+            projection["attention"][0]["kind"],
+            "blocked",
+        )
+        self.assertNotIn(self.hidden_marker, json.dumps(projection))
+
+    def test_lineage_cycles_and_equal_time_progress_conflicts_fail_visible(self):
+        definition_path = (
+            self.corpus / "cases" / "example-case" / "case.json"
+        )
+        definition = json.loads(definition_path.read_text(encoding="utf-8"))
+        definition["behavioral_claim"] = "The skill preserves evaluator authority."
+        definition["authority_kind"] = "synthetic"
+        definition_path.write_text(
+            json.dumps(definition, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (
+            self.corpus
+            / "cases"
+            / "example-case"
+            / "evidence"
+            / "candidate"
+            / "input.md"
+        ).write_text("candidate evidence\n", encoding="utf-8")
+        freeze_case(self.corpus, "example-case", replace=False)
+        registration = create_campaign(self.state_root, self.corpus)
+        session_id = str(uuid.uuid4())
+        session, _ = register_session(
+            self.state_root,
+            self.corpus,
+            session_id,
+        )
+        writer = {
+            "kind": "session",
+            "id": session_id,
+            "generation": session["writer_generation"],
+        }
+        plugin = self.root / "plugin"
+        skill = plugin / "skills" / "example-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# One\n", encoding="utf-8")
+        first = capture_skill_snapshot(self.corpus, plugin, ["example-skill"])
+        (skill / "SKILL.md").write_text("# Two\n", encoding="utf-8")
+        second = capture_skill_snapshot(self.corpus, plugin, ["example-skill"])
+        emit_lineage_event(
+            self.corpus,
+            campaign_id=registration["campaign_id"],
+            writer=writer,
+            snapshot_id=first["snapshot_id"],
+            roles=["integrated"],
+            parents=[{
+                "snapshot_id": second["snapshot_id"],
+                "relation": "derived_from",
+            }],
+            summary="First side of cycle",
+            event_id="4" * 32,
+        )
+        emit_lineage_event(
+            self.corpus,
+            campaign_id=registration["campaign_id"],
+            writer=writer,
+            snapshot_id=second["snapshot_id"],
+            roles=["integrated"],
+            parents=[{
+                "snapshot_id": first["snapshot_id"],
+                "relation": "derived_from",
+            }],
+            summary="Second side of cycle",
+            event_id="5" * 32,
+        )
+        projection = campaign_projection(
+            self.state_root,
+            registration["campaign_id"],
+        )
+        self.assertEqual(
+            projection["lineage"]["roles"]["integrated"]["status"],
+            "unavailable",
+        )
+        self.assertEqual(
+            sum(
+                item["reason"] == "lineage declaration participates in a cycle"
+                for item in projection["lineage"]["invalid"]
+            ),
+            2,
+        )
+
+        # Publish a valid tip, then two incompatible observations at one instant.
+        emit_lineage_event(
+            self.corpus,
+            campaign_id=registration["campaign_id"],
+            writer=writer,
+            snapshot_id=second["snapshot_id"],
+            roles=["integrated"],
+            parents=[],
+            summary="Recovered tip",
+            event_id="6" * 32,
+            observed_at="2026-01-02T00:00:00+00:00",
+        )
+        revision = digest(
+            frozen_case_path(self.corpus, "example-case") / "case-manifest.json"
+        )
+        for event_id, movement, observed_at in (
+            ("a" * 32, "Mixed", "2026-01-02T00:01:00+00:00"),
+            ("b" * 32, "Regression", "2026-01-01T19:01:00-05:00"),
+        ):
+            emit_task_progress_event(
+                self.corpus,
+                campaign_id=registration["campaign_id"],
+                writer=writer,
+                snapshot_id=second["snapshot_id"],
+                case_id="example-case",
+                case_revision=revision,
+                frontier="behavioral",
+                classification="skill_defect",
+                movement=movement,
+                summary=f"Observation {movement}",
+                event_id=event_id,
+                observed_at=observed_at,
+            )
+        projection = campaign_projection(
+            self.state_root,
+            registration["campaign_id"],
+        )
+        self.assertEqual(
+            projection["task_details"][0]["progress"]["status"],
+            "conflicted",
+        )
+        self.assertEqual(projection["attention"][0]["kind"], "conflicted")
+
+        emit_task_progress_event(
+            self.corpus,
+            campaign_id=registration["campaign_id"],
+            writer=writer,
+            snapshot_id=second["snapshot_id"],
+            case_id="example-case",
+            case_revision=revision,
+            frontier="release",
+            classification="skill_defect",
+            movement="Strict improvement",
+            summary="A later absolute instant resolves the conflict",
+            event_id="c" * 32,
+            observed_at="2026-01-01T20:00:00-05:00",
+        )
+        projection = campaign_projection(
+            self.state_root,
+            registration["campaign_id"],
+        )
+        self.assertEqual(
+            projection["task_details"][0]["progress"]["status"],
+            "available",
+        )
+        self.assertEqual(
+            projection["task_details"][0]["progress"]["movement"],
+            "Strict improvement",
+        )
+
+    def test_lineage_and_progress_cli_producers_bind_registered_session(self):
+        definition_path = (
+            self.corpus / "cases" / "example-case" / "case.json"
+        )
+        definition = json.loads(definition_path.read_text(encoding="utf-8"))
+        definition["behavioral_claim"] = "The skill preserves evaluator authority."
+        definition["authority_kind"] = "synthetic"
+        definition_path.write_text(
+            json.dumps(definition, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (
+            self.corpus
+            / "cases"
+            / "example-case"
+            / "evidence"
+            / "candidate"
+            / "input.md"
+        ).write_text("candidate evidence\n", encoding="utf-8")
+        freeze_case(self.corpus, "example-case", replace=False)
+        session_id = str(uuid.uuid4())
+        register_session(self.state_root, self.corpus, session_id)
+        plugin = self.root / "plugin"
+        skill = plugin / "skills" / "example-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Integrated\n", encoding="utf-8")
+
+        lineage = lineage_snapshot_dashboard(
+            self.corpus,
+            session_id,
+            plugin,
+            ["example-skill"],
+            ["integrated"],
+            "Integrated candidate",
+            root=self.state_root,
+        )
+        progress = task_progress_dashboard(
+            self.corpus,
+            session_id,
+            "example-case",
+            lineage["snapshot_id"],
+            "behavioral",
+            "skill_defect",
+            "Strict improvement",
+            "Behavior moved later",
+            blocker="One criterion remains",
+            root=self.state_root,
+        )
+        self.assertEqual(progress["snapshot_id"], lineage["snapshot_id"])
+        projection = campaign_projection(
+            self.state_root,
+            lineage["campaign_id"],
+        )
+        self.assertEqual(
+            projection["task_details"][0]["progress"]["status"],
+            "available",
+        )
 
     def test_event_writer_rejects_symlinked_events_ancestor(self):
         registration = create_campaign(self.state_root, self.corpus)
@@ -720,6 +1373,31 @@ class DashboardServerTests(unittest.TestCase):
         self.assertNotIn(b"SERVER-HIDDEN-MARKER", body)
         self.assertEqual(headers["Referrer-Policy"], "no-referrer")
         self.assertIn("default-src 'self'", headers["Content-Security-Policy"])
+
+    def test_task_route_uses_static_shell_without_embedding_data(self):
+        campaign_id = self.registration["campaign_id"]
+        status, headers, body = self.request(
+            f"/campaign/{campaign_id}/task/example-case"
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("text/html", headers["Content-Type"])
+        self.assertNotIn(b"SERVER-HIDDEN-MARKER", body)
+
+    def test_static_assets_include_lineage_and_task_surfaces_without_data(self):
+        status, _, javascript = self.request("/dashboard.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b"Skill lineage", javascript)
+        self.assertIn(b"Relevant skill change", javascript)
+        self.assertIn(b"Needs attention", javascript)
+        self.assertIn(b"Incompatible current workflow records", javascript)
+        self.assertIn(b"/task/", javascript)
+        self.assertNotIn(b"SERVER-HIDDEN-MARKER", javascript)
+
+        status, _, stylesheet = self.request("/dashboard.css")
+        self.assertEqual(status, 200)
+        self.assertIn(b".lineage-strip", stylesheet)
+        self.assertIn(b".diff-code", stylesheet)
+        self.assertNotIn(b"SERVER-HIDDEN-MARKER", stylesheet)
 
 
 class DashboardLifecycleTests(unittest.TestCase):

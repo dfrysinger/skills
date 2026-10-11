@@ -134,6 +134,118 @@ function stateBadge(state) {
   return `<span class="badge state-${escapeHtml(state)}">${escapeHtml(state)}</span>`;
 }
 
+const shortId = (value) => (value ? value.slice(0, 12) : "Unavailable");
+
+function roleCard(role, value) {
+  const status = value?.status || "unavailable";
+  return `
+    <div class="lineage-role ${escapeHtml(status)}">
+      <span class="lineage-role-name">${escapeHtml(role)}</span>
+      <strong class="mono">${escapeHtml(shortId(value?.snapshot_id))}</strong>
+      <span class="lineage-role-detail">${escapeHtml(status)} | ${escapeHtml(value?.authority || "no authority")}</span>
+    </div>`;
+}
+
+function renderLineage(data) {
+  const lineage = data.lineage;
+  if (!lineage || lineage.status !== "available") {
+    return `
+      <section class="panel">
+        <div class="panel-header">
+          <div><h2>Skill lineage</h2><p>No admitted lineage snapshots have been published.</p></div>
+          <span class="badge unavailable">unavailable</span>
+        </div>
+      </section>`;
+  }
+  const roles = [
+    "original",
+    "published",
+    "integrated",
+    "experimental",
+    "passing",
+    "released",
+  ];
+  return `
+    <section class="panel lineage-panel">
+      <div class="panel-header">
+        <div><h2>Skill lineage</h2><p>Declared roles and evaluator-observed passing stay distinct.</p></div>
+        <span class="badge available">${escapeHtml(lineage.snapshots.length)} snapshots</span>
+      </div>
+      <div class="lineage-strip">
+        ${roles.map((role) => roleCard(role, lineage.roles[role])).join("")}
+      </div>
+      ${
+        lineage.invalid.length || lineage.conflicts.length
+          ? `<div class="panel-warning">
+              ${escapeHtml(lineage.invalid.length)} invalid records and ${escapeHtml(lineage.conflicts.length)} writer conflicts remain excluded.
+            </div>`
+          : ""
+      }
+    </section>`;
+}
+
+function renderCampaignChange(data) {
+  const original = data.lineage?.roles?.original;
+  const integrated = data.lineage?.roles?.integrated;
+  const comparison =
+    original?.status === "available" && integrated?.status === "available"
+      ? data.lineage.comparisons.find(
+          (item) =>
+            item.from_snapshot_id === original.snapshot_id &&
+            item.to_snapshot_id === integrated.snapshot_id,
+        )
+      : null;
+  if (!comparison) {
+    return `
+      <section class="panel">
+        <div class="panel-header">
+          <div><h2>Original to integrated</h2><p>No unique admitted comparison is available.</p></div>
+          <span class="badge unavailable">unavailable</span>
+        </div>
+      </section>`;
+  }
+  const summary = comparison.summary;
+  return `
+    <section class="panel campaign-change">
+      <div class="panel-header">
+        <div><h2>Original to integrated</h2><p>Exact admitted snapshot comparison across all target skills.</p></div>
+        <span class="identity mono">${escapeHtml(shortId(comparison.from_snapshot_id))} to ${escapeHtml(shortId(comparison.to_snapshot_id))}</span>
+      </div>
+      <div class="change-strip">
+        <div><strong>${escapeHtml(summary.added_files + summary.removed_files + summary.modified_files)}</strong><span>files changed</span></div>
+        <div><strong>+${escapeHtml(summary.added_lines)} / -${escapeHtml(summary.removed_lines)}</strong><span>line movement</span></div>
+        <div><strong>${escapeHtml(summary.byte_delta)}</strong><span>byte delta</span></div>
+        <div><strong>${escapeHtml(summary.binary_changes)}</strong><span>binary changes</span></div>
+      </div>
+    </section>`;
+}
+
+function renderAttention(data) {
+  return `
+    <section class="panel attention-panel">
+      <div class="panel-header">
+        <div><h2>Needs attention</h2><p>Blocked, conflicted, failing, stale, or missing-progress work only.</p></div>
+        <span class="badge ${data.attention.length ? "state-blocked" : "available"}">${escapeHtml(data.attention.length)}</span>
+      </div>
+      ${
+        data.attention.length
+          ? `<div class="attention-list">
+              ${data.attention
+                .map(
+                  (item) => `
+                    <a class="attention-item" href="/campaign/${escapeHtml(data.campaign.campaign_id)}/task/${escapeHtml(item.case_id)}#cap=${encodeURIComponent(capability)}">
+                      <span class="attention-kind">${escapeHtml(item.kind.replaceAll("_", " "))}</span>
+                      <strong>${escapeHtml(item.case_id)}</strong>
+                      <span>${escapeHtml(item.summary)}</span>
+                    </a>`,
+                )
+                .join("")}
+            </div>`
+          : `<div class="panel-empty">No task currently meets the attention criteria.</div>`
+      }
+    </section>`;
+}
+
 function liveSessionRows(data) {
   return data.sessions
     .map(
@@ -180,6 +292,9 @@ function renderCampaign(data) {
   const passes = data.attempts.filter(
     (attempt) => attempt.correctness === "PASS",
   ).length;
+  const details = new Map(
+    data.task_details.map((item) => [item.case_id, item]),
+  );
   app.innerHTML = `
     <section class="page-heading">
       <div>
@@ -198,6 +313,9 @@ function renderCampaign(data) {
       ${metric("Observed credits", formatNumber(totalSpend.value, 4), totalSpend.value === null ? observedDetail(totalSpend, "credit") : `${formatNumber(totalSpend.value, 4)} cents by user convention | ${observedDetail(totalSpend, "credit")}`)}
       ${metric("Premium requests", formatNumber(premium.value, 4), `Separate evaluator-native unit | ${observedDetail(premium, "premium request")}`)}
     </section>
+    ${renderLineage(data)}
+    ${renderCampaignChange(data)}
+    ${renderAttention(data)}
     <section class="panel">
       <div class="panel-header">
         <div><h2>Local sessions</h2><p>Session-owned heartbeats and assignments; stale is never completed.</p></div>
@@ -226,19 +344,25 @@ function renderCampaign(data) {
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Task</th><th>Skill</th><th>Type</th><th>Status</th><th>Authority</th></tr></thead>
+          <thead><tr><th>Task</th><th>Skill</th><th>Type</th><th>Outcome</th><th>Progress</th><th>Authority</th></tr></thead>
           <tbody>
             ${data.cases
-              .map(
-                (item) => `
+              .map((item) => {
+                const progress = details.get(item.case_id)?.progress;
+                const progressLabel =
+                  progress?.status === "available"
+                    ? `${progress.frontier} | ${progress.movement}`
+                    : progress?.status || "unavailable";
+                return `
                   <tr>
-                    <td><strong>${escapeHtml(item.case_id)}</strong></td>
+                    <td><a class="task-link" href="/campaign/${escapeHtml(data.campaign.campaign_id)}/task/${escapeHtml(item.case_id)}#cap=${encodeURIComponent(capability)}"><strong>${escapeHtml(item.case_id)}</strong></a></td>
                     <td>${escapeHtml(item.target_skill)}</td>
                     <td>${escapeHtml(item.case_type)}</td>
                     <td>${escapeHtml(outcomeSummary(item.outcomes))}</td>
+                    <td>${escapeHtml(progressLabel)}</td>
                     <td><span class="identity">${escapeHtml(item.source.id)}</span></td>
-                  </tr>`,
-              )
+                  </tr>`;
+              })
               .join("")}
           </tbody>
         </table>
@@ -302,6 +426,154 @@ function renderCampaign(data) {
     <section class="notice"><strong>Accounting note:</strong> ${escapeHtml(data.interpretation)}</section>`;
 }
 
+function progressBadge(progress) {
+  if (!progress || progress.status !== "available") {
+    return `<span class="badge state-${escapeHtml(progress?.status || "unavailable")}">${escapeHtml(progress?.status || "unavailable")}</span>`;
+  }
+  return `<span class="badge progress-evidence">workflow evidence</span>`;
+}
+
+function comparisonView(comparison) {
+  if (!comparison) {
+    return `<div class="panel-empty">No relevant admitted comparison is available for this task.</div>`;
+  }
+  const summary = comparison.summary;
+  return `
+    <div class="comparison-summary">
+      ${metric("Files changed", formatNumber(summary.added_files + summary.removed_files + summary.modified_files, 0), `${summary.added_files} added | ${summary.removed_files} removed | ${summary.modified_files} modified`)}
+      ${metric("Line movement", `+${formatNumber(summary.added_lines, 0)} / -${formatNumber(summary.removed_lines, 0)}`, `${summary.binary_changes} binary changes`)}
+      ${metric("Byte delta", formatNumber(summary.byte_delta, 0), `${shortId(comparison.from_snapshot_id)} to ${shortId(comparison.to_snapshot_id)}`)}
+    </div>
+    <div class="diff-list">
+      ${comparison.files
+        .map(
+          (file) => `
+            <details class="diff-file" ${comparison.files.length === 1 ? "open" : ""}>
+              <summary>
+                <span><strong>${escapeHtml(file.skill)}/${escapeHtml(file.path)}</strong></span>
+                <span class="badge state-${file.status === "modified" ? "blocked" : "active"}">${escapeHtml(file.status)}</span>
+              </summary>
+              ${
+                file.binary
+                  ? `<div class="binary-change">Binary content changed. Only hashes, modes, and byte counts are available.</div>`
+                  : `<pre class="diff-code"><code>${escapeHtml(file.diff || "No textual change")}</code></pre>`
+              }
+            </details>`,
+        )
+        .join("") || '<div class="panel-empty">The admitted snapshots have no file changes.</div>'}
+    </div>`;
+}
+
+function taskAttemptRows(items) {
+  return items
+    .map(
+      (item) => `
+        <tr>
+          <td><span class="identity">${escapeHtml(item.source.id)}</span></td>
+          <td class="outcome-${escapeHtml(item.correctness)}"><strong>${escapeHtml(item.correctness)}</strong></td>
+          <td>${escapeHtml(item.behavioral_verdict || "Unavailable")}</td>
+          <td>${escapeHtml(item.population.model || "Unknown")}</td>
+          <td class="mono">${escapeHtml(formatNumber(item.elapsed_seconds))}</td>
+        </tr>`,
+    )
+    .join("");
+}
+
+function renderTask(data, caseId) {
+  const detail = data.task_details.find((item) => item.case_id === caseId);
+  const summary = data.cases.find((item) => item.case_id === caseId);
+  if (!detail || !summary) {
+    throw new Error(`Task unavailable: ${caseId}`);
+  }
+  const progress = detail.progress;
+  const progressAvailable = progress.status === "available";
+  const progressMetric =
+    progress.status === "conflicted" ? "Conflicted" : "Unavailable";
+  const progressMetricDetail =
+    progress.status === "conflicted"
+      ? "Incompatible current workflow records"
+      : "No current workflow record";
+  app.innerHTML = `
+    <section class="page-heading task-heading">
+      <div>
+        <h1>${escapeHtml(caseId)}</h1>
+        <p>${escapeHtml(summary.target_skill)} | Exact case revision <span class="mono">${escapeHtml(shortId(detail.case_revision))}</span></p>
+      </div>
+      <a href="/campaign/${escapeHtml(data.campaign.campaign_id)}#cap=${encodeURIComponent(capability)}">Campaign</a>
+    </section>
+    <section class="metrics">
+      ${metric("Outcome", detail.outcome || "Not run", "Immutable evaluator authority")}
+      ${metric("Failure frontier", progressAvailable ? progress.frontier : progressMetric, progressAvailable ? progress.classification.replaceAll("_", " ") : progressMetricDetail)}
+      ${metric("Product movement", progressAvailable ? progress.movement : progressMetric, progressAvailable ? "Workflow evidence, not correctness" : progressMetricDetail)}
+      ${metric("Associated snapshot", shortId(detail.associated_snapshot_id), detail.associated_snapshot_id || "No unique integrated or released tip")}
+    </section>
+    <section class="panel">
+      <div class="panel-header">
+        <div><h2>Current progress</h2><p>Bound to the exact case revision and associated skill snapshot.</p></div>
+        ${progressBadge(progress)}
+      </div>
+      ${
+        progressAvailable
+          ? `<div class="progress-layout">
+              <div class="progress-summary">
+                <h3>${escapeHtml(progress.summary)}</h3>
+                <dl>
+                  <div><dt>Classification</dt><dd>${escapeHtml(progress.classification.replaceAll("_", " "))}</dd></div>
+                  <div><dt>Blocker</dt><dd>${escapeHtml(progress.blocker || "None recorded")}</dd></div>
+                  <div><dt>Next action</dt><dd>${escapeHtml(progress.next_action || "None recorded")}</dd></div>
+                  <div><dt>Observed</dt><dd>${escapeHtml(progress.observed_at)}</dd></div>
+                  <div><dt>Sources</dt><dd>${progress.sources.length ? progress.sources.map((item) => `<span class="source-label">${escapeHtml(item.kind)}:${escapeHtml(item.id)}</span>`).join("") : "None recorded"}</dd></div>
+                </dl>
+              </div>
+              <div class="uptake-list">
+                <h3>Instruction uptake</h3>
+                ${
+                  progress.uptake.length
+                    ? progress.uptake
+                        .map(
+                          (item) => `
+                            <div class="uptake-item">
+                              <div><strong>${escapeHtml(item.rule_id)}</strong><span class="badge uptake-${escapeHtml(item.status.toLowerCase())}">${escapeHtml(item.status)}</span></div>
+                              <p>${escapeHtml(item.summary)}</p>
+                            </div>`,
+                        )
+                        .join("")
+                    : '<div class="panel-empty">No instruction-uptake rows recorded.</div>'
+                }
+              </div>
+            </div>`
+          : `<div class="panel-empty">Progress is ${escapeHtml(progress.status)} for the current task and skill snapshot.</div>`
+      }
+    </section>
+    <section class="panel">
+      <div class="panel-header">
+        <div><h2>Relevant skill change</h2><p>Exact admitted bytes. Stored source files are never directly served.</p></div>
+      </div>
+      ${comparisonView(detail.comparison)}
+    </section>
+    <section class="panel">
+      <div class="panel-header">
+        <div><h2>Immutable attempts</h2><p>Only attempts for this exact frozen case revision are shown.</p></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Source</th><th>Result</th><th>Behavioral</th><th>Model</th><th>Seconds</th></tr></thead>
+          <tbody>${taskAttemptRows(detail.attempts) || '<tr><td colspan="5">No completed attempts for this revision.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-header">
+        <div><h2>Local activity</h2><p>Live activity is non-final and cannot change the outcome above.</p></div>
+      </div>
+      <div class="activity-grid">
+        <div><strong>${escapeHtml(detail.sessions.length)}</strong><span>sessions</span></div>
+        <div><strong>${escapeHtml(detail.live_attempts.length)}</strong><span>live attempts</span></div>
+        <div><strong>${escapeHtml(progressAvailable ? progress.sources.length : 0)}</strong><span>safe source identifiers</span></div>
+      </div>
+    </section>`;
+}
+
 function renderSession(data) {
   const item = data.session;
   app.innerHTML = `
@@ -359,10 +631,15 @@ async function start() {
   const sessionMatch = window.location.pathname.match(
     /^\/campaign\/([0-9a-f]{32})\/session\/([0-9a-f-]{36})$/,
   );
+  const taskMatch = window.location.pathname.match(
+    /^\/campaign\/([0-9a-f]{32})\/task\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/,
+  );
   const match = window.location.pathname.match(/^\/campaign\/([0-9a-f]{32})$/);
   const data = await loadJson(
     sessionMatch
       ? `/api/campaign/${sessionMatch[1]}/session/${sessionMatch[2]}`
+      : taskMatch
+        ? `/api/campaign/${taskMatch[1]}`
       : match
         ? `/api/campaign/${match[1]}`
         : "/api/index",
@@ -370,6 +647,7 @@ async function start() {
   serviceState.textContent = "Read only";
   serviceState.classList.add("available");
   if (sessionMatch) renderSession(data);
+  else if (taskMatch) renderTask(data, taskMatch[2]);
   else if (match) renderCampaign(data);
   else renderIndex(data);
 }

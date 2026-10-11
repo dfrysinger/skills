@@ -224,6 +224,320 @@ main {
   font-size: 12px;
 }
 
+.panel-empty,
+.panel-warning {
+  padding: 20px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.panel-warning {
+  border-top: 1px solid var(--border);
+  color: var(--warning);
+}
+
+.lineage-strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--border);
+}
+
+.lineage-role {
+  min-width: 0;
+  padding: 18px 20px;
+  background: var(--surface);
+}
+
+.lineage-role.available {
+  box-shadow: inset 0 3px 0 var(--success);
+}
+
+.lineage-role.conflicted {
+  box-shadow: inset 0 3px 0 var(--warning);
+}
+
+.lineage-role-name,
+.lineage-role-detail {
+  display: block;
+}
+
+.lineage-role-name {
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.lineage-role strong {
+  display: block;
+  overflow: hidden;
+  font-size: 14px;
+  text-overflow: ellipsis;
+}
+
+.lineage-role-detail {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.attention-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--border);
+}
+
+.attention-item {
+  display: grid;
+  grid-template-columns: minmax(90px, auto) minmax(120px, 0.7fr) 1.6fr;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.attention-item:hover {
+  background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface));
+}
+
+.attention-kind {
+  color: var(--warning);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.attention-item span:last-child {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.change-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--border);
+}
+
+.change-strip > div {
+  padding: 18px 20px;
+  background: var(--surface);
+}
+
+.change-strip strong,
+.change-strip span {
+  display: block;
+}
+
+.change-strip strong {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 20px;
+}
+
+.change-strip span {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.task-link {
+  color: var(--text);
+  text-underline-offset: 3px;
+}
+
+.progress-evidence {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  color: var(--accent);
+}
+
+.progress-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+  gap: 1px;
+  background: var(--border);
+}
+
+.progress-summary,
+.uptake-list {
+  padding: 24px;
+  background: var(--surface);
+}
+
+.progress-summary h3,
+.uptake-list h3 {
+  margin: 0 0 18px;
+  font-size: 15px;
+}
+
+.progress-summary dl {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+}
+
+.progress-summary dl div {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 16px;
+}
+
+.progress-summary dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.progress-summary dd {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.source-label {
+  display: inline-flex;
+  margin: 0 6px 6px 0;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+}
+
+.uptake-list {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.uptake-item {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--surface-muted);
+}
+
+.uptake-item > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.uptake-item p {
+  margin: 9px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.uptake-observed {
+  color: var(--success);
+}
+
+.uptake-partial,
+.uptake-absent {
+  color: var(--warning);
+}
+
+.comparison-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  border-bottom: 1px solid var(--border);
+  background: var(--border);
+}
+
+.comparison-summary .metric {
+  min-height: 104px;
+  box-shadow: none;
+}
+
+.diff-list {
+  display: grid;
+}
+
+.diff-file {
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-file:last-child {
+  border-bottom: 0;
+}
+
+.diff-file summary {
+  display: flex;
+  cursor: pointer;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 20px;
+  list-style: none;
+}
+
+.diff-file summary::-webkit-details-marker {
+  display: none;
+}
+
+.diff-file summary:hover {
+  background: var(--surface-muted);
+}
+
+.diff-code {
+  overflow: auto;
+  max-height: 520px;
+  margin: 0;
+  padding: 18px 20px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--canvas) 76%, var(--surface));
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  tab-size: 2;
+}
+
+.binary-change {
+  padding: 20px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.activity-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--border);
+}
+
+.activity-grid > div {
+  padding: 20px;
+  background: var(--surface);
+}
+
+.activity-grid strong,
+.activity-grid span {
+  display: block;
+}
+
+.activity-grid strong {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 24px;
+}
+
+.activity-grid span {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .table-wrap {
   overflow-x: auto;
 }
@@ -413,6 +727,15 @@ tbody tr:hover {
   .campaign-grid {
     grid-template-columns: 1fr;
   }
+
+  .lineage-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .attention-list,
+  .progress-layout {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 640px) {
@@ -439,6 +762,27 @@ tbody tr:hover {
 
   .metric {
     min-height: 92px;
+  }
+
+  .lineage-strip,
+  .change-strip,
+  .comparison-summary,
+  .activity-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .attention-item {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .progress-summary dl div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .diff-file summary {
+    align-items: flex-start;
   }
 }
 

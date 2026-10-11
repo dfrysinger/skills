@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "decision_record": "skill-evaluation-ui-slice3",
+  "status": "sealed-for-design",
+  "scope": "Deferred Slice 3: skill lineage and task-progress evidence",
+  "source_records": [
+    {
+      "event_id": "user-original-ui-request",
+      "authority": "user",
+      "quote": "each session working with the skill should spin up a local ui that shows all the tasks in the test corpus and the skill or skills being improved, with the progress showing which tasks have passed and if not passing what data we have on progress within that task. it should show total cost of all training/experiments, and how many parallel cloud/local runs are running currently and against what task or tasks and skill or skills. it shoyld also show what has changed on the skill or skills so far vs tge original and the outcomes of completed runs/experiments. we should also show when a skill is undergoing ablation and progress against that, and whats changed from the original skill, the passing skill, and the ablated skill so far (and the final ablated skill and how much small it is than the passing skill). also any other ui elements you think are relevant to the user to track status and progress.",
+      "application": "Authorizes lineage, skill-change, task-progress, experiment, and ablation visibility across the full dashboard program. Slice 3 implements only lineage and task-progress visibility."
+    },
+    {
+      "event_id": "user-read-only-boundary",
+      "authority": "user",
+      "quote": "read only",
+      "application": "The browser may inspect evaluator-owned state but may not start, stop, retry, mutate, publish, edit, or qualify work."
+    },
+    {
+      "event_id": "user-multi-session-decision",
+      "authority": "user",
+      "quote": "yes but there could be many active session",
+      "application": "Lineage and task progress must reconcile concurrent append-only writers and must not rely on one mutable session record."
+    },
+    {
+      "event_id": "user-slice3-authorization",
+      "authority": "user",
+      "quote": "proceed to the next slice",
+      "application": "Authorizes Deferred Slice 3 after the merged two-slice Foundation."
+    }
+  ],
+  "resolved_decisions": [
+    {
+      "id": "slice-boundary",
+      "decision": "Slice 3 covers exact skill-set lineage, bounded revision comparison, task detail, earliest failure frontier, failure classification, instruction uptake, product movement, and a derived attention queue.",
+      "reason": "These are the user-visible lineage and within-task progress capabilities deferred by the Foundation design."
+    },
+    {
+      "id": "browser-mutability",
+      "decision": "The browser remains strictly read-only. Trusted evaluator and workflow CLI producers may append immutable lineage snapshots and task-progress records.",
+      "reason": "The read-only decision constrains the UI, while the existing dashboard already relies on trusted local writers for sessions and attempts."
+    },
+    {
+      "id": "lineage-authority",
+      "decision": "Lineage roles and parent relationships are explicit workflow declarations bound to immutable skill-set snapshots; the dashboard does not infer release state from Git branches, directory names, timestamps, or candidate prose.",
+      "reason": "The repository has no canonical machine-readable publication or lineage artifact, and inference would create false authority."
+    },
+    {
+      "id": "passing-authority",
+      "decision": "Passing is observed from immutable evaluator results that match the exact snapshot identity. A declaration may label original, published, integrated, experimental, or released, but may not manufacture a passing result.",
+      "reason": "Completed evaluator history remains the sole correctness authority."
+    },
+    {
+      "id": "snapshot-boundary",
+      "decision": "A lineage snapshot may include only explicitly named skill directories under a supplied plugin's skills root. It refuses symlinks and non-regular files, stores exact immutable bytes privately with a typed manifest, and exposes only task- or lineage-relevant generated comparisons through the dashboard. Content-addressed deduplication is optional.",
+      "reason": "Exact durable diffs require immutable bytes, but broad plugin copying and arbitrary browsing remain out of scope."
+    },
+    {
+      "id": "task-progress-authority",
+      "decision": "Failure frontier, classification, instruction uptake, product movement, and blockers are explicit typed workflow event variants in the existing dashboard journal, bound to an exact frozen case revision and exact skill-set snapshot. They never upgrade evaluator correctness.",
+      "reason": "These workflow concepts exist in prose but not in a canonical artifact, and candidate output must not be treated as authoritative progress."
+    },
+    {
+      "id": "cost-and-runs",
+      "decision": "Slice 3 reuses Foundation cost and local-run projections. Experiment accounting and cloud/distributed execution remain unavailable until Slice 4.",
+      "reason": "This keeps the next slice end-to-end and prevents lineage work from absorbing the separate experiment/cloud architecture."
+    }
+  ],
+  "unresolved_decisions": [],
+  "completion": {
+    "decision_complete": true,
+    "user_answer_support": [
+      "user-original-ui-request",
+      "user-read-only-boundary",
+      "user-multi-session-decision",
+      "user-slice3-authorization"
+    ]
+  }
+}

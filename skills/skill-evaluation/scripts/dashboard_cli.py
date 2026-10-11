@@ -21,7 +21,10 @@ from pathlib import Path
 from urllib.parse import quote
 
 from dashboard_state import (
+    capture_skill_snapshot,
     create_campaign,
+    emit_lineage_event,
+    emit_task_progress_event,
     ensure_state_root,
     mark_session_opened,
     read_session,
@@ -431,6 +434,113 @@ def assignment_dashboard(
     }
 
 
+def lineage_snapshot_dashboard(
+    corpus: Path,
+    session_id: str,
+    plugin_dir: Path,
+    skills: list[str],
+    roles: list[str],
+    summary: str,
+    *,
+    parents: list[dict] | None = None,
+    provenance_kind: str | None = None,
+    source_revision: str | None = None,
+    event_id: str | None = None,
+    observed_at: str | None = None,
+    root: Path | None = None,
+) -> dict:
+    registration = create_campaign(state_root(root), corpus)
+    session = read_session(corpus, session_id)
+    if session is None or session["campaign_id"] != registration["campaign_id"]:
+        raise ValueError("dashboard session is not registered")
+    snapshot = capture_skill_snapshot(corpus, plugin_dir, skills)
+    event = emit_lineage_event(
+        corpus,
+        campaign_id=registration["campaign_id"],
+        writer={
+            "kind": "session",
+            "id": session_id,
+            "generation": session["writer_generation"],
+        },
+        snapshot_id=snapshot["snapshot_id"],
+        roles=roles,
+        parents=parents or [],
+        summary=summary,
+        provenance_kind=provenance_kind,
+        source_revision=source_revision,
+        event_id=event_id,
+        observed_at=observed_at,
+    )
+    return {
+        "schema_version": 1,
+        "campaign_id": registration["campaign_id"],
+        "session_id": session_id,
+        "snapshot_id": snapshot["snapshot_id"],
+        "event_id": event["event_id"],
+        "roles": event["payload"]["roles"],
+    }
+
+
+def task_progress_dashboard(
+    corpus: Path,
+    session_id: str,
+    case_id: str,
+    snapshot_id: str,
+    frontier: str,
+    classification: str,
+    movement: str,
+    summary: str,
+    *,
+    uptake: list[dict] | None = None,
+    blocker: str | None = None,
+    next_action: str | None = None,
+    comparison_snapshot_id: str | None = None,
+    sources: list[dict] | None = None,
+    event_id: str | None = None,
+    observed_at: str | None = None,
+    root: Path | None = None,
+) -> dict:
+    registration = create_campaign(state_root(root), corpus)
+    session = read_session(corpus, session_id)
+    if session is None or session["campaign_id"] != registration["campaign_id"]:
+        raise ValueError("dashboard session is not registered")
+    from skill_eval import digest, frozen_case_path
+
+    revision = digest(frozen_case_path(corpus, case_id) / "case-manifest.json")
+    event = emit_task_progress_event(
+        corpus,
+        campaign_id=registration["campaign_id"],
+        writer={
+            "kind": "session",
+            "id": session_id,
+            "generation": session["writer_generation"],
+        },
+        snapshot_id=snapshot_id,
+        case_id=case_id,
+        case_revision=revision,
+        frontier=frontier,
+        classification=classification,
+        movement=movement,
+        summary=summary,
+        uptake=uptake,
+        blocker=blocker,
+        next_action=next_action,
+        comparison_snapshot_id=comparison_snapshot_id,
+        sources=sources,
+        event_id=event_id,
+        observed_at=observed_at,
+    )
+    return {
+        "schema_version": 1,
+        "campaign_id": registration["campaign_id"],
+        "session_id": session_id,
+        "case_id": case_id,
+        "case_revision": revision,
+        "snapshot_id": snapshot_id,
+        "event_id": event["event_id"],
+    }
+
+
 def service_status(root: Path | None = None) -> dict:
     root = state_root(root)
     service = healthy_service(root)
@@ -539,6 +649,94 @@ def configure_parser(sub: argparse._SubParsersAction) -> None:
     event.add_argument("--summary", required=True)
     event.add_argument("--skill-identity")
     event.add_argument("--state-root", type=Path)
+    lineage = commands.add_parser("lineage-snapshot")
+    lineage.add_argument("corpus", type=Path)
+    lineage.add_argument("--session-id", required=True)
+    lineage.add_argument("--plugin-dir", type=Path, required=True)
+    lineage.add_argument("--skill", action="append", required=True)
+    lineage.add_argument(
+        "--role",
+        action="append",
+        choices=("original", "published", "integrated", "experimental", "released"),
+        required=True,
+    )
+    lineage.add_argument(
+        "--parent",
+        action="append",
+        nargs=2,
+        metavar=("RELATION", "SNAPSHOT_ID"),
+    )
+    lineage.add_argument("--summary", required=True)
+    lineage.add_argument("--provenance-kind")
+    lineage.add_argument("--source-revision")
+    lineage.add_argument("--event-id")
+    lineage.add_argument("--observed-at")
+    lineage.add_argument("--state-root", type=Path)
+    progress = commands.add_parser("task-progress")
+    progress.add_argument("corpus", type=Path)
+    progress.add_argument("--session-id", required=True)
+    progress.add_argument("--case", required=True)
+    progress.add_argument("--snapshot", required=True)
+    progress.add_argument(
+        "--frontier",
+        choices=(
+            "admission",
+            "candidate",
+            "executable",
+            "behavioral",
+            "quality",
+            "qualification",
+            "release",
+            "unknown",
+        ),
+        required=True,
+    )
+    progress.add_argument(
+        "--classification",
+        choices=(
+            "skill_defect",
+            "instruction_interaction",
+            "execution_variance",
+            "packet_defect",
+            "harness_defect",
+            "grading_defect",
+            "authority_limit",
+            "product_limit",
+            "unknown",
+        ),
+        required=True,
+    )
+    progress.add_argument(
+        "--movement",
+        choices=(
+            "Conquered",
+            "Strict improvement",
+            "Mixed",
+            "No signal",
+            "Regression",
+            "Unknown",
+        ),
+        required=True,
+    )
+    progress.add_argument("--summary", required=True)
+    progress.add_argument(
+        "--uptake",
+        action="append",
+        nargs=3,
+        metavar=("RULE_ID", "STATUS", "SUMMARY"),
+    )
+    progress.add_argument("--blocker")
+    progress.add_argument("--next-action")
+    progress.add_argument("--comparison-snapshot")
+    progress.add_argument(
+        "--source",
+        action="append",
+        nargs=2,
+        metavar=("KIND", "ID"),
+    )
+    progress.add_argument("--event-id")
+    progress.add_argument("--observed-at")
+    progress.add_argument("--state-root", type=Path)
     for name in ("status", "stop"):
         command = commands.add_parser(name)
         command.add_argument("--state-root", type=Path)
@@ -570,6 +768,49 @@ def dispatch(args: argparse.Namespace) -> dict:
             args.case,
             args.summary,
             skill_identity=args.skill_identity,
+            root=args.state_root,
+        )
+    if args.dashboard_command == "lineage-snapshot":
+        return lineage_snapshot_dashboard(
+            args.corpus,
+            args.session_id,
+            args.plugin_dir.expanduser().resolve(),
+            args.skill,
+            args.role,
+            args.summary,
+            parents=[
+                {"relation": relation, "snapshot_id": snapshot_id}
+                for relation, snapshot_id in (args.parent or [])
+            ],
+            provenance_kind=args.provenance_kind,
+            source_revision=args.source_revision,
+            event_id=args.event_id,
+            observed_at=args.observed_at,
+            root=args.state_root,
+        )
+    if args.dashboard_command == "task-progress":
+        return task_progress_dashboard(
+            args.corpus,
+            args.session_id,
+            args.case,
+            args.snapshot,
+            args.frontier,
+            args.classification,
+            args.movement,
+            args.summary,
+            uptake=[
+                {"rule_id": rule_id, "status": status, "summary": summary}
+                for rule_id, status, summary in (args.uptake or [])
+            ],
+            blocker=args.blocker,
+            next_action=args.next_action,
+            comparison_snapshot_id=args.comparison_snapshot,
+            sources=[
+                {"kind": kind, "id": identifier}
+                for kind, identifier in (args.source or [])
+            ],
+            event_id=args.event_id,
+            observed_at=args.observed_at,
             root=args.state_root,
         )
     if args.dashboard_command == "status":
