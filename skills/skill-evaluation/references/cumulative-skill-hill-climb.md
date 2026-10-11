@@ -189,11 +189,13 @@ revision rather than publishing a shorter regression.
 On the final exact bytes, compare the newly conquered task with the published
 baseline under the same contract, verify mechanism uptake and held-out
 transfer, protect every maintained passing task, and finish structural checks
-and independent review. Use the release rule in `SKILL.md`; do not wait for
-every unsolved task. After publication the released bytes become the next
-parent and control. Carry remaining failures and the most promising supported
-ideas forward, preserving each experimental first result and its original
-identity.
+and independent review. For no-skill advantage, broad transfer, or
+generalization claims, apply the
+[`release qualification and generalization`](release-qualification-and-generalization.md)
+gate. Use the release rule in `SKILL.md`; do not wait for every unsolved task.
+After publication the released bytes become the next parent and control. Carry
+remaining failures and the most promising supported ideas forward, preserving
+each experimental first result and its original identity.
 
 For an explicitly scoped consolidation or minimization of existing successes,
 qualify the exact combined artifact against the declared prior-win and

@@ -1,6 +1,6 @@
 ---
 name: skill-evaluation
-description: Build and run frozen behavioral evaluation corpora for any agent skill. Use when regression-testing a skill against historical or synthetic cases, adding transcript-derived cases, checking that general prompt language handles new evidence, or comparing a revised skill against an unchanged baseline.
+description: Build and run frozen behavioral evaluation corpora for any agent skill. Use when regression-testing a skill against historical or synthetic cases, adding transcript-derived cases, checking that general prompt language handles new evidence, comparing a revised skill against unchanged or no-skill controls, or qualifying a released skill for generalization.
 ---
 
 # skill-evaluation
@@ -368,6 +368,23 @@ changed rule was used does not establish a reusable skill improvement. Use
 product movement; retain the per-rule uptake rows underneath that
 classification.
 
+### Qualify released generalization claims
+
+When claiming that a skill helps versus no skill, transfers beyond its source
+task, or remains general after packaging scripts and references, follow the
+[`release qualification and generalization`](references/release-qualification-and-generalization.md)
+branch. It owns the matched no-skill control, exact released-byte identity,
+tool-usefulness cases, portability and abstention coverage, and the independent
+overfitting review.
+
+A passing skill arm, an improvement over an older skill, and deterministic
+script tests establish different claims. Name only the claim whose complete
+gate passed.
+
+Complete when the exact released artifact either supports the named comparative
+or generalization claim at its declared scope, or the report narrows the claim
+to the evidence actually obtained.
+
 ### Release incremental wins
 
 Treat each published skill revision as the next baseline, not the completion of
@@ -497,6 +514,10 @@ The evaluation is complete only when:
 - a maintained regression suite runs through one command and every included
   case meets its predeclared qualification rule after a target-skill change,
   with complete original attempt outcomes retained; and
+- every no-skill advantage, broad transfer, or packaged-generalization claim
+  about a published revision completes the applicable
+  [`generalization gate`](references/release-qualification-and-generalization.md)
+  on the exact released artifact; and
 - no evaluation repair introduces case-specific hints into the target skill.
 - a large distributed campaign, when used, has one checksum-bound effective
   result per expected attempt ID, with no missing, extra, or duplicate
