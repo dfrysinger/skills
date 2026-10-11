@@ -583,17 +583,26 @@ class SkillEvalTests(unittest.TestCase):
             "print(json.dumps({'type':'result','exitCode':0}))\n"
         )
         os.chmod(fake, 0o755)
-        run = run_case(
-            self.root,
-            "example-case",
-            plugin,
-            fake,
-            "fake-model",
-            "high",
-            "existing",
-            60,
-            treatment_file=self.make_treatment(),
-        )
+        dashboard_root = self.root / "dashboard-state"
+        from dashboard_state import create_campaign, event_records
+        from dashboard_projection import campaign_projection
+
+        registration = create_campaign(dashboard_root, self.root)
+        with mock.patch.dict(
+            os.environ,
+            {"SKILL_EVAL_DASHBOARD_STATE_ROOT": str(dashboard_root)},
+        ):
+            run = run_case(
+                self.root,
+                "example-case",
+                plugin,
+                fake,
+                "fake-model",
+                "high",
+                "existing",
+                60,
+                treatment_file=self.make_treatment(),
+            )
         receipt = json.loads((run / "candidate-pass-1-receipt.json").read_text())
         self.assertTrue(receipt["skill_invoked"])
         self.assertEqual(
@@ -606,6 +615,33 @@ class SkillEvalTests(unittest.TestCase):
             json.loads((run / "compatibility.json").read_text())["status"],
             "ADMITTED",
         )
+        events, conflicts = event_records(self.root)
+        self.assertEqual(conflicts, [])
+        self.assertEqual(events[0]["event_type"], "attempt_planned")
+        self.assertEqual(events[1]["event_type"], "attempt_started")
+        self.assertIn(
+            "attempt_artifact_available",
+            {item["event_type"] for item in events},
+        )
+        attempt = json.loads((run / "attempt.json").read_text())
+        self.assertEqual(
+            events[0]["writer"]["id"],
+            attempt["dashboard_writer_id"],
+        )
+        projected = campaign_projection(
+            dashboard_root,
+            registration["campaign_id"],
+        )
+        self.assertEqual(projected["live_attempts"][0]["state"], "superseded")
+        self.assertEqual(
+            projected["live_attempts"][0]["authority"],
+            "immutable-artifact",
+        )
+        self.assertEqual(
+            projected["live_attempts"][0]["skill_identity"],
+            projected["attempts"][0]["population"]["skill_identity"],
+        )
+        self.assertEqual(projected["live_attempts"][0]["location"], "local")
 
     def test_freeze_and_verify(self) -> None:
         self.make_case()

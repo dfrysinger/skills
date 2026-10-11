@@ -311,9 +311,9 @@ CORPUS/.skill-evaluation-ui/
         <event-id>-<digest>.json
 ```
 
-`campaign.json` is immutable after exclusive creation. A registration file may
-refresh display metadata but cannot change campaign ID, corpus root identity,
-or target skill names.
+`campaign.json` is created exclusively. Campaign ID and corpus root identity
+remain immutable; target skill names may grow monotonically as cases are added
+to the same corpus, but existing names cannot be removed by registration.
 
 The foundation does not copy skill source, cloud observations, candidate
 output, or logs into dashboard state. The corpus state directory contains only
@@ -327,7 +327,7 @@ path construction.
 
 | Aggregate | Minimum identity tuple |
 | --- | --- |
-| Campaign registration | `campaign_id`, corpus root identity, immutable target skill names |
+| Campaign registration | `campaign_id`, corpus root identity, monotonic target skill names |
 | Session status | `campaign_id`, exact Copilot `session_id`, writer generation |
 | Case row | `campaign_id`, `case_id`, immutable `case_revision` |
 | Attempt row | case tuple plus run path or suite path and ordinal, treatment identity, model, harness identity |
@@ -759,32 +759,53 @@ history, distributed tooling, and skill invocation work without the service.
 
 ## Current baton
 
-- **Phase:** Foundation Slice 1 landing.
+- **Phase:** Foundation Slice 2 landing.
 - **Workspace:** isolated worktree for
-  `dfrysinger/skill-eval-ui-slice1`, based on merged design commit
-  `fc8cb1d268d3b80320f0fa9dc00a48dd80158207`.
+  `dfrysinger/skill-eval-ui-slice2`, based on merged Slice 1 commit
+  `da23e2821b06c2d0c8befd86d78d33ac23de0182`.
 - **Decision record:** complete; no unresolved user event.
-- **Pass-1 challenge:** `NARROW`, incorporated in this proposal.
-- **Pass-2 challenge:** `NARROW`; ten required edits are incorporated in the
-  current revision.
-- **Challenge closure:** focused trust-boundary refresh is `CONTINUE`,
-  `CLEAR`; the candidate-shell premise was disproved against the exact runner,
-  and capability rotation on audited boundary violations is specified.
-- **Dual design review:** complete; both model families applied the design
-  scope lens and closed every material finding.
-- **Slice 1 evidence:** 315 deterministic tests pass; installed lifecycle,
-  completed-history, and browser receipts pass against candidate fingerprint
-  `sha256:d3e3b7d78753f52b854663451d92712804df4c20b15a56b7bdde44cd6c1bb421`.
-  Light, dark, mobile, overview, missing-capability, and legacy-unknown states
-  were inspected. Round-2 dual review closed all findings with no remaining
-  must-fix or follow-up.
-- **Next action:** commit, push, review the pull request checks, and merge
-  Slice 1 before creating the Slice 2 worktree from merged `main`.
+- **Challenge closure:** focused trust-boundary review is `CONTINUE`, `CLEAR`.
+  The exact runner disproved candidate shell and network access, and audited
+  out-of-workdir dashboard-state reads rotate the service generation before
+  candidate output is admitted.
+- **Slice 1 delivery:** merged in PR 87 at
+  `da23e2821b06c2d0c8befd86d78d33ac23de0182`.
+- **Slice 2 implementation:** session registration, one-time opening,
+  heartbeats, atomic writer-scoped events, evaluator attempt publication,
+  exact-revision reconciliation, campaign and session routes, and responsive
+  live UI surfaces are complete.
+- **Deterministic validation:** the eight-module matrix passes 378 tests with
+  49 skipped; focused terminal-marker regression, Python compilation, and
+  `git diff --check` pass.
+- **Frozen candidate:**
+  `sha256:39b9ac0b429b05ae93ac36db428edbde525856e1d14e994a6fd42f3e1318f051`.
+  The installed skill tree is byte-identical to this candidate.
+- **Installed proof:** four validator-accepted receipts are under
+  `files/slice2-live-final-r3/` for concurrent sessions, active evaluator
+  attempts and the exact `skill,view` boundary, reconciliation and recovery,
+  and browser and boundary behavior. The reconciliation receipt proves that
+  execution results, repository summaries, and recoverable judge failure
+  receipts remain live until `REPORT.md`; attempt-level failure receipts remain
+  terminal.
+- **Visual proof:** light, dark, mobile, and invalid-capability captures were
+  inspected. Valid pages remove the capability fragment and have no console
+  errors; the refusal page has only its expected 401.
+- **Dual implementation review:** complete. Round-one and round-two findings
+  were repaired. Final Claude Opus and GPT Terra finding-scoped closure checks
+  resolved repository completion finding `R2-F1` and recoverable judge receipt
+  finding `R3-F1` with no remaining finding.
+- **Review assignments:** Claude closure
+  `7e25df08-d411-4b2e-8898-c81b03bd0d1e`; GPT closure
+  `adacd9a6-3fdd-494a-aa1c-822fd00ab11f`; both are complete and consumed.
+- **Next action:** commit with the required co-author trailer, push the owned
+  branch, open the Slice 2 pull request, pass required checks and substantive
+  review, merge, verify the Foundation definition of done, then stop schedules
+  3 and 4.
 - **Open revisit condition:** none.
-- **Observed mechanism correction:** live proof showed that a new-port
-  replacement cannot answer an old-port browser with `generation_replaced`.
-  Slice 1 therefore reuses the released prior port when available and reports
-  unavailable when another process owns it.
+- **Observed mechanism correction:** a new-port replacement cannot answer an
+  old-port browser with `generation_replaced`. Slice 1 therefore reuses the
+  released prior port when available and reports unavailable when another
+  process owns it.
 
 ## Definition of Done: Skill Evaluation UI Foundation
 

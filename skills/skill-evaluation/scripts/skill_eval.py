@@ -1843,6 +1843,46 @@ def _run_case(
     return run_root
 
 
+def dashboard_attempt_event(
+    root: Path,
+    *,
+    event_type: str,
+    writer_id: str,
+    writer_generation: str,
+    case_id: str,
+    case_revision: str,
+    payload: dict,
+    event_id: str | None = None,
+) -> None:
+    local = root / ".skill-evaluation-ui" / "campaign.json"
+    if not local.exists():
+        return
+    try:
+        from dashboard_cli import state_root as dashboard_state_root
+        from dashboard_state import create_campaign, emit_event
+
+        registration = create_campaign(dashboard_state_root(), root)
+        emit_event(
+            root,
+            campaign_id=registration["campaign_id"],
+            writer={
+                "kind": "evaluator",
+                "id": writer_id,
+                "generation": writer_generation,
+            },
+            event_type=event_type,
+            case_id=case_id,
+            case_revision=case_revision,
+            payload=payload,
+            event_id=event_id,
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(
+            f"skill-evaluation dashboard progress unavailable: {error}",
+            file=sys.stderr,
+        )
+
+
 def run_case(
     root: Path, case_id: str, plugin_dir: Path, copilot: Path, model: str, effort: str,
     home_mode: str, timeout_seconds: int, copilot_identity_record: dict | None = None,
@@ -1857,6 +1897,7 @@ def run_case(
     timeline = measurement.Timeline()
     ensure_case_id(case_id)
     verify_case(root, case_id)
+    case_revision = digest(frozen_case_path(root, case_id) / "case-manifest.json")
     definition = read_json(frozen_case_path(root, case_id) / "case.json")
     treatment, compatibility = resolve_treatment(
         definition,
@@ -1874,6 +1915,9 @@ def run_case(
     run_parent = "treatment-admission-runs" if treatment_admission else "runs"
     run_root = root / run_parent / f"{utc_stamp()}-{uuid.uuid4().hex[:8]}" / case_id
     run_root.mkdir(parents=True)
+    dashboard_writer_id = uuid.uuid4().hex
+    dashboard_writer_generation = uuid.uuid4().hex
+    dashboard_planned_event_id = uuid.uuid4().hex
     attempt = {
         "schema_version": 1, "run_id": run_root.parent.name, "case_id": case_id,
         "model": model, "effort": effort, "timeout_seconds": timeout_seconds,
@@ -1884,8 +1928,42 @@ def run_case(
         "runner_kind": treatment["descriptor"]["runner"]["kind"],
         "intervention_policy": treatment["descriptor"]["intervention_policy"],
         "compatibility_status": compatibility["status"],
+        "dashboard_writer_id": dashboard_writer_id,
+        "dashboard_writer_generation": dashboard_writer_generation,
     }
     measurement.write_once(run_root / "attempt.json", attempt)
+    dashboard_attempt_event(
+        root,
+        event_type="attempt_planned",
+        writer_id=dashboard_writer_id,
+        writer_generation=dashboard_writer_generation,
+        event_id=dashboard_planned_event_id,
+        case_id=case_id,
+        case_revision=case_revision,
+        payload={
+            "model": model,
+            "effort": effort,
+            "arm": arm,
+            "treatment_identity": treatment["fingerprint"],
+            "suite_id": (
+                Path(suite_owner["suite_path"]).name
+                if isinstance(suite_owner, dict)
+                else None
+            ),
+        },
+    )
+    dashboard_attempt_event(
+        root,
+        event_type="attempt_started",
+        writer_id=dashboard_writer_id,
+        writer_generation=dashboard_writer_generation,
+        case_id=case_id,
+        case_revision=case_revision,
+        payload={
+            "planned_event_id": dashboard_planned_event_id,
+            "run_path": str(run_root.relative_to(root)),
+        },
+    )
     status = "failed"
     resources = ExitStack()
     try:
@@ -1993,6 +2071,28 @@ def run_case(
             "elapsed_seconds": time.monotonic() - reporting_clock,
             "scope": "post-execution measurement aggregation and report rendering",
         })
+        for artifact in (
+            "attempt.json",
+            "execution-result.json",
+            "repository-result.json",
+            "accounting.json",
+            "timing.json",
+        ):
+            path = run_root / artifact
+            if path.is_file():
+                dashboard_attempt_event(
+                    root,
+                    event_type="attempt_artifact_available",
+                    writer_id=dashboard_writer_id,
+                    writer_generation=dashboard_writer_generation,
+                    case_id=case_id,
+                    case_revision=case_revision,
+                    payload={
+                        "run_path": str(run_root.relative_to(root)),
+                        "artifact": artifact,
+                        "sha256": digest(path),
+                    },
+                )
 
 
 def result_from_run(run_root: Path, *, behavioral_only: bool = False) -> str:
