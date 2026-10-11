@@ -84,7 +84,7 @@ function renderIndex(data) {
       ${metric("Registered campaigns", formatNumber(data.campaigns.length, 0), "Local corpus registrations")}
       ${metric("Available", formatNumber(available, 0), "Corpus identity verified")}
       ${metric("Live sessions", liveAvailable ? formatNumber(data.session_counts.active + data.session_counts.blocked, 0) : "Unavailable", liveAvailable ? `${data.session_counts.stale} stale | ${data.active_attempts} active attempts` : "No registered corpus has live session state")}
-      ${metric("Cloud activity", "Unavailable", "Deferred by design")}
+      ${metric("Cloud activity", data.availability.cloud_activity === "available" ? formatNumber(data.cloud_counts.nonterminal + data.cloud_counts.completed_awaiting_result + data.cloud_counts.distributed_pending, 0) : "Unavailable", data.availability.cloud_activity === "available" ? `${data.cloud_counts.terminal} terminal | observed ${data.cloud_observed_as_of || "without a timestamp"}` : "No exact known cloud observations")}
     </section>
     ${
       data.campaigns.length
@@ -246,6 +246,140 @@ function renderAttention(data) {
     </section>`;
 }
 
+const joinedValues = (items, empty = "Unavailable") =>
+  items?.length ? items.join(", ") : empty;
+
+function selectionLabel(selection) {
+  if (!selection) return "pending";
+  if (selection.status === "selected") {
+    return `selected: ${selection.selected_treatment_id}`;
+  }
+  return selection.status.replaceAll("_", " ");
+}
+
+function renderExperimentAttention(experiments) {
+  return `
+          <section class="panel experiment-attention">
+            <div class="panel-header">
+              <div><h2>Experiment attention</h2><p>Missing activity, incomplete stages, conflicts, judge disagreement, and accounting gaps.</p></div>
+              <span class="badge ${experiments.attention.length ? "state-blocked" : "available"}">${escapeHtml(experiments.attention.length)}</span>
+            </div>
+            ${
+              experiments.attention.length
+                ? `<div class="experiment-attention-list">
+                    ${experiments.attention
+                      .map(
+                        (item) => `
+                          <div class="experiment-attention-item">
+                            <strong>${escapeHtml(item.kind.replaceAll("_", " "))}</strong>
+                            <span>${escapeHtml(item.case_id || item.experiment_id)}</span>
+                            <p>${escapeHtml(item.summary)}</p>
+                          </div>`,
+                      )
+                      .join("")}
+                  </div>`
+                : '<div class="panel-empty">No admitted experiment record currently needs attention.</div>'
+            }
+    </section>`;
+}
+
+function experimentActivityRows(items) {
+  return items
+    .map(
+      (item) => `
+              <tr>
+                <td><a class="task-link" href="/campaign/${escapeHtml(item.campaign_id || "")}/task/${escapeHtml(item.case_id)}#cap=${encodeURIComponent(capability)}">${escapeHtml(item.case_id)}</a><span class="identity mono">${escapeHtml(shortId(item.case_revision))}</span></td>
+                <td>${escapeHtml(item.treatment_id)}<span class="identity">repetition ${escapeHtml(item.repetition)}</span></td>
+                <td>${escapeHtml(item.model)}<span class="identity">${escapeHtml(item.platform)} | ${escapeHtml(item.route)}</span></td>
+                <td>${stateBadge(item.state)}</td>
+                <td>${escapeHtml(joinedValues(item.transport_statuses))}<span class="identity">${escapeHtml(joinedValues(item.transport_conclusions, "No conclusion"))}</span></td>
+                <td>${escapeHtml(item.stage_status || "Unavailable")}</td>
+                <td class="${item.evaluator_result ? `outcome-${escapeHtml(item.evaluator_result)}` : ""}">${escapeHtml(item.evaluator_result || "Unavailable")}</td>
+                <td><span class="identity mono">${escapeHtml(shortId(item.first_outcome_id))}</span></td>
+                <td>${escapeHtml(item.recovery_source_id || "None")}<span class="identity mono">${escapeHtml(shortId(item.effective_result_id))}</span></td>
+                <td>${escapeHtml(item.observed_as_of || "Not observed")}<span class="identity">${item.non_atomic ? "non-atomic snapshot" : "atomic or unavailable"}</span></td>
+                <td>${item.cost.complete ? escapeHtml(costLabel(item.cost)) : "Incomplete"}<span class="identity">${escapeHtml(joinedValues(item.source_ids, "No safe source ID"))}</span></td>
+              </tr>`,
+          )
+    .join("");
+}
+
+function renderExperiments(data) {
+  const experiments = data.experiments;
+  if (!experiments || experiments.status !== "available") {
+    return `
+            <section class="panel">
+              <div class="panel-header">
+                <div><h2>Experiments</h2><p>No admitted distributed experiment records are available.</p></div>
+                <span class="badge unavailable">unavailable</span>
+              </div>
+      </section>`;
+  }
+  return `
+          <section class="panel experiment-overview">
+            <div class="panel-header">
+              <div><h2>Experiments</h2><p>Predeclared treatments, exact distributed identity, and non-authoritative selection.</p></div>
+              <span class="badge available">${escapeHtml(experiments.items.length)} experiments</span>
+            </div>
+            <div class="experiment-summary-strip">
+              <div><strong>${escapeHtml(experiments.counts.planned)}</strong><span>planned attempts</span></div>
+              <div><strong>${escapeHtml(experiments.counts.cloud_nonterminal)}</strong><span>cloud nonterminal</span></div>
+              <div><strong>${escapeHtml(experiments.counts.distributed_pending)}</strong><span>distributed pending</span></div>
+              <div><strong>${escapeHtml(experiments.counts.terminal)}</strong><span>terminal results</span></div>
+              <div><strong>${escapeHtml(experiments.counts.invalid_or_conflicted)}</strong><span>invalid or conflicted</span></div>
+            </div>
+            ${experiments.items
+              .map(
+                (item) => `
+                  <article class="experiment-block">
+                    <header class="experiment-heading">
+                      <div>
+                        <h3>${escapeHtml(item.title)}</h3>
+                        <p>${escapeHtml(item.summary)}</p>
+                      </div>
+                      <div class="experiment-meta">
+                        <span class="badge state-${escapeHtml(item.selection.status === "selected" ? "active" : item.selection.status === "conflicted" ? "conflicted" : "idle")}">${escapeHtml(selectionLabel(item.selection))}</span>
+                        <span>${escapeHtml(item.candidate_model)} | ${escapeHtml(item.platform)}</span>
+                        <span>${escapeHtml(item.observed_as_of ? `observed as of ${item.observed_as_of}` : "cloud not observed")}${item.non_atomic ? " | non-atomic" : ""}</span>
+                      </div>
+                    </header>
+                    <div class="treatment-grid">
+                      ${item.treatments
+                        .map(
+                          (treatment) => `
+                            <div class="treatment-card selection-${escapeHtml(treatment.selection_state)}">
+                              <div class="treatment-card-heading">
+                                <div><strong>${escapeHtml(treatment.treatment_id)}</strong><span>${escapeHtml(treatment.role)}</span></div>
+                                <span class="badge state-${escapeHtml(treatment.selection_state === "selected" ? "active" : treatment.selection_state === "conflicted" ? "conflicted" : "idle")}">${escapeHtml(treatment.selection_state.replaceAll("_", " "))}</span>
+                              </div>
+                              <p>${escapeHtml(treatment.hypothesis)}</p>
+                              <dl>
+                                <div><dt>Repetitions</dt><dd>${escapeHtml(treatment.terminal_repetitions)} terminal / ${escapeHtml(treatment.planned_repetitions)} planned</dd></div>
+                                <div><dt>Outcomes</dt><dd>${escapeHtml(`PASS ${treatment.outcomes.PASS}, FAIL ${treatment.outcomes.FAIL}`)}</dd></div>
+                                <div><dt>Cost</dt><dd>${treatment.cost.complete ? escapeHtml(costLabel(treatment.cost)) : `Incomplete: ${treatment.cost.known_attempts} of ${treatment.cost.total_attempts}`}</dd></div>
+                              </dl>
+                            </div>`,
+                        )
+                        .join("")}
+                    </div>
+                  </article>`,
+              )
+              .join("")}
+          </section>
+          ${renderExperimentAttention(experiments)}
+          <section class="panel">
+            <div class="panel-header">
+              <div><h2>Distributed activity</h2><p>Transport, stage, evaluator, first outcome, recovery, and effective result remain separate.</p></div>
+            </div>
+            <div class="table-wrap">
+              <table class="distributed-table">
+                <thead><tr><th>Task</th><th>Treatment</th><th>Execution</th><th>State</th><th>Transport</th><th>Stage</th><th>Evaluator</th><th>First outcome</th><th>Recovery / effective</th><th>Observation</th><th>Cost / source</th></tr></thead>
+                <tbody>${experimentActivityRows(experiments.activity) || '<tr><td colspan="11">No distributed attempts have been admitted.</td></tr>'}</tbody>
+              </table>
+            </div>
+    </section>`;
+}
+
 function liveSessionRows(data) {
   return data.sessions
     .map(
@@ -316,6 +450,7 @@ function renderCampaign(data) {
     ${renderLineage(data)}
     ${renderCampaignChange(data)}
     ${renderAttention(data)}
+    ${renderExperiments(data)}
     <section class="panel">
       <div class="panel-header">
         <div><h2>Local sessions</h2><p>Session-owned heartbeats and assignments; stale is never completed.</p></div>
@@ -559,6 +694,36 @@ function renderTask(data, caseId) {
         <table>
           <thead><tr><th>Source</th><th>Result</th><th>Behavioral</th><th>Model</th><th>Seconds</th></tr></thead>
           <tbody>${taskAttemptRows(detail.attempts) || '<tr><td colspan="5">No completed attempts for this revision.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-header">
+        <div><h2>Experiment attempts</h2><p>Only attempts for this exact frozen case revision are shown.</p></div>
+        <span class="badge ${detail.experiment_attempts.length ? "available" : "unavailable"}">${escapeHtml(detail.experiment_attempts.length)}</span>
+      </div>
+      <div class="table-wrap">
+        <table class="distributed-table">
+          <thead><tr><th>Treatment</th><th>Execution</th><th>State</th><th>Transport</th><th>Stage</th><th>Evaluator</th><th>First outcome</th><th>Recovery / effective</th><th>Observation</th><th>Cost / source</th></tr></thead>
+          <tbody>
+            ${detail.experiment_attempts
+              .map(
+                (item) => `
+                  <tr>
+                    <td>${escapeHtml(item.treatment_id)}<span class="identity">repetition ${escapeHtml(item.repetition)}</span></td>
+                    <td>${escapeHtml(item.model)}<span class="identity">${escapeHtml(item.platform)} | ${escapeHtml(item.route)}</span></td>
+                    <td>${stateBadge(item.state)}</td>
+                    <td>${escapeHtml(joinedValues(item.transport_statuses))}<span class="identity">${escapeHtml(joinedValues(item.transport_conclusions, "No conclusion"))}</span></td>
+                    <td>${escapeHtml(item.stage_status || "Unavailable")}</td>
+                    <td class="${item.evaluator_result ? `outcome-${escapeHtml(item.evaluator_result)}` : ""}">${escapeHtml(item.evaluator_result || "Unavailable")}</td>
+                    <td><span class="identity mono">${escapeHtml(shortId(item.first_outcome_id))}</span></td>
+                    <td>${escapeHtml(item.recovery_source_id || "None")}<span class="identity mono">${escapeHtml(shortId(item.effective_result_id))}</span></td>
+                    <td>${escapeHtml(item.observed_as_of || "Not observed")}<span class="identity">${item.non_atomic ? "non-atomic snapshot" : "atomic or unavailable"}</span></td>
+                    <td>${item.cost.complete ? escapeHtml(costLabel(item.cost)) : "Incomplete"}<span class="identity">${escapeHtml(joinedValues(item.source_ids, "No safe source ID"))}</span></td>
+                  </tr>`,
+              )
+              .join("") || '<tr><td colspan="10">No experiment attempt matches this exact case revision.</td></tr>'}
+          </tbody>
         </table>
       </div>
     </section>

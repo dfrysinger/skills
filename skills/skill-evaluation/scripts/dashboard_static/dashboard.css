@@ -527,6 +527,177 @@ main {
   display: block;
 }
 
+.experiment-summary-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--border);
+}
+
+.experiment-summary-strip > div {
+  padding: 18px 20px;
+  background: var(--surface);
+}
+
+.experiment-summary-strip strong,
+.experiment-summary-strip span {
+  display: block;
+}
+
+.experiment-summary-strip strong {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 22px;
+}
+
+.experiment-summary-strip span {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.experiment-block {
+  border-top: 1px solid var(--border);
+}
+
+.experiment-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, auto);
+  gap: 24px;
+  padding: 20px;
+}
+
+.experiment-heading h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.experiment-heading p {
+  max-width: 70ch;
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.experiment-meta {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: right;
+}
+
+.treatment-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  border-top: 1px solid var(--border);
+  background: var(--border);
+}
+
+.treatment-card {
+  min-width: 0;
+  padding: 20px;
+  background: var(--surface);
+}
+
+.treatment-card.selection-selected {
+  box-shadow: inset 0 3px 0 var(--success);
+}
+
+.treatment-card.selection-conflicted {
+  box-shadow: inset 0 3px 0 var(--warning);
+}
+
+.treatment-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.treatment-card-heading strong,
+.treatment-card-heading span {
+  display: block;
+}
+
+.treatment-card-heading > div > span {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.treatment-card > p {
+  min-height: 38px;
+  margin: 14px 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.treatment-card dl {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+}
+
+.treatment-card dl div {
+  display: grid;
+  grid-template-columns: 95px 1fr;
+  gap: 12px;
+}
+
+.treatment-card dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.treatment-card dd {
+  margin: 0;
+  font-size: 12px;
+}
+
+.experiment-attention-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--border);
+}
+
+.experiment-attention-item {
+  padding: 16px 20px;
+  background: var(--surface);
+}
+
+.experiment-attention-item strong,
+.experiment-attention-item span {
+  display: block;
+}
+
+.experiment-attention-item strong {
+  color: var(--warning);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.experiment-attention-item span {
+  margin-top: 4px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+}
+
+.experiment-attention-item p {
+  margin: 9px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.distributed-table {
+  min-width: 1280px;
+}
+
 .activity-grid strong {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 24px;
@@ -733,8 +904,13 @@ tbody tr:hover {
   }
 
   .attention-list,
-  .progress-layout {
+  .progress-layout,
+  .experiment-attention-list {
     grid-template-columns: 1fr;
+  }
+
+  .experiment-summary-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
@@ -767,8 +943,16 @@ tbody tr:hover {
   .lineage-strip,
   .change-strip,
   .comparison-summary,
-  .activity-grid {
+  .activity-grid,
+  .experiment-summary-strip,
+  .treatment-grid,
+  .experiment-heading {
     grid-template-columns: 1fr;
+  }
+
+  .experiment-meta {
+    justify-items: start;
+    text-align: left;
   }
 
   .attention-item {

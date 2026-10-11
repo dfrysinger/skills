@@ -45,6 +45,30 @@ def page(*rows, total=None):
     return {"total_count": len(rows) if total is None else total, "workflow_runs": list(rows)}
 
 
+def job(name, job_id=100, **updates):
+    value = {
+        "id": job_id,
+        "name": name,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 1,
+        "run_attempt": 1,
+        "head_sha": "a" * 40,
+        "started_at": "2026-10-11T20:00:00Z",
+        "completed_at": "2026-10-11T20:01:00Z",
+    }
+    value.update(updates)
+    return value
+
+
+def job_page(*rows, total=None):
+    return {"total_count": len(rows) if total is None else total, "jobs": list(rows)}
+
+
+def jobs_requested(row, names):
+    return [dict(direct_requested(row)[0], expected_jobs=list(names))]
+
+
 GH_SUBSTITUTE = """#!/usr/bin/env python3
 import json
 import os
@@ -456,6 +480,62 @@ class ObserverCLITests(unittest.TestCase):
                                        "--output", str(self.root / "missing-parent" / "result.json"))
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls, [])
+
+    def test_direct_known_jobs_requires_exact_unique_first_attempt_snapshot(self):
+        row = run()
+        expected = ["plan", "linux-native / attempt-1"]
+        jobs = [job(expected[0]), job(expected[1], 101)]
+        result, calls, output = self.invoke(
+            jobs_requested(row, expected),
+            [{"body": row}, {"body": job_page(*jobs)}],
+            "--direct-known-jobs",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output["schema_version"], 3)
+        self.assertEqual(output["coverage"], {
+            "scope": "requested-runs-and-exact-jobs-only",
+            "repository_enumerated": False,
+        })
+        self.assertEqual(output["observations"][0]["jobs"], jobs)
+        self.assertEqual(calls[1], [
+            "api", "--hostname", "github.com", "--method", "GET",
+            f"repos/{REPOSITORY}/actions/runs/1/jobs?per_page=100&page=1",
+            "--jq", observer.JOBS_LIST_PROJECTION,
+        ])
+
+        invalid_sets = (
+            [jobs[0]],
+            [*jobs, job("extra", 102)],
+            [jobs[0], job(expected[0], 101)],
+            [jobs[0], job(expected[1], 101, run_attempt=2)],
+            [jobs[0], job(expected[1], 101, run_id=2)],
+        )
+        for invalid in invalid_sets:
+            with self.subTest(invalid=invalid):
+                self.refuse(
+                    jobs_requested(row, expected),
+                    [{"body": row}, {"body": job_page(*invalid)}],
+                    "--direct-known-jobs",
+                    expected_calls=2,
+                )
+
+    def test_direct_known_jobs_validates_expected_set_before_network(self):
+        row = run()
+        for names in ([], ["plan", "plan"], [" plan"], ["bad\nname"], [1]):
+            with self.subTest(names=names):
+                self.refuse(
+                    jobs_requested(row, names),
+                    [],
+                    "--direct-known-jobs",
+                    expected_calls=0,
+                )
+        rerun = run(run_attempt=2)
+        self.refuse(
+            jobs_requested(rerun, ["plan"]),
+            [],
+            "--direct-known-jobs",
+            expected_calls=0,
+        )
 
     def test_direct_known_runs_pending_response_has_no_snapshot_or_later_get(self):
         for failure in (False, True):

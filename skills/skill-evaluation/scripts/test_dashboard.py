@@ -1389,6 +1389,11 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn(b"Skill lineage", javascript)
         self.assertIn(b"Relevant skill change", javascript)
         self.assertIn(b"Needs attention", javascript)
+        self.assertIn(b"Experiment attention", javascript)
+        self.assertIn(b"Distributed activity", javascript)
+        self.assertIn(b"observed as of", javascript)
+        self.assertIn(b"non-atomic snapshot", javascript)
+        self.assertIn(b"Experiment attempts", javascript)
         self.assertIn(b"Incompatible current workflow records", javascript)
         self.assertIn(b"/task/", javascript)
         self.assertNotIn(b"SERVER-HIDDEN-MARKER", javascript)
@@ -1397,6 +1402,9 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b".lineage-strip", stylesheet)
         self.assertIn(b".diff-code", stylesheet)
+        self.assertIn(b".experiment-summary-strip", stylesheet)
+        self.assertIn(b".treatment-grid", stylesheet)
+        self.assertIn(b".distributed-table", stylesheet)
         self.assertNotIn(b"SERVER-HIDDEN-MARKER", stylesheet)
 
 

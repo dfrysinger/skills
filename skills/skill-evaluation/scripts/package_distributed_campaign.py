@@ -16,9 +16,22 @@ import stat
 import tarfile
 
 
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise ValueError(message)
+
+
 def sha256(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def canonical_fingerprint(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value, allow_nan=False, separators=(",", ":"), sort_keys=True
+        ).encode()
+    ).hexdigest()
 
 
 def write_json(path: Path, value: object) -> None:
@@ -78,6 +91,136 @@ def tree_sha256(root: Path, *, workers: int = 1) -> str:
     )
     payload = json.dumps(records, separators=(",", ":"), sort_keys=True).encode()
     return hashlib.sha256(payload).hexdigest()
+
+
+def safe_relative_path(value: object, label: str) -> Path:
+    require(isinstance(value, str) and value, f"{label} must be nonempty text")
+    path = Path(value)
+    require(
+        not path.is_absolute()
+        and "\\" not in value
+        and ":" not in value
+        and all(part not in {"", ".", ".."} for part in path.parts),
+        f"{label} must be a safe package-relative path",
+    )
+    return path
+
+
+def validate_target_skill_identities(value: object) -> list[dict]:
+    require(isinstance(value, list) and value, "targetSkillIdentities must be nonempty")
+    result = []
+    seen = set()
+    for record in value:
+        require(
+            isinstance(record, dict)
+            and set(record) == {"skillName", "evaluatorFingerprint"},
+            "target skill identity has unexpected fields",
+        )
+        name = record["skillName"]
+        fingerprint = record["evaluatorFingerprint"]
+        require(
+            isinstance(name, str)
+            and name
+            and all(character.isalnum() or character in "._-" for character in name),
+            "invalid target skill name",
+        )
+        require(
+            isinstance(fingerprint, str)
+            and len(fingerprint) == 64
+            and all(character in "0123456789abcdef" for character in fingerprint),
+            "invalid evaluator fingerprint",
+        )
+        require(name not in seen, f"duplicate target skill identity: {name}")
+        seen.add(name)
+        result.append(record)
+    require(result == sorted(result, key=lambda item: item["skillName"]),
+            "target skill identities must be sorted")
+    return result
+
+
+def validate_treatment_inventory(source: Path, manifest: dict) -> dict:
+    source = source.resolve()
+    schema_version = manifest.get("schemaVersion", 1)
+    if schema_version == 1:
+        return {}
+    require(schema_version == 2, "unsupported package manifest schema")
+    plan = manifest.get("experimentPlanSha256")
+    require(
+        isinstance(plan, str)
+        and len(plan) == 64
+        and all(character in "0123456789abcdef" for character in plan),
+        "invalid experiment plan fingerprint",
+    )
+    inventory_value = manifest.get("treatmentInventory")
+    require(isinstance(inventory_value, dict) and inventory_value,
+            "treatmentInventory must be a nonempty object")
+    result = {}
+    for treatment_id, record in sorted(inventory_value.items()):
+        require(
+            isinstance(treatment_id, str)
+            and treatment_id
+            and all(character.isalnum() or character in "._-" for character in treatment_id),
+            "invalid treatment id",
+        )
+        require(
+            isinstance(record, dict)
+            and set(record) == {
+                "treatmentFingerprint", "targetSkillIdentities", "files"
+            },
+            f"treatment inventory has unexpected fields: {treatment_id}",
+        )
+        fingerprint = record["treatmentFingerprint"]
+        require(
+            isinstance(fingerprint, str)
+            and len(fingerprint) == 64
+            and all(character in "0123456789abcdef" for character in fingerprint),
+            f"invalid treatment fingerprint: {treatment_id}",
+        )
+        validate_target_skill_identities(record["targetSkillIdentities"])
+        files = record["files"]
+        require(isinstance(files, list) and files,
+                f"treatment files must be nonempty: {treatment_id}")
+        seen_paths = set()
+        for file_record in files:
+            require(
+                isinstance(file_record, dict)
+                and set(file_record) == {"path", "sha256"},
+                f"treatment file has unexpected fields: {treatment_id}",
+            )
+            relative = safe_relative_path(file_record["path"], "treatment file path")
+            require(relative.as_posix() not in seen_paths,
+                    f"duplicate treatment file: {relative}")
+            seen_paths.add(relative.as_posix())
+            path = source / relative
+            current = source
+            for part in relative.parts:
+                current = current / part
+                require(
+                    not current.is_symlink(),
+                    f"treatment file path contains a symlink: {relative}",
+                )
+            require(path.is_file(), f"treatment file must be a regular file: {relative}")
+            require(
+                os.path.commonpath((str(source), str(path.resolve())))
+                == str(source),
+                f"treatment file escapes package root: {relative}",
+            )
+            require(
+                sha256(path) == file_record["sha256"],
+                f"treatment file digest mismatch: {relative}",
+            )
+        require(files == sorted(files, key=lambda item: item["path"]),
+                f"treatment files must be sorted: {treatment_id}")
+        require(
+            fingerprint
+            == canonical_fingerprint({
+                "targetSkillIdentities": record["targetSkillIdentities"],
+                "files": files,
+            }),
+            f"treatment fingerprint mismatch: {treatment_id}",
+        )
+        result[treatment_id] = record
+    return result
 
 
 def add_tar_member(stream: tarfile.TarFile, root: Path, path: Path) -> None:
@@ -156,6 +299,24 @@ def package_campaign(
         raise ValueError("refusing to replace an existing output")
     if not hidden_patterns:
         raise ValueError("at least one hidden-path pattern is required")
+    manifest = json.loads((source / "package-manifest.json").read_text())
+    require(isinstance(manifest, dict), "package manifest must be an object")
+    treatment_inventory = validate_treatment_inventory(source, manifest)
+    for treatment in treatment_inventory.values():
+        for record in treatment["files"]:
+            relative = Path(record["path"])
+            protected = [
+                Path(*relative.parts[:index]).as_posix()
+                for index in range(1, len(relative.parts) + 1)
+            ]
+            require(
+                not any(
+                    fnmatch.fnmatch(path, pattern)
+                    for path in protected
+                    for pattern in hidden_patterns
+                ),
+                f"hidden-path pattern removes treatment inventory: {relative}",
+            )
 
     shutil.copytree(source, full_root, symlinks=True)
     for cache in full_root.rglob("__pycache__"):
@@ -167,6 +328,8 @@ def package_campaign(
     removed = remove_matches(candidate_root, hidden_patterns)
     if not removed:
         raise ValueError("hidden-path patterns removed no files or directories")
+    if manifest.get("schemaVersion") == 2:
+        validate_treatment_inventory(candidate_root, manifest)
     write_json(candidate_root / "package-inventory.json", inventory(candidate_root, workers=hash_workers))
     write_archive(candidate_root, candidate_archive)
 
@@ -174,7 +337,7 @@ def package_campaign(
     if sha256(candidate_root / "package-manifest.json") != manifest_sha:
         raise ValueError("candidate and full package manifests differ")
     receipt = {
-        "schemaVersion": 1,
+        "schemaVersion": manifest.get("schemaVersion", 1),
         "hashWorkers": hash_workers,
         "source": str(source),
         "hiddenPatterns": hidden_patterns,
@@ -193,21 +356,22 @@ def package_campaign(
             "treeSha256": tree_sha256(candidate_root, workers=hash_workers),
         },
     }
+    if receipt["schemaVersion"] == 2:
+        receipt["experimentPlanSha256"] = manifest["experimentPlanSha256"]
+        receipt["treatmentInventory"] = treatment_inventory
     write_json(receipt_path, receipt)
-    write_json(
-        completion_path,
-        {
-            "schemaVersion": 1,
-            "campaignId": json.loads(
-                (full_root / "package-manifest.json").read_text()
-            )["campaignId"],
-            "packageArchiveSha256": receipt["full"]["archiveSha256"],
-            "candidatePackageArchiveSha256": receipt["candidate"]["archiveSha256"],
-            "packageManifestSha256": manifest_sha,
-            "completedAttempts": [],
-            "excludedAttempts": [],
-        },
-    )
+    completion = {
+        "schemaVersion": receipt["schemaVersion"],
+        "campaignId": manifest["campaignId"],
+        "packageArchiveSha256": receipt["full"]["archiveSha256"],
+        "candidatePackageArchiveSha256": receipt["candidate"]["archiveSha256"],
+        "packageManifestSha256": manifest_sha,
+        "completedAttempts": [],
+        "excludedAttempts": [],
+    }
+    if receipt["schemaVersion"] == 2:
+        completion["experimentPlanSha256"] = manifest["experimentPlanSha256"]
+    write_json(completion_path, completion)
     return receipt
 
 

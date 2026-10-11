@@ -11,8 +11,10 @@ from pathlib import Path
 import evaluation_history
 from dashboard_state import (
     campaign_registration,
+    compute_experiment_selection,
     ensure_state_root,
     event_records,
+    experiment_activity_records,
     extension_records,
     live_state_enabled,
     parse_instant,
@@ -67,6 +69,13 @@ POPULATION_FIELDS = {
     "evaluator_models",
 }
 DEFAULT_STALE_SECONDS = 120
+NONTERMINAL_TRANSPORT_STATUSES = {
+    "queued",
+    "in_progress",
+    "waiting",
+    "requested",
+    "pending",
+}
 
 
 def safe_cost(value: object) -> dict:
@@ -838,6 +847,22 @@ def unavailable_projection(registration: dict, reason: str) -> dict:
         },
         "task_details": [],
         "attention": [],
+        "experiments": {
+            "status": "unavailable",
+            "items": [],
+            "activity": [],
+            "attention": [],
+            "conflicts": [],
+            "invalid": [],
+            "counts": {
+                "planned": 0,
+                "cloud_nonterminal": 0,
+                "cloud_completed_awaiting_result": 0,
+                "distributed_pending": 0,
+                "terminal": 0,
+                "invalid_or_conflicted": 0,
+            },
+        },
         "availability": {
             "completed_history": "unavailable",
             "live_sessions": "unavailable",
@@ -847,6 +872,498 @@ def unavailable_projection(registration: dict, reason: str) -> dict:
             "experiments": "unavailable",
             "ablation": "unavailable",
         },
+    }
+
+
+def experiment_projection(corpus_root: Path, campaign_id: str) -> dict:
+    records, conflicts, invalid = experiment_activity_records(corpus_root)
+    records = [
+        item for item in records
+        if item["campaign_id"] == campaign_id
+    ]
+    declarations = [
+        item for item in records
+        if item["event_type"] == "experiment_declared"
+    ]
+    conflicted_event_ids = {
+        item["event_id"] for item in conflicts
+    }
+    by_identity: dict[tuple[str, str], list[dict]] = {}
+    for declaration in declarations:
+        key = (
+            declaration["subject"]["experiment_id"],
+            declaration["subject"]["experiment_fingerprint"],
+        )
+        by_identity.setdefault(key, []).append(declaration)
+
+    items = []
+    activity = []
+    attention = []
+    counts = {
+        "planned": 0,
+        "cloud_nonterminal": 0,
+        "cloud_completed_awaiting_result": 0,
+        "distributed_pending": 0,
+        "terminal": 0,
+        "invalid_or_conflicted": len(invalid) + len(conflicts),
+    }
+    for identity, candidates in sorted(by_identity.items()):
+        experiment_id, experiment_fingerprint = identity
+        related = [
+            item for item in records
+            if (
+                item["subject"]["experiment_id"],
+                item["subject"]["experiment_fingerprint"],
+            ) == identity
+        ]
+        if len(candidates) != 1:
+            attention.append({
+                "kind": "experiment_conflicted",
+                "experiment_id": experiment_id,
+                "attempt_id": None,
+                "case_id": None,
+                "summary": "Experiment declaration is not unique.",
+            })
+            counts["invalid_or_conflicted"] += len(candidates)
+            continue
+        declaration = candidates[0]
+        plan = declaration["payload"]
+        planned = {
+            item["attempt_id"]: item
+            for item in plan["attempts"]
+        }
+        treatments = {
+            item["treatment_id"]: item
+            for item in plan["treatments"]
+        }
+        dispatches = [
+            item for item in related
+            if item["event_type"] == "cloud_dispatch_bound"
+        ]
+        observations = [
+            item for item in related
+            if item["event_type"] == "cloud_transport_observed"
+        ]
+        stages = [
+            item for item in related
+            if item["event_type"] == "distributed_stage_recorded"
+        ]
+        results = [
+            item for item in related
+            if item["event_type"] == "distributed_result_recorded"
+        ]
+        selections = [
+            item for item in related
+            if item["event_type"] == "experiment_selection_recorded"
+            and item["event_id"] not in conflicted_event_ids
+        ]
+
+        results_by_attempt: dict[str, list[dict]] = {}
+        stages_by_attempt: dict[str, list[dict]] = {}
+        for result in results:
+            results_by_attempt.setdefault(
+                result["subject"]["attempt_id"],
+                [],
+            ).append(result)
+        for stage in stages:
+            stages_by_attempt.setdefault(
+                stage["subject"]["attempt_id"],
+                [],
+            ).append(stage)
+
+        valid_dispatch = dispatches[0] if len(dispatches) == 1 else None
+        observation_rows: dict[str, list[dict]] = {}
+        latest_observed_at = None
+        non_atomic = False
+        if valid_dispatch is not None:
+            expected_jobs = {
+                item["job_name"]: item
+                for item in valid_dispatch["payload"]["jobs"]
+            }
+            matching_observations = [
+                item for item in observations
+                if item["subject"]["run_binding_fingerprint"]
+                == valid_dispatch["subject"]["run_binding_fingerprint"]
+            ]
+            if matching_observations:
+                observation = max(
+                    matching_observations,
+                    key=lambda item: (
+                        parse_instant(item["observed_at"]),
+                        parse_instant(item["recorded_at"]),
+                        item["event_id"],
+                    ),
+                )
+                observed_jobs = {
+                    item["job_name"]: item
+                    for item in observation["payload"]["observations"]
+                }
+                if set(observed_jobs) != set(expected_jobs):
+                    observation = None
+                elif any(
+                    (
+                        observed_jobs[name]["attempt_id"],
+                        observed_jobs[name]["stage_kind"],
+                    ) != (
+                        expected_jobs[name]["attempt_id"],
+                        expected_jobs[name]["stage_kind"],
+                    )
+                    for name in expected_jobs
+                ):
+                    observation = None
+                if observation is not None:
+                    latest_observed_at = observation["observed_at"]
+                    non_atomic = observation["payload"]["non_atomic"]
+                    for row in observation["payload"]["observations"]:
+                        if row["attempt_id"] is not None:
+                            observation_rows.setdefault(
+                                row["attempt_id"],
+                                [],
+                            ).append({
+                                **row,
+                                "observed_at": observation["observed_at"],
+                                "opaque_source_id": observation["payload"][
+                                    "opaque_source_id"
+                                ],
+                            })
+
+        treatment_rows = []
+        for treatment_id, treatment in sorted(treatments.items()):
+            treatment_attempts = [
+                item for item in planned.values()
+                if item["treatment_id"] == treatment_id
+            ]
+            treatment_results = [
+                row
+                for attempt in treatment_attempts
+                for row in results_by_attempt.get(attempt["attempt_id"], [])
+            ]
+            outcome_counts = {"PASS": 0, "FAIL": 0}
+            for attempt in treatment_attempts:
+                attempt_results = results_by_attempt.get(
+                    attempt["attempt_id"],
+                    [],
+                )
+                if len(attempt_results) == 1:
+                    outcome_counts[
+                        attempt_results[0]["payload"]["terminal_status"]
+                    ] += 1
+            selection_state = "not_selected"
+            if len(selections) == 1:
+                selected = selections[0]["payload"]["selected_treatment_id"]
+                if selected == treatment_id:
+                    selection_state = "selected"
+                elif treatment_id in selections[0]["payload"][
+                    "eliminated_treatment_ids"
+                ]:
+                    selection_state = "eliminated"
+            elif len(selections) > 1:
+                selection_state = "conflicted"
+            treatment_rows.append({
+                "treatment_id": treatment_id,
+                "role": treatment["role"],
+                "hypothesis": treatment["hypothesis"],
+                "snapshot_id": treatment["snapshot_id"],
+                "planned_repetitions": len(treatment_attempts),
+                "observed_repetitions": sum(
+                    bool(observation_rows.get(item["attempt_id"]))
+                    for item in treatment_attempts
+                ),
+                "terminal_repetitions": sum(
+                    len(results_by_attempt.get(item["attempt_id"], [])) == 1
+                    for item in treatment_attempts
+                ),
+                "outcomes": outcome_counts,
+                "selection_state": selection_state,
+                "cost": {
+                    "known_attempts": 0,
+                    "total_attempts": len(treatment_attempts),
+                    "credits": None,
+                    "premium_requests": None,
+                    "complete": not treatment_attempts,
+                },
+            })
+
+        result_conflicted = any(
+            len(rows) > 1 for rows in results_by_attempt.values()
+        )
+        if result_conflicted:
+            selection = {
+                "status": "conflicted",
+                "selected_treatment_id": None,
+                "reasons": ["result_conflicted"],
+                "authority": "experiment_evaluator",
+            }
+        elif len(selections) == 1:
+            selection = {
+                **selections[0]["payload"],
+                "authority": "experiment_evaluator",
+            }
+        elif len(selections) > 1 or any(
+            item["reason"] == "terminal_selection_conflicted"
+            and item["event_id"] in {
+                row["event_id"] for row in related
+            }
+            for item in conflicts
+        ):
+            selection = {
+                "status": "conflicted",
+                "selected_treatment_id": None,
+                "reasons": ["terminal_selection_conflicted"],
+                "authority": "experiment_evaluator",
+            }
+        else:
+            try:
+                computed = compute_experiment_selection(
+                    declaration,
+                    [
+                        rows[0]
+                        for rows in results_by_attempt.values()
+                        if len(rows) == 1
+                    ],
+                )
+            except ValueError:
+                computed = {
+                    "status": "selection_incomplete",
+                    "reasons": ["result_identity_invalid"],
+                }
+            selection = {
+                "status": (
+                    "pending"
+                    if not results
+                    else "incomplete"
+                ),
+                "selected_treatment_id": None,
+                "reasons": computed.get("reasons", []),
+                "authority": "derived",
+            }
+
+        experiment_activity = []
+        for attempt_id, attempt in sorted(planned.items()):
+            attempt_results = results_by_attempt.get(attempt_id, [])
+            attempt_stages = sorted(
+                stages_by_attempt.get(attempt_id, []),
+                key=lambda item: (
+                    parse_instant(item["observed_at"]),
+                    item["event_id"],
+                ),
+            )
+            attempt_observations = sorted(
+                observation_rows.get(attempt_id, []),
+                key=lambda item: (
+                    item["observed_at"],
+                    item["source_index"],
+                ),
+            )
+            transport_statuses = sorted({
+                item["status"] for item in attempt_observations
+            })
+            transport_conclusions = sorted({
+                item["conclusion"]
+                for item in attempt_observations
+                if item["conclusion"] is not None
+            })
+            result = attempt_results[0] if len(attempt_results) == 1 else None
+            stage = attempt_stages[-1] if attempt_stages else None
+            state = "planned"
+            if len(attempt_results) > 1:
+                state = "conflicted"
+            elif result is not None:
+                state = "terminal"
+                counts["terminal"] += 1
+            elif stage is not None and not stage["payload"]["terminal"]:
+                state = "distributed_pending"
+                counts["distributed_pending"] += 1
+            elif any(
+                status in NONTERMINAL_TRANSPORT_STATUSES
+                for status in transport_statuses
+            ):
+                state = "cloud_nonterminal"
+                counts["cloud_nonterminal"] += 1
+            elif (
+                "completed" in transport_statuses
+                and result is None
+            ):
+                state = "cloud_completed_awaiting_result"
+                counts["cloud_completed_awaiting_result"] += 1
+            counts["planned"] += 1
+            row = {
+                "campaign_id": campaign_id,
+                "experiment_id": experiment_id,
+                "experiment_fingerprint": experiment_fingerprint,
+                "attempt_id": attempt_id,
+                "case_id": attempt["case_id"],
+                "case_revision": attempt["case_revision"],
+                "snapshot_id": attempt["snapshot_id"],
+                "treatment_id": attempt["treatment_id"],
+                "repetition": attempt["repetition"],
+                "model": attempt["candidate_model"],
+                "platform": (
+                    f"{attempt['target_os']} / {attempt['architecture']}"
+                ),
+                "route": attempt["route"],
+                "location": "cloud",
+                "state": state,
+                "transport_statuses": transport_statuses,
+                "transport_conclusions": transport_conclusions,
+                "stage_status": (
+                    stage["payload"]["status"] if stage is not None else None
+                ),
+                "stage_terminal": (
+                    stage["payload"]["terminal"] if stage is not None else None
+                ),
+                "evaluator_result": (
+                    result["payload"]["terminal_status"]
+                    if result is not None
+                    else None
+                ),
+                "first_outcome_id": (
+                    result["payload"]["first_stage_id"]
+                    if result is not None
+                    else (
+                        attempt_stages[0]["event_id"]
+                        if attempt_stages
+                        else None
+                    )
+                ),
+                "recovery_source_id": (
+                    result["payload"]["source_lineage"]["source_id"]
+                    if result is not None
+                    and result["payload"]["source_lineage"] is not None
+                    else None
+                ),
+                "effective_result_id": (
+                    result["payload"]["effective_result_id"]
+                    if result is not None
+                    else None
+                ),
+                "observed_as_of": (
+                    attempt_observations[-1]["observed_at"]
+                    if attempt_observations
+                    else None
+                ),
+                "non_atomic": bool(attempt_observations) and non_atomic,
+                "source_ids": sorted({
+                    item["opaque_source_id"]
+                    for item in attempt_observations
+                } | {
+                    source_id
+                    for event in attempt_stages + attempt_results
+                    for source_id in event["payload"]["source_ids"]
+                }),
+                "cost": {
+                    "credits": None,
+                    "premium_requests": None,
+                    "complete": False,
+                },
+            }
+            experiment_activity.append(row)
+            activity.append(row)
+            if state in {
+                "planned",
+                "cloud_completed_awaiting_result",
+                "distributed_pending",
+                "conflicted",
+            }:
+                attention.append({
+                    "kind": state,
+                    "experiment_id": experiment_id,
+                    "attempt_id": attempt_id,
+                    "case_id": attempt["case_id"],
+                    "summary": {
+                        "planned": "Attempt has no admitted activity.",
+                        "cloud_completed_awaiting_result": (
+                            "Transport completed without a terminal result."
+                        ),
+                        "distributed_pending": (
+                            "Distributed evaluation is awaiting a later stage."
+                        ),
+                        "conflicted": "Attempt has conflicting terminal results.",
+                    }[state],
+                })
+            fields = (
+                result["payload"]["selection_fields"]
+                if result is not None
+                else None
+            )
+            if fields is not None and len(set(
+                fields["independent_behavioral_verdicts"]
+            )) > 1:
+                attention.append({
+                    "kind": "judge_disagreement",
+                    "experiment_id": experiment_id,
+                    "attempt_id": attempt_id,
+                    "case_id": attempt["case_id"],
+                    "summary": "Independent behavioral verdicts disagree.",
+                })
+
+        items.append({
+            "experiment_id": experiment_id,
+            "experiment_fingerprint": experiment_fingerprint,
+            "title": plan["title"],
+            "summary": plan["summary"],
+            "snapshot_id": plan["snapshot_id"],
+            "candidate_model": plan["candidate_model"],
+            "platform": f"{plan['target_os']} / {plan['architecture']}",
+            "route": plan["route"],
+            "planned_attempts": len(planned),
+            "observed_attempts": sum(
+                bool(observation_rows.get(attempt_id))
+                for attempt_id in planned
+            ),
+            "terminal_attempts": sum(
+                len(rows) == 1 for rows in results_by_attempt.values()
+            ),
+            "missing_attempts": sum(
+                not observation_rows.get(attempt_id)
+                and not results_by_attempt.get(attempt_id)
+                for attempt_id in planned
+            ),
+            "selection_rule": plan["selection_rule"],
+            "selection": selection,
+            "treatments": treatment_rows,
+            "observed_as_of": latest_observed_at,
+            "non_atomic": non_atomic,
+            "cost": {
+                "known_attempts": 0,
+                "total_attempts": len(planned),
+                "credits": None,
+                "premium_requests": None,
+                "complete": not planned,
+            },
+            "activity": experiment_activity,
+        })
+        attention.append({
+            "kind": "incomplete_accounting",
+            "experiment_id": experiment_id,
+            "attempt_id": None,
+            "case_id": None,
+            "summary": (
+                "Distributed attempts have no canonical accounting artifact."
+            ),
+        })
+
+    if invalid or conflicts:
+        attention.append({
+            "kind": "invalid_or_conflicted_records",
+            "experiment_id": "campaign",
+            "attempt_id": None,
+            "case_id": None,
+            "summary": (
+                f"{len(invalid)} invalid records and {len(conflicts)} "
+                "conflicts remain excluded."
+            ),
+        })
+
+    status = "available" if items or invalid or conflicts else "unavailable"
+    return {
+        "status": status,
+        "items": items,
+        "activity": activity,
+        "attention": attention,
+        "conflicts": conflicts,
+        "invalid": invalid,
+        "counts": counts,
     }
 
 
@@ -1161,6 +1678,21 @@ def campaign_projection(state_root: Path, campaign_id: str) -> dict:
         live["sessions"],
         live["live_attempts"],
     )
+    experiments = experiment_projection(
+        corpus_root,
+        registration["campaign_id"],
+    )
+    for detail in task_details:
+        detail["experiment_attempts"] = [
+            item for item in experiments["activity"]
+            if (
+                item["case_id"],
+                item["case_revision"],
+            ) == (
+                detail["case_id"],
+                detail["case_revision"],
+            )
+        ]
     return {
         "schema_version": 1,
         "campaign": {
@@ -1180,14 +1712,15 @@ def campaign_projection(state_root: Path, campaign_id: str) -> dict:
         "lineage": lineage,
         "task_details": task_details,
         "attention": attention,
+        "experiments": experiments,
         "interpretation": report["interpretation"],
         "availability": {
             "completed_history": "available",
             "live_sessions": "available" if live["available"] else "unavailable",
             "live_attempts": "available" if live["available"] else "unavailable",
-            "cloud_activity": "unavailable",
+            "cloud_activity": experiments["status"],
             "lineage": lineage["status"],
-            "experiments": "unavailable",
+            "experiments": experiments["status"],
             "ablation": "unavailable",
         },
     }
@@ -1204,6 +1737,12 @@ def campaign_index_projection(state_root: Path) -> dict:
         "conflicted": 0,
     }
     active_attempts = 0
+    cloud_nonterminal = 0
+    cloud_completed_awaiting_result = 0
+    distributed_pending = 0
+    terminal_distributed = 0
+    experiment_campaigns = 0
+    latest_cloud_observation = None
     live_campaigns = 0
     for path in sorted((root / "campaigns").glob("*.json")):
         if path.is_symlink():
@@ -1223,6 +1762,15 @@ def campaign_index_projection(state_root: Path) -> dict:
                 item["state"] == "active"
                 for item in projection["live_attempts"]
             ),
+            "cloud_counts": projection["experiments"]["counts"],
+            "cloud_observed_as_of": max(
+                (
+                    item["observed_as_of"]
+                    for item in projection["experiments"]["items"]
+                    if item["observed_as_of"] is not None
+                ),
+                default=None,
+            ),
         }
         campaigns.append(campaign)
         if projection["availability"]["live_sessions"] == "available":
@@ -1230,14 +1778,38 @@ def campaign_index_projection(state_root: Path) -> dict:
         for state in session_counts:
             session_counts[state] += campaign["session_counts"][state]
         active_attempts += campaign["active_attempts"]
+        cloud_nonterminal += campaign["cloud_counts"]["cloud_nonterminal"]
+        cloud_completed_awaiting_result += campaign["cloud_counts"][
+            "cloud_completed_awaiting_result"
+        ]
+        distributed_pending += campaign["cloud_counts"]["distributed_pending"]
+        terminal_distributed += campaign["cloud_counts"]["terminal"]
+        if projection["availability"]["experiments"] == "available":
+            experiment_campaigns += 1
+        if campaign["cloud_observed_as_of"] is not None:
+            if (
+                latest_cloud_observation is None
+                or parse_instant(campaign["cloud_observed_as_of"])
+                > parse_instant(latest_cloud_observation)
+            ):
+                latest_cloud_observation = campaign["cloud_observed_as_of"]
     return {
         "schema_version": 1,
         "campaigns": campaigns,
         "session_counts": session_counts,
         "active_attempts": active_attempts,
+        "cloud_counts": {
+            "nonterminal": cloud_nonterminal,
+            "completed_awaiting_result": cloud_completed_awaiting_result,
+            "distributed_pending": distributed_pending,
+            "terminal": terminal_distributed,
+        },
+        "cloud_observed_as_of": latest_cloud_observation,
         "availability": {
             "live_sessions": "available" if live_campaigns else "unavailable",
-            "cloud_activity": "unavailable",
+            "cloud_activity": (
+                "available" if experiment_campaigns else "unavailable"
+            ),
         },
     }
 

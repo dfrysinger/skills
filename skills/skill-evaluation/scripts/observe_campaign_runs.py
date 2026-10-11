@@ -19,6 +19,14 @@ ROW_PROJECTION = (
     "repository:{id:.repository.id,full_name:.repository.full_name,private:.repository.private}}"
 )
 LIST_PROJECTION = "{total_count,workflow_runs:[.workflow_runs[]|" + ROW_PROJECTION + "]}"
+JOB_FIELDS = (
+    "id", "name", "status", "conclusion", "run_id", "run_attempt", "head_sha",
+    "started_at", "completed_at",
+)
+JOB_PROJECTION = (
+    "{id,name,status,conclusion,run_id,run_attempt,head_sha,started_at,completed_at}"
+)
+JOBS_LIST_PROJECTION = "{total_count,jobs:[.jobs[]|" + JOB_PROJECTION + "]}"
 
 
 class ObservationError(ValueError):
@@ -68,6 +76,36 @@ def workflow_path(value: object, name: str = "path") -> str:
             or any(part in {"", ".", ".."} for part in path.split("/"))):
         raise ObservationError("workflow path must be a safe relative path")
     return path
+
+
+def job_name(value: object) -> str:
+    name = text(value, "job name")
+    if name != name.strip() or len(name) > 256:
+        raise ObservationError("job name must be trimmed and at most 256 characters")
+    return name
+
+
+def job_record(row: object, expected: dict) -> dict:
+    if not isinstance(row, dict) or set(row) != set(JOB_FIELDS):
+        raise ObservationError("job metadata has missing or unexpected fields")
+    integer(row["id"], "job id")
+    job_name(row["name"])
+    for field in ("run_id", "run_attempt"):
+        integer(row[field], f"job {field}")
+    if row["run_id"] != expected["id"] or row["run_attempt"] != expected["run_attempt"]:
+        raise ObservationError("job belongs to a different run or run attempt")
+    if row["head_sha"] != expected["head_sha"]:
+        raise ObservationError("job head SHA does not match requested run")
+    if row["status"] not in STATUSES:
+        raise ObservationError("unknown job status")
+    if row["status"] == "completed":
+        text(row["conclusion"], "completed job conclusion")
+    elif row["conclusion"] is not None:
+        raise ObservationError("nonterminal job must have a null conclusion")
+    for field in ("started_at", "completed_at"):
+        if row[field] is not None:
+            text(row[field], f"job {field}")
+    return row
 
 
 def run_record(row: object, repository: str) -> dict:
@@ -126,20 +164,33 @@ def validate_options(args: argparse.Namespace) -> list[dict]:
         raise ObservationError("runs must be a nonempty JSON array")
     seen = set()
     input_fields = set(BINDINGS) | {"repository"}
-    if args.direct_known_runs:
+    direct = args.direct_known_runs or args.direct_known_jobs
+    if direct:
         input_fields.add("workflow_path")
+    if args.direct_known_jobs:
+        input_fields.add("expected_jobs")
     for row in rows:
         binding(row, args.repository)
         if set(row) != input_fields:
             raise ObservationError("input run has unexpected fields")
-        if args.direct_known_runs:
+        if direct:
             workflow_path(row["workflow_path"], "workflow_path")
+        if args.direct_known_jobs:
+            if row["run_attempt"] != 1:
+                raise ObservationError("exact job observation requires first run attempt")
+            names = row["expected_jobs"]
+            if not isinstance(names, list) or not names:
+                raise ObservationError("expected_jobs must be a nonempty array")
+            validated = [job_name(name) for name in names]
+            if len(set(validated)) != len(validated):
+                raise ObservationError("expected_jobs contains duplicate names")
         if row["id"] in seen:
             raise ObservationError("duplicate requested run id")
         seen.add(row["id"])
         if row["repository"] != rows[0]["repository"]:
             raise ObservationError("inconsistent requested repository records")
-    if args.direct_known_runs and len(rows) > args.max_calls:
+    calls_per_run = 2 if args.direct_known_jobs else 1
+    if direct and len(rows) * calls_per_run > args.max_calls:
         raise ObservationError("requested runs exceed call budget; observation is UNKNOWN")
     return rows
 
@@ -190,11 +241,12 @@ def observe(args: argparse.Namespace, requested: list[dict]) -> dict:
         expected = wanted.get(row["id"])
         if expected is not None and any(row[key] != expected[key] for key in BINDINGS):
             raise ObservationError("requested run binding mismatch; reruns cannot replace originals")
-        if (args.direct_known_runs and expected is not None
+        if (direct and expected is not None
                 and row["path"] != expected["workflow_path"]):
             raise ObservationError("requested workflow path mismatch; observation is UNKNOWN")
 
-    if not args.direct_known_runs:
+    direct = args.direct_known_runs or args.direct_known_jobs
+    if not direct:
         for page in range(1, args.max_pages + 1):
             endpoint = f"repos/{args.repository}/actions/runs?per_page=100&page={page}"
             response = reader.get(endpoint, LIST_PROJECTION, "list")
@@ -237,8 +289,57 @@ def observe(args: argparse.Namespace, requested: list[dict]) -> dict:
         observed[row["id"]] = {
             "run": row, "provenance": {"source": "direct", "call": len(reader.calls)}
         }
+        if args.direct_known_jobs:
+            expected_names = set(expected["expected_jobs"])
+            jobs = []
+            seen_ids = set()
+            seen_names = set()
+            total_jobs = None
+            first_job_call = len(reader.calls) + 1
+            for page in range(1, args.max_pages + 1):
+                endpoint = (
+                    f"repos/{args.repository}/actions/runs/{expected['id']}"
+                    f"/jobs?per_page=100&page={page}"
+                )
+                response = reader.get(endpoint, JOBS_LIST_PROJECTION, "jobs")
+                if not isinstance(response, dict) or set(response) != {"total_count", "jobs"}:
+                    raise ObservationError("jobs response requires total_count and jobs")
+                count = integer(response["total_count"], "job total_count", 0)
+                if total_jobs is None:
+                    total_jobs = count
+                    if total_jobs > args.max_pages * 100:
+                        raise ObservationError(
+                            "jobs listing incomplete within max-pages; observation is UNKNOWN"
+                        )
+                elif count != total_jobs:
+                    raise ObservationError("jobs total_count drift; observation is UNKNOWN")
+                rows = response["jobs"]
+                if not isinstance(rows, list) or len(rows) != min(
+                    100, total_jobs - len(seen_ids)
+                ):
+                    raise ObservationError(
+                        "jobs page length does not match declared membership"
+                    )
+                for job in rows:
+                    job_record(job, expected)
+                    if job["id"] in seen_ids or job["name"] in seen_names:
+                        raise ObservationError("duplicate job id or name")
+                    seen_ids.add(job["id"])
+                    seen_names.add(job["name"])
+                    jobs.append(job)
+                if len(seen_ids) == total_jobs:
+                    break
+            else:
+                raise ObservationError("jobs listing incomplete; observation is UNKNOWN")
+            if seen_names != expected_names:
+                raise ObservationError("observed job-name set differs from dispatch binding")
+            observed[row["id"]]["jobs"] = jobs
+            observed[row["id"]]["jobs_provenance"] = {
+                "source": "jobs",
+                "calls": list(range(first_job_call, len(reader.calls) + 1)),
+            }
     result = {
-        "schema_version": 2 if args.direct_known_runs else 1,
+        "schema_version": 3 if args.direct_known_jobs else 2 if direct else 1,
         "repository": args.repository, "host": args.host,
         "non_atomic": True,
         "observations": [observed[row["id"]] for row in requested],
@@ -246,8 +347,15 @@ def observe(args: argparse.Namespace, requested: list[dict]) -> dict:
         "projected_response_bytes": sum(call["projected_response_bytes"] for call in reader.calls),
         "client_wall_seconds": time.monotonic() - started,
     }
-    if args.direct_known_runs:
-        result["coverage"] = {"scope": "requested-runs-only", "repository_enumerated": False}
+    if direct:
+        result["coverage"] = {
+            "scope": (
+                "requested-runs-and-exact-jobs-only"
+                if args.direct_known_jobs
+                else "requested-runs-only"
+            ),
+            "repository_enumerated": False,
+        }
     return result
 
 
@@ -262,8 +370,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=int, default=30, help="seconds per gh GET (1-300)")
     parser.add_argument("--direct-known-runs", action="store_true",
                         help="read only exact known IDs; requires workflow_path on each input")
+    parser.add_argument("--direct-known-jobs", action="store_true",
+                        help="read exact known IDs and exact expected job-name sets")
     args = parser.parse_args(argv)
     try:
+        if args.direct_known_runs and args.direct_known_jobs:
+            raise ObservationError("choose one direct observation mode")
         requested = validate_options(args)
         result = observe(args, requested)
         encoded = json.dumps(result, indent=2, allow_nan=False) + "\n"

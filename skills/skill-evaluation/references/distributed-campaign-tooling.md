@@ -63,6 +63,15 @@ Start with one prepared package containing:
 - hidden graders, fixtures, and judge evidence under paths selected for
   removal.
 
+An experiment-aware package uses manifest and execution-matrix schema version
+2. It carries the immutable experiment-plan fingerprint, candidate model,
+treatment content fingerprint, sorted target-skill identities, target OS,
+architecture, route, and grading route. Its treatment inventory binds every
+safe package-relative regular file to an exact SHA-256 value. Packaging refuses
+symlinks, path escapes, missing files, digest changes, or different candidate
+and full manifests. Schema version 1 remains available for ordinary distributed
+campaigns but cannot join a dashboard experiment.
+
 Create deterministic payloads:
 
 ```sh
@@ -95,6 +104,23 @@ upload or model work, and does not establish a full-feedback or cost saving.
 
 Publish both archives and `completion.json` as private release assets. Supply
 their exact SHA-256 values when dispatching the workflow.
+
+The plan command emits the complete deterministic workflow job-name set for a
+schema-version-2 campaign. After GitHub allocates the first run attempt, freeze
+the private run binding:
+
+```sh
+python3 skills/skill-evaluation/scripts/distributed_campaign.py \
+  bind-dispatch \
+  --plan build/dispatch-plan.json \
+  --run build/private-run-binding.json \
+  --output build/dispatch-binding.json
+```
+
+The binding covers the exact repository, workflow, run, branch, source
+revision, event, and first run attempt by fingerprint and carries the complete
+planner-owned job mapping. Rebinding or changing a job name, attempt, or stage
+is refused.
 
 ## Candidate isolation
 
@@ -153,6 +179,8 @@ deterministic grading, and judge inputs through its runtime module and case
 manifests. The carrier requires:
 
 - immutable attempt IDs and identity tuples;
+- for schema version 2, candidate receipts that report the exact loaded
+  candidate model, treatment fingerprint, and target-skill identities;
 - one `arm64` platform (`macos` or `linux`) per case;
 - explicit candidate timeouts;
 - content-addressed source bundles, images, and dependency archives;
