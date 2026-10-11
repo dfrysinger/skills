@@ -571,6 +571,35 @@ class DashboardExperimentStateTests(unittest.TestCase):
         incomplete = dashboard_dispatch(selection_args)
         self.assertEqual(incomplete["status"], "selection_incomplete")
 
+        declaration = next(
+            item
+            for item in experiment_activity_records(self.corpus)[0]
+            if item["event_id"] == receipt["event_id"]
+        )
+        results = self.publish_results(declaration)
+        terminal_args = dashboard_parser().parse_args([
+            "dashboard",
+            "experiment-selection",
+            str(self.corpus),
+            "--declaration-event",
+            receipt["event_id"],
+            "--result-event",
+            results[0]["event_id"],
+            "--result-event",
+            results[1]["event_id"],
+            "--writer-id",
+            self.evaluator_writer["id"],
+            "--writer-generation",
+            self.evaluator_writer["generation"],
+            "--event-id",
+            "7" * 32,
+            "--state-root",
+            str(self.state_root),
+        ])
+        terminal = dashboard_dispatch(terminal_args)
+        self.assertEqual(terminal["status"], "selected")
+        self.assertEqual(terminal["event_type"], "experiment_selection_recorded")
+
     def test_cross_campaign_publication_is_refused_without_a_record(self):
         payload = self.declaration_payload()
         with self.assertRaisesRegex(ValueError, "campaign identity"):

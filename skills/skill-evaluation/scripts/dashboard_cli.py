@@ -635,7 +635,7 @@ def experiment_selection_dashboard(
         event_id=event_id,
         observed_at=observed_at,
     )
-    if selection["status"] == "selection_incomplete":
+    if selection.get("status") == "selection_incomplete":
         return {
             "schema_version": 1,
             **selection,
