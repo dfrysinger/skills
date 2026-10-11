@@ -790,10 +790,27 @@ render after rollback.
 - **Branch:** `dfrysinger/skill-eval-ui-slice4`
 - **Base:** `898ae893b59219a0640e90d6d7365fc13b6d8780`
 - **Reviewed design commit:** `ba70ab6da30d8cdf29249ac5d326861945ea71e8`
-- **Critical path:** distributed identity and state implementation -> projection
-  and UI -> proof -> review -> landing
-- **Phase:** implementation
+- **Critical path:** authority-repair proof -> implementation review -> landing
+  -> merged-byte proof
+- **Phase:** authority-boundary repair
 - **Implementation gate:** open
+- **Integrated implementation commits:**
+  - `cea9c1e` experiment activity state and deterministic selection
+  - `91c6864` distributed execution identity and exact-known observation
+  - `3487cc1` campaign/task/index projection and dashboard UI
+  - `f0ab2971ca2285b463363d59026ae71dc423dfbb` terminal selection CLI
+    repair found by installed proof
+- **Superseded proof:** the `f0ab297` installed candidate and its
+  `sha256:d6330e1508bbf4fe8e5b80f8fdad23aa42cf60954cc5b85adc14555740d289d9`
+  receipts are stale after implementation review found a generic importer
+  authority defect.
+- **Current validation:** 413 tests pass with 49 skips after replacing the
+  generic importer with declaration, dispatch, observation, stage, result, and
+  selection adapters. The adapters correlate declared attempts, immutable
+  dispatch bindings, exact-known observer output, package and plan identities,
+  retained receipts, retained artifacts, and retention manifests. Selection
+  discovers all admitted results and fails closed on duplicate or conflicted
+  results. Installed proof replay is pending against the committed repair.
 - **Last constraint challenge:** the workflow-job, distributed-identity, and
   deterministic-selection deltas returned `NARROW`; all required corrections
   are applied and the gate is `CLEAR`.
@@ -806,20 +823,12 @@ render after rollback.
   records complete Claude Opus 5.5 and GPT 5.6 Terra review. Both applied the
   architecture and scope lens. Finding-scoped closure reports zero unresolved
   material findings.
-- **Delegated owners:**
-  - `59409653-8621-4d7d-bb3b-c80918395db0` owns distributed schema v2,
-    packaging, workflow job naming, exact job observation, and their tests in
-    `skill-eval-ui-slice4-distributed` on
-    `dfrysinger/slice4-distributed`; integration requires one committed tested
-    handoff.
-  - `b16eafb6-2a1b-451e-8d6b-7aa5f6a1d56b` owns experiment/activity journal
-    state, trusted publishers, deterministic selection, and their tests in
-    `skill-eval-ui-slice4-state` on `dfrysinger/slice4-state`; integration
-    requires one committed tested handoff.
-  - the coordinator exclusively owns this worktree, projection, UI,
-    documentation, integration, proof, and landing.
-- **Next action:** trace the existing projection/UI seams while the two
-  non-overlapping foundation commits are built.
+- **Delegated owners:** both implementation handoffs are integrated and closed.
+  The coordinator owns final review, PR, merge, merged-byte verification, and
+  schedule cleanup.
+- **Next action:** commit the authority repair, reinstall the exact candidate,
+  replay all four installed proofs, then run finding-scoped dual review round
+  two.
 
 ## Definition of Done: Skill Evaluation UI Slice 4
 
@@ -829,14 +838,14 @@ render after rollback.
       order.
 - [x] Dual design review has no unresolved material finding.
 - [x] The reviewed work order and charter are committed before implementation.
-- [ ] Typed experiment and activity records are implemented with fail-closed
+- [x] Typed experiment and activity records are implemented with fail-closed
       writer ownership and additive compatibility.
-- [ ] Distributed plan binding, exact-known Actions observation, distributed
+- [x] Distributed plan binding, exact-known Actions observation, distributed
       stage/result projection, first outcomes, recovery lineage, effective
       results, and honest cost coverage are implemented.
-- [ ] Campaign, task, and index views expose the accepted experiment and
+- [x] Campaign, task, and index views expose the accepted experiment and
       local/cloud activity states without authority conflation.
-- [ ] Focused and full deterministic checks pass on one exact candidate.
+- [x] Focused and full deterministic checks pass on one exact candidate.
 - [ ] Installed-plugin proof demonstrates one experiment, existing local
       activity, one exact-known cloud observation, one distributed recovery path,
       malformed isolation, legacy behavior, and security refusal.

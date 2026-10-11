@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -10,7 +11,12 @@ from pathlib import Path
 
 from dashboard_cli import (
     dispatch as dashboard_dispatch,
-    experiment_activity_dashboard,
+    experiment_declaration_dashboard,
+    experiment_dispatch_dashboard,
+    experiment_observation_dashboard,
+    experiment_result_dashboard,
+    experiment_selection_dashboard,
+    experiment_stage_dashboard,
     parser as dashboard_parser,
 )
 from dashboard_projection import campaign_index_projection, campaign_projection
@@ -23,6 +29,7 @@ from dashboard_state import (
     emit_experiment_selection,
     experiment_activity_records,
     experiment_plan_fingerprint,
+    register_session,
     validate_experiment_activity_event,
     writer_directory,
 )
@@ -33,6 +40,7 @@ from skill_eval import (
     frozen_case_path,
     init_corpus,
 )
+from distributed_campaign import canonical_fingerprint, create_dispatch_binding
 
 
 class DashboardExperimentStateTests(unittest.TestCase):
@@ -84,10 +92,12 @@ class DashboardExperimentStateTests(unittest.TestCase):
             self.plugin,
             ["example-skill"],
         )
+        session_id = str(uuid.uuid4())
+        session, _ = register_session(self.state_root, self.corpus, session_id)
         self.session_writer = {
             "kind": "session",
-            "id": str(uuid.uuid4()),
-            "generation": "1" * 32,
+            "id": session_id,
+            "generation": session["writer_generation"],
         }
         self.coordinator_writer = {
             "kind": "distributed_coordinator",
@@ -298,6 +308,237 @@ class DashboardExperimentStateTests(unittest.TestCase):
             ))
         return results
 
+    def adapter_artifacts(self, declaration: dict, attempt: dict, *, terminal: bool):
+        root = self.root / f"adapter-{attempt['attempt_id']}-{'result' if terminal else 'stage'}"
+        package_root = root / "package"
+        package_root.mkdir(parents=True)
+        target_skills = [{
+            "skillName": "example-skill",
+            "evaluatorFingerprint": self.snapshot["skills"][0][
+                "evaluator_skill_identity"
+            ],
+        }]
+        treatment_fingerprint = (
+            "c" * 64 if attempt["treatment_id"] == "candidate" else "f" * 64
+        )
+        matrix_attempts = []
+        jobs = []
+        for planned in declaration["payload"]["attempts"]:
+            planned_fingerprint = (
+                "c" * 64
+                if planned["treatment_id"] == "candidate"
+                else "f" * 64
+            )
+            matrix_attempt = {
+                "attemptId": planned["attempt_id"],
+                "caseId": planned["case_id"],
+                "caseRevision": planned["case_revision"],
+                "treatmentId": planned["treatment_id"],
+                "repetition": planned["repetition"],
+                "candidateModel": planned["candidate_model"],
+                "candidateTimeoutSeconds": 120,
+                "treatmentFingerprint": planned_fingerprint,
+                "targetSkillIdentities": target_skills,
+                "targetOs": planned["target_os"],
+                "architecture": planned["architecture"],
+                "route": planned["route"],
+                "gradingRoute": "direct",
+            }
+            matrix_attempts.append(matrix_attempt)
+            jobs.append({
+                **matrix_attempt,
+                "imageId": "sha256:" + "8" * 64,
+                "dependencySha256": "",
+            })
+        package = {
+            "schemaVersion": 2,
+            "campaignId": "proof-campaign",
+            "experimentPlanSha256": self.plan_fingerprint,
+        }
+        package_path = package_root / "package-manifest.json"
+        package_path.write_text(json.dumps(package), encoding="utf-8")
+        manifest_sha = hashlib.sha256(package_path.read_bytes()).hexdigest()
+        (package_root / "execution-matrix.json").write_text(
+            json.dumps({
+                "schemaVersion": 2,
+                "campaignId": "proof-campaign",
+                "experimentPlanSha256": self.plan_fingerprint,
+                "attempts": matrix_attempts,
+            }),
+            encoding="utf-8",
+        )
+        expected_jobs = [
+            {"jobName": "plan", "attemptId": None, "stage": "plan"},
+            *[
+                {
+                    "jobName": f"macos-stage / {planned['attempt_id']}",
+                    "attemptId": planned["attempt_id"],
+                    "stage": "macos-stage",
+                }
+                for planned in declaration["payload"]["attempts"]
+            ],
+        ]
+        plan = {
+            "schemaVersion": 2,
+            "experimentPlanSha256": self.plan_fingerprint,
+            "packageArchiveSha256": "5" * 64,
+            "candidatePackageArchiveSha256": "5" * 64,
+            "packageManifestSha256": manifest_sha,
+            "matrix": {"include": jobs},
+            "expectedJobs": expected_jobs,
+        }
+        plan_path = root / "plan.json"
+        plan_path.write_text(json.dumps(plan), encoding="utf-8")
+        run = {
+            "repositoryId": 99,
+            "repositoryFullName": "example/private-evals",
+            "workflowId": 42,
+            "workflowPath": ".github/workflows/distributed.yml",
+            "workflowSha": "1" * 40,
+            "headSha": "2" * 40,
+            "headBranch": "proof",
+            "event": "workflow_dispatch",
+            "runId": 4242,
+            "runAttempt": 1,
+        }
+        run_path = root / "run.json"
+        run_path.write_text(json.dumps(run), encoding="utf-8")
+        binding = create_dispatch_binding(plan, run)
+        binding_path = root / "binding.json"
+        binding_path.write_text(json.dumps(binding), encoding="utf-8")
+        matrix_attempt = next(
+            item for item in matrix_attempts
+            if item["attemptId"] == attempt["attempt_id"]
+        )
+        identity = {
+            "experimentPlanSha256": self.plan_fingerprint,
+            "attemptId": matrix_attempt["attemptId"],
+            "caseId": matrix_attempt["caseId"],
+            "caseRevision": matrix_attempt["caseRevision"],
+            "treatmentId": matrix_attempt["treatmentId"],
+            "repetition": matrix_attempt["repetition"],
+            "candidateModel": matrix_attempt["candidateModel"],
+            "candidateTimeoutSeconds": 120,
+            "treatmentFingerprint": treatment_fingerprint,
+            "targetSkillIdentitiesFingerprint": canonical_fingerprint(target_skills),
+            "targetOs": "linux",
+            "architecture": "x86_64",
+            "route": "direct",
+            "gradingRoute": "direct",
+            "packageArchiveSha256": "5" * 64,
+            "candidatePackageArchiveSha256": "5" * 64,
+            "packageManifestSha256": manifest_sha,
+        }
+        receipt = {
+            "schemaVersion": 2,
+            "caseId": attempt["case_id"],
+            "caseRevision": attempt["case_revision"],
+            "treatmentId": attempt["treatment_id"],
+            "repetition": attempt["repetition"],
+            "executionIdentity": identity,
+            "executionIdentitySha256": canonical_fingerprint(identity),
+            "candidate": {
+                "candidateModel": "model-a",
+                "treatmentFingerprint": treatment_fingerprint,
+                "targetSkillIdentities": target_skills,
+                "boundaryAudit": {"passed": True},
+                "exitCode": 0,
+            },
+            "status": "PASS" if terminal else "PENDING_LINUX_FINALIZATION",
+        }
+        if terminal:
+            receipt.update({
+                "deterministic": {
+                    "targetPassed": True,
+                    "regressionPassed": True,
+                },
+                "product": {"passed": True},
+                "judges": [
+                    {"judgment": {"verdict": "PASS"}},
+                    {"judgment": {"verdict": "PASS"}},
+                ],
+                "candidateRerun": False,
+            })
+        else:
+            receipt.update({
+                "candidateRerunRequired": False,
+                "product": {"passed": True},
+                "hostDeterministic": {
+                    "targetPassed": True,
+                    "regressionPassed": True,
+                },
+            })
+        receipt_path = root / "receipt.json"
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        artifact_path = root / "retained.tar.gz"
+        artifact_path.write_bytes(b"retained artifact")
+        retention_path = root / "retention.json"
+        retention_path.write_text(json.dumps({
+            "schema_version": 1,
+            "receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+            "artifact_sha256": hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+            "source_ids": [f"source-{attempt['attempt_id']}"],
+        }), encoding="utf-8")
+        observation_path = root / "observation.json"
+        observation_path.write_text(json.dumps({
+            "schema_version": 3,
+            "repository": "example/private-evals",
+            "host": "github.com",
+            "non_atomic": True,
+            "observations": [{
+                "run": {
+                    "id": 4242,
+                    "workflow_id": 42,
+                    "path": ".github/workflows/distributed.yml",
+                    "event": "workflow_dispatch",
+                    "head_sha": "2" * 40,
+                    "head_branch": "proof",
+                    "run_attempt": 1,
+                    "status": "in_progress",
+                    "conclusion": None,
+                    "repository": {
+                        "id": 99,
+                        "full_name": "example/private-evals",
+                        "private": True,
+                    },
+                },
+                "provenance": {"source": "direct", "call": 1},
+                "jobs": [
+                    {
+                        "id": index + 1,
+                        "name": job["jobName"],
+                        "status": "in_progress",
+                        "conclusion": None,
+                        "run_id": 4242,
+                        "run_attempt": 1,
+                        "head_sha": "2" * 40,
+                        "started_at": "2026-01-01T00:00:00Z",
+                        "completed_at": None,
+                    }
+                    for index, job in enumerate(expected_jobs)
+                ],
+                "jobs_provenance": {"source": "jobs", "calls": [2]},
+            }],
+            "calls": [{}, {}],
+            "call_count": 2,
+            "projected_response_bytes": 100,
+            "client_wall_seconds": 0.1,
+            "coverage": {
+                "scope": "requested-runs-and-exact-jobs-only",
+                "repository_enumerated": False,
+            },
+        }), encoding="utf-8")
+        return {
+            "package_root": package_root,
+            "plan": plan_path,
+            "run": run_path,
+            "binding": binding_path,
+            "receipt": receipt_path,
+            "artifact": artifact_path,
+            "retention": retention_path,
+            "observation": observation_path,
+        }
+
     def test_writer_ownership_is_exact_for_every_variant(self):
         owner_by_type = {
             "experiment_declared": "session",
@@ -482,20 +723,15 @@ class DashboardExperimentStateTests(unittest.TestCase):
         source = self.root / "PRIVATE-SOURCE-PATH.json"
         selected = {
             "schema_version": 1,
-            "event_type": "experiment_declared",
             "experiment_id": "experiment-a",
             "experiment_fingerprint": experiment_plan_fingerprint(payload),
-            "attempt_id": None,
-            "run_binding_fingerprint": None,
             "payload": payload,
         }
         source.write_text(json.dumps(selected), encoding="utf-8")
-        receipt = experiment_activity_dashboard(
+        receipt = experiment_declaration_dashboard(
             self.corpus,
             source,
-            writer_kind="session",
-            writer_id=self.session_writer["id"],
-            writer_generation=self.session_writer["generation"],
+            session_id=self.session_writer["id"],
             event_id="4" * 32,
             observed_at="2026-01-01T00:00:00+00:00",
             root=self.state_root,
@@ -515,12 +751,10 @@ class DashboardExperimentStateTests(unittest.TestCase):
         selected["repository"] = "private/repository"
         source.write_text(json.dumps(selected), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "unsupported"):
-            experiment_activity_dashboard(
+            experiment_declaration_dashboard(
                 self.corpus,
                 source,
-                writer_kind="session",
-                writer_id=self.session_writer["id"],
-                writer_generation=self.session_writer["generation"],
+                session_id=self.session_writer["id"],
                 root=self.state_root,
             )
 
@@ -529,24 +763,17 @@ class DashboardExperimentStateTests(unittest.TestCase):
         source = self.root / "declaration.json"
         source.write_text(json.dumps({
             "schema_version": 1,
-            "event_type": "experiment_declared",
             "experiment_id": "experiment-a",
             "experiment_fingerprint": experiment_plan_fingerprint(payload),
-            "attempt_id": None,
-            "run_binding_fingerprint": None,
             "payload": payload,
         }), encoding="utf-8")
         args = dashboard_parser().parse_args([
             "dashboard",
-            "experiment-activity",
+            "experiment-declaration",
             str(self.corpus),
             str(source),
-            "--writer-kind",
-            "session",
-            "--writer-id",
+            "--session-id",
             self.session_writer["id"],
-            "--writer-generation",
-            self.session_writer["generation"],
             "--event-id",
             "4" * 32,
             "--state-root",
@@ -583,10 +810,6 @@ class DashboardExperimentStateTests(unittest.TestCase):
             str(self.corpus),
             "--declaration-event",
             receipt["event_id"],
-            "--result-event",
-            results[0]["event_id"],
-            "--result-event",
-            results[1]["event_id"],
             "--writer-id",
             self.evaluator_writer["id"],
             "--writer-generation",
@@ -599,6 +822,218 @@ class DashboardExperimentStateTests(unittest.TestCase):
         terminal = dashboard_dispatch(terminal_args)
         self.assertEqual(terminal["status"], "selected")
         self.assertEqual(terminal["event_type"], "experiment_selection_recorded")
+
+    def test_validator_backed_adapters_build_events_from_owner_artifacts(self):
+        declaration = self.publish_declaration()
+        self.plan_fingerprint = declaration["subject"]["experiment_fingerprint"]
+        stage_attempt, result_attempt = declaration["payload"]["attempts"]
+        stage = self.adapter_artifacts(declaration, stage_attempt, terminal=False)
+        result = self.adapter_artifacts(declaration, result_attempt, terminal=True)
+
+        dispatch = experiment_dispatch_dashboard(
+            self.corpus,
+            stage["plan"],
+            stage["run"],
+            stage["binding"],
+            experiment_id="experiment-a",
+            opaque_source_id="dispatch-source",
+            writer_id=self.coordinator_writer["id"],
+            writer_generation=self.coordinator_writer["generation"],
+            event_id="b" * 32,
+            root=self.state_root,
+        )
+        self.assertEqual(dispatch["event_type"], "cloud_dispatch_bound")
+        observation = experiment_observation_dashboard(
+            self.corpus,
+            stage["observation"],
+            stage["plan"],
+            stage["run"],
+            stage["binding"],
+            experiment_id="experiment-a",
+            opaque_source_id="observer-source",
+            writer_id="observer-a",
+            writer_generation="c" * 32,
+            event_id="c" * 32,
+            root=self.state_root,
+        )
+        self.assertEqual(observation["event_type"], "cloud_transport_observed")
+        stage_event = experiment_stage_dashboard(
+            self.corpus,
+            stage["package_root"],
+            stage["plan"],
+            stage["receipt"],
+            stage["artifact"],
+            stage["retention"],
+            experiment_id="experiment-a",
+            attempt_id=stage_attempt["attempt_id"],
+            writer_id=self.coordinator_writer["id"],
+            writer_generation=self.coordinator_writer["generation"],
+            event_id="d" * 32,
+            root=self.state_root,
+        )
+        self.assertEqual(stage_event["event_type"], "distributed_stage_recorded")
+        result_event = experiment_result_dashboard(
+            self.corpus,
+            result["package_root"],
+            result["plan"],
+            result["receipt"],
+            result["artifact"],
+            result["retention"],
+            experiment_id="experiment-a",
+            attempt_id=result_attempt["attempt_id"],
+            writer_id=self.coordinator_writer["id"],
+            writer_generation=self.coordinator_writer["generation"],
+            event_id="e" * 32,
+            root=self.state_root,
+        )
+        self.assertEqual(result_event["event_type"], "distributed_result_recorded")
+
+        tampered = json.loads(result["receipt"].read_text(encoding="utf-8"))
+        tampered["executionIdentity"]["packageArchiveSha256"] = "0" * 64
+        result["receipt"].write_text(json.dumps(tampered), encoding="utf-8")
+        result["retention"].write_text(json.dumps({
+            "schema_version": 1,
+            "receipt_sha256": hashlib.sha256(
+                result["receipt"].read_bytes()
+            ).hexdigest(),
+            "artifact_sha256": hashlib.sha256(
+                result["artifact"].read_bytes()
+            ).hexdigest(),
+            "source_ids": ["tampered-source"],
+        }), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "execution identity"):
+            experiment_result_dashboard(
+                self.corpus,
+                result["package_root"],
+                result["plan"],
+                result["receipt"],
+                result["artifact"],
+                result["retention"],
+                experiment_id="experiment-a",
+                attempt_id=result_attempt["attempt_id"],
+                writer_id=self.coordinator_writer["id"],
+                writer_generation=self.coordinator_writer["generation"],
+                root=self.state_root,
+            )
+
+    def test_dispatch_refuses_a_plan_that_differs_from_the_declaration(self):
+        declaration = self.publish_declaration()
+        self.plan_fingerprint = declaration["subject"]["experiment_fingerprint"]
+        artifacts = self.adapter_artifacts(
+            declaration,
+            declaration["payload"]["attempts"][0],
+            terminal=True,
+        )
+        plan = json.loads(artifacts["plan"].read_text(encoding="utf-8"))
+        plan["matrix"]["include"][0]["caseId"] = "undeclared-case"
+        artifacts["plan"].write_text(json.dumps(plan), encoding="utf-8")
+        run = json.loads(artifacts["run"].read_text(encoding="utf-8"))
+        artifacts["binding"].write_text(
+            json.dumps(create_dispatch_binding(plan, run)),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "differs from its declaration"):
+            experiment_dispatch_dashboard(
+                self.corpus,
+                artifacts["plan"],
+                artifacts["run"],
+                artifacts["binding"],
+                experiment_id="experiment-a",
+                opaque_source_id="dispatch-source",
+                writer_id=self.coordinator_writer["id"],
+                writer_generation=self.coordinator_writer["generation"],
+                root=self.state_root,
+            )
+
+    def test_selection_refuses_result_subsets_and_invalidates_prior_selection(self):
+        declaration = self.publish_declaration()
+        results = self.publish_results(declaration)
+        selected = emit_experiment_selection(
+            self.corpus,
+            campaign_id=self.registration["campaign_id"],
+            writer=self.evaluator_writer,
+            declaration=declaration,
+            terminal_results=results,
+            event_id="7" * 32,
+            observed_at="2026-01-01T00:02:00+00:00",
+        )
+        duplicate = json.loads(json.dumps(results[0]))
+        duplicate["event_id"] = "8" * 32
+        emit_experiment_activity_event(
+            self.corpus,
+            campaign_id=self.registration["campaign_id"],
+            writer=self.coordinator_writer,
+            event_type="distributed_result_recorded",
+            experiment_id="experiment-a",
+            experiment_fingerprint=self.plan_fingerprint,
+            attempt_id=duplicate["subject"]["attempt_id"],
+            payload=duplicate["payload"],
+            event_id=duplicate["event_id"],
+            observed_at="2026-01-01T00:03:00+00:00",
+        )
+        incomplete = experiment_selection_dashboard(
+            self.corpus,
+            declaration["event_id"],
+            writer_id="evaluator-b",
+            writer_generation="8" * 32,
+            root=self.state_root,
+        )
+        self.assertEqual(incomplete["status"], "selection_incomplete")
+        self.assertEqual(incomplete["reasons"], ["result_conflicted"])
+        records, _, invalid = experiment_activity_records(self.corpus)
+        self.assertNotIn(selected["event_id"], {
+            item["event_id"] for item in records
+        })
+        self.assertIn("experiment_selection_invalid", {
+            item["reason"] for item in invalid
+        })
+        projection = campaign_projection(
+            self.state_root,
+            self.registration["campaign_id"],
+        )
+        self.assertEqual(
+            projection["experiments"]["items"][0]["selection"]["status"],
+            "conflicted",
+        )
+
+    def test_conflicted_result_event_invalidates_prior_selection(self):
+        declaration = self.publish_declaration()
+        results = self.publish_results(declaration)
+        selected = emit_experiment_selection(
+            self.corpus,
+            campaign_id=self.registration["campaign_id"],
+            writer=self.evaluator_writer,
+            declaration=declaration,
+            terminal_results=results,
+            event_id="7" * 32,
+            observed_at="2026-01-01T00:02:00+00:00",
+        )
+        conflicting_payload = json.loads(json.dumps(results[0]["payload"]))
+        conflicting_payload["terminal_status"] = "FAIL"
+        conflicting_payload["selection_fields"]["terminal_status"] = "FAIL"
+        with self.assertRaisesRegex(ValueError, "conflicts"):
+            emit_experiment_activity_event(
+                self.corpus,
+                campaign_id=self.registration["campaign_id"],
+                writer=self.coordinator_writer,
+                event_type="distributed_result_recorded",
+                experiment_id="experiment-a",
+                experiment_fingerprint=self.plan_fingerprint,
+                attempt_id=results[0]["subject"]["attempt_id"],
+                payload=conflicting_payload,
+                event_id=results[0]["event_id"],
+                observed_at="2026-01-01T00:03:00+00:00",
+            )
+        records, conflicts, invalid = experiment_activity_records(self.corpus)
+        self.assertIn(results[0]["event_id"], {
+            item["event_id"] for item in conflicts
+        })
+        self.assertNotIn(selected["event_id"], {
+            item["event_id"] for item in records
+        })
+        self.assertIn("experiment_selection_invalid", {
+            item["reason"] for item in invalid
+        })
 
     def test_cross_campaign_publication_is_refused_without_a_record(self):
         payload = self.declaration_payload()

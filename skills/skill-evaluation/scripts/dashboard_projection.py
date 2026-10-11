@@ -1039,8 +1039,15 @@ def experiment_projection(corpus_root: Path, campaign_id: str) -> dict:
                 for row in results_by_attempt.get(attempt["attempt_id"], [])
             ]
             outcome_counts = {"PASS": 0, "FAIL": 0}
-            for result in treatment_results:
-                outcome_counts[result["payload"]["terminal_status"]] += 1
+            for attempt in treatment_attempts:
+                attempt_results = results_by_attempt.get(
+                    attempt["attempt_id"],
+                    [],
+                )
+                if len(attempt_results) == 1:
+                    outcome_counts[
+                        attempt_results[0]["payload"]["terminal_status"]
+                    ] += 1
             selection_state = "not_selected"
             if len(selections) == 1:
                 selected = selections[0]["payload"]["selected_treatment_id"]
@@ -1062,7 +1069,10 @@ def experiment_projection(corpus_root: Path, campaign_id: str) -> dict:
                     bool(observation_rows.get(item["attempt_id"]))
                     for item in treatment_attempts
                 ),
-                "terminal_repetitions": len(treatment_results),
+                "terminal_repetitions": sum(
+                    len(results_by_attempt.get(item["attempt_id"], [])) == 1
+                    for item in treatment_attempts
+                ),
                 "outcomes": outcome_counts,
                 "selection_state": selection_state,
                 "cost": {
@@ -1074,7 +1084,17 @@ def experiment_projection(corpus_root: Path, campaign_id: str) -> dict:
                 },
             })
 
-        if len(selections) == 1:
+        result_conflicted = any(
+            len(rows) > 1 for rows in results_by_attempt.values()
+        )
+        if result_conflicted:
+            selection = {
+                "status": "conflicted",
+                "selected_treatment_id": None,
+                "reasons": ["result_conflicted"],
+                "authority": "experiment_evaluator",
+            }
+        elif len(selections) == 1:
             selection = {
                 **selections[0]["payload"],
                 "authority": "experiment_evaluator",

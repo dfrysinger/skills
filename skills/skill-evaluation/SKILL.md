@@ -82,40 +82,81 @@ python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard task-progress CORPUS \
 ```
 
 For a distributed treatment experiment, publish each bounded projection only
-after its owning producer validates the source artifact. The source file has a
-strict event-specific schema and may contain only dashboard-safe fields.
-Repository, workflow, run, branch, URL, artifact path, log, and credential
-fields are refused.
+through its event-specific adapter. The adapters validate and correlate the
+declaration, immutable dispatch binding, exact-known-jobs observer output,
+package, plan, retained receipt, retained artifact, and retention manifest.
+Only dashboard-safe projections are stored; private repository, workflow, run,
+branch, URL, artifact path, log, and credential fields are not persisted.
 
 ```sh
-python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard experiment-activity CORPUS \
-  /path/to/validated-dashboard-event.json \
-  --writer-kind distributed_coordinator \
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard experiment-declaration CORPUS \
+  /path/to/declaration.json \
+  --session-id SESSION_UUID
+
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard experiment-dispatch CORPUS \
+  /path/to/plan.json /path/to/private-run.json /path/to/dispatch-binding.json \
+  --experiment-id EXPERIMENT_ID \
+  --opaque-source-id SAFE_SOURCE_ID \
+  --writer-id COORDINATOR_ID \
+  --writer-generation GENERATION
+
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard experiment-observation CORPUS \
+  /path/to/observation.json /path/to/plan.json \
+  /path/to/private-run.json /path/to/dispatch-binding.json \
+  --experiment-id EXPERIMENT_ID \
+  --opaque-source-id SAFE_SOURCE_ID \
+  --writer-id OBSERVER_ID \
+  --writer-generation GENERATION
+```
+
+Use a session writer for the immutable declaration, a distributed coordinator
+for dispatch, stage, and result records, and a cloud observer for one complete
+exact-known-jobs snapshot. Generate the private dispatch binding with
+`distributed_campaign.py bind-dispatch`; observe only its complete expected
+job set with `observe_campaign_runs.py --direct-known-jobs`.
+
+Publish a checksum-bound nonterminal stage or terminal result from its retained
+owner artifacts. The stage kind is derived from the validated receipt and plan,
+not supplied by the caller.
+
+```sh
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard experiment-stage CORPUS \
+  /path/to/package /path/to/plan.json /path/to/stage-receipt.json \
+  /path/to/retained-artifact.tar.gz /path/to/retention-manifest.json \
+  --experiment-id EXPERIMENT_ID \
+  --attempt-id ATTEMPT_ID \
+  --writer-id COORDINATOR_ID \
+  --writer-generation GENERATION
+
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard experiment-result CORPUS \
+  /path/to/package /path/to/plan.json /path/to/result-receipt.json \
+  /path/to/retained-artifact.tar.gz /path/to/retention-manifest.json \
+  --experiment-id EXPERIMENT_ID \
+  --attempt-id ATTEMPT_ID \
   --writer-id COORDINATOR_ID \
   --writer-generation GENERATION
 ```
 
-Use a session writer for the immutable experiment declaration, a distributed
-coordinator for dispatch, stage, and result records, and a cloud observer for
-one complete exact-known-jobs snapshot. Generate the private dispatch binding
-with `distributed_campaign.py bind-dispatch`; observe only its complete
-expected job set with `observe_campaign_runs.py --direct-known-jobs`. The
-dashboard record retains the binding fingerprint, safe job mapping, statuses,
-timestamps, coverage, and opaque source ID, not the private binding fields.
+The retention manifest is schema version 1 and contains exactly
+`receipt_sha256`, `artifact_sha256`, and a nonempty `source_ids` list in
+addition to `schema_version`. The dashboard retains safe identities, bounded
+status and evidence summaries, coverage, accounting observations, and opaque
+source IDs, not private transport fields or artifact paths.
 
 After every required terminal result is admitted, run deterministic selection:
 
 ```sh
 python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard experiment-selection CORPUS \
   --declaration-event DECLARATION_EVENT_ID \
-  --result-event RESULT_EVENT_ID \
   --writer-id EXPERIMENT_EVALUATOR_ID \
   --writer-generation GENERATION
 ```
 
-The evaluator recomputes eligibility, metrics, disqualifiers, ties, and the
-selected or no-selection result. Incomplete coverage returns
-`selection_incomplete` and writes no terminal selection.
+The evaluator discovers every admitted result for the declaration and
+recomputes eligibility, metrics, disqualifiers, ties, and the selected or
+no-selection result. Missing or duplicate attempt results return
+`selection_incomplete` and write no terminal selection. A later conflicting or
+additional result invalidates an older terminal selection at read time.
 
 Bind an evaluator run to the snapshot whose bytes it is meant to exercise:
 

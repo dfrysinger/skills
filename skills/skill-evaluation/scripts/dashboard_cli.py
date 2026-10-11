@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import secrets
@@ -20,6 +21,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
+from distributed_campaign import (
+    canonical_fingerprint,
+    validate_dispatch_binding,
+)
 from dashboard_state import (
     capture_skill_snapshot,
     create_campaign,
@@ -33,6 +38,7 @@ from dashboard_state import (
     read_session,
     register_session,
     regular_json,
+    selection_rule_fingerprint,
     session_event,
     update_session,
 )
@@ -41,14 +47,17 @@ from dashboard_state import (
 DEFAULT_STATE_ROOT = Path.home() / ".copilot" / "skill-evaluation-ui"
 SERVICE_FIELDS = {"schema_version", "generation", "pid", "port", "started_at"}
 STARTED_PROCESSES: dict[int, subprocess.Popen] = {}
-EXPERIMENT_ACTIVITY_SOURCE_FIELDS = {
+EXPERIMENT_DECLARATION_SOURCE_FIELDS = {
     "schema_version",
-    "event_type",
     "experiment_id",
     "experiment_fingerprint",
-    "attempt_id",
-    "run_binding_fingerprint",
     "payload",
+}
+RETENTION_MANIFEST_FIELDS = {
+    "schema_version",
+    "receipt_sha256",
+    "artifact_sha256",
+    "source_ids",
 }
 
 
@@ -553,37 +562,87 @@ def task_progress_dashboard(
     }
 
 
-def experiment_activity_dashboard(
+def _require(condition: bool, message: str) -> None:
+    if not condition:
+        raise ValueError(message)
+
+
+def _sha256(path: Path, label: str) -> str:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"{label} is unavailable")
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _safe_source_ids(value: object) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or not value
+        or len(value) != len(set(value))
+        or any(
+            not isinstance(item, str)
+            or not item
+            or len(item) > 160
+            or not all(character.isalnum() or character in "._-" for character in item)
+            for item in value
+        )
+    ):
+        raise ValueError("retention source IDs are invalid")
+    return sorted(value)
+
+
+def _declaration(
+    corpus: Path,
+    experiment_id: str,
+    experiment_fingerprint: str,
+) -> dict:
+    records, conflicts, _ = experiment_activity_records(corpus)
+    conflicted = {item["event_id"] for item in conflicts}
+    declarations = [
+        item
+        for item in records
+        if (
+            item["event_type"] == "experiment_declared"
+            and item["subject"]["experiment_id"] == experiment_id
+            and item["subject"]["experiment_fingerprint"] == experiment_fingerprint
+            and item["event_id"] not in conflicted
+        )
+    ]
+    if len(declarations) != 1:
+        raise ValueError("experiment declaration is unavailable or conflicted")
+    return declarations[0]
+
+
+def experiment_declaration_dashboard(
     corpus: Path,
     source: Path,
     *,
-    writer_kind: str,
-    writer_id: str,
-    writer_generation: str,
+    session_id: str,
     event_id: str | None = None,
     observed_at: str | None = None,
     root: Path | None = None,
 ) -> dict:
     registration = create_campaign(state_root(root), corpus)
-    selected = regular_json(source, "experiment activity source")
+    session = read_session(corpus, session_id)
+    if session is None or session["campaign_id"] != registration["campaign_id"]:
+        raise ValueError("dashboard session is not registered")
+    selected = regular_json(source, "experiment declaration source")
     if (
-        set(selected) != EXPERIMENT_ACTIVITY_SOURCE_FIELDS
+        set(selected) != EXPERIMENT_DECLARATION_SOURCE_FIELDS
         or selected.get("schema_version") != 1
     ):
-        raise ValueError("unsupported experiment activity source")
+        raise ValueError("unsupported experiment declaration source")
     event = emit_experiment_activity_event(
         corpus,
         campaign_id=registration["campaign_id"],
         writer={
-            "kind": writer_kind,
-            "id": writer_id,
-            "generation": writer_generation,
+            "kind": "session",
+            "id": session_id,
+            "generation": session["writer_generation"],
         },
-        event_type=selected["event_type"],
+        event_type="experiment_declared",
         experiment_id=selected["experiment_id"],
         experiment_fingerprint=selected["experiment_fingerprint"],
-        attempt_id=selected["attempt_id"],
-        run_binding_fingerprint=selected["run_binding_fingerprint"],
         payload=selected["payload"],
         event_id=event_id,
         observed_at=observed_at,
@@ -597,10 +656,858 @@ def experiment_activity_dashboard(
     }
 
 
+def _validated_dispatch(
+    plan_path: Path,
+    run_path: Path,
+    binding_path: Path,
+    declaration: dict,
+) -> tuple[dict, dict, dict]:
+    plan = regular_json(plan_path, "distributed plan")
+    run = regular_json(run_path, "private dispatch run")
+    binding = regular_json(binding_path, "dispatch binding")
+    validate_dispatch_binding(binding, plan, run)
+    _validate_plan_against_declaration(plan, declaration)
+    return plan, run, binding
+
+
+def _validate_plan_against_declaration(plan: dict, declaration: dict) -> None:
+    declared_attempts = {
+        item["attempt_id"]: item
+        for item in declaration["payload"]["attempts"]
+    }
+    declared_treatments = {
+        item["treatment_id"]: item
+        for item in declaration["payload"]["treatments"]
+    }
+    jobs = plan.get("matrix", {}).get("include")
+    _require(isinstance(jobs, list) and jobs, "distributed plan has no attempts")
+    seen = set()
+    for job in jobs:
+        attempt_id = job.get("attemptId")
+        _require(
+            isinstance(attempt_id, str)
+            and attempt_id not in seen
+            and attempt_id in declared_attempts,
+            "distributed plan attempt is undeclared or duplicated",
+        )
+        seen.add(attempt_id)
+        declared = declared_attempts[attempt_id]
+        expected = {
+            "caseId": declared["case_id"],
+            "caseRevision": declared["case_revision"],
+            "treatmentId": declared["treatment_id"],
+            "repetition": declared["repetition"],
+            "candidateModel": declared["candidate_model"],
+            "candidateTimeoutSeconds": declaration["payload"][
+                "candidate_timeout_seconds"
+            ],
+            "targetOs": declared["target_os"],
+            "architecture": declared["architecture"],
+            "route": declared["route"],
+        }
+        _require(
+            all(job.get(key) == value for key, value in expected.items()),
+            "distributed plan attempt differs from its declaration",
+        )
+        treatment = declared_treatments[declared["treatment_id"]]
+        _require(
+            job.get("treatmentFingerprint")
+            == treatment["content_fingerprint"]
+            and job.get("targetSkillIdentities")
+            == [
+                {
+                    "skillName": item["name"],
+                    "evaluatorFingerprint": item["evaluator_fingerprint"],
+                }
+                for item in treatment["target_skill_identities"]
+            ],
+            "distributed plan treatment differs from its declaration",
+        )
+
+
+def experiment_dispatch_dashboard(
+    corpus: Path,
+    plan_path: Path,
+    run_path: Path,
+    binding_path: Path,
+    *,
+    experiment_id: str,
+    opaque_source_id: str,
+    writer_id: str,
+    writer_generation: str,
+    event_id: str | None = None,
+    observed_at: str | None = None,
+    root: Path | None = None,
+) -> dict:
+    registration = create_campaign(state_root(root), corpus)
+    plan = regular_json(plan_path, "distributed plan")
+    fingerprint = plan.get("experimentPlanSha256")
+    declaration = _declaration(corpus, experiment_id, fingerprint)
+    plan, run, binding = _validated_dispatch(
+        plan_path,
+        run_path,
+        binding_path,
+        declaration,
+    )
+    fingerprint = binding["experimentPlanSha256"]
+    jobs = sorted([
+        {
+            "job_name": item["jobName"],
+            "attempt_id": item["attemptId"],
+            "stage_kind": item["stage"],
+        }
+        for item in binding["expectedJobs"]
+    ], key=lambda item: item["job_name"])
+    workflow_revision_fingerprint = canonical_fingerprint({
+        "workflowPath": run["workflowPath"],
+        "workflowSha": run["workflowSha"],
+    })
+    event = emit_experiment_activity_event(
+        corpus,
+        campaign_id=registration["campaign_id"],
+        writer={
+            "kind": "distributed_coordinator",
+            "id": writer_id,
+            "generation": writer_generation,
+        },
+        event_type="cloud_dispatch_bound",
+        experiment_id=experiment_id,
+        experiment_fingerprint=fingerprint,
+        run_binding_fingerprint=binding["runBindingFingerprint"],
+        payload={
+            "plan_fingerprint": fingerprint,
+            "package_archive_sha256": binding["packageIdentity"][
+                "packageArchiveSha256"
+            ],
+            "candidate_package_archive_sha256": binding["packageIdentity"][
+                "candidatePackageArchiveSha256"
+            ],
+            "package_manifest_sha256": binding["packageIdentity"][
+                "packageManifestSha256"
+            ],
+            "workflow_revision_fingerprint": workflow_revision_fingerprint,
+            "jobs": jobs,
+            "opaque_source_id": opaque_source_id,
+        },
+        event_id=event_id,
+        observed_at=observed_at,
+    )
+    return {
+        "schema_version": 1,
+        "campaign_id": registration["campaign_id"],
+        "event_id": event["event_id"],
+        "event_type": event["event_type"],
+        "experiment_id": experiment_id,
+    }
+
+
+def _validated_observer_output(
+    observation_path: Path,
+    plan: dict,
+    run: dict,
+    binding: dict,
+) -> tuple[dict, list[dict]]:
+    observed = regular_json(observation_path, "exact-known-jobs observation")
+    expected_top = {
+        "schema_version",
+        "repository",
+        "host",
+        "non_atomic",
+        "observations",
+        "calls",
+        "call_count",
+        "projected_response_bytes",
+        "client_wall_seconds",
+        "coverage",
+    }
+    _require(
+        set(observed) == expected_top and observed.get("schema_version") == 3,
+        "unsupported exact-known-jobs observation",
+    )
+    _require(observed["repository"] == run["repositoryFullName"], "observer repository changed")
+    _require(observed["non_atomic"] is True, "observer non-atomic flag changed")
+    _require(
+        observed["coverage"] == {
+            "scope": "requested-runs-and-exact-jobs-only",
+            "repository_enumerated": False,
+        },
+        "observer coverage changed",
+    )
+    _require(
+        isinstance(observed["observations"], list)
+        and len(observed["observations"]) == 1,
+        "observer must contain one exact run",
+    )
+    snapshot = observed["observations"][0]
+    _require(
+        isinstance(snapshot, dict)
+        and set(snapshot) == {"run", "provenance", "jobs", "jobs_provenance"},
+        "observer run snapshot is invalid",
+    )
+    run_observation = snapshot["run"]
+    repository = run_observation.get("repository")
+    _require(
+        isinstance(repository, dict)
+        and set(repository) == {"id", "full_name", "private"}
+        and type(repository.get("private")) is bool,
+        "observer repository record is invalid",
+    )
+    expected_run = {
+        "id": run["runId"],
+        "workflow_id": run["workflowId"],
+        "path": run["workflowPath"],
+        "event": run["event"],
+        "head_sha": run["headSha"],
+        "head_branch": run["headBranch"],
+        "run_attempt": run["runAttempt"],
+        "repository": {
+            "id": run["repositoryId"],
+            "full_name": run["repositoryFullName"],
+            "private": repository["private"],
+        },
+    }
+    _require(
+        all(run_observation.get(key) == value for key, value in expected_run.items()),
+        "observer run binding changed",
+    )
+    _require(
+        run_observation.get("status")
+        in {"queued", "in_progress", "completed", "waiting", "requested", "pending"},
+        "observer run status is invalid",
+    )
+    expected_jobs = {
+        item["jobName"]: item for item in binding["expectedJobs"]
+    }
+    jobs = snapshot["jobs"]
+    _require(
+        isinstance(jobs, list)
+        and {item.get("name") for item in jobs} == set(expected_jobs)
+        and len(jobs) == len(expected_jobs),
+        "observer job-name set differs from dispatch binding",
+    )
+    projected = []
+    for source_index, item in enumerate(sorted(jobs, key=lambda value: value["name"])):
+        expected = expected_jobs[item["name"]]
+        _require(
+            item.get("run_id") == run["runId"]
+            and item.get("run_attempt") == 1
+            and item.get("head_sha") == run["headSha"],
+            "observer job binding changed",
+        )
+        status = item.get("status")
+        conclusion = item.get("conclusion")
+        _require(
+            status
+            in {"queued", "in_progress", "completed", "waiting", "requested", "pending"},
+            "observer job status is invalid",
+        )
+        _require(
+            (status == "completed" and isinstance(conclusion, str) and conclusion)
+            or (status != "completed" and conclusion is None),
+            "observer job conclusion is invalid",
+        )
+        projected.append({
+            "source_index": source_index,
+            "job_name": item["name"],
+            "attempt_id": expected["attemptId"],
+            "stage_kind": expected["stage"],
+            "status": status,
+            "conclusion": conclusion,
+            "started_at": item.get("started_at"),
+            "completed_at": item.get("completed_at"),
+        })
+    _require(
+        observed.get("call_count") == len(observed.get("calls", []))
+        and type(observed.get("projected_response_bytes")) is int
+        and observed["projected_response_bytes"] >= 0
+        and type(observed.get("client_wall_seconds")) in {int, float}
+        and observed["client_wall_seconds"] >= 0,
+        "observer accounting is invalid",
+    )
+    return observed, projected
+
+
+def experiment_observation_dashboard(
+    corpus: Path,
+    observation_path: Path,
+    plan_path: Path,
+    run_path: Path,
+    binding_path: Path,
+    *,
+    experiment_id: str,
+    opaque_source_id: str,
+    writer_id: str,
+    writer_generation: str,
+    event_id: str | None = None,
+    observed_at: str | None = None,
+    root: Path | None = None,
+) -> dict:
+    registration = create_campaign(state_root(root), corpus)
+    plan = regular_json(plan_path, "distributed plan")
+    fingerprint = plan.get("experimentPlanSha256")
+    declaration = _declaration(corpus, experiment_id, fingerprint)
+    plan, run, binding = _validated_dispatch(
+        plan_path,
+        run_path,
+        binding_path,
+        declaration,
+    )
+    fingerprint = binding["experimentPlanSha256"]
+    records, conflicts, _ = experiment_activity_records(corpus)
+    conflicted = {item["event_id"] for item in conflicts}
+    dispatches = [
+        item
+        for item in records
+        if (
+            item["event_type"] == "cloud_dispatch_bound"
+            and item["subject"]["experiment_id"] == experiment_id
+            and item["subject"]["experiment_fingerprint"] == fingerprint
+            and item["subject"]["run_binding_fingerprint"]
+            == binding["runBindingFingerprint"]
+            and item["event_id"] not in conflicted
+        )
+    ]
+    if len(dispatches) != 1:
+        raise ValueError("cloud dispatch binding is unavailable or conflicted")
+    observed, observations = _validated_observer_output(
+        observation_path,
+        plan,
+        run,
+        binding,
+    )
+    event = emit_experiment_activity_event(
+        corpus,
+        campaign_id=registration["campaign_id"],
+        writer={
+            "kind": "cloud_observer",
+            "id": writer_id,
+            "generation": writer_generation,
+        },
+        event_type="cloud_transport_observed",
+        experiment_id=experiment_id,
+        experiment_fingerprint=fingerprint,
+        run_binding_fingerprint=binding["runBindingFingerprint"],
+        payload={
+            "observer_snapshot_fingerprint": _sha256(
+                observation_path,
+                "exact-known-jobs observation",
+            ),
+            "observations": observations,
+            "coverage": {
+                "expected": len(binding["expectedJobs"]),
+                "observed": len(observations),
+            },
+            "non_atomic": True,
+            "provenance": "exact-known-jobs",
+            "call_count": observed["call_count"],
+            "projected_response_bytes": observed["projected_response_bytes"],
+            "client_wall_seconds": observed["client_wall_seconds"],
+            "opaque_source_id": opaque_source_id,
+        },
+        event_id=event_id,
+        observed_at=observed_at,
+    )
+    return {
+        "schema_version": 1,
+        "campaign_id": registration["campaign_id"],
+        "event_id": event["event_id"],
+        "event_type": event["event_type"],
+        "experiment_id": experiment_id,
+    }
+
+
+def _package_attempt(
+    package_root: Path,
+    plan: dict,
+    declaration: dict,
+    attempt_id: str,
+) -> tuple[dict, dict, dict]:
+    manifest_path = package_root / "package-manifest.json"
+    matrix_path = package_root / "execution-matrix.json"
+    package = regular_json(manifest_path, "distributed package manifest")
+    matrix = regular_json(matrix_path, "distributed execution matrix")
+    _require(
+        package.get("schemaVersion") == 2
+        and matrix.get("schemaVersion") == 2
+        and package.get("campaignId") == matrix.get("campaignId")
+        and package.get("experimentPlanSha256") == plan.get("experimentPlanSha256")
+        and matrix.get("experimentPlanSha256") == plan.get("experimentPlanSha256"),
+        "distributed package plan identity changed",
+    )
+    _require(
+        _sha256(manifest_path, "distributed package manifest")
+        == plan.get("packageManifestSha256"),
+        "distributed package manifest digest changed",
+    )
+    attempts = [
+        item for item in matrix.get("attempts", [])
+        if isinstance(item, dict) and item.get("attemptId") == attempt_id
+    ]
+    jobs = [
+        item for item in plan.get("matrix", {}).get("include", [])
+        if isinstance(item, dict) and item.get("attemptId") == attempt_id
+    ]
+    if len(attempts) != 1 or len(jobs) != 1:
+        raise ValueError("distributed attempt is unavailable or duplicated")
+    attempt = attempts[0]
+    job = jobs[0]
+    _validate_plan_against_declaration(plan, declaration)
+    for key in (
+        "attemptId",
+        "caseId",
+        "caseRevision",
+        "treatmentId",
+        "repetition",
+        "candidateModel",
+        "candidateTimeoutSeconds",
+        "treatmentFingerprint",
+        "targetSkillIdentities",
+        "targetOs",
+        "architecture",
+        "route",
+        "gradingRoute",
+    ):
+        _require(job.get(key) == attempt.get(key), "distributed plan attempt identity changed")
+    return package, attempt, job
+
+
+def _receipt_projection(
+    package_root: Path,
+    plan: dict,
+    declaration: dict,
+    receipt_path: Path,
+    retained_artifact: Path,
+    retention_manifest_path: Path,
+    attempt_id: str,
+    *,
+    terminal: bool,
+) -> tuple[dict, dict, dict, dict]:
+    package, attempt, job = _package_attempt(
+        package_root,
+        plan,
+        declaration,
+        attempt_id,
+    )
+    receipt = regular_json(receipt_path, "distributed receipt")
+    retention = regular_json(retention_manifest_path, "retention manifest")
+    _require(
+        set(retention) == RETENTION_MANIFEST_FIELDS
+        and retention.get("schema_version") == 1,
+        "unsupported retention manifest",
+    )
+    receipt_sha = _sha256(receipt_path, "distributed receipt")
+    artifact_sha = _sha256(retained_artifact, "retained artifact")
+    _require(
+        retention["receipt_sha256"] == receipt_sha
+        and retention["artifact_sha256"] == artifact_sha,
+        "retention manifest digest mismatch",
+    )
+    source_ids = _safe_source_ids(retention["source_ids"])
+    identity = {
+        "experimentPlanSha256": plan["experimentPlanSha256"],
+        "attemptId": attempt["attemptId"],
+        "caseId": attempt["caseId"],
+        "caseRevision": attempt["caseRevision"],
+        "treatmentId": attempt["treatmentId"],
+        "repetition": attempt["repetition"],
+        "candidateModel": attempt["candidateModel"],
+        "candidateTimeoutSeconds": attempt["candidateTimeoutSeconds"],
+        "treatmentFingerprint": attempt["treatmentFingerprint"],
+        "targetSkillIdentitiesFingerprint": canonical_fingerprint(
+            attempt["targetSkillIdentities"]
+        ),
+        "targetOs": attempt["targetOs"],
+        "architecture": attempt["architecture"],
+        "route": attempt["route"],
+        "gradingRoute": attempt["gradingRoute"],
+        "packageArchiveSha256": plan["packageArchiveSha256"],
+        "candidatePackageArchiveSha256": plan[
+            "candidatePackageArchiveSha256"
+        ],
+        "packageManifestSha256": plan["packageManifestSha256"],
+    }
+    _require(
+        receipt.get("schemaVersion") == 2
+        and receipt.get("executionIdentity") == identity
+        and receipt.get("executionIdentitySha256")
+        == canonical_fingerprint(identity),
+        "distributed receipt execution identity changed",
+    )
+    for key in ("caseId", "caseRevision", "treatmentId", "repetition"):
+        _require(receipt.get(key) == attempt[key], "distributed receipt attempt identity changed")
+    status = receipt.get("status")
+    _require(
+        status in {
+            "PENDING_MACOS_PRODUCT",
+            "PENDING_LINUX_FINALIZATION",
+            "READY_FOR_FINALIZATION",
+            "PASS",
+            "FAIL",
+        },
+        "distributed receipt status is invalid",
+    )
+    _require(
+        terminal == (status in {"PASS", "FAIL"}),
+        "distributed receipt terminal status changed",
+    )
+    candidate = receipt.get("candidate")
+    if status == "READY_FOR_FINALIZATION":
+        _require(
+            candidate is None
+            and receipt.get("qualification") == "NOT_EVALUATED"
+            and type(receipt.get("productPassed")) is bool,
+            "distributed finalization preflight is invalid",
+        )
+    else:
+        _require(
+            isinstance(candidate, dict)
+            and candidate.get("candidateModel") == attempt["candidateModel"]
+            and candidate.get("treatmentFingerprint")
+            == attempt["treatmentFingerprint"]
+            and candidate.get("targetSkillIdentities")
+            == attempt["targetSkillIdentities"]
+            and candidate.get("boundaryAudit", {}).get("passed") is True,
+            "distributed candidate execution identity changed",
+        )
+    deterministic = (
+        receipt.get("deterministic")
+        or receipt.get("hostedDeterministic")
+        or receipt.get("hostDeterministic")
+    )
+    product = receipt.get("product")
+    judges = receipt.get("judges", [])
+    if terminal:
+        _require(
+            isinstance(deterministic, dict)
+            and type(deterministic.get("targetPassed")) is bool
+            and type(deterministic.get("regressionPassed")) is bool
+            and isinstance(product, dict)
+            and type(product.get("passed")) is bool
+            and isinstance(judges, list)
+            and judges,
+            "terminal distributed receipt evidence is incomplete",
+        )
+        _require(
+            receipt.get("candidateRerun", False) is False,
+            "terminal distributed receipt reran the candidate",
+        )
+        verdicts = []
+        for judge in judges:
+            verdict = (
+                judge.get("judgment", {}).get("verdict")
+                if isinstance(judge, dict)
+                else None
+            )
+            _require(
+                verdict in {"PASS", "FAIL", "UNANSWERABLE"},
+                "distributed judge verdict is invalid",
+            )
+            verdicts.append("PASS" if verdict == "PASS" else "FAIL")
+        expected_status = (
+            "PASS"
+            if candidate.get("exitCode", 0) == 0
+            and deterministic["targetPassed"]
+            and deterministic["regressionPassed"]
+            and product["passed"]
+            else "FAIL"
+        )
+        _require(status == expected_status, "distributed terminal status changed")
+    else:
+        verdicts = []
+        if status != "READY_FOR_FINALIZATION":
+            _require(
+                receipt.get("candidateRerunRequired") is False,
+                "distributed stage requires a candidate rerun",
+            )
+    image_id = job.get("imageId", "")
+    if image_id:
+        _require(
+            isinstance(image_id, str)
+            and image_id.startswith("sha256:")
+            and len(image_id) == 71,
+            "distributed image identity is invalid",
+        )
+        image_identity = image_id.removeprefix("sha256:")
+    else:
+        image_identity = canonical_fingerprint({"image": None})
+    dependency = job.get("dependencySha256", "")
+    if dependency:
+        _require(
+            isinstance(dependency, str) and len(dependency) == 64,
+            "distributed dependency identity is invalid",
+        )
+        dependency_identity = dependency
+    else:
+        dependency_identity = canonical_fingerprint({"dependency": None})
+    execution = {
+        "plan_fingerprint": plan["experimentPlanSha256"],
+        "candidate_model": attempt["candidateModel"],
+        "candidate_timeout_seconds": attempt["candidateTimeoutSeconds"],
+        "treatment_fingerprint": attempt["treatmentFingerprint"],
+        "target_skill_identities": [
+            {
+                "name": item["skillName"],
+                "evaluator_fingerprint": item["evaluatorFingerprint"],
+            }
+            for item in attempt["targetSkillIdentities"]
+        ],
+        "target_os": attempt["targetOs"],
+        "architecture": attempt["architecture"],
+        "route": attempt["route"],
+        "grading_route": attempt["gradingRoute"],
+        "package_archive_sha256": plan["packageArchiveSha256"],
+        "candidate_package_archive_sha256": plan[
+            "candidatePackageArchiveSha256"
+        ],
+        "package_manifest_sha256": plan["packageManifestSha256"],
+        "image_identity": image_identity,
+        "dependency_identity": dependency_identity,
+    }
+    attempt_projection = {
+        "attempt_id": attempt["attemptId"],
+        "case_id": attempt["caseId"],
+        "case_revision": attempt["caseRevision"],
+        "treatment_id": attempt["treatmentId"],
+        "repetition": attempt["repetition"],
+    }
+    summaries = {
+        "candidate": (
+            "Candidate receipt validated"
+            if candidate is not None
+            else None
+        ),
+        "deterministic": (
+            "Deterministic checks validated"
+            if isinstance(deterministic, dict)
+            else None
+        ),
+        "product": (
+            "Product check validated"
+            if isinstance(product, dict)
+            else "Product preflight validated"
+            if status == "READY_FOR_FINALIZATION"
+            else None
+        ),
+        "judge": "Behavioral judgments validated" if judges else None,
+    }
+    return {
+        "receipt": receipt,
+        "receipt_sha256": receipt_sha,
+        "artifact_sha256": artifact_sha,
+        "retention_manifest_sha256": _sha256(
+            retention_manifest_path,
+            "retention manifest",
+        ),
+        "source_ids": source_ids,
+        "attempt": attempt_projection,
+        "execution": execution,
+        "summaries": summaries,
+        "deterministic": deterministic,
+        "product": product,
+        "verdicts": verdicts,
+    }, package, attempt, job
+
+
+def _stage_kind(receipt: dict, plan: dict, attempt_id: str) -> str:
+    status = receipt["status"]
+    split = (
+        plan["candidatePackageArchiveSha256"]
+        != plan["packageArchiveSha256"]
+    )
+    stage_kind = {
+        "PENDING_MACOS_PRODUCT": "macos-stage",
+        "PENDING_LINUX_FINALIZATION": (
+            "macos-product" if split else "macos-stage"
+        ),
+        "READY_FOR_FINALIZATION": "linux-finalize",
+    }[status]
+    expected = [
+        item
+        for item in plan.get("expectedJobs", [])
+        if (
+            item.get("attemptId") == attempt_id
+            and item.get("stage") == stage_kind
+        )
+    ]
+    _require(
+        len(expected) == 1,
+        "distributed stage is absent from the dispatch plan",
+    )
+    return stage_kind
+
+
+def experiment_stage_dashboard(
+    corpus: Path,
+    package_root: Path,
+    plan_path: Path,
+    receipt_path: Path,
+    retained_artifact: Path,
+    retention_manifest_path: Path,
+    *,
+    experiment_id: str,
+    attempt_id: str,
+    writer_id: str,
+    writer_generation: str,
+    event_id: str | None = None,
+    observed_at: str | None = None,
+    root: Path | None = None,
+) -> dict:
+    registration = create_campaign(state_root(root), corpus)
+    plan = regular_json(plan_path, "distributed plan")
+    fingerprint = plan.get("experimentPlanSha256")
+    declaration = _declaration(corpus, experiment_id, fingerprint)
+    projected, _, _, _ = _receipt_projection(
+        package_root,
+        plan,
+        declaration,
+        receipt_path,
+        retained_artifact,
+        retention_manifest_path,
+        attempt_id,
+        terminal=False,
+    )
+    receipt = projected["receipt"]
+    stage_kind = _stage_kind(receipt, plan, attempt_id)
+    event = emit_experiment_activity_event(
+        corpus,
+        campaign_id=registration["campaign_id"],
+        writer={
+            "kind": "distributed_coordinator",
+            "id": writer_id,
+            "generation": writer_generation,
+        },
+        event_type="distributed_stage_recorded",
+        experiment_id=experiment_id,
+        experiment_fingerprint=fingerprint,
+        attempt_id=attempt_id,
+        payload={
+            "attempt": projected["attempt"],
+            "execution": projected["execution"],
+            "stage_kind": stage_kind,
+            "status": receipt["status"],
+            "terminal": False,
+            "candidate_rerun_required": False,
+            "summaries": projected["summaries"],
+            "retention_manifest_sha256": projected[
+                "retention_manifest_sha256"
+            ],
+            "source_artifact_sha256": projected["artifact_sha256"],
+            "source_ids": projected["source_ids"],
+        },
+        event_id=event_id,
+        observed_at=observed_at,
+    )
+    return {
+        "schema_version": 1,
+        "campaign_id": registration["campaign_id"],
+        "event_id": event["event_id"],
+        "event_type": event["event_type"],
+        "experiment_id": experiment_id,
+    }
+
+
+def experiment_result_dashboard(
+    corpus: Path,
+    package_root: Path,
+    plan_path: Path,
+    receipt_path: Path,
+    retained_artifact: Path,
+    retention_manifest_path: Path,
+    *,
+    experiment_id: str,
+    attempt_id: str,
+    writer_id: str,
+    writer_generation: str,
+    event_id: str | None = None,
+    observed_at: str | None = None,
+    root: Path | None = None,
+) -> dict:
+    registration = create_campaign(state_root(root), corpus)
+    plan = regular_json(plan_path, "distributed plan")
+    fingerprint = plan.get("experimentPlanSha256")
+    declaration = _declaration(corpus, experiment_id, fingerprint)
+    projected, _, _, _ = _receipt_projection(
+        package_root,
+        plan,
+        declaration,
+        receipt_path,
+        retained_artifact,
+        retention_manifest_path,
+        attempt_id,
+        terminal=True,
+    )
+    receipt = projected["receipt"]
+    lineage = receipt.get("sourceLineage")
+    source_lineage = None
+    if lineage is not None:
+        _require(
+            isinstance(lineage, dict)
+            and lineage.get("candidateRerun") is False
+            and isinstance(lineage.get("sourceRetainedArchiveSha256"), str)
+            and len(lineage["sourceRetainedArchiveSha256"]) == 64
+            and isinstance(lineage.get("candidateReconstruction"), list),
+            "distributed source lineage is invalid",
+        )
+        source_lineage = {
+            "source_id": canonical_fingerprint(lineage),
+            "retained_archive_sha256": lineage[
+                "sourceRetainedArchiveSha256"
+            ],
+            "candidate_reconstruction": True,
+        }
+    event = emit_experiment_activity_event(
+        corpus,
+        campaign_id=registration["campaign_id"],
+        writer={
+            "kind": "distributed_coordinator",
+            "id": writer_id,
+            "generation": writer_generation,
+        },
+        event_type="distributed_result_recorded",
+        experiment_id=experiment_id,
+        experiment_fingerprint=fingerprint,
+        attempt_id=attempt_id,
+        payload={
+            "attempt": projected["attempt"],
+            "execution": projected["execution"],
+            "terminal_status": receipt["status"],
+            "summaries": projected["summaries"],
+            "first_stage_id": (
+                source_lineage["retained_archive_sha256"]
+                if source_lineage is not None
+                else projected["artifact_sha256"]
+            ),
+            "source_lineage": source_lineage,
+            "candidate_rerun": False,
+            "effective_result_id": projected["receipt_sha256"],
+            "selection_fields": {
+                "terminal_status": receipt["status"],
+                "deterministic_target_pass": projected["deterministic"][
+                    "targetPassed"
+                ],
+                "deterministic_regression_pass": projected["deterministic"][
+                    "regressionPassed"
+                ],
+                "product_pass": projected["product"]["passed"],
+                "independent_behavioral_verdicts": projected["verdicts"],
+            },
+            "source_ids": projected["source_ids"],
+        },
+        event_id=event_id,
+        observed_at=observed_at,
+    )
+    return {
+        "schema_version": 1,
+        "campaign_id": registration["campaign_id"],
+        "event_id": event["event_id"],
+        "event_type": event["event_type"],
+        "experiment_id": experiment_id,
+    }
+
+
 def experiment_selection_dashboard(
     corpus: Path,
     declaration_event_id: str,
-    result_event_ids: list[str],
     *,
     writer_id: str,
     writer_generation: str,
@@ -611,17 +1518,32 @@ def experiment_selection_dashboard(
     registration = create_campaign(state_root(root), corpus)
     records, conflicts, _ = experiment_activity_records(corpus)
     conflicted_ids = {item["event_id"] for item in conflicts}
-    selected_ids = [declaration_event_id, *result_event_ids]
-    if len(selected_ids) != len(set(selected_ids)):
-        raise ValueError("experiment selection source IDs are duplicated")
     by_id = {item["event_id"]: item for item in records}
-    if any(identifier in conflicted_ids for identifier in selected_ids):
+    if declaration_event_id in conflicted_ids:
         raise ValueError("experiment selection source is conflicted")
     try:
         declaration = by_id[declaration_event_id]
-        results = [by_id[identifier] for identifier in result_event_ids]
     except KeyError:
         raise ValueError("experiment selection source is unavailable") from None
+    results = [
+        item
+        for item in records
+        if (
+            item["event_type"] == "distributed_result_recorded"
+            and item["subject"]["experiment_id"]
+            == declaration["subject"]["experiment_id"]
+            and item["subject"]["experiment_fingerprint"]
+            == declaration["subject"]["experiment_fingerprint"]
+            and item["event_id"] not in conflicted_ids
+        )
+    ]
+    attempt_ids = [item["subject"]["attempt_id"] for item in results]
+    if len(attempt_ids) != len(set(attempt_ids)):
+        return {
+            "schema_version": 1,
+            "status": "selection_incomplete",
+            "reasons": ["result_conflicted"],
+        }
     selection = emit_experiment_selection(
         corpus,
         campaign_id=registration["campaign_id"],
@@ -846,27 +1768,56 @@ def configure_parser(sub: argparse._SubParsersAction) -> None:
     progress.add_argument("--event-id")
     progress.add_argument("--observed-at")
     progress.add_argument("--state-root", type=Path)
-    activity = commands.add_parser("experiment-activity")
-    activity.add_argument("corpus", type=Path)
-    activity.add_argument("source", type=Path)
-    activity.add_argument(
-        "--writer-kind",
-        choices=(
-            "session",
-            "distributed_coordinator",
-            "cloud_observer",
-        ),
-        required=True,
-    )
-    activity.add_argument("--writer-id", required=True)
-    activity.add_argument("--writer-generation", required=True)
-    activity.add_argument("--event-id")
-    activity.add_argument("--observed-at")
-    activity.add_argument("--state-root", type=Path)
+    declaration = commands.add_parser("experiment-declaration")
+    declaration.add_argument("corpus", type=Path)
+    declaration.add_argument("source", type=Path)
+    declaration.add_argument("--session-id", required=True)
+    declaration.add_argument("--event-id")
+    declaration.add_argument("--observed-at")
+    declaration.add_argument("--state-root", type=Path)
+    dispatch = commands.add_parser("experiment-dispatch")
+    dispatch.add_argument("corpus", type=Path)
+    dispatch.add_argument("plan", type=Path)
+    dispatch.add_argument("run", type=Path)
+    dispatch.add_argument("binding", type=Path)
+    dispatch.add_argument("--experiment-id", required=True)
+    dispatch.add_argument("--opaque-source-id", required=True)
+    dispatch.add_argument("--writer-id", required=True)
+    dispatch.add_argument("--writer-generation", required=True)
+    dispatch.add_argument("--event-id")
+    dispatch.add_argument("--observed-at")
+    dispatch.add_argument("--state-root", type=Path)
+    observation = commands.add_parser("experiment-observation")
+    observation.add_argument("corpus", type=Path)
+    observation.add_argument("observation", type=Path)
+    observation.add_argument("plan", type=Path)
+    observation.add_argument("run", type=Path)
+    observation.add_argument("binding", type=Path)
+    observation.add_argument("--experiment-id", required=True)
+    observation.add_argument("--opaque-source-id", required=True)
+    observation.add_argument("--writer-id", required=True)
+    observation.add_argument("--writer-generation", required=True)
+    observation.add_argument("--event-id")
+    observation.add_argument("--observed-at")
+    observation.add_argument("--state-root", type=Path)
+    for name in ("experiment-stage", "experiment-result"):
+        receipt = commands.add_parser(name)
+        receipt.add_argument("corpus", type=Path)
+        receipt.add_argument("package_root", type=Path)
+        receipt.add_argument("plan", type=Path)
+        receipt.add_argument("receipt", type=Path)
+        receipt.add_argument("retained_artifact", type=Path)
+        receipt.add_argument("retention_manifest", type=Path)
+        receipt.add_argument("--experiment-id", required=True)
+        receipt.add_argument("--attempt-id", required=True)
+        receipt.add_argument("--writer-id", required=True)
+        receipt.add_argument("--writer-generation", required=True)
+        receipt.add_argument("--event-id")
+        receipt.add_argument("--observed-at")
+        receipt.add_argument("--state-root", type=Path)
     selection = commands.add_parser("experiment-selection")
     selection.add_argument("corpus", type=Path)
     selection.add_argument("--declaration-event", required=True)
-    selection.add_argument("--result-event", action="append", default=[])
     selection.add_argument("--writer-id", required=True)
     selection.add_argument("--writer-generation", required=True)
     selection.add_argument("--event-id")
@@ -948,11 +1899,70 @@ def dispatch(args: argparse.Namespace) -> dict:
             observed_at=args.observed_at,
             root=args.state_root,
         )
-    if args.dashboard_command == "experiment-activity":
-        return experiment_activity_dashboard(
+    if args.dashboard_command == "experiment-declaration":
+        return experiment_declaration_dashboard(
             args.corpus,
             args.source.expanduser().resolve(),
-            writer_kind=args.writer_kind,
+            session_id=args.session_id,
+            event_id=args.event_id,
+            observed_at=args.observed_at,
+            root=args.state_root,
+        )
+    if args.dashboard_command == "experiment-dispatch":
+        return experiment_dispatch_dashboard(
+            args.corpus,
+            args.plan.expanduser().resolve(),
+            args.run.expanduser().resolve(),
+            args.binding.expanduser().resolve(),
+            experiment_id=args.experiment_id,
+            opaque_source_id=args.opaque_source_id,
+            writer_id=args.writer_id,
+            writer_generation=args.writer_generation,
+            event_id=args.event_id,
+            observed_at=args.observed_at,
+            root=args.state_root,
+        )
+    if args.dashboard_command == "experiment-observation":
+        return experiment_observation_dashboard(
+            args.corpus,
+            args.observation.expanduser().resolve(),
+            args.plan.expanduser().resolve(),
+            args.run.expanduser().resolve(),
+            args.binding.expanduser().resolve(),
+            experiment_id=args.experiment_id,
+            opaque_source_id=args.opaque_source_id,
+            writer_id=args.writer_id,
+            writer_generation=args.writer_generation,
+            event_id=args.event_id,
+            observed_at=args.observed_at,
+            root=args.state_root,
+        )
+    if args.dashboard_command == "experiment-stage":
+        return experiment_stage_dashboard(
+            args.corpus,
+            args.package_root.expanduser().resolve(),
+            args.plan.expanduser().resolve(),
+            args.receipt.expanduser().resolve(),
+            args.retained_artifact.expanduser().resolve(),
+            args.retention_manifest.expanduser().resolve(),
+            experiment_id=args.experiment_id,
+            attempt_id=args.attempt_id,
+            writer_id=args.writer_id,
+            writer_generation=args.writer_generation,
+            event_id=args.event_id,
+            observed_at=args.observed_at,
+            root=args.state_root,
+        )
+    if args.dashboard_command == "experiment-result":
+        return experiment_result_dashboard(
+            args.corpus,
+            args.package_root.expanduser().resolve(),
+            args.plan.expanduser().resolve(),
+            args.receipt.expanduser().resolve(),
+            args.retained_artifact.expanduser().resolve(),
+            args.retention_manifest.expanduser().resolve(),
+            experiment_id=args.experiment_id,
+            attempt_id=args.attempt_id,
             writer_id=args.writer_id,
             writer_generation=args.writer_generation,
             event_id=args.event_id,
@@ -963,7 +1973,6 @@ def dispatch(args: argparse.Namespace) -> dict:
         return experiment_selection_dashboard(
             args.corpus,
             args.declaration_event,
-            args.result_event,
             writer_id=args.writer_id,
             writer_generation=args.writer_generation,
             event_id=args.event_id,

@@ -2888,6 +2888,7 @@ def experiment_activity_records(
                     })
 
     by_id = {item["event_id"]: item for item in records}
+    conflicted_event_ids = {item["event_id"] for item in conflicts}
     admitted_records = []
     for event in records:
         if event["event_type"] != "experiment_selection_recorded":
@@ -2908,12 +2909,36 @@ def experiment_activity_records(
             for item in sources
             if item["event_type"] == "distributed_result_recorded"
         ]
+        experiment_results = [
+            item
+            for item in records
+            if (
+                item["event_type"] == "distributed_result_recorded"
+                and item["subject"]["experiment_id"]
+                == event["subject"]["experiment_id"]
+                and item["subject"]["experiment_fingerprint"]
+                == event["subject"]["experiment_fingerprint"]
+            )
+        ]
+        result_attempts = [
+            item["subject"]["attempt_id"] for item in experiment_results
+        ]
         valid = False
-        if len(declarations) == 1 and len(sources) == 1 + len(results):
+        if (
+            len(declarations) == 1
+            and len(sources) == 1 + len(results)
+            and len(result_attempts) == len(set(result_attempts))
+            and not conflicted_event_ids.intersection(source_ids)
+            and set(source_ids)
+            == {
+                declarations[0]["event_id"],
+                *(item["event_id"] for item in experiment_results),
+            }
+        ):
             try:
                 computed = compute_experiment_selection(
                     declarations[0],
-                    results,
+                    experiment_results,
                 )
                 valid = (
                     computed.get("status") != "selection_incomplete"
