@@ -542,8 +542,8 @@ The acceptance fixtures must additionally prove:
   refusal light captures were opened and passed pixel-spread and overflow
   checks.
 - **Implementation commit:** `bbb312fdfb6ea2c67e77b2e44ca2dab13ed8007b`
-- **Committed proof candidate:**
-  `sha256:518d4763f9b4c142e9bab9b7a6ea16cb2c5e330c9f2c62aab21406b002550de6`
+- **Committed proof identity:** the four live-proof receipts carry the canonical
+  whole-candidate fingerprint and installed-tree match.
 - **Next action:** run dual implementation review against the exact committed
   candidate, close any verified material findings, then push and open the PR.
 
