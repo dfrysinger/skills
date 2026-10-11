@@ -16,6 +16,160 @@ SPEC.loader.exec_module(packager)
 
 
 class PackageDistributedCampaignTests(unittest.TestCase):
+    def test_v2_treatment_inventory_is_verified_before_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            treatment = source / "treatments/baseline/instructions.md"
+            hidden = source / "cases/example/revision/hidden/authority/criteria.md"
+            treatment.parent.mkdir(parents=True)
+            hidden.parent.mkdir(parents=True)
+            treatment.write_text("baseline\n")
+            hidden.write_text("criteria\n")
+            treatment_sha = packager.sha256(treatment)
+            treatment_fingerprint = packager.canonical_fingerprint({
+                "targetSkillIdentities": [
+                    {
+                        "skillName": "example-skill",
+                        "evaluatorFingerprint": "c" * 64,
+                    }
+                ],
+                "files": [
+                    {
+                        "path": "treatments/baseline/instructions.md",
+                        "sha256": treatment_sha,
+                    }
+                ],
+            })
+            manifest = {
+                "schemaVersion": 2,
+                "campaignId": "example-campaign",
+                "experimentPlanSha256": "a" * 64,
+                "treatmentInventory": {
+                    "baseline": {
+                        "treatmentFingerprint": treatment_fingerprint,
+                        "targetSkillIdentities": [
+                            {
+                                "skillName": "example-skill",
+                                "evaluatorFingerprint": "c" * 64,
+                            }
+                        ],
+                        "files": [
+                            {
+                                "path": "treatments/baseline/instructions.md",
+                                "sha256": treatment_sha,
+                            }
+                        ],
+                    }
+                },
+            }
+            (source / "package-manifest.json").write_text(json.dumps(manifest) + "\n")
+
+            receipt = packager.package_campaign(
+                source,
+                root / "full",
+                root / "candidate",
+                root / "full.tar.gz",
+                root / "candidate.tar.gz",
+                root / "receipt.json",
+                root / "completion.json",
+                ["cases/*/*/hidden"],
+            )
+
+            self.assertEqual(receipt["schemaVersion"], 2)
+            self.assertEqual(receipt["experimentPlanSha256"], "a" * 64)
+            self.assertEqual(
+                receipt["treatmentInventory"]["baseline"]["files"][0],
+                {
+                    "path": "treatments/baseline/instructions.md",
+                    "sha256": treatment_sha,
+                },
+            )
+            completion = json.loads((root / "completion.json").read_text())
+            self.assertEqual(completion["schemaVersion"], 2)
+            self.assertEqual(completion["experimentPlanSha256"], "a" * 64)
+
+            for output in (
+                root / "full-refused",
+                root / "candidate-refused",
+                root / "full-refused.tar.gz",
+                root / "candidate-refused.tar.gz",
+                root / "receipt-refused.json",
+                root / "completion-refused.json",
+            ):
+                self.assertFalse(output.exists())
+            with self.assertRaisesRegex(ValueError, "removes treatment inventory"):
+                packager.package_campaign(
+                    source,
+                    root / "full-refused",
+                    root / "candidate-refused",
+                    root / "full-refused.tar.gz",
+                    root / "candidate-refused.tar.gz",
+                    root / "receipt-refused.json",
+                    root / "completion-refused.json",
+                    ["treatments"],
+                )
+            self.assertFalse((root / "full-refused").exists())
+
+    def test_v2_treatment_inventory_rejects_symlink_escape_and_digest_mismatch(self):
+        scenarios = ("symlink", "symlink-directory", "escape", "digest")
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "source"
+                source.mkdir()
+                treatment = source / "treatment.md"
+                treatment.write_text("baseline\n")
+                path = "treatment.md"
+                digest_value = packager.sha256(treatment)
+                if scenario == "symlink":
+                    treatment.unlink()
+                    treatment.symlink_to(root / "outside")
+                elif scenario == "symlink-directory":
+                    outside = root / "outside"
+                    outside.mkdir()
+                    (outside / "treatment.md").write_text("baseline\n")
+                    link = source / "linked"
+                    link.symlink_to(outside, target_is_directory=True)
+                    path = "linked/treatment.md"
+                    digest_value = packager.sha256(outside / "treatment.md")
+                elif scenario == "escape":
+                    path = "../outside"
+                else:
+                    digest_value = "f" * 64
+                files = [{"path": path, "sha256": digest_value}]
+                skills = [{
+                    "skillName": "example-skill",
+                    "evaluatorFingerprint": "c" * 64,
+                }]
+                (source / "package-manifest.json").write_text(json.dumps({
+                    "schemaVersion": 2,
+                    "campaignId": "example-campaign",
+                    "experimentPlanSha256": "a" * 64,
+                    "treatmentInventory": {
+                        "baseline": {
+                            "treatmentFingerprint": packager.canonical_fingerprint({
+                                "targetSkillIdentities": skills,
+                                "files": files,
+                            }),
+                            "targetSkillIdentities": skills,
+                            "files": files,
+                        }
+                    },
+                }))
+                with self.assertRaises(ValueError):
+                    packager.package_campaign(
+                        source,
+                        root / "full",
+                        root / "candidate",
+                        root / "full.tar.gz",
+                        root / "candidate.tar.gz",
+                        root / "receipt.json",
+                        root / "completion.json",
+                        ["hidden"],
+                    )
+                self.assertFalse((root / "full").exists())
+
     def test_builds_deterministic_split_archives(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

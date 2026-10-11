@@ -25,6 +25,273 @@ def digest(path):
 
 
 class FullProductMatrixTests(unittest.TestCase):
+    def test_v2_execution_identity_is_canonical_and_mutation_sensitive(self):
+        attempt = {
+            "attemptId": "attempt-1",
+            "caseId": "case-1",
+            "caseRevision": "1" * 64,
+            "treatmentId": "baseline",
+            "repetition": 1,
+            "candidateModel": "gpt-5.6-sol",
+            "candidateTimeoutSeconds": 7200,
+            "treatmentFingerprint": "2" * 64,
+            "targetSkillIdentities": [
+                {
+                    "skillName": "example-skill",
+                    "evaluatorFingerprint": "3" * 64,
+                }
+            ],
+            "targetOs": "linux",
+            "architecture": "arm64",
+            "route": "full-linux",
+            "gradingRoute": "hosted-final",
+        }
+        package = {
+            "schemaVersion": 2,
+            "experimentPlanSha256": "4" * 64,
+        }
+        identity = matrix.execution_identity(package, attempt)
+        self.assertEqual(
+            identity["targetSkillIdentitiesFingerprint"],
+            matrix.canonical_fingerprint(attempt["targetSkillIdentities"]),
+        )
+        self.assertEqual(
+            matrix.execution_identity_fingerprint(identity),
+            matrix.execution_identity_fingerprint(
+                matrix.execution_identity(package, dict(attempt))
+            ),
+        )
+        for field in matrix.V2_EXECUTION_IDENTITY_KEYS:
+            changed = dict(identity)
+            changed[field] = (
+                "f" * 64 if isinstance(changed[field], str) else changed[field] + 1
+            )
+            self.assertNotEqual(
+                matrix.execution_identity_fingerprint(identity),
+                matrix.execution_identity_fingerprint(changed),
+                field,
+            )
+            record = matrix.execution_identity_record(package, attempt)
+            record["executionIdentity"][field] = changed[field]
+            with self.assertRaisesRegex(ValueError, "Execution identity mismatch"):
+                matrix.validate_execution_identity_record(record, package, attempt)
+
+    def test_dispatch_binding_uses_planned_exact_job_set_and_refuses_rebinding(self):
+        plan = {
+            "schemaVersion": 2,
+            "experimentPlanSha256": "1" * 64,
+            "packageArchiveSha256": "2" * 64,
+            "candidatePackageArchiveSha256": "3" * 64,
+            "packageManifestSha256": "4" * 64,
+            "expectedJobs": [
+                {"jobName": "plan", "attemptId": None, "stage": "plan"},
+                {
+                    "jobName": "linux-native / attempt-1",
+                    "attemptId": "attempt-1",
+                    "stage": "linux-native",
+                },
+            ],
+        }
+        run = {
+            "repositoryId": 7,
+            "repositoryFullName": "example/evaluation",
+            "workflowId": 8,
+            "workflowPath": ".github/workflows/distributed-campaign.yml",
+            "workflowSha": "b" * 40,
+            "headSha": "a" * 40,
+            "headBranch": "main",
+            "event": "workflow_dispatch",
+            "runId": 9,
+            "runAttempt": 1,
+        }
+        first = matrix.create_dispatch_binding(plan, run)
+        self.assertEqual(first["expectedJobs"], plan["expectedJobs"])
+        self.assertNotIn("repositoryFullName", json.dumps(first))
+        self.assertNotIn("workflowPath", json.dumps(first))
+        self.assertNotIn("headSha", json.dumps(first))
+        self.assertEqual(matrix.validate_dispatch_binding(first, plan, run), first)
+        self.assertEqual(
+            matrix.validate_dispatch_binding(dict(first), plan, dict(run)),
+            first,
+        )
+        rebound = dict(run, runAttempt=2)
+        with self.assertRaisesRegex(ValueError, "first run attempt"):
+            matrix.create_dispatch_binding(plan, rebound)
+        changed = json.loads(json.dumps(first))
+        changed["expectedJobs"][1]["jobName"] = "renamed"
+        with self.assertRaisesRegex(ValueError, "dispatch binding"):
+            matrix.validate_dispatch_binding(changed, plan, run)
+        duplicate = json.loads(json.dumps(plan))
+        duplicate["expectedJobs"].append(dict(duplicate["expectedJobs"][1]))
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            matrix.create_dispatch_binding(duplicate, run)
+
+    def test_v2_plan_and_completion_carry_exact_execution_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package_root = root / "package"
+            case_root = package_root / "cases/case-1" / ("1" * 64)
+            treatment_path = package_root / "treatments/baseline.md"
+            case_root.mkdir(parents=True)
+            treatment_path.parent.mkdir(parents=True)
+            treatment_path.write_text("baseline\n")
+            case = {
+                "caseId": "case-1",
+                "caseRevision": "1" * 64,
+                "runtime": {"platform": {"architecture": "arm64", "os": "linux"}},
+                "grading": {
+                    "execution": "container",
+                    "image": "sha256:" + "a" * 64,
+                },
+            }
+            case_path = case_root / "case-manifest.json"
+            case_path.write_text(json.dumps(case))
+            skills = [{
+                "skillName": "example-skill",
+                "evaluatorFingerprint": "3" * 64,
+            }]
+            treatment_files = [{
+                "path": "treatments/baseline.md",
+                "sha256": digest(treatment_path),
+            }]
+            treatment_fingerprint = matrix.canonical_fingerprint({
+                "targetSkillIdentities": skills,
+                "files": treatment_files,
+            })
+            package = {
+                "schemaVersion": 2,
+                "campaignId": matrix.CAMPAIGN_ID,
+                "experimentPlanSha256": "4" * 64,
+                "treatmentInventory": {
+                    "baseline": {
+                        "treatmentFingerprint": treatment_fingerprint,
+                        "targetSkillIdentities": skills,
+                        "files": treatment_files,
+                    }
+                },
+                "cases": [{
+                    "caseId": "case-1",
+                    "caseRevision": "1" * 64,
+                    "manifest": case_path.relative_to(package_root).as_posix(),
+                    "manifestSha256": digest(case_path),
+                }],
+            }
+            package_path = package_root / "package-manifest.json"
+            package_path.write_text(json.dumps(package))
+            attempt = {
+                "attemptId": "attempt-1",
+                "caseId": "case-1",
+                "caseRevision": "1" * 64,
+                "treatmentId": "baseline",
+                "repetition": 1,
+                "candidateModel": "gpt-5.6-sol",
+                "candidateTimeoutSeconds": 7200,
+                "treatmentFingerprint": treatment_fingerprint,
+                "targetSkillIdentities": skills,
+                "targetOs": "linux",
+                "architecture": "arm64",
+                "route": "full-linux",
+                "gradingRoute": "hosted-final",
+            }
+            (package_root / "execution-matrix.json").write_text(json.dumps({
+                "schemaVersion": 2,
+                "campaignId": matrix.CAMPAIGN_ID,
+                "experimentPlanSha256": "4" * 64,
+                "attempts": [attempt],
+            }))
+            completion = {
+                "schemaVersion": 2,
+                "campaignId": matrix.CAMPAIGN_ID,
+                "experimentPlanSha256": "4" * 64,
+                "packageArchiveSha256": matrix.PACKAGE_ARCHIVE_SHA256,
+                "candidatePackageArchiveSha256":
+                    matrix.CANDIDATE_PACKAGE_ARCHIVE_SHA256,
+                "packageManifestSha256": matrix.PACKAGE_MANIFEST_SHA256,
+                "completedAttempts": [],
+                "excludedAttempts": [],
+            }
+            completion_path = root / "completion.json"
+            completion_path.write_text(json.dumps(completion))
+            images_path = root / "images.json"
+            images_path.write_text(json.dumps({
+                "schemaVersion": 1,
+                "assets": [{
+                    "imageId": "sha256:" + "a" * 64,
+                    "release": "images-r1",
+                    "asset": "image.tar",
+                    "sha256": "b" * 64,
+                    "bytes": 123,
+                }],
+            }))
+            dependencies_path = root / "dependencies.json"
+            dependencies_path.write_text(json.dumps({
+                "schemaVersion": 1,
+                "dependencies": [],
+            }))
+
+            plan = matrix.build_plan(
+                package_root,
+                completion_path,
+                images_path,
+                dependencies_path,
+                expected_manifest_sha256=digest(package_path),
+            )
+            job = plan["linuxMatrix"]["include"][0]
+            self.assertEqual(plan["schemaVersion"], 2)
+            self.assertEqual(plan["experimentPlanSha256"], "4" * 64)
+            self.assertEqual(
+                plan["expectedJobs"],
+                [
+                    {"jobName": "plan", "attemptId": None, "stage": "plan"},
+                    {
+                        "jobName": "linux-native / attempt-1",
+                        "attemptId": "attempt-1",
+                        "stage": "linux-native",
+                    },
+                ],
+            )
+            matrix.validate_execution_identity_record(job, package, attempt)
+            self.assertEqual(job["linuxNativeJobName"], "linux-native / attempt-1")
+
+            completed = dict(
+                matrix.attempt_identity(attempt),
+                outcome="PASS",
+                retainedEvidenceSha256="c" * 64,
+                **matrix.execution_identity_record(package, attempt),
+            )
+            completion["completedAttempts"] = [completed]
+            self.assertEqual(
+                matrix.validate_completion_manifest_from_value(
+                    completion, {"attempt-1": attempt}, package
+                ),
+                {"attempt-1"},
+            )
+            completion["completedAttempts"][0]["executionIdentity"]["candidateModel"] = (
+                "other-model"
+            )
+            with self.assertRaisesRegex(ValueError, "Execution identity mismatch"):
+                matrix.validate_completion_manifest_from_value(
+                    completion, {"attempt-1": attempt}, package
+                )
+
+    def test_workflow_has_explicit_planner_owned_job_names(self):
+        workflow = (
+            SCRIPT.parent.parent / "templates/distributed-campaign.yml"
+        ).read_text()
+        self.assertIn("name: plan", workflow)
+        for job, field in (
+            ("macos-stage", "macosStageJobName"),
+            ("macos-product", "macosProductJobName"),
+            ("linux-finalize", "linuxFinalizeJobName"),
+            ("linux-native", "linuxNativeJobName"),
+            ("linux-refinalize", "linuxRefinalizeJobName"),
+        ):
+            self.assertRegex(
+                workflow,
+                rf"(?m)^  {job}:\n    name: \$\{{\{{ matrix\.{field} \|\| "
+                rf"format\('{job} / \{{0\}}', matrix\.attemptId\) \}}\}}$",
+            )
+
     def test_candidate_patch_path_is_resolved_before_workspace_chdir(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

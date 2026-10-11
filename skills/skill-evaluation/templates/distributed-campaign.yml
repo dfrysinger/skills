@@ -168,6 +168,7 @@ env:
 
 jobs:
   plan:
+    name: plan
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     outputs:
@@ -304,6 +305,7 @@ jobs:
           compression-level: 0
 
   macos-stage:
+    name: ${{ matrix.macosStageJobName || format('macos-stage / {0}', matrix.attemptId) }}
     needs: plan
     if: inputs.macos_source_run_id == '' && inputs.linux_source_run_id == '' && needs.plan.outputs.macos_count != '0'
     strategy:
@@ -332,10 +334,11 @@ jobs:
           python3 - <<'PY'
           import json, os
           from pathlib import Path
-          Path("evidence/dispatch.json").write_text(json.dumps({
-              "schemaVersion": 1,
+          attempt = json.loads(os.environ["ATTEMPT_JSON"])
+          dispatch = {
+              "schemaVersion": 2 if "executionIdentity" in attempt else 1,
               "stage": "macos-native",
-              "attempt": json.loads(os.environ["ATTEMPT_JSON"]),
+              "attempt": attempt,
               "controls": {key: os.environ[key] for key in (
                   "PACKAGE_RELEASE", "PACKAGE_ASSET", "COMPLETION_RELEASE",
                   "COMPLETION_ASSET", "COMPLETION_SHA256",
@@ -348,7 +351,13 @@ jobs:
                   "GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "RUNNER_OS",
                   "RUNNER_ARCH", "ImageOS", "ImageVersion",
               )},
-          }, indent=2, sort_keys=True) + "\n")
+          }
+          if dispatch["schemaVersion"] == 2:
+              dispatch["executionIdentity"] = attempt["executionIdentity"]
+              dispatch["executionIdentitySha256"] = attempt["executionIdentitySha256"]
+          Path("evidence/dispatch.json").write_text(
+              json.dumps(dispatch, indent=2, sort_keys=True) + "\n"
+          )
           PY
           cp .github/workflows/distributed-campaign.yml evidence/workflow.yml
           cp skills/skill-evaluation/scripts/distributed_campaign.py evidence/distributed_campaign.py
@@ -530,6 +539,7 @@ jobs:
           compression-level: 0
 
   macos-product:
+    name: ${{ matrix.macosProductJobName || format('macos-product / {0}', matrix.attemptId) }}
     needs:
       - plan
       - macos-stage
@@ -619,6 +629,7 @@ jobs:
           compression-level: 0
 
   linux-finalize:
+    name: ${{ matrix.linuxFinalizeJobName || format('linux-finalize / {0}', matrix.attemptId) }}
     needs:
       - plan
       - macos-stage
@@ -802,6 +813,7 @@ jobs:
           compression-level: 0
 
   linux-native:
+    name: ${{ matrix.linuxNativeJobName || format('linux-native / {0}', matrix.attemptId) }}
     needs: plan
     if: inputs.macos_source_run_id == '' && inputs.linux_source_run_id == '' && needs.plan.outputs.linux_count != '0'
     strategy:
@@ -901,6 +913,7 @@ jobs:
           compression-level: 0
 
   linux-refinalize:
+    name: ${{ matrix.linuxRefinalizeJobName || format('linux-refinalize / {0}', matrix.attemptId) }}
     needs: plan
     if: inputs.linux_source_run_id != '' && needs.plan.outputs.linux_count == '1'
     strategy:

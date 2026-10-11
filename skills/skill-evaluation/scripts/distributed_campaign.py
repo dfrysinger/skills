@@ -45,6 +45,34 @@ IDENTITY_KEYS = (
     "treatmentId",
     "repetition",
 )
+V2_ATTEMPT_KEYS = (
+    "candidateModel",
+    "treatmentFingerprint",
+    "targetSkillIdentities",
+    "targetOs",
+    "architecture",
+    "route",
+    "gradingRoute",
+)
+V2_EXECUTION_IDENTITY_KEYS = (
+    "experimentPlanSha256",
+    "attemptId",
+    "caseId",
+    "caseRevision",
+    "treatmentId",
+    "repetition",
+    "candidateModel",
+    "candidateTimeoutSeconds",
+    "treatmentFingerprint",
+    "targetSkillIdentitiesFingerprint",
+    "targetOs",
+    "architecture",
+    "route",
+    "gradingRoute",
+    "packageArchiveSha256",
+    "candidatePackageArchiveSha256",
+    "packageManifestSha256",
+)
 SECRET_ENV_NAMES = (
     "COPILOT_GITHUB_TOKEN",
     "COPILOT_EVAL_MODEL_TOKEN",
@@ -81,6 +109,13 @@ def write_json(path: Path, value: object) -> None:
 def sha256(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def canonical_fingerprint(value: object) -> str:
+    encoded = json.dumps(
+        value, allow_nan=False, separators=(",", ":"), sort_keys=True
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def git_tree(workspace: Path, revision: str = "HEAD") -> str:
@@ -406,7 +441,118 @@ def identity_tuple(attempt: dict) -> tuple:
     return tuple(attempt[key] for key in IDENTITY_KEYS)
 
 
-def validate_attempt(attempt: dict) -> None:
+def target_skill_identities(value: object) -> list[dict]:
+    require(isinstance(value, list) and value, "Target skill identities must be nonempty")
+    result = []
+    seen = set()
+    for record in value:
+        require(
+            isinstance(record, dict)
+            and set(record) == {"skillName", "evaluatorFingerprint"},
+            "Target skill identity has unexpected fields",
+        )
+        name = safe_name(record.get("skillName"), "target skill name")
+        check_sha256(record.get("evaluatorFingerprint"), f"{name} evaluator fingerprint")
+        require(name not in seen, f"Duplicate target skill identity: {name}")
+        seen.add(name)
+        result.append(record)
+    require(result == sorted(result, key=lambda item: item["skillName"]),
+            "Target skill identities must be sorted")
+    return result
+
+
+def execution_identity(package: dict, attempt: dict) -> dict:
+    require(package.get("schemaVersion") == 2, "Execution identity requires package schema 2")
+    for key in V2_ATTEMPT_KEYS:
+        require(key in attempt, f"V2 attempt is missing {key}")
+    identities = target_skill_identities(attempt["targetSkillIdentities"])
+    identity = {
+        "experimentPlanSha256": check_sha256(
+            package.get("experimentPlanSha256"), "experiment plan"
+        ),
+        **attempt_identity(attempt),
+        "candidateModel": safe_name(attempt["candidateModel"], "candidate model"),
+        "candidateTimeoutSeconds": attempt["candidateTimeoutSeconds"],
+        "treatmentFingerprint": check_sha256(
+            attempt["treatmentFingerprint"], "treatment fingerprint"
+        ),
+        "targetSkillIdentitiesFingerprint": canonical_fingerprint(identities),
+        "targetOs": attempt["targetOs"],
+        "architecture": attempt["architecture"],
+        "route": attempt["route"],
+        "gradingRoute": attempt["gradingRoute"],
+        "packageArchiveSha256": PACKAGE_ARCHIVE_SHA256,
+        "candidatePackageArchiveSha256": CANDIDATE_PACKAGE_ARCHIVE_SHA256,
+        "packageManifestSha256": PACKAGE_MANIFEST_SHA256,
+    }
+    require(set(identity) == set(V2_EXECUTION_IDENTITY_KEYS),
+            "Canonical execution identity field set changed")
+    return identity
+
+
+def execution_identity_fingerprint(identity: dict) -> str:
+    require(
+        isinstance(identity, dict) and set(identity) == set(V2_EXECUTION_IDENTITY_KEYS),
+        "Execution identity has missing or unexpected fields",
+    )
+    return canonical_fingerprint(identity)
+
+
+def execution_identity_record(package: dict, attempt: dict) -> dict:
+    identity = execution_identity(package, attempt)
+    return {
+        "executionIdentity": identity,
+        "executionIdentitySha256": execution_identity_fingerprint(identity),
+    }
+
+
+def versioned_execution_identity_record(package: dict, attempt: dict) -> dict:
+    return execution_identity_record(package, attempt) if package.get("schemaVersion") == 2 else {}
+
+
+def bind_versioned_execution_identity(
+    record: dict, package: dict, attempt: dict
+) -> dict:
+    if package.get("schemaVersion") == 1:
+        return record
+    return {**record, **execution_identity_record(package, attempt)}
+
+
+def validate_execution_identity_record(record: dict, package: dict, attempt: dict) -> dict:
+    expected = execution_identity(package, attempt)
+    require(record.get("executionIdentity") == expected, "Execution identity mismatch")
+    require(
+        record.get("executionIdentitySha256")
+        == execution_identity_fingerprint(expected),
+        "Execution identity fingerprint mismatch",
+    )
+    return expected
+
+
+def validate_versioned_execution_identity(
+    record: dict, package: dict, attempt: dict
+) -> dict | None:
+    if package.get("schemaVersion") == 1:
+        require(
+            "executionIdentity" not in record
+            and "executionIdentitySha256" not in record,
+            "Legacy record unexpectedly carries v2 execution identity",
+        )
+        return None
+    return validate_execution_identity_record(record, package, attempt)
+
+
+def validate_candidate_execution_identity(candidate: dict, attempt: dict) -> None:
+    expected = {
+        "candidateModel": attempt["candidateModel"],
+        "treatmentFingerprint": attempt["treatmentFingerprint"],
+        "targetSkillIdentities": attempt["targetSkillIdentities"],
+    }
+    actual = {key: candidate.get(key) for key in expected}
+    require(actual == expected, "Candidate runtime execution identity mismatch")
+
+
+def validate_attempt(attempt: dict, schema_version: int = 1) -> None:
     require(isinstance(attempt, dict), "Attempt must be an object")
     safe_name(attempt.get("attemptId"), "attempt id")
     safe_name(attempt.get("caseId"), "case id")
@@ -419,12 +565,28 @@ def validate_attempt(attempt: dict) -> None:
         and attempt["candidateTimeoutSeconds"] > 0,
         "Attempt candidate timeout must be positive",
     )
+    if schema_version == 2:
+        safe_name(attempt.get("candidateModel"), "candidate model")
+        check_sha256(attempt.get("treatmentFingerprint"), "treatment fingerprint")
+        target_skill_identities(attempt.get("targetSkillIdentities"))
+        require(attempt.get("targetOs") in {"linux", "macos"}, "Invalid target OS")
+        require(attempt.get("architecture") == "arm64", "Invalid target architecture")
+        require(
+            attempt.get("route") in {"full-linux", "macos-native-stage"},
+            "Invalid attempt route",
+        )
+        require(
+            attempt.get("gradingRoute")
+            in {"hosted-final", "linux-container-final", "macos-host-final"},
+            "Invalid grading route",
+        )
 
 
 def load_package(
     package_root: Path,
     expected_manifest_sha256: str | None = None,
 ) -> tuple[dict, dict, dict[str, dict]]:
+    package_root = package_root.resolve()
     if expected_manifest_sha256 is None:
         expected_manifest_sha256 = PACKAGE_MANIFEST_SHA256
     manifest_path = package_root / "package-manifest.json"
@@ -438,21 +600,250 @@ def load_package(
     matrix = read_json(matrix_path)
     require(manifest.get("campaignId") == CAMPAIGN_ID, "Unexpected package campaign")
     require(matrix.get("campaignId") == CAMPAIGN_ID, "Unexpected matrix campaign")
-    require(manifest.get("schemaVersion") == 1, "Unsupported package manifest schema")
-    require(matrix.get("schemaVersion") == 1, "Unsupported execution matrix schema")
+    schema_version = manifest.get("schemaVersion")
+    require(schema_version in {1, 2}, "Unsupported package manifest schema")
+    require(matrix.get("schemaVersion") == schema_version,
+            "Package manifest and execution matrix schemas differ")
+    treatment_inventory = {}
+    if schema_version == 2:
+        plan_sha = check_sha256(
+            manifest.get("experimentPlanSha256"), "experiment plan"
+        )
+        require(
+            matrix.get("experimentPlanSha256") == plan_sha,
+            "Execution matrix experiment plan mismatch",
+        )
+        treatment_inventory = manifest.get("treatmentInventory")
+        require(
+            isinstance(treatment_inventory, dict) and treatment_inventory,
+            "Package treatment inventory is missing",
+        )
     attempts = matrix.get("attempts")
     require(isinstance(attempts, list) and attempts, "Execution matrix is empty")
     by_id: dict[str, dict] = {}
     identities: set[tuple] = set()
     for attempt in attempts:
-        validate_attempt(attempt)
+        validate_attempt(attempt, schema_version)
         attempt_id = attempt["attemptId"]
         require(attempt_id not in by_id, f"Duplicate matrix attempt id: {attempt_id}")
         identity = identity_tuple(attempt)
         require(identity not in identities, f"Duplicate matrix attempt identity: {attempt_id}")
         by_id[attempt_id] = attempt
         identities.add(identity)
+        if schema_version == 2:
+            treatment = treatment_inventory.get(attempt["treatmentId"])
+            require(
+                isinstance(treatment, dict)
+                and set(treatment)
+                == {"treatmentFingerprint", "targetSkillIdentities", "files"},
+                f"Missing or invalid treatment inventory: {attempt['treatmentId']}",
+            )
+            require(
+                treatment["treatmentFingerprint"] == attempt["treatmentFingerprint"],
+                f"Treatment fingerprint mismatch: {attempt_id}",
+            )
+            require(
+                target_skill_identities(treatment["targetSkillIdentities"])
+                == attempt["targetSkillIdentities"],
+                f"Target skill identities mismatch: {attempt_id}",
+            )
+            files = treatment["files"]
+            require(
+                isinstance(files, list) and files,
+                f"Treatment inventory files are missing: {attempt['treatmentId']}",
+            )
+            seen_paths = set()
+            for record in files:
+                require(
+                    isinstance(record, dict)
+                    and set(record) == {"path", "sha256"},
+                    f"Treatment inventory file has unexpected fields: {attempt['treatmentId']}",
+                )
+                relative = PurePosixPath(record.get("path", ""))
+                require(
+                    relative.parts
+                    and not relative.is_absolute()
+                    and ".." not in relative.parts
+                    and "\\" not in str(relative)
+                    and ":" not in str(relative),
+                    f"Unsafe treatment inventory path: {relative}",
+                )
+                require(str(relative) not in seen_paths,
+                        f"Duplicate treatment inventory path: {relative}")
+                seen_paths.add(str(relative))
+                path = package_root / relative
+                current = package_root
+                for part in relative.parts:
+                    current = current / part
+                    require(
+                        not current.is_symlink(),
+                        f"Treatment inventory path contains a symlink: {relative}",
+                    )
+                require(
+                    path.is_file()
+                    and os.path.commonpath(
+                        (str(package_root), str(path.resolve()))
+                    )
+                    == str(package_root),
+                    f"Treatment inventory file is missing or not regular: {relative}",
+                )
+                require(
+                    sha256(path) == check_sha256(
+                        record.get("sha256"), "treatment inventory file"
+                    ),
+                    f"Treatment inventory digest mismatch: {relative}",
+                )
+            require(
+                treatment["treatmentFingerprint"]
+                == canonical_fingerprint({
+                    "targetSkillIdentities": treatment["targetSkillIdentities"],
+                    "files": files,
+                }),
+                f"Treatment inventory fingerprint mismatch: {attempt_id}",
+            )
     return manifest, matrix, by_id
+
+
+def planned_job(job_name: str, attempt_id: str | None, stage: str) -> dict:
+    require(
+        isinstance(job_name, str)
+        and job_name == job_name.strip()
+        and job_name
+        and len(job_name) <= 256,
+        "Invalid workflow job name",
+    )
+    if attempt_id is not None:
+        safe_name(attempt_id, "job attempt id")
+    safe_name(stage, "job stage")
+    return {"jobName": job_name, "attemptId": attempt_id, "stage": stage}
+
+
+def expected_workflow_jobs(jobs: list[dict]) -> list[dict]:
+    result = [planned_job("plan", None, "plan")]
+    macos_source = bool(os.environ.get("MACOS_SOURCE_RUN_ID"))
+    linux_source = bool(os.environ.get("LINUX_SOURCE_RUN_ID"))
+    split = CANDIDATE_PACKAGE_ARCHIVE_SHA256 != PACKAGE_ARCHIVE_SHA256
+    for job in jobs:
+        attempt_id = job["attemptId"]
+        if job["targetOs"] == "linux":
+            stage = "linux-refinalize" if linux_source else "linux-native"
+            result.append(planned_job(f"{stage} / {attempt_id}", attempt_id, stage))
+            continue
+        if not macos_source:
+            result.append(
+                planned_job(f"macos-stage / {attempt_id}", attempt_id, "macos-stage")
+            )
+            if split:
+                result.append(
+                    planned_job(
+                        f"macos-product / {attempt_id}", attempt_id, "macos-product"
+                    )
+                )
+        result.append(
+            planned_job(
+                f"linux-finalize / {attempt_id}", attempt_id, "linux-finalize"
+            )
+        )
+    names = [record["jobName"] for record in result]
+    pairs = [(record["attemptId"], record["stage"]) for record in result]
+    require(len(names) == len(set(names)), "Duplicate planned workflow job name")
+    require(len(pairs) == len(set(pairs)), "Duplicate planned attempt/stage job")
+    return result
+
+
+def dispatch_run_binding(value: dict) -> dict:
+    require(
+        isinstance(value, dict)
+        and set(value)
+        == {
+            "repositoryId",
+            "repositoryFullName",
+            "workflowId",
+            "workflowPath",
+            "workflowSha",
+            "headSha",
+            "headBranch",
+            "event",
+            "runId",
+            "runAttempt",
+        },
+        "Dispatch run binding has missing or unexpected fields",
+    )
+    for field in ("repositoryId", "workflowId", "runId", "runAttempt"):
+        require(type(value[field]) is int and value[field] >= 1,
+                f"Invalid dispatch {field}")
+    require(value["runAttempt"] == 1, "Dispatch binding requires first run attempt")
+    for field in ("repositoryFullName", "headBranch", "event"):
+        require(
+            isinstance(value[field], str)
+            and value[field].strip()
+            and value[field] == value[field].strip(),
+            f"Invalid dispatch {field}",
+        )
+    workflow = PurePosixPath(value["workflowPath"])
+    require(
+        workflow.parts
+        and not workflow.is_absolute()
+        and ".." not in workflow.parts
+        and "\\" not in value["workflowPath"]
+        and ":" not in value["workflowPath"],
+        "Invalid dispatch workflow path",
+    )
+    for field, label in (
+        ("workflowSha", "workflow SHA"),
+        ("headSha", "head SHA"),
+    ):
+        require(
+            isinstance(value[field], str)
+            and re.fullmatch(r"[0-9a-f]{40}", value[field]) is not None,
+            f"Invalid dispatch {label}",
+        )
+    return value
+
+
+def create_dispatch_binding(plan: dict, run: dict) -> dict:
+    require(plan.get("schemaVersion") == 2, "Dispatch binding requires plan schema 2")
+    expected = plan.get("expectedJobs")
+    require(isinstance(expected, list) and expected, "Dispatch plan has no expected jobs")
+    normalized = [
+        planned_job(record.get("jobName"), record.get("attemptId"), record.get("stage"))
+        for record in expected
+    ]
+    require(normalized == expected, "Dispatch plan job mapping is not canonical")
+    names = [record["jobName"] for record in normalized]
+    pairs = [(record["attemptId"], record["stage"]) for record in normalized]
+    require(len(names) == len(set(names)), "Dispatch plan has duplicate job names")
+    require(
+        len(pairs) == len(set(pairs)),
+        "Dispatch plan has duplicate attempt/stage mappings",
+    )
+    private = dispatch_run_binding(run)
+    binding_fingerprint = canonical_fingerprint(private)
+    value = {
+        "schemaVersion": 1,
+        "experimentPlanSha256": check_sha256(
+            plan.get("experimentPlanSha256"), "experiment plan"
+        ),
+        "dispatchPlanSha256": canonical_fingerprint(plan),
+        "packageIdentity": {
+            key: check_sha256(plan.get(key), key)
+            for key in (
+                "packageArchiveSha256",
+                "candidatePackageArchiveSha256",
+                "packageManifestSha256",
+            )
+        },
+        "runBindingFingerprint": binding_fingerprint,
+        "expectedJobs": normalized,
+    }
+    value["dispatchBindingSha256"] = canonical_fingerprint(value)
+    return value
+
+
+def validate_dispatch_binding(binding: dict, plan: dict, run: dict) -> dict:
+    expected = create_dispatch_binding(plan, run)
+    require(binding == expected, "Immutable dispatch binding mismatch")
+    return binding
 
 
 def case_records(package_root: Path, package: dict) -> dict[str, dict]:
@@ -485,6 +876,7 @@ def validate_completion_manifest(
     path: Path,
     by_id: dict[str, dict],
     *,
+    package: dict | None = None,
     expected_file_sha256: str | None = None,
 ) -> tuple[dict, set[str]]:
     if expected_file_sha256 is not None:
@@ -493,7 +885,7 @@ def validate_completion_manifest(
             "Completion manifest SHA256 mismatch",
         )
     value = read_json(path)
-    return value, validate_completion_manifest_from_value(value, by_id)
+    return value, validate_completion_manifest_from_value(value, by_id, package)
 
 
 def validate_image_manifest(
@@ -599,7 +991,10 @@ def build_plan(
 ) -> dict:
     package, matrix, by_id = load_package(package_root, expected_manifest_sha256)
     _, excluded = validate_completion_manifest(
-        completion_path, by_id, expected_file_sha256=completion_sha256
+        completion_path,
+        by_id,
+        package=package,
+        expected_file_sha256=completion_sha256,
     )
     cases = case_records(package_root, package)
     _, images = validate_image_manifest(
@@ -674,8 +1069,7 @@ def build_plan(
                 "dependencyBytes": dependency["bytes"],
                 "dependencyArchiveRoot": dependency["archiveRoot"],
             }
-        jobs.append(
-            {
+        job = {
                 **attempt_identity(attempt),
                 "candidateTimeoutSeconds": attempt["candidateTimeoutSeconds"],
                 "route": route,
@@ -688,7 +1082,22 @@ def build_plan(
                 "imageBytes": image_bytes,
                 **dependency_fields,
             }
-        )
+        if package["schemaVersion"] == 2:
+            for key in (
+                "candidateModel",
+                "treatmentFingerprint",
+                "targetSkillIdentities",
+                "architecture",
+            ):
+                job[key] = attempt[key]
+            require(
+                attempt["targetOs"] == os_name
+                and attempt["route"] == route
+                and attempt["gradingRoute"] == grading_route,
+                f"V2 attempt platform or route mismatch: {attempt['attemptId']}",
+            )
+            job.update(execution_identity_record(package, attempt))
+        jobs.append(job)
     if selected_attempt_id:
         safe_name(selected_attempt_id, "selected attempt id")
         require(selected_attempt_id in by_id, f"Unknown selected attempt: {selected_attempt_id}")
@@ -704,8 +1113,8 @@ def build_plan(
             all(not job["dependencyAsset"] for job in macos_jobs),
             "Split candidate packages do not yet support external dependency archives",
         )
-    return {
-        "schemaVersion": 1,
+    value = {
+        "schemaVersion": package["schemaVersion"],
         "campaignId": CAMPAIGN_ID,
         "packageArchiveSha256": PACKAGE_ARCHIVE_SHA256,
         "candidatePackageArchiveSha256": CANDIDATE_PACKAGE_ARCHIVE_SHA256,
@@ -718,6 +1127,23 @@ def build_plan(
         "macosMatrix": {"include": macos_jobs},
         "linuxMatrix": {"include": linux_jobs},
     }
+    if package["schemaVersion"] == 2:
+        value["experimentPlanSha256"] = package["experimentPlanSha256"]
+        value["expectedJobs"] = expected_workflow_jobs(jobs)
+        for job in jobs:
+            applicable = {
+                record["stage"]: record["jobName"]
+                for record in value["expectedJobs"]
+                if record["attemptId"] == job["attemptId"]
+            }
+            require(applicable, f"V2 attempt has no planned workflow job: {job['attemptId']}")
+            job["jobNames"] = applicable
+            for stage, name in applicable.items():
+                field = stage.split("-")[0] + "".join(
+                    part.title() for part in stage.split("-")[1:]
+                ) + "JobName"
+                job[field] = name
+    return value
 
 
 def safe_extract(archive: Path, destination: Path, expected_sha256: str) -> dict:
@@ -1426,6 +1852,11 @@ def run_hosted(
             run_root=run_root,
             timeout=attempt["candidateTimeoutSeconds"],
         )
+        if package["schemaVersion"] == 2:
+            validate_candidate_execution_identity(candidate, attempt)
+            candidate = bind_versioned_execution_identity(
+                candidate, package, attempt
+            )
         runner.write_json(run_root / "candidate-receipt.json", candidate)
         sources = runner.capture_candidate(
             candidate_root, baselines, run_root / "candidate-source"
@@ -1435,6 +1866,8 @@ def run_hosted(
         grading_git_identity = synchronize_grading_git_identity(candidate_root, sources)
         apply_scaffold(runner, case, case_root, candidate_root)
         product = runner.run_product(case, case_root, candidate_root, run_root)
+        product = bind_versioned_execution_identity(product, package, attempt)
+        runner.write_json(run_root / "product/receipt.json", product)
         if case["grading"]["execution"] == "container":
             prepare_container_grading_tree(
                 runner, case, case_root, candidate_root
@@ -1467,8 +1900,9 @@ def run_hosted(
                 }
             )
         receipt = {
-            "schemaVersion": 1,
+            "schemaVersion": package["schemaVersion"],
             **attempt_identity(attempt),
+            **versioned_execution_identity_record(package, attempt),
             "route": route,
             "gradingRoute": "hosted-final",
             "packageArchiveSha256": PACKAGE_ARCHIVE_SHA256,
@@ -1493,7 +1927,7 @@ def run_hosted(
         }
         runner.write_json(run_root / "hosted-stage-receipt.json", receipt)
         final = {
-            "schemaVersion": 1,
+            "schemaVersion": package["schemaVersion"],
             "caseId": attempt["caseId"],
             "caseRevision": attempt["caseRevision"],
             "treatmentId": attempt["treatmentId"],
@@ -1506,6 +1940,7 @@ def run_hosted(
             "product": product,
             "judges": judges,
             "status": receipt["status"],
+            **versioned_execution_identity_record(package, attempt),
         }
         runner.write_json(run_root / "attempt-receipt.json", final)
         return receipt
@@ -1513,8 +1948,9 @@ def run_hosted(
         write_json(
             run_root / "hosted-stage-error.json",
             {
-                "schemaVersion": 1,
+                "schemaVersion": package["schemaVersion"],
                 **attempt_identity(attempt),
+                **versioned_execution_identity_record(package, attempt),
                 "errorType": type(error).__name__,
                 "message": str(error),
                 "resumableBoundary": getattr(error, "resumable_boundary", None),
@@ -1593,6 +2029,11 @@ def run_macos_candidate_stage(
                 run_root=run_root,
                 timeout=attempt["candidateTimeoutSeconds"],
             )
+        if package["schemaVersion"] == 2:
+            validate_candidate_execution_identity(candidate, attempt)
+            candidate = bind_versioned_execution_identity(
+                candidate, package, attempt
+            )
         runner.write_json(run_root / "candidate-receipt.json", candidate)
         sources = runner.capture_candidate(
             candidate_root, baselines, run_root / "candidate-source"
@@ -1608,6 +2049,7 @@ def run_macos_candidate_stage(
         receipt = {
             "schemaVersion": 2,
             **attempt_identity(attempt),
+            **versioned_execution_identity_record(package, attempt),
             "route": "macos-candidate-stage",
             "candidatePackageArchiveSha256": candidate_package_archive_sha256,
             "packageManifestSha256": PACKAGE_MANIFEST_SHA256,
@@ -1630,8 +2072,9 @@ def run_macos_candidate_stage(
         write_json(
             run_root / "macos-stage-error.json",
             {
-                "schemaVersion": 1,
+                "schemaVersion": package["schemaVersion"],
                 **attempt_identity(attempt),
+                **versioned_execution_identity_record(package, attempt),
                 "errorType": type(error).__name__,
                 "message": str(error),
                 "recordedAtEpoch": time.time(),
@@ -1681,6 +2124,7 @@ def run_macos_product_stage(
         == CANDIDATE_PACKAGE_ARCHIVE_SHA256,
         "Candidate stage package archive mismatch",
     )
+    validate_versioned_execution_identity(candidate_stage, package, attempt)
     candidate = candidate_stage["candidate"]
     require(
         candidate.get("boundaryAudit", {}).get("passed") is True,
@@ -1737,6 +2181,8 @@ def run_macos_product_stage(
             cargo_fetch_workspace,
         ):
             product = runner.run_product(case, case_root, candidate_root, run_root)
+            product = bind_versioned_execution_identity(product, package, attempt)
+            runner.write_json(run_root / "product/receipt.json", product)
             if case["grading"]["execution"] == "container":
                 prepare_container_grading_tree(runner, case, case_root, candidate_root)
             host_deterministic = {
@@ -1754,6 +2200,7 @@ def run_macos_product_stage(
     receipt = {
         "schemaVersion": 2,
         **attempt_identity(attempt),
+        **versioned_execution_identity_record(package, attempt),
         "route": "macos-native-stage",
         "candidatePackageArchiveSha256": candidate_stage[
             "candidatePackageArchiveSha256"
@@ -1935,7 +2382,9 @@ def validate_product_evidence(run_root: Path, stage: dict) -> None:
         require(sha256(path) == record.get("sha256"), f"Product evidence digest mismatch: {relative}")
 
 
-def load_or_recover_macos_stage_receipt(run_root: Path) -> dict:
+def load_or_recover_macos_stage_receipt(
+    run_root: Path, package: dict | None = None, attempt: dict | None = None
+) -> dict:
     receipt_path = run_root / "macos-stage-receipt.json"
     if receipt_path.is_file():
         return read_json(receipt_path)
@@ -1960,6 +2409,8 @@ def load_or_recover_macos_stage_receipt(run_root: Path) -> dict:
         and isinstance(product.get("records"), list),
         "macOS product receipt is incomplete",
     )
+    if package is not None and attempt is not None:
+        validate_versioned_execution_identity(product, package, attempt)
     deterministic_execution = candidate_stage.get("deterministicExecution")
     host_deterministic = {
         "skipped": True,
@@ -1972,12 +2423,17 @@ def load_or_recover_macos_stage_receipt(run_root: Path) -> dict:
             deterministic_execution == "container",
             "Unsupported deterministic execution",
         )
+    identity_record = {}
+    if package is not None and attempt is not None:
+        validate_versioned_execution_identity(candidate_stage, package, attempt)
+        identity_record = versioned_execution_identity_record(package, attempt)
     receipt = {
         "schemaVersion": 2,
         **{
             key: candidate_stage.get(key)
             for key in IDENTITY_KEYS
         },
+        **identity_record,
         "route": "macos-native-stage",
         "candidatePackageArchiveSha256": candidate_stage[
             "candidatePackageArchiveSha256"
@@ -2003,9 +2459,14 @@ def validate_stage_dispatch(
     attempt: dict,
     source_run_id: str | None = None,
     source_sha: str | None = None,
+    package: dict | None = None,
 ) -> dict:
     dispatch = read_json(evidence_path)
-    require(dispatch.get("schemaVersion") == 1, "Unsupported stage dispatch evidence")
+    expected_schema = 2 if package is not None and package.get("schemaVersion") == 2 else 1
+    require(
+        dispatch.get("schemaVersion") == expected_schema,
+        "Unsupported stage dispatch evidence",
+    )
     dispatched_attempt = dispatch.get("attempt")
     require(isinstance(dispatched_attempt, dict), "Stage dispatch attempt is missing")
     require(
@@ -2013,6 +2474,8 @@ def validate_stage_dispatch(
         == attempt_identity(attempt),
         "Stage dispatch attempt identity mismatch",
     )
+    if package is not None:
+        validate_versioned_execution_identity(dispatch, package, attempt)
     controls = dispatch.get("controls", {})
     expected_controls = {
         "PACKAGE_RELEASE": os.environ.get("PACKAGE_RELEASE", ""),
@@ -2090,7 +2553,7 @@ def validate_finalization_stage(
     package_root = package_root.resolve()
     run_root = run_root.resolve()
     package, attempt, indexed_case = select_attempt(package_root, attempt_id, supplied_identity)
-    stage = load_or_recover_macos_stage_receipt(run_root)
+    stage = load_or_recover_macos_stage_receipt(run_root, package, attempt)
     require(stage.get("route") == "macos-native-stage", "Artifact is not a macOS stage")
     require({key: stage.get(key) for key in IDENTITY_KEYS} == attempt_identity(attempt),
             "macOS stage attempt identity mismatch")
@@ -2103,7 +2566,14 @@ def validate_finalization_stage(
         "macOS stage candidate package identity mismatch",
     )
     require(stage.get("candidateRerunRequired") is False, "Stage requests a candidate rerun")
-    validate_stage_dispatch(dispatch_evidence, attempt, source_run_id, source_sha)
+    validate_versioned_execution_identity(stage, package, attempt)
+    validate_stage_dispatch(
+        dispatch_evidence,
+        attempt,
+        source_run_id,
+        source_sha,
+        package=package,
+    )
     validate_product_evidence(run_root, stage)
     return {
         "package": package,
@@ -2179,7 +2649,7 @@ def finalize_linux(
     )
     product = stage["product"]
     receipt = {
-        "schemaVersion": 1,
+        "schemaVersion": package["schemaVersion"],
         "caseId": attempt["caseId"],
         "caseRevision": attempt["caseRevision"],
         "treatmentId": attempt["treatmentId"],
@@ -2203,6 +2673,7 @@ def finalize_linux(
             and product["passed"]
             else "FAIL"
         ),
+        **versioned_execution_identity_record(package, attempt),
     }
     runner.write_json(run_root / "attempt-receipt.json", receipt)
     return receipt
@@ -2350,9 +2821,12 @@ def recover_retained_candidate_sources(
     return candidate_root, baselines, sources, reconstruction
 
 
-def validate_linux_resume_plan(source_plan: Path, attempt: dict) -> dict:
+def validate_linux_resume_plan(
+    source_plan: Path, attempt: dict, package: dict | None = None
+) -> dict:
     plan = read_json(source_plan)
-    require(plan.get("schemaVersion") == 1, "Unsupported source plan schema")
+    expected_schema = package.get("schemaVersion") if package is not None else 1
+    require(plan.get("schemaVersion") == expected_schema, "Unsupported source plan schema")
     require(plan.get("campaignId") == CAMPAIGN_ID, "Source plan campaign mismatch")
     require(
         plan.get("packageArchiveSha256") == PACKAGE_ARCHIVE_SHA256,
@@ -2374,12 +2848,26 @@ def validate_linux_resume_plan(source_plan: Path, attempt: dict) -> dict:
         "Source plan attempt identity mismatch",
     )
     require(source_attempt.get("route") == "full-linux", "Source plan route mismatch")
+    if package is not None:
+        validate_versioned_execution_identity(source_attempt, package, attempt)
+        if package.get("schemaVersion") == 2:
+            require(
+                plan.get("experimentPlanSha256")
+                == package.get("experimentPlanSha256"),
+                "Source plan experiment identity mismatch",
+            )
     return plan
 
 
-def validate_linux_resume_failure(error_path: Path, attempt: dict) -> dict:
+def validate_linux_resume_failure(
+    error_path: Path, attempt: dict, package: dict | None = None
+) -> dict:
     error = read_json(error_path)
-    require(error.get("schemaVersion") == 1, "Unsupported source failure schema")
+    expected_schema = package.get("schemaVersion") if package is not None else 1
+    require(
+        error.get("schemaVersion") == expected_schema,
+        "Unsupported source failure schema",
+    )
     require(
         {key: error.get(key) for key in IDENTITY_KEYS} == attempt_identity(attempt),
         "Source failure attempt identity mismatch",
@@ -2388,6 +2876,8 @@ def validate_linux_resume_failure(error_path: Path, attempt: dict) -> dict:
         error.get("resumableBoundary") == "candidate-setup",
         "Source attempt did not fail at the resumable infrastructure boundary",
     )
+    if package is not None:
+        validate_versioned_execution_identity(error, package, attempt)
     return error
 
 
@@ -2419,19 +2909,24 @@ def resume_hosted_linux(
     )
     require(loaded_package == package and case == indexed_case, "Sealed runner case view mismatch")
     require(case["runtime"]["platform"]["os"] == "linux", "Resume requires a Linux-native case")
-    validate_linux_resume_plan(source_plan, attempt)
+    validate_linux_resume_plan(source_plan, attempt, package)
     source_archive = read_json(source_archive_evidence)
     check_sha256(source_archive.get("sha256", ""), "source retained archive")
 
     candidate = runner.read_json(run_root / "candidate-receipt.json")
     require(candidate.get("exitCode") == 0, "Source candidate did not complete successfully")
+    if package["schemaVersion"] == 2:
+        validate_candidate_execution_identity(candidate, attempt)
+    validate_versioned_execution_identity(candidate, package, attempt)
     product = runner.read_json(run_root / "product/receipt.json")
     require(product.get("passed") is True, "Source product proof did not pass")
+    validate_versioned_execution_identity(product, package, attempt)
     validate_product_evidence(run_root, {"product": product})
     require(not (run_root / "attempt-receipt.json").exists(), "Source attempt is already complete")
     validate_linux_resume_failure(
         run_root / "hosted-stage-error.json",
         attempt,
+        package,
     )
 
     candidate_root, baselines, sources, reconstruction = (
@@ -2488,8 +2983,9 @@ def resume_hosted_linux(
         "candidateReconstruction": reconstruction,
     }
     receipt = {
-        "schemaVersion": 1,
+        "schemaVersion": package["schemaVersion"],
         **attempt_identity(attempt),
+        **versioned_execution_identity_record(package, attempt),
         "route": "full-linux-resumed",
         "gradingRoute": "hosted-final",
         "packageArchiveSha256": PACKAGE_ARCHIVE_SHA256,
@@ -2505,7 +3001,7 @@ def resume_hosted_linux(
     }
     runner.write_json(run_root / "hosted-stage-receipt.json", receipt)
     final = {
-        "schemaVersion": 1,
+        "schemaVersion": package["schemaVersion"],
         "caseId": attempt["caseId"],
         "caseRevision": attempt["caseRevision"],
         "treatmentId": attempt["treatmentId"],
@@ -2518,6 +3014,7 @@ def resume_hosted_linux(
         "judges": judges,
         "sourceLineage": lineage,
         "status": status,
+        **versioned_execution_identity_record(package, attempt),
     }
     runner.write_json(run_root / "attempt-receipt.json", final)
     return receipt
@@ -2569,7 +3066,7 @@ def freeze_completion(
     output: Path,
     excluded_states: set[str],
 ) -> dict:
-    _, _, by_id = load_package(package_root)
+    package, _, by_id = load_package(package_root)
     ledger = read_json(ledger_path)
     completed = []
     excluded = []
@@ -2595,22 +3092,30 @@ def freeze_completion(
             require(record.get("outcome") in {"PASS", "FAIL"},
                     f"Completed ledger entry lacks terminal outcome: {attempt_id}")
             evidence = record.get("retainedEvidence", {})
-            completed.append(
-                {
+            completed_record = {
                     **identity,
                     "outcome": record["outcome"],
                     "retainedEvidenceSha256": evidence.get("sha256"),
                 }
-            )
+            if package["schemaVersion"] == 2:
+                validate_execution_identity_record(record, package, by_id[attempt_id])
+                completed_record.update(
+                    versioned_execution_identity_record(package, by_id[attempt_id])
+                )
+            completed.append(completed_record)
         elif state in excluded_states:
-            excluded.append(
-                {
+            excluded_record = {
                     **identity,
                     "reason": f"reserved by local matrix in state {state} at dispatch freeze",
                 }
-            )
+            if package["schemaVersion"] == 2:
+                validate_execution_identity_record(record, package, by_id[attempt_id])
+                excluded_record.update(
+                    versioned_execution_identity_record(package, by_id[attempt_id])
+                )
+            excluded.append(excluded_record)
     value = {
-        "schemaVersion": 1,
+        "schemaVersion": package["schemaVersion"],
         "campaignId": CAMPAIGN_ID,
         "packageArchiveSha256": PACKAGE_ARCHIVE_SHA256,
         "candidatePackageArchiveSha256": CANDIDATE_PACKAGE_ARCHIVE_SHA256,
@@ -2619,15 +3124,26 @@ def freeze_completion(
         "completedAttempts": completed,
         "excludedAttempts": excluded,
     }
-    validate_completion_manifest_from_value(value, by_id)
+    if package["schemaVersion"] == 2:
+        value["experimentPlanSha256"] = package["experimentPlanSha256"]
+    validate_completion_manifest_from_value(value, by_id, package)
     write_json(output, value)
     return value
 
 
 def validate_completion_manifest_from_value(
-    value: dict, by_id: dict[str, dict]
+    value: dict, by_id: dict[str, dict], package: dict | None = None
 ) -> set[str]:
-    require(value.get("schemaVersion") == 1, "Unsupported completion manifest schema")
+    expected_schema = package.get("schemaVersion") if package is not None else 1
+    require(
+        value.get("schemaVersion") == expected_schema,
+        "Unsupported completion manifest schema",
+    )
+    if expected_schema == 2:
+        require(
+            value.get("experimentPlanSha256") == package.get("experimentPlanSha256"),
+            "Completion experiment plan mismatch",
+        )
     require(value.get("campaignId") == CAMPAIGN_ID, "Completion campaign mismatch")
     require(
         value.get("packageArchiveSha256") == PACKAGE_ARCHIVE_SHA256,
@@ -2656,6 +3172,8 @@ def validate_completion_manifest_from_value(
             expected = attempt_identity(by_id[attempt_id])
             actual = {key: record.get(key) for key in IDENTITY_KEYS}
             require(actual == expected, f"Attempt identity mismatch: {attempt_id}")
+            if expected_schema == 2:
+                validate_execution_identity_record(record, package, by_id[attempt_id])
             if completed:
                 require(record.get("outcome") in {"PASS", "FAIL"},
                         f"Completed attempt lacks terminal outcome: {attempt_id}")
@@ -2785,6 +3303,11 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--attempt-id")
     plan.add_argument("--output", type=Path, required=True)
     plan.add_argument("--github-output", type=Path)
+
+    bind_dispatch = commands.add_parser("bind-dispatch")
+    bind_dispatch.add_argument("--plan", type=Path, required=True)
+    bind_dispatch.add_argument("--run", type=Path, required=True)
+    bind_dispatch.add_argument("--output", type=Path, required=True)
 
     freeze = commands.add_parser("freeze-completion")
     freeze.add_argument("--package-root", type=Path, required=True)
@@ -2950,6 +3473,15 @@ def main() -> int:
                 stream.write(f"linux_matrix={json.dumps(value['linuxMatrix'], separators=(',', ':'))}\n")
                 stream.write(f"linux_count={value['linuxCount']}\n")
         print(json.dumps(value, indent=2, sort_keys=True))
+    elif args.command == "bind-dispatch":
+        require(
+            not args.output.exists() and not args.output.is_symlink(),
+            "Refusing to replace dispatch binding output",
+        )
+        value = create_dispatch_binding(read_json(args.plan), read_json(args.run))
+        with args.output.open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
+        print(json.dumps(value, indent=2, sort_keys=True))
     elif args.command == "freeze-completion":
         value = freeze_completion(
             args.package_root,
@@ -3058,6 +3590,9 @@ def main() -> int:
             "packageManifestSha256": value["stage"]["packageManifestSha256"],
             "productPassed": value["stage"]["product"]["passed"],
             "qualification": "NOT_EVALUATED",
+            **versioned_execution_identity_record(
+                value["package"], value["attempt"]
+            ),
         }, sort_keys=True))
     elif args.command == "finalize-linux":
         value = finalize_linux(
