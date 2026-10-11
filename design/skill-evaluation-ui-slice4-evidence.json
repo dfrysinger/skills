@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "packet_revision": "slice4-evidence-v1",
+  "status": "sealed",
+  "scope": "Architecture-neutral evidence for Skill Evaluation UI Slice 4",
+  "decision_record": "design/skill-evaluation-ui-slice4-decisions.json",
+  "user_job": [
+    "See how many local and cloud attempts are active and which task, skill revision, treatment, model, and platform each attempt belongs to.",
+    "Understand a predeclared treatment experiment: hypothesis, controls, planned repetitions, selection rule, outcomes, cost, and uncertainty.",
+    "Distinguish workflow transport and stage progress from evaluator correctness.",
+    "Retain every first outcome while understanding infrastructure recovery and the effective reconciled result."
+  ],
+  "existing_authority": {
+    "completed_correctness": "evaluation_history.history() validates immutable evaluator artifacts and remains authoritative for completed local outcomes.",
+    "skill_lineage": "Slice 3 admits immutable target-skill snapshots and derives passing only from owned exact-identity evaluator suites.",
+    "experiment_method": "parallel-treatment-search.md defines source-backed hypotheses, controls, repetitions, immutable attempt identities, predeclared selection, first-outcome retention, and transfer before promotion.",
+    "distributed_execution": "distributed_campaign.py validates frozen execution matrices, immutable attempt identities, retained stage receipts, and effective-result reconciliation.",
+    "cloud_observation": "observe_campaign_runs.py records bounded read-only metadata for exact known GitHub Actions run bindings and explicitly does not establish product success.",
+    "measurement": "measurement.py and evaluation_history.py distinguish AI credits, premium requests, coverage, roles, subroles, timing, and incomplete observations.",
+    "dashboard_boundary": "The merged dashboard accepts typed corpus-local state and safe immutable evaluator projections through a loopback capability; it exposes no arbitrary-path reader."
+  },
+  "contract_traces": {
+    "actions_observation": {
+      "input_identity": [
+        "id",
+        "workflow_id",
+        "head_sha",
+        "head_branch",
+        "run_attempt",
+        "event",
+        "repository.id",
+        "repository.full_name",
+        "repository.private"
+      ],
+      "direct_mode_addition": "workflow_path is caller-frozen and must exactly match the returned safe relative run.path.",
+      "snapshot_versions": {
+        "listing": 1,
+        "direct_known_runs": 2
+      },
+      "output_authority": "A successful immutable snapshot proves every requested exact binding was observed. It does not prove workflow success, evaluator correctness, capacity, quota, model identity, selection, or efficacy.",
+      "statuses": [
+        "queued",
+        "in_progress",
+        "completed",
+        "waiting",
+        "requested",
+        "pending"
+      ],
+      "completeness": "Listing mode enumerates declared repository membership completely and may use exact-ID fallback for requested originals absent from that complete listing. Direct mode covers requested runs only. Both refuse partial output, mismatches, malformed responses, budget exhaustion, timeouts, and first-call failures.",
+      "atomicity": "Snapshots are explicitly non_atomic; observation calls occur at different instants.",
+      "writer": "observe_campaign_runs.py exclusively creates one complete output after validating every requested run and never overwrites an existing file or symlink.",
+      "safe_projection": "The dashboard may project bounded run identity, workflow path, transport status and conclusion, observation provenance, explicit coverage, non-atomicity, and collection accounting. It must keep evaluator result in a separate authority field and may omit repository display data not required by the user-visible claim.",
+      "evidence": [
+        "skills/skill-evaluation/scripts/observe_campaign_runs.py",
+        "skills/skill-evaluation/scripts/test_observe_campaign_runs.py",
+        "skills/skill-evaluation/references/run-observation.md"
+      ]
+    },
+    "distributed_campaign": {
+      "attempt_identity": [
+        "attemptId",
+        "caseId",
+        "caseRevision",
+        "treatmentId",
+        "repetition"
+      ],
+      "execution_identity": [
+        "candidateTimeoutSeconds",
+        "targetOs",
+        "architecture",
+        "route",
+        "gradingRoute",
+        "image identity",
+        "dependency identity"
+      ],
+      "package_identity": [
+        "campaignId",
+        "packageArchiveSha256",
+        "candidatePackageArchiveSha256",
+        "packageManifestSha256"
+      ],
+      "stage_statuses": [
+        "PENDING_MACOS_PRODUCT",
+        "PENDING_LINUX_FINALIZATION",
+        "READY_FOR_FINALIZATION"
+      ],
+      "terminal_statuses": [
+        "PASS",
+        "FAIL"
+      ],
+      "first_outcome": "A retained candidate or macOS stage is nonterminal, content-bound, and marked candidateRerunRequired false. It is preserved while later product or finalization stages consume it.",
+      "recovery": "A resumed terminal receipt records route full-linux-resumed, candidateRerun false, and sourceLineage containing the source run, source revision, retained archive digest, and candidate reconstruction. Recovery may reconcile an effective result but may not replace the retained first stage or rerun the candidate.",
+      "retention": "Only checksum-verified retained archives and allowlisted receipt/evidence paths are eligible for projection. Live candidate, candidate home, dependency runtime, judge homes, raw archives, and unverified contents are excluded.",
+      "cost_boundary": "The distributed artifacts expose model identity, timeout, image/dependency bytes, and retained bytes but no canonical monetary, token, AI-credit, premium-request, or runner-price amount. The dashboard must not infer cost from these resource fields.",
+      "evidence": [
+        "skills/skill-evaluation/scripts/distributed_campaign.py",
+        "skills/skill-evaluation/scripts/package_distributed_campaign.py",
+        "skills/skill-evaluation/scripts/test_distributed_campaign.py",
+        "skills/skill-evaluation/scripts/test_package_distributed_campaign.py",
+        "skills/skill-evaluation/templates/distributed-campaign.yml"
+      ]
+    },
+    "dashboard_extension": {
+      "existing_namespace": "extensions/skill-lineage-v1",
+      "compatibility": "Foundation readers ignore versioned extension directories. Slice 3 readers isolate malformed and conflicting records without hiding valid siblings.",
+      "envelope": [
+        "schema_version",
+        "event_id",
+        "event_type",
+        "campaign_id",
+        "writer",
+        "observed_at",
+        "recorded_at",
+        "subject",
+        "payload"
+      ],
+      "publication": "Writer-scoped exclusive creation is idempotent for identical bytes; differing bytes under one event ID are retained as visible conflicts.",
+      "projection": "campaign_projection already separates immutable attempts, live attempts, sessions, events, conflicts, lineage, task detail, attention, interpretation, and per-capability availability.",
+      "safe_sources": "Safe sources are typed authority/id pairs or allowlisted bounded artifact labels, never arbitrary paths or raw bytes.",
+      "smallest_extension": "Add a separate versioned experiment/activity namespace with strict variants and tolerant readers. Extend campaign and task projections additively; keep existing routes unless measured payload size requires a bounded activity route.",
+      "evidence": [
+        "skills/skill-evaluation/scripts/dashboard_state.py",
+        "skills/skill-evaluation/scripts/dashboard_projection.py",
+        "skills/skill-evaluation/scripts/dashboard_server.py",
+        "skills/skill-evaluation/scripts/dashboard_cli.py",
+        "skills/skill-evaluation/scripts/dashboard_static/dashboard.js",
+        "skills/skill-evaluation/scripts/test_dashboard.py",
+        "design/skill-evaluation-ui-slice3.md"
+      ]
+    }
+  },
+  "observed_gaps": [
+    "The dashboard has no canonical typed experiment declaration containing a hypothesis, control role, planned repetitions, ranking metrics, or selection rule.",
+    "The dashboard does not project distributed attempt identities, stages, effective-result reconciliation, or recovery lineage.",
+    "The dashboard does not ingest or project bounded observations for exact known GitHub Actions run bindings.",
+    "Current active counts cover local evaluator activity but do not reconcile local and cloud locations by exact task, snapshot, treatment, model, and platform.",
+    "Current campaign and task views cannot show complete first outcomes separately from recovered or effective outcomes.",
+    "Experiment and cloud state remain explicitly unavailable in the merged UI."
+  ],
+  "supported_callers": [
+    "The skill-evaluation workflow coordinating a local corpus.",
+    "The local evaluator producing immutable run and suite artifacts.",
+    "A trusted distributed-campaign coordinator retaining immutable campaign artifacts.",
+    "The bounded read-only Actions observer writing an exact-known-run snapshot.",
+    "Concurrent Copilot sessions contributing workflow declarations.",
+    "A loopback browser holding the generation-scoped campaign capability."
+  ],
+  "security_and_privacy_boundary": [
+    "The dashboard service must not receive GitHub credentials or call GitHub APIs.",
+    "The browser must not receive private release names, archive locations, repository secrets, candidate payloads, hidden graders, judge evidence, raw logs, or arbitrary retained artifacts.",
+    "Only exact known run bindings may be observed; no repository, organization, account, workflow, capacity, or run discovery may be added.",
+    "Workflow status and stage completion are transport facts and must not create evaluator PASS, treatment qualification, or release authority.",
+    "Untrusted candidate output, treatment prose, workflow output, and session summaries may not alter immutable identity or completed results.",
+    "Malformed, partial, conflicting, mismatched, stale, or unsupported artifacts must remain unavailable, incomplete, or conflicted rather than falling back to inferred success."
+  ],
+  "scope_constraints": [
+    "Read-only browser and no execution controls.",
+    "One local loopback service and existing generation-scoped capability model.",
+    "Append-only or immutable producer records with explicit writer ownership.",
+    "No remote hosting, cloud API client, broad cloud discovery, or credential handling in the dashboard.",
+    "No mutable result database or copied second source of evaluator truth.",
+    "No arbitrary corpus, release, artifact, repository, plugin, candidate, judge, or log browsing.",
+    "No ablation qualification or retained-rule accounting in Slice 4.",
+    "No raw evidence drill-down in Slice 4."
+  ],
+  "failure_modes_to_design_for": [
+    "A workflow is green while product or judge evaluation failed or is absent.",
+    "A nonterminal exact-known run is observed successfully and is mistakenly counted as completed.",
+    "A rerun, recovery job, or later workflow replaces the original attempt's first outcome.",
+    "An effective result references missing, mismatched, duplicate, or wrong-attempt stage receipts.",
+    "A treatment outcome is joined to the wrong case revision, snapshot, model, platform, repetition, or control.",
+    "A mutable or post-outcome experiment declaration changes hypotheses, repetitions, or the selection rule.",
+    "A partial observation snapshot is treated as confirmed absence or a complete campaign view.",
+    "Missing cost observations are converted to zero or pooled across incompatible populations.",
+    "One malformed experiment or observation record hides valid siblings.",
+    "An imported cloud record exposes a private repository or retained-artifact locator that is not required for the user-visible claim."
+  ],
+  "observable_acceptance": [
+    "An installed-plugin campaign view can show one predeclared treatment experiment with controls, planned repetitions, exact attempt identities, outcomes, cost coverage, and selection state.",
+    "The same view can show simultaneous local and exact-known cloud activity grouped by task, admitted skill snapshot, treatment, model, platform, and location.",
+    "Queued, in-progress, waiting, completed, failed, missing, stale, and invalid transport states remain separate from evaluator PASS, FAIL, UNANSWERABLE, and incomplete results.",
+    "Every first outcome remains visible after downstream recovery, and the effective result identifies the exact recovery lineage without rewriting the original.",
+    "A mismatched or malformed binding, matrix, stage receipt, effective result, or observation fails closed without hiding unrelated valid activity.",
+    "Legacy campaigns and Slice 3 campaigns without experiment or cloud records continue to render with those capabilities explicitly unavailable."
+  ],
+  "pending_contract_traces": []
+}

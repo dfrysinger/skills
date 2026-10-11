@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "subject": "design/skill-evaluation-ui-slice4.md",
+  "base_commit": "898ae893b59219a0640e90d6d7365fc13b6d8780",
+  "constraint_gate": {
+    "record": "design/skill-evaluation-ui-slice4-constraint-challenge.md",
+    "decision": "CLEAR",
+    "selection_delta_decision": "NARROW",
+    "selection_delta_corrections_applied": true
+  },
+  "reviewers": [
+    {
+      "family": "claude",
+      "model": "claude-opus-5.5",
+      "agent_id": "827d7c18-586c-4061-be0c-f3f6b7440b9d",
+      "architecture_scope_lens_applied": true,
+      "discovery_findings": [
+        "missing immutable dispatch-to-run and attempt-to-job binding",
+        "distributed execution did not verify model, treatment content, target-skill identity, and full platform identity",
+        "stored incomplete selection had no valid terminal supersession rule"
+      ],
+      "final_round": 3,
+      "final_mode": "resolution-only",
+      "final_complete": true,
+      "remaining_findings": 0,
+      "final_tool_calls": 5,
+      "final_elapsed_minutes": 5
+    },
+    {
+      "family": "gpt",
+      "model": "gpt-5.6-terra",
+      "agent_id": "ee23672b-dc86-4105-952b-af2a6a92c95f",
+      "architecture_scope_lens_applied": true,
+      "discovery_findings": [
+        "missing immutable dispatch-to-run and attempt-to-job binding",
+        "distributed execution did not verify model, treatment content, target-skill identity, and full platform identity"
+      ],
+      "fix_verification_finding": "terminal selection could bypass declared eligibility and coverage",
+      "final_round": 3,
+      "final_mode": "resolution-only",
+      "final_complete": true,
+      "remaining_findings": 0,
+      "final_tool_calls": 3,
+      "final_elapsed_minutes": 4
+    }
+  ],
+  "resolutions": [
+    {
+      "finding": "dispatch and job attribution",
+      "disposition": "must-fix",
+      "resolution": "immutable coordinator-owned binding plus exact planner-owned job-set observation"
+    },
+    {
+      "finding": "distributed execution identity",
+      "disposition": "must-fix",
+      "resolution": "one canonical versioned identity verified across package, matrix, dispatch, stages, results, completion, and recovery"
+    },
+    {
+      "finding": "selection lifecycle",
+      "disposition": "must-fix",
+      "resolution": "pending and incomplete state is derived; only one terminal deterministic selection record is stored"
+    },
+    {
+      "finding": "selection authority",
+      "disposition": "must-fix",
+      "resolution": "experiment_evaluator recomputes eligibility and outcome from closed evaluator-owned inputs; premature evaluation writes no terminal record"
+    }
+  ],
+  "gate": "PASS",
+  "unresolved_material_findings": 0
+}

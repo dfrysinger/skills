@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "decision_record": "skill-evaluation-ui-slice4",
+  "status": "sealed-for-design",
+  "scope": "Deferred Slice 4: experiments and cloud/distributed activity",
+  "source_records": [
+    {
+      "event_id": "user-original-ui-request",
+      "authority": "user",
+      "quote": "each session working with the skill should spin up a local ui that shows all the tasks in the test corpus and the skill or skills being improved, with the progress showing which tasks have passed and if not passing what data we have on progress within that task. it should show total cost of all training/experiments, and how many parallel cloud/local runs are running currently and against what task or tasks and skill or skills. it shoyld also show what has changed on the skill or skills so far vs tge original and the outcomes of completed runs/experiments.",
+      "application": "Authorizes experiment outcomes, total measured cost, and concurrent local/cloud activity by task and skill within the full dashboard program. Slice 4 implements the experiment and distributed-activity portion."
+    },
+    {
+      "event_id": "user-read-only-boundary",
+      "authority": "user",
+      "quote": "read only",
+      "application": "The browser may inspect experiment and transport state but may not dispatch, retry, cancel, configure, select, promote, or mutate work."
+    },
+    {
+      "event_id": "user-multi-session-decision",
+      "authority": "user",
+      "quote": "yes but there could be many active session",
+      "application": "Experiment and activity state must reconcile concurrent writers and many simultaneous local or cloud attempts without one shared mutable status record."
+    },
+    {
+      "event_id": "user-cost-display-decision",
+      "authority": "user",
+      "quote": "credits are cents but agreed",
+      "application": "AI credits retain evaluator-native accounting and are displayed as cents; partial coverage remains visibly incomplete."
+    },
+    {
+      "event_id": "user-slice4-authorization",
+      "authority": "user",
+      "quote": "proceed",
+      "application": "Authorizes Deferred Slice 4 after Slice 3 merged and completed its closeout."
+    }
+  ],
+  "resolved_decisions": [
+    {
+      "id": "slice-boundary",
+      "decision": "Slice 4 covers predeclared treatment hypotheses, controls, repetitions, selection rules, exact known local and GitHub Actions activity, distributed stage and effective-result projection, complete first outcomes, and recovery lineage.",
+      "reason": "These are the user-visible experiment and cloud/distributed outcomes deferred by the merged Foundation design."
+    },
+    {
+      "id": "browser-mutability",
+      "decision": "The browser remains strictly read-only. Existing trusted evaluator, campaign, and observation tools remain the only producers.",
+      "reason": "The user explicitly selected read-only observability, and dispatch or recovery control would create a separate authority plane."
+    },
+    {
+      "id": "cloud-binding",
+      "decision": "The dashboard accepts only exact known run bindings and bounded observation snapshots. It performs no broad workflow, repository, organization, or account discovery.",
+      "reason": "The existing observer already distinguishes exact binding observation from discovery, and the program forbids broad cloud discovery."
+    },
+    {
+      "id": "result-authority",
+      "decision": "Workflow and stage status describe transport only. Evaluator PASS, FAIL, and effective results come only from validated immutable evaluator and distributed-campaign artifacts.",
+      "reason": "A green workflow or completed transport stage must never manufacture product correctness."
+    },
+    {
+      "id": "first-outcome-and-recovery",
+      "decision": "Every launched attempt retains its first outcome. Infrastructure recovery and resumed downstream stages are shown as separate lineage and may not replace that outcome.",
+      "reason": "The skill-evaluation contract requires immutable first outcomes and exact recovery reconciliation."
+    },
+    {
+      "id": "experiment-authority",
+      "decision": "Hypotheses, controls, planned repetitions, ranking metrics, and selection rules must be predeclared and content-bound before outcomes are interpreted. The dashboard projects them but does not select or promote a treatment.",
+      "reason": "Parallel-treatment search separates experimental design from execution order and forbids choosing a winner from one lucky run."
+    },
+    {
+      "id": "cost-and-completeness",
+      "decision": "Slice 4 extends existing cost coverage across experiment and distributed attempts without converting missing usage to zero or mixing runner resources, premium requests, and AI credits.",
+      "reason": "Existing measurement authority and the user's cents display decision remain binding."
+    },
+    {
+      "id": "ablation-and-drilldown",
+      "decision": "Ablation qualification and raw evidence drill-down remain unavailable until Slices 5 and 6.",
+      "reason": "They have separate authority, qualification, and hidden-evidence entry conditions."
+    }
+  ],
+  "unresolved_decisions": [],
+  "completion": {
+    "decision_complete": true,
+    "reused_interview": "design/skill-evaluation-ui-decisions.json",
+    "reuse_reason": "The Slice 4 objective, supported local user, read-only boundary, multi-session model, cost semantics, and exact-known cloud boundary are unchanged from the current program interview.",
+    "user_answer_support": [
+      "user-original-ui-request",
+      "user-read-only-boundary",
+      "user-multi-session-decision",
+      "user-cost-display-decision",
+      "user-slice4-authorization"
+    ]
+  }
+}
