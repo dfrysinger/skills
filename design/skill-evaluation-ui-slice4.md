@@ -792,8 +792,8 @@ render after rollback.
 - **Reviewed design commit:** `ba70ab6da30d8cdf29249ac5d326861945ea71e8`
 - **Critical path:** authority-repair proof -> implementation review -> landing
   -> merged-byte proof
-- **Phase:** authority-boundary repair
-- **Implementation gate:** open
+- **Phase:** landing
+- **Implementation gate:** clear
 - **Integrated implementation commits:**
   - `cea9c1e` experiment activity state and deterministic selection
   - `91c6864` distributed execution identity and exact-known observation
@@ -831,12 +831,15 @@ render after rollback.
   records complete Claude Opus 5.5 and GPT 5.6 Terra review. Both applied the
   architecture and scope lens. Finding-scoped closure reports zero unresolved
   material findings.
+- **Implementation review:** round-two Claude Opus 5.5 and GPT 5.6 Terra
+  fix-verification both completed within budget. Both verified the generic
+  importer finding and caller-selected result-subset finding as resolved, with
+  zero new findings and no unresolved material defect.
 - **Delegated owners:** both implementation handoffs are integrated and closed.
   The coordinator owns final review, PR, merge, merged-byte verification, and
   schedule cleanup.
-- **Next action:** run finding-scoped dual review round two against the exact
-  committed candidate and current installed-proof receipts, then land only if
-  both reviewers close the authority findings without a new material defect.
+- **Next action:** push the reviewed candidate, open and merge the Slice 4 PR
+  after required checks, then verify merged bytes and current installed proof.
 
 ## Definition of Done: Skill Evaluation UI Slice 4
 
@@ -859,7 +862,7 @@ render after rollback.
       malformed isolation, legacy behavior, and security refusal.
 - [x] Dark, light, mobile, dense, recovery, invalid, unavailable, and
       incomplete-cost states are visually inspected and accepted.
-- [ ] Dual implementation review reports no unresolved material finding
+- [x] Dual implementation review reports no unresolved material finding
       against the exact proved candidate.
 - [ ] The slice is committed, pushed, reviewed in a PR, passes required checks,
       is merged, and actual merged bytes retain the accepted behavior.
