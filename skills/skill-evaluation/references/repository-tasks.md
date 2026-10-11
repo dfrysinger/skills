@@ -267,13 +267,13 @@ failure handling and comparison populations.
 
 ## Toolchain example and focused checks
 
-`examples/Dockerfile` is a generic starting point, not a prebuilt execution
+`templates/repository-task.Dockerfile` is a generic starting point, not a prebuilt execution
 dependency. Build it, inspect its resolved image ID, and put that exact ID in
 the case. Add language dependencies deliberately; freeze a new case revision
 when the image changes.
 
 ```sh
-docker build -f examples/Dockerfile -t skill-eval-local .
+docker build -f templates/repository-task.Dockerfile -t skill-eval-local .
 docker image inspect skill-eval-local --format '{{.Id}}'
 
 cd scripts
