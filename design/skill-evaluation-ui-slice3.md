@@ -517,7 +517,7 @@ The acceptance fixtures must additionally prove:
 - **Base:** `68f289a098286f8980161097e64ee53e21feba53`
 - **Critical path:** implementation -> installed proof -> dual implementation
   review -> landing
-- **Phase:** candidate freeze and implementation review
+- **Phase:** dual implementation review
 - **Implementation gate:** open
 - **Last constraint challenge:** focused reconciliation and completed dual
   design review permit the exact bounded implementation.
@@ -536,15 +536,16 @@ The acceptance fixtures must additionally prove:
 - **Deterministic evidence:** the eight-module matrix passes 387 tests with 49
   skipped; Python compilation, JavaScript syntax, and diff checks pass.
 - **Installed proof:** four validator-accepted receipts under
-  `files/slice3-lineage-proof/` cover campaign lineage, exact task detail,
-  conflict plus legacy behavior, and invalid capability refusal. Desktop dark,
-  mobile light, task light, conflict dark, legacy light, and refusal light
-  captures were opened and passed pixel-spread and overflow checks.
-- **Proof candidate:** `sha256:e5ec705b432fd2fd2c8332003197757da6b499968e914a8aa1c48df81fe542dd`
-  before commit freeze.
-- **Next action:** commit the exact candidate, refresh candidate-bound proof
-  identity without changing executable bytes, then run dual implementation
-  review.
+  `files/slice3-lineage-proof-commit/` cover campaign lineage, exact task
+  detail, conflict plus legacy behavior, and invalid capability refusal.
+  Desktop dark, mobile light, task light, conflict dark, legacy light, and
+  refusal light captures were opened and passed pixel-spread and overflow
+  checks.
+- **Implementation commit:** `bbb312fdfb6ea2c67e77b2e44ca2dab13ed8007b`
+- **Committed proof candidate:**
+  `sha256:518d4763f9b4c142e9bab9b7a6ea16cb2c5e330c9f2c62aab21406b002550de6`
+- **Next action:** run dual implementation review against the exact committed
+  candidate, close any verified material findings, then push and open the PR.
 
 ## Definition of Done: Skill Evaluation UI Slice 3
 
