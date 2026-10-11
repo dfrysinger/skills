@@ -1045,6 +1045,14 @@ class SkillEvalTests(unittest.TestCase):
             encoding="utf-8",
         )
         os.chmod(fake, 0o755)
+        from dashboard_state import capture_skill_snapshot, create_campaign
+        dashboard_state_root = Path(self.temp.name) / "dashboard-state"
+        registration = create_campaign(dashboard_state_root, self.root)
+        snapshot = capture_skill_snapshot(
+            self.root,
+            plugin,
+            ["example-skill"],
+        )
 
         with mock.patch(
             "skill_eval.copilot_identity",
@@ -1059,6 +1067,7 @@ class SkillEvalTests(unittest.TestCase):
                 "existing",
                 60,
                 workers=2,
+                dashboard_snapshot_id=snapshot["snapshot_id"],
             )
         identity.assert_called_once()
         self.assertNotEqual(identity.call_args.args[0], fake)
@@ -1070,6 +1079,14 @@ class SkillEvalTests(unittest.TestCase):
         result = json.loads((suite_root / "suite-result.json").read_text())
         self.assertEqual(len(result["cases"]), 2)
         self.assertEqual(result["failures"], [])
+        self.assertEqual(
+            result["lineage_identity"]["snapshot_id"],
+            snapshot["snapshot_id"],
+        )
+        suite_lineage = json.loads(
+            (suite_root / "lineage-identity.json").read_text()
+        )
+        self.assertEqual(suite_lineage, result["lineage_identity"])
         harnesses = [
             json.loads((self.root / item["run_path"] / "harness-identity.json").read_text())
             for item in result["cases"]
@@ -1080,11 +1097,86 @@ class SkillEvalTests(unittest.TestCase):
             suite_root.resolve(),
         )
         for case in result["cases"]:
+            run_lineage = json.loads(
+                (self.root / case["run_path"] / "lineage-identity.json").read_text()
+            )
+            self.assertEqual(run_lineage, suite_lineage)
             for prompt_path in (self.root / case["run_path"]).glob("judge-*-prompt.md"):
                 self.assertEqual(
                     prompt_path.read_text().count("Return only JSON with:"),
                     1,
                 )
+        import evaluation_history
+        historical = evaluation_history.history(self.root)
+        self.assertEqual(
+            historical["lineage_suites"][0]["lineage_identity"],
+            suite_lineage,
+        )
+        self.assertEqual(
+            {
+                row["population"]["lineage_snapshot_id"]
+                for row in historical["attempts"]
+            },
+            {snapshot["snapshot_id"]},
+        )
+        first_run = self.root / result["cases"][0]["run_path"]
+        lineage_path = first_run / "lineage-identity.json"
+        original_lineage = lineage_path.read_text(encoding="utf-8")
+        tampered = json.loads(original_lineage)
+        tampered["plugin_identity"] = "f" * 64
+        lineage_path.write_text(json.dumps(tampered, indent=2) + "\n")
+        with self.assertRaisesRegex(
+            ValueError,
+            "lineage and plugin identity disagree",
+        ):
+            evaluation_history.history(self.root)
+        lineage_path.write_text(original_lineage, encoding="utf-8")
+        from dashboard_projection import campaign_projection
+        projected = campaign_projection(
+            dashboard_state_root,
+            registration["campaign_id"],
+        )
+        self.assertEqual(
+            projected["lineage"]["roles"]["passing"],
+            {
+                "status": "available",
+                "snapshot_id": snapshot["snapshot_id"],
+                "authority": "immutable-suite",
+            },
+        )
+
+    def test_dashboard_snapshot_binding_rejects_mutated_source_before_execution(self):
+        case_dir = self.make_case("lineage-case")
+        freeze_case(self.root, "lineage-case", replace=False)
+        plugin = Path(self.temp.name) / "lineage-plugin"
+        skill = plugin / "skills" / "example-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Original\n", encoding="utf-8")
+        from dashboard_state import capture_skill_snapshot, create_campaign
+        create_campaign(Path(self.temp.name) / "dashboard-state", self.root)
+        snapshot = capture_skill_snapshot(
+            self.root,
+            plugin,
+            ["example-skill"],
+        )
+        (skill / "SKILL.md").write_text("# Changed\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "pinned plugin does not match dashboard snapshot skill",
+        ):
+            run_suite(
+                self.root,
+                plugin,
+                Path(self.temp.name) / "copilot-not-needed",
+                "fake-model",
+                "high",
+                "existing",
+                60,
+                workers=1,
+                dashboard_snapshot_id=snapshot["snapshot_id"],
+            )
+        self.assertFalse(list((self.root / "runs").glob("*/*")))
 
     def test_run_suite_rejects_invalid_selection(self) -> None:
         plugin = Path(self.temp.name) / "unused-plugin"

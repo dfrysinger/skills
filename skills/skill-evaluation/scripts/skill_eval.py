@@ -1137,6 +1137,59 @@ def skill_identity(plugin_dir: Path, skill: str) -> dict:
     }
 
 
+def lineage_identity(
+    corpus_root: Path,
+    pinned_plugin: Path,
+    plugin: dict,
+    snapshot_id: str,
+    *,
+    entry_skill: str | None = None,
+) -> dict:
+    from dashboard_state import read_skill_snapshot
+
+    if directory_identity(pinned_plugin) != plugin:
+        raise ValueError("pinned plugin changed before lineage binding")
+    snapshot = read_skill_snapshot(corpus_root, snapshot_id)
+    expected = {
+        item["name"]: item["evaluator_skill_identity"]
+        for item in snapshot["skills"]
+    }
+    if entry_skill is not None and entry_skill not in expected:
+        raise ValueError("effective entry skill is not in the dashboard snapshot")
+    actual = {}
+    for skill_name in expected:
+        prefix = f"skills/{skill_name}/"
+        files = [
+            {
+                "path": item["path"][len(prefix):],
+                "sha256": item["sha256"],
+            }
+            for item in plugin["files"]
+            if item["path"].startswith(prefix)
+        ]
+        if not files:
+            raise ValueError(f"dashboard snapshot skill is absent: {skill_name}")
+        identity = json_fingerprint({"name": skill_name, "files": files})
+        if identity != expected[skill_name]:
+            raise ValueError(
+                f"pinned plugin does not match dashboard snapshot skill: {skill_name}"
+            )
+        actual[skill_name] = identity
+    return {
+        "schema_version": 1,
+        "campaign_id": snapshot["campaign_id"],
+        "snapshot_id": snapshot["snapshot_id"],
+        "plugin_identity": plugin["sha256"],
+        "skills": [
+            {
+                "name": skill_name,
+                "evaluator_skill_identity": actual[skill_name],
+            }
+            for skill_name in sorted(actual)
+        ],
+    }
+
+
 def snapshot_plugin(plugin_dir: Path, destination: Path) -> None:
     for root, directories, files in os.walk(plugin_dir):
         directories[:] = [
@@ -1497,6 +1550,7 @@ def _run_case(
     treatment_admission: bool,
     expected_revision: str | None = None,
     quality_review: bool = False,
+    dashboard_snapshot_id: str | None = None,
     run_root: Path,
     timeline: measurement.Timeline,
     resources: ExitStack,
@@ -1582,6 +1636,19 @@ def _run_case(
             else {"name": None, "plugin_dir": str(pinned_plugin.resolve()), "files": []}
         )
         write_json(run_root / "skill-identity.json", identity)
+        if dashboard_snapshot_id is not None:
+            if arm != "skill":
+                raise ValueError("dashboard snapshot binding requires the skill arm")
+            write_json(
+                run_root / "lineage-identity.json",
+                lineage_identity(
+                    root,
+                    pinned_plugin,
+                    plugin_identity,
+                    dashboard_snapshot_id,
+                    entry_skill=entry_skill or definition["target_skill"],
+                ),
+            )
         if treatment.get("source_path"):
             shutil.copyfile(treatment["source_path"], run_root / "treatment.json")
             if digest(run_root / "treatment.json") != treatment["descriptor_sha256"]:
@@ -1893,6 +1960,7 @@ def run_case(
     treatment_admission: bool = False,
     expected_revision: str | None = None, quality_review: bool = False,
     suite_owner: dict | None = None,
+    dashboard_snapshot_id: str | None = None,
 ) -> Path:
     timeline = measurement.Timeline()
     ensure_case_id(case_id)
@@ -1973,6 +2041,7 @@ def run_case(
             treatment=treatment, compatibility=compatibility,
             treatment_admission=treatment_admission,
             expected_revision=expected_revision, quality_review=quality_review,
+            dashboard_snapshot_id=dashboard_snapshot_id,
             run_root=run_root, timeline=timeline, resources=resources,
         )
         status = "completed"
@@ -2127,6 +2196,7 @@ def run_suite(
     treatment_file: Path | None = None,
     sandcastle_treatment_file: Path | None = None,
     sandcastle_adapter_dir: Path | None = None,
+    dashboard_snapshot_id: str | None = None,
 ) -> tuple[Path, bool]:
     if workers <= 0:
         raise ValueError("workers must be positive")
@@ -2157,6 +2227,22 @@ def run_suite(
     harness_identity_record = harness_identity(suite_root)
     suite_plugin = suite_root / "target-plugin"
     snapshot_plugin(plugin_dir, suite_plugin)
+    suite_lineage_identity = None
+    if dashboard_snapshot_id is not None:
+        if arm != "skill":
+            raise ValueError("dashboard snapshot binding requires the skill arm")
+        suite_plugin_identity = directory_identity(suite_plugin)
+        write_json(suite_root / "plugin-identity.json", suite_plugin_identity)
+        suite_lineage_identity = lineage_identity(
+            root,
+            suite_plugin,
+            suite_plugin_identity,
+            dashboard_snapshot_id,
+        )
+        write_json(
+            suite_root / "lineage-identity.json",
+            suite_lineage_identity,
+        )
     suite_treatment_file = None
     suite_sandcastle_file = None
     suite_adapter_dir = None
@@ -2208,6 +2294,7 @@ def run_suite(
                     sandcastle_adapter_dir=suite_adapter_dir,
                     expected_revision=revisions[case_id],
                     quality_review=quality_review,
+                    dashboard_snapshot_id=dashboard_snapshot_id,
                     suite_owner={"suite_path": str(suite_root.relative_to(root)),
                                  "case_id": case_id, "attempt": attempt_number,
                                  "max_attempts": max_attempts},
@@ -2354,6 +2441,7 @@ def run_suite(
             "harness_identity": harness_identity_record,
             "plugin_dir": str(plugin_dir),
             "plugin_snapshot": str(suite_plugin),
+            "lineage_identity": suite_lineage_identity,
             "case_revisions": revisions,
             "cases": results,
             "failures": failures,
@@ -2467,6 +2555,7 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--sandcastle-adapter-dir", type=Path)
     run.add_argument("--treatment-admission", action="store_true")
     run.add_argument("--quality-review", action="store_true")
+    run.add_argument("--dashboard-snapshot")
 
     suite = sub.add_parser("run-suite")
     suite.add_argument("corpus", type=Path)
@@ -2488,6 +2577,7 @@ def parser() -> argparse.ArgumentParser:
     suite.add_argument("--sandcastle-treatment-file", type=Path)
     suite.add_argument("--sandcastle-adapter-dir", type=Path)
     suite.add_argument("--quality-review", action="store_true")
+    suite.add_argument("--dashboard-snapshot")
     history = sub.add_parser("history")
     history.add_argument("corpus", type=Path)
     history.add_argument("--format", choices=("json", "markdown"), default="markdown")
@@ -2545,6 +2635,7 @@ def main(argv: list[str] | None = None) -> int:
                     if args.sandcastle_adapter_dir else None,
                     treatment_admission=args.treatment_admission,
                     quality_review=args.quality_review,
+                    dashboard_snapshot_id=args.dashboard_snapshot,
                 )
             print(run_path)
             repository_result = run_path / "repository-result.json"
@@ -2572,6 +2663,7 @@ def main(argv: list[str] | None = None) -> int:
                 sandcastle_adapter_dir=args.sandcastle_adapter_dir.expanduser().resolve()
                 if args.sandcastle_adapter_dir else None,
                 quality_review=args.quality_review,
+                dashboard_snapshot_id=args.dashboard_snapshot,
             )
             print(suite_root)
             if not passed:

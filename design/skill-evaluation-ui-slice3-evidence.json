@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "packet_revision": "slice3-evidence-v1",
+  "status": "sealed",
+  "scope": "Architecture-neutral evidence for Skill Evaluation UI Slice 3",
+  "user_job": [
+    "See which exact shared skill revision is original, published, integrated, experimental, passing, or released.",
+    "See what changed between exact revisions without browsing arbitrary plugin files.",
+    "Understand progress within a failing task: the earliest failure frontier, failure class, instruction uptake, product movement, blocker, and supporting safe source identifiers.",
+    "Find the tasks needing attention across many concurrent local sessions."
+  ],
+  "existing_authority": {
+    "completed_correctness": "evaluation_history.history() validates immutable evaluator artifacts and is authoritative for completed outcomes.",
+    "live_activity": "dashboard session and event state is non-final and is superseded by immutable evaluator artifacts.",
+    "skill_identity": "skill_eval.py skill_identity() records the target skill name, resolved plugin path, and each target-skill file path and SHA-256.",
+    "plugin_identity": "skill_eval.py directory_identity() records regular-file path, SHA-256, mode, and an aggregate fingerprint while refusing symlinks and non-regular files.",
+    "run_snapshot": "skill_eval.py snapshot_plugin() copies the complete plugin into each run's target-plugin while excluding Git and cache files and refusing symlinks.",
+    "history_projection": "evaluation_history.py validates identity artifacts but exposes safe fingerprints rather than full manifests.",
+    "dashboard_projection": "dashboard_projection.py uses typed readers and does not expose arbitrary files or complete plugin trees."
+  },
+  "observed_gaps": [
+    "No canonical machine-readable artifact declares lineage role or parent/child revision relationships.",
+    "No canonical artifact distinguishes published, original, integrated, experimental, passing, and released state.",
+    "Existing skill identities contain hashes but not immutable file bytes suitable for durable exact comparison.",
+    "Full run snapshots are attempt-local, copy the whole plugin, and are not a safe dashboard browsing surface.",
+    "No canonical task-progress artifact records earliest failure frontier, failure classification, instruction uptake, product movement, or blocker.",
+    "The current dashboard has campaign and session views but no task-detail route or attention queue.",
+    "The current dashboard marks lineage, experiments, cloud work, and ablation unavailable."
+  ],
+  "workflow_semantics": {
+    "lineage": [
+      "cumulative-skill-hill-climb.md treats independent work as hypotheses for one shared skill or skill-set lineage.",
+      "Published revisions become the next baseline only after exact-candidate product, regression, and transfer gates pass.",
+      "Experimental revisions must not be presented as released."
+    ],
+    "task_progress": [
+      "SKILL.md defines failure classes including skill defect, instruction interaction, execution variance, packet defect, harness defect, and grading defect.",
+      "SKILL.md defines instruction uptake statuses OBSERVED, PARTIAL, ABSENT, and NOT_APPLICABLE.",
+      "SKILL.md defines product movement as Conquered, Strict improvement, Mixed, No signal, or Regression.",
+      "parallel-treatment-search.md requires the earliest remaining failure frontier to be compared against an unchanged control."
+    ]
+  },
+  "supported_callers": [
+    "The skill-evaluation workflow coordinating a local corpus.",
+    "The local evaluator producing immutable attempt artifacts.",
+    "Concurrent Copilot sessions registered to the same dashboard campaign.",
+    "A loopback browser holding the generation-scoped capability."
+  ],
+  "security_and_privacy_boundary": [
+    "The browser must not receive arbitrary filesystem paths, raw plugin directories, hidden judge evidence, candidate workdirs, raw logs, credentials, or unrestricted file content.",
+    "Any stored revision bytes must be limited to explicitly named target-skill roots and must refuse symlinks, escapes, and non-regular files.",
+    "Raw content-addressed blobs must not have a browser route.",
+    "Generated diffs must compare only validated manifests already admitted to the same campaign.",
+    "Task-progress records may contain bounded structured summaries and safe identifiers, not arbitrary file attachments or browsing paths.",
+    "Malformed, missing, conflicting, or mismatched lineage/progress state must remain unavailable or conflicted rather than falling back to inferred success."
+  ],
+  "scope_constraints": [
+    "Read-only browser.",
+    "Loopback-only service and existing generation-scoped capability model.",
+    "Append-only immutable producer records.",
+    "No execution controls.",
+    "No remote hosting or broad cloud discovery.",
+    "No mutable result database.",
+    "No arbitrary corpus or plugin browsing.",
+    "No hidden-evidence exposure.",
+    "No experiment hypothesis/arm mechanics or distributed-run orchestration in Slice 3.",
+    "No ablation mechanics in Slice 3."
+  ],
+  "failure_modes_to_design_for": [
+    "A lineage declaration references a missing, malformed, or non-admitted snapshot.",
+    "Two writers reuse an identifier with different bytes.",
+    "A snapshot contains a symlink, escaping path, non-regular file, or changed bytes during capture.",
+    "A declared parent is missing, belongs to another campaign, or would create a cycle.",
+    "A progress record binds the wrong case revision or snapshot identity.",
+    "A progress record claims passing while immutable evaluator results do not.",
+    "A diff request attempts to compare unregistered snapshots or read raw blobs.",
+    "A current source skill changes after snapshot capture.",
+    "Legacy campaigns contain no lineage or progress records.",
+    "One corrupt record would otherwise hide valid records from other writers."
+  ],
+  "observable_acceptance": [
+    "An installed-plugin dashboard can show an exact original-to-integrated skill comparison generated from immutable admitted snapshots.",
+    "A completed PASS appears only when immutable evaluator history matches the exact snapshot identity.",
+    "A failing task detail can show a typed failure frontier, failure class, instruction uptake, product movement, and blocker without serving raw evidence files.",
+    "Concurrent writers can publish distinct records without overwriting one another.",
+    "Malformed, conflicting, cross-campaign, symlinked, or mismatched inputs remain visibly unavailable or conflicted.",
+    "Legacy Foundation campaigns continue to render with lineage and task progress explicitly unavailable."
+  ]
+}

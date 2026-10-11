@@ -47,6 +47,54 @@ The evaluator publishes its own planned, started, and artifact-available
 attempt events when the corpus is registered. These live records are
 non-final: immutable evaluator artifacts always supersede them.
 
+Capture an immutable snapshot when a campaign skill reaches a meaningful
+lineage state. Name every target skill represented by the snapshot. Roles are
+workflow declarations except `passing`, which only the evaluator can derive.
+
+```sh
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard lineage-snapshot CORPUS \
+  --session-id SESSION_UUID \
+  --plugin-dir /path/to/plugin \
+  --skill TARGET_SKILL \
+  --role integrated \
+  --parent derived_from PARENT_SNAPSHOT_ID \
+  --summary "Integrated the general fix"
+```
+
+Publish task progress against the exact frozen case revision and associated
+snapshot. Progress explains the current frontier, movement, blockers, and
+instruction uptake; it does not change evaluator correctness.
+
+```sh
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard task-progress CORPUS \
+  --session-id SESSION_UUID \
+  --case CASE_ID \
+  --snapshot SNAPSHOT_ID \
+  --comparison-snapshot PARENT_SNAPSHOT_ID \
+  --frontier behavioral \
+  --classification skill_defect \
+  --movement "Strict improvement" \
+  --summary "The remaining failure is isolated to behavioral review" \
+  --uptake preserve-authority OBSERVED "The candidate preserved authority" \
+  --blocker "One behavioral criterion still fails" \
+  --next-action "Refine the general rule" \
+  --source review_receipt REVIEW_ID
+```
+
+Bind an evaluator run to the snapshot whose bytes it is meant to exercise:
+
+```sh
+python3 "$SKILL_DIR/scripts/skill_eval.py" run-suite CORPUS \
+  --plugin-dir /path/to/plugin \
+  --dashboard-snapshot SNAPSHOT_ID
+```
+
+The evaluator pins the plugin first and refuses the run before model execution
+if the pinned target-skill identities do not match the snapshot. Campaign-level
+passing requires one bound full-corpus suite on one exact snapshot, plugin
+identity, case-revision set, and evaluation contract. Separate cases, suites,
+or revisions never pool into passing.
+
 Manual lifecycle commands remain available:
 
 ```sh
@@ -56,10 +104,12 @@ python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard status
 python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard stop
 ```
 
-The foundation shows registered corpora, completed attempts, local sessions,
+The dashboard shows registered corpora, completed attempts, local sessions,
 active or stale attempts, exact observed skill identities, outcomes, timing,
-AI credits, and premium requests. Cloud work, lineage, experiments, and
-ablation remain explicitly unavailable.
+AI credits, premium requests, admitted skill lineage, exact relevant
+comparisons, task progress, and derived attention. AI credits are interpreted
+as cents by user convention; premium requests remain a separate evaluator
+unit. Cloud work, experiments, and ablation remain explicitly unavailable.
 
 ## 1. Define the behavioral claim
 
