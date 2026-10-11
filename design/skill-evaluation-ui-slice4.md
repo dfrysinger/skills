@@ -800,6 +800,8 @@ render after rollback.
   - `3487cc1` campaign/task/index projection and dashboard UI
   - `f0ab2971ca2285b463363d59026ae71dc423dfbb` terminal selection CLI
     repair found by installed proof
+  - `83f34fc180ec1d774243d14d8b81f94d15cf9df7` validator-backed
+    experiment publishers, declaration correlation, and all-result selection
 - **Superseded proof:** the `f0ab297` installed candidate and its
   `sha256:d6330e1508bbf4fe8e5b80f8fdad23aa42cf60954cc5b85adc14555740d289d9`
   receipts are stale after implementation review found a generic importer
@@ -810,7 +812,13 @@ render after rollback.
   dispatch bindings, exact-known observer output, package and plan identities,
   retained receipts, retained artifacts, and retention manifests. Selection
   discovers all admitted results and fails closed on duplicate or conflicted
-  results. Installed proof replay is pending against the committed repair.
+  results. The installed plugin matches the candidate skill tree. Four
+  current live-proof receipts under `files/slice4-experiment-proof/` validate
+  as `PASS`: experiment/selection, exact-known cloud recovery,
+  malformed/conflict/legacy isolation, and private-metadata plus
+  invalid-capability refusal. The current candidate identity is recorded in
+  `candidate.json`; prior `f0ab297` evidence is archived under
+  `stale-f0ab297/`.
 - **Last constraint challenge:** the workflow-job, distributed-identity, and
   deterministic-selection deltas returned `NARROW`; all required corrections
   are applied and the gate is `CLEAR`.
@@ -826,9 +834,9 @@ render after rollback.
 - **Delegated owners:** both implementation handoffs are integrated and closed.
   The coordinator owns final review, PR, merge, merged-byte verification, and
   schedule cleanup.
-- **Next action:** commit the authority repair, reinstall the exact candidate,
-  replay all four installed proofs, then run finding-scoped dual review round
-  two.
+- **Next action:** run finding-scoped dual review round two against the exact
+  committed candidate and current installed-proof receipts, then land only if
+  both reviewers close the authority findings without a new material defect.
 
 ## Definition of Done: Skill Evaluation UI Slice 4
 
@@ -846,10 +854,10 @@ render after rollback.
 - [x] Campaign, task, and index views expose the accepted experiment and
       local/cloud activity states without authority conflation.
 - [x] Focused and full deterministic checks pass on one exact candidate.
-- [ ] Installed-plugin proof demonstrates one experiment, existing local
+- [x] Installed-plugin proof demonstrates one experiment, existing local
       activity, one exact-known cloud observation, one distributed recovery path,
       malformed isolation, legacy behavior, and security refusal.
-- [ ] Dark, light, mobile, dense, recovery, invalid, unavailable, and
+- [x] Dark, light, mobile, dense, recovery, invalid, unavailable, and
       incomplete-cost states are visually inspected and accepted.
 - [ ] Dual implementation review reports no unresolved material finding
       against the exact proved candidate.
