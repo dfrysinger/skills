@@ -1,0 +1,18 @@
+{
+  "synthetic": true,
+  "consumer": "Existing coordinator consumes audit JSON and process exit; this fixture is not an execution controller.",
+  "events": [
+    {"event": "regression", "exit_code": 2, "reconciliation_ready": false, "action": "Record scoped hold; stop only new implicated work."},
+    {"event": "drain", "action": "Collect already-running results while drain_allowed is true."},
+    {"event": "measurement_attempt", "outcome": "inconclusive", "attempts": 1, "action": "Retain gap and failed remedy; do not repeat identical attempt."},
+    {"event": "missing_evidence", "exit_code": 2, "reconciliation_ready": false, "action": "Keep hold; missing required current evidence cannot reconcile."},
+    {"event": "corrected_proof", "proof_status": "accepted", "proof_reference": "synthetic-proof-v2", "applicability_reference": "synthetic-applicability-v2", "action": "Separate owner accepts corrected focused proof and scoped applicability; no identical replay."},
+    {"event": "held_audit", "exit_code": 2, "reconciliation_ready": true, "action": "Readiness alone does not close hold or accept repair."},
+    {"event": "explicit_reconcile", "requires": ["reconciliation_ready", "separate_accepted_proof", "scoped_applicability"], "action": "Record scoped reconciliation before clearing scope_hold and open_repair."},
+    {"event": "final_audit", "exit_code": 0, "reconciliation_ready": true, "action": "Proceed only under existing independent admission authority."}
+  ],
+  "learning": [
+    {"signature": "synthetic-same-operation", "status": "inconclusive", "source": "synthetic-source-v1", "reopening": "Distinct corrective evidence, not an identical replay."},
+    {"signature": "synthetic-same-operation", "status": "validated", "source": "synthetic-source-v2", "reopening": "Same-source recurrence reopens repair; changed actor, authority, operation, effects, protected boundary or source requires scoped applicability before reuse."}
+  ]
+}

@@ -3414,6 +3414,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
 
+    efficiency = commands.add_parser("audit-efficiency")
+    efficiency.add_argument("view", type=Path)
+    efficiency.add_argument("--baseline", type=Path)
+    efficiency.add_argument("--policy", type=Path)
+
     validate = commands.add_parser("validate-dispatch")
     for name in (
         "package_release",
@@ -3577,7 +3582,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    if args.command == "validate-dispatch":
+    if args.command == "audit-efficiency":
+        import execution_efficiency
+
+        return execution_efficiency.command(args.view, args.baseline, args.policy)
+    elif args.command == "validate-dispatch":
         for field in (
             "package_release",
             "package_asset",

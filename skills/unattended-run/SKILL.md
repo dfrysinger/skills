@@ -196,6 +196,35 @@ The charter names any user-assigned agent roster and its durable coordination
 surface. "Use subagents liberally" alone is not a sufficient delegation
 contract.
 
+At result, phase and failure events, include execution efficiency in the
+existing audit when the run uses coordinator-owned measurement projections.
+Use skill-evaluation's `distributed_campaign.py audit-efficiency` command and
+its measurement reference; do not add another schedule, service or store.
+Consume both JSON and exit status before new implicated work. Malformed input,
+a fired trigger or missing decisive measurement records a scoped hold while
+running work and collection drain. Pause priority includes integrity,
+recurrence, measured regression, duplicate unchanged-operation copies and
+unproductive same-operation cycles, even when other measurement is unknown.
+
+Keep policy/baseline identity, complete populations, all repair investment and
+unknown coverage in the existing charter. Try the smallest missing-measurement
+action once; retain failed/inconclusive remedies and gaps without identical
+automatic retries. Reuse unchanged reviewed operations, batch semantic deltas
+and immutable reporting artifacts, and parallelize only distinct owners within
+actual capacity. Do not change frozen outcomes, grading, authority or admission
+proof to meet an efficiency target.
+
+A standing hold can coexist with `reconciliation_ready: true` and exit `2`.
+Require readiness AND separate accepted focused repair proof and scoped
+applicability, record explicit reconciliation, and only then clear the scoped
+hold/open repair and re-audit for exit `0`. Neither readiness nor exit `0`
+accepts a repair or grants execution permission. Preserve the scoped symptom,
+source and protected-boundary identities, remedy/proof, investment coverage,
+status and reopening condition. Same-source recurrence reopens repair;
+changed source or actor/authority/operation/effects/boundary requires
+applicability before reuse. Missing historic wall or financial data disables
+related savings claims, not forward measurement.
+
 The plan must carry a plain **Definition of Done** covering exactly this run's
 scope, under a unique heading both artifacts point at; if it's missing, write it
 first — with `design-doc` for systemic or critical work, or at
