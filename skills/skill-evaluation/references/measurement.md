@@ -149,6 +149,171 @@ authentication. The report never supplies sessions, terminal coverage, grades
 or `accounting.credits`. API duration is not candidate wall time, and recovered
 counters are not exact full evaluation cost.
 
+## Continuous execution efficiency
+
+The existing distributed command reports over a coordinator-authored projection:
+
+```sh
+python3 scripts/distributed_campaign.py audit-efficiency synthetic-view.json \
+  --baseline synthetic-baseline.json --policy synthetic-policy.json
+```
+
+Baseline and policy are optional. The command reads only these explicit JSON
+inputs, does not resolve their references, and never changes results, starts
+work, accepts a repair or grants admission. Coordinator projections are
+conditional observations, not authenticated arbitrary grades or billing.
+Candidate-reported product outcomes remain unresolved.
+
+### Projection contract
+
+The view requires `schema_version: 1`, nonempty `scope_id` and
+`source_fingerprint`, `comparison_contract`, `expected_decision_ids`,
+`decisions`, `expected_work_ids`, `work`, nullable `outer_timing`, and `control`.
+Expected identity lists are unique and exhaustive for the declared scope.
+Missing records remain explicit unknown coverage. Unexpected identities,
+conflicting records, duplicate JSON keys, malformed types and negative,
+nonfinite or out-of-range measurements produce an explicit JSON error.
+Identical repeated records count once. Supplemental fields cannot replace
+defined policy, outcome or control fields.
+
+`comparison_contract` is a coordinator-authored object containing
+`comparison_mode: retained_replay|fresh_window` and the fixed authorized case
+revisions, planned population/multiplicities, model, effort, timeout, checks,
+thresholds, repetitions, retry and verification rules. Exact normalized
+equality defines comparability; source fingerprints can differ for an
+overhead-only change. The owner is responsible for declaring the complete
+population and rules, not filtering the view to successful attempts.
+
+Each decision has `id`, `class: product|audit`,
+`status: PASS|FAIL|PENDING|INVALID|UNKNOWN`, and
+`provenance: {reference, digest, trust}`. References and digests are nonempty
+opaque strings; trust is `coordinator_projection` or `candidate_reported`.
+Unique coordinator-projected product `PASS` and valid `FAIL` count equally as
+useful decisions. Audit outcomes are counted separately; invalid, pending,
+unknown, missing and candidate-reported product outcomes remain unresolved.
+Retained replay requires identical expected identities, classes, statuses
+and canonical outcome digests. A changed retained outcome is an integrity
+trigger, including a present trusted reclassification to an unresolved or invalid
+status. Missing or untrusted retained outcome evidence is incomplete coverage,
+not proof of mutation. Fresh windows may have different attempt identities and realized
+outcomes under the same complete planned population and rules.
+
+Each work record requires `id`, `owner`, nullable `parent_id`,
+`category: coordination|infrastructure|execution|reporting`, nullable
+`seconds`, `source_reference`, `inclusion: leaf|aggregate`, and
+`purpose: recurring|repair_investment`. Parent links must be present, acyclic
+and point to aggregate records. Only leaves are charged. Distinct owners'
+overlapping work is work, not elapsed wall time. Include unsuccessful audit,
+implementation, review, measurement and retry investment once in the declared
+scope; missing investment is unknown, not free.
+
+`outer_timing` retains the Timeline shape: `clock`, nullable `elapsed_seconds`,
+and `stages`. Optional stage `start_seconds` and `end_seconds` are offsets
+within that same monotonic outer interval, with explicit work categories.
+An overhead wall fraction requires sorted, disjoint, contained intervals
+covering exactly `0..elapsed_seconds`, known categories and consistent
+optional stage durations. Explicit stage clock/scope mismatches, missing
+offsets, gaps, overlap, zero elapsed or foreign clocks yield a null fraction
+with reasons. UTC timestamps alone do not establish those offsets.
+
+The report separates outer wall per useful product decision, recurring
+coordination/reporting leaf work per useful decision, total leaf work per
+useful decision, and the exact overhead wall fraction. Ratios require a
+positive complete product denominator and complete relevant coverage.
+Observed work subtotals, recurring versus one-time investment, category sums
+and unresolved identity sets remain visible even when exact ratios are null.
+Work divided by wall is never used as a wall fraction.
+
+### Policy, events and reconciliation
+
+Policy JSON may override the following explicit defaults; unknown policy
+fields are errors. Defaults are provisional owner policy, not grading rules:
+
+| Field | Default |
+| --- | --- |
+| `policy_id` | `execution-efficiency-provisional-v1` |
+| `improvement_fraction` | `0.2` |
+| `regression_multiplier` | `1.25`, strictly greater triggers |
+| `consecutive_complete_windows` | `3` |
+| `unproductive_same_operation_cycles` | `2` |
+| `routine_copies_target` | `0` |
+| `quality_regressions_allowed` | `0` |
+| `required_metrics` | `["overhead_work_per_decision"]` |
+| `require_baseline` | `false` |
+
+Required metrics may name `outer_wall_per_decision`,
+`overhead_work_per_decision`, `total_work_per_decision`, or
+`overhead_wall_fraction`. Window/cycle counts are positive integers;
+copy/quality counts are nonnegative integers. Improvement is in `[0,1)`,
+and the regression multiplier is at least one. Keep policy changes and
+baseline identities with their evidence in the owner's existing charter;
+do not silently reset either.
+
+`control` requires coordinator-owned boolean `scope_hold` and `open_repair`.
+Optional boolean `integrity_violation`, nonnegative integer
+`quality_regressions`, and nonempty-string `recurrence_signatures` retain
+quality/integrity and recurrence causes separately.
+
+Optional `consecutive_windows` contains complete prior views, oldest first;
+the current view is appended by the command. Scope identities must be unique,
+and nested window history is refused. Three adjacent eligible windows above
+the multiplier trigger regression; an ineligible or non-regressing intervening
+window breaks the run rather than being skipped. A missing or incompatible
+baseline is ineligible, not by itself corruption or regression. Standing holds
+and open repairs do not make otherwise comparable prior windows ineligible:
+measurement continues during repair, so a persistent regression cannot clear
+its own reconciliation check.
+
+Optional `operation_materializations` records `operation_id`,
+`operation_digest`, boolean `implementation_changed`, and integer
+`new_executable_copies`. Unchanged operations exceeding the copy target
+trigger a pause. Optional ordered `same_operation_cycles` records
+`operation_id`, `operation_digest`, boolean `new_decision_evidence` and opaque
+`evidence_reference`. The final consecutive no-new-evidence sequence of the
+same operation/digest triggers at the cycle limit; changed digest, changed
+operation or new evidence resets it. Omitted event lists mean no reported
+events, not independently authenticated absence.
+
+JSON and process status agree, with this priority:
+
+| Exit | State | Meaning |
+| --- | --- | --- |
+| `1` | `ERROR` | Malformed JSON, projection or policy |
+| `2` | `PAUSE_NEW_WORK` | Any integrity, recurrence, open repair, standing hold, measured regression, copy or cycle trigger |
+| `3` | `MEASUREMENT_REQUIRED` | Missing decisive current quality/metrics or required comparable baseline |
+| `0` | `PROCEED` | No reported trigger or missing decisive measurement |
+
+`drain_allowed` remains true: collection and already-running work may drain.
+All trigger and measurement reasons are emitted independently of priority.
+`reconciliation_ready` ignores only standing hold and open repair; required
+current quality/metrics and all other triggers must be clear. Thus a held view
+can return exit `2` with readiness true. Readiness does not accept a repair.
+The coordinator requires separate accepted focused proof and scoped
+applicability, records explicit reconciliation, then clears its hold and open
+repair flags and audits again. Only that later audit can return `0`; neither
+field supplies independent execution authority.
+
+Recurring-overhead and complete-total comparisons are separate. The improvement
+target requires the requested recurring-overhead reduction, complete total
+work reduction including all declared investment, comparable no-worse outer
+wall, and clear non-standing triggers/decisive coverage. Zero baseline yields an undefined ratio.
+Missing financial, historical wall or investment coverage disables related
+claims, not forward instrumentation. No billing, amortized benefit beyond an
+actual observed horizon, or whole-process savings is inferred.
+
+Run one finite smallest attempt to fill decisive missing measurement. A failed
+or inconclusive attempt retains its gap and scoped remedy without an identical
+automatic retry. Preserve validated, unsupported, inconclusive and blocked
+remedies in the existing charter with source/boundary identities, policy,
+baseline, proof, investment coverage and reopening conditions. Same-source
+recurrence reopens repair; changed source or actor/authority/operation/effects/
+protected boundary requires scoped applicability before reuse.
+
+The public `scripts/fixtures/efficiency-event-flow.json` documents a synthetic
+owner event sequence, exercised against the actual CLI by
+`python3 -m unittest -q test_execution_efficiency` from `scripts`. It is not a
+new coordinator or an automatic repair engine.
+
 ## Independent source quality
 
 ```sh
