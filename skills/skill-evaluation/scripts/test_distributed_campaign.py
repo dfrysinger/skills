@@ -1,4 +1,5 @@
 import hashlib
+import gzip
 import importlib.util
 import inspect
 import io
@@ -22,6 +23,220 @@ SPEC.loader.exec_module(matrix)
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+class RetainedUsageProjectionTests(unittest.TestCase):
+    member = "run-root/usage.json"
+    copy = "run-root/copy.json"
+
+    def make_archive(self, root, documents, *, change_manifest=None, duplicate=None,
+                     member_type=None, include_manifest=True):
+        manifest = {
+            "schemaVersion": 1,
+            "files": [
+                {"path": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                for name, data in documents.items()
+            ],
+        }
+        if change_manifest:
+            change_manifest(manifest)
+        archive = root / "retained.tar.gz"
+        with tarfile.open(archive, "w:gz") as stream:
+            entries = list(documents.items())
+            if duplicate:
+                entries.append((duplicate, documents[duplicate]))
+            if include_manifest:
+                entries.append(("evidence/retention-manifest.json", json.dumps(manifest).encode()))
+            for name, data in entries:
+                info = tarfile.TarInfo(name)
+                info.type = member_type if name == self.member and member_type else tarfile.REGTYPE
+                info.size = len(data) if info.isfile() else 0
+                if info.issym() or info.islnk():
+                    info.linkname = "outside"
+                stream.addfile(info, io.BytesIO(data) if info.isfile() else None)
+        checksum = root / "retained.tar.gz.sha256"
+        checksum.write_text(f"{digest(archive)}  {archive.name}\n")
+        return archive, checksum
+
+    def command(self, archive, checksum, *members):
+        command = [sys.executable, "-B", str(SCRIPT), "recover-retained-usage", str(archive), str(checksum)]
+        for member in members:
+            command.extend(["--member", member])
+        return subprocess.run(command, capture_output=True, text=True, check=False)
+
+    def accepted(self, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def refused(self, result):
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertTrue(result.stderr)
+        self.assertNotIn("invalid choice", result.stderr)
+
+    def test_cli_recovers_equal_cumulative_copies_without_promoting_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive, checksum = self.make_archive(root, {
+                self.member: json.dumps({"totalNanoAiu": 42, "totalApiDurationMs": 18,
+                                         "sessions": ["forged"], "grades": "PASS"}).encode(),
+                self.copy: json.dumps({"totalNanoAiu": 42.0, "totalApiDurationMs": 18.0,
+                                      "models": {"fake": {"totalNanoAiu": 999}}}).encode(),
+                "run-root/unrelated.py": b"raise RuntimeError('must not execute')",
+            })
+            before = {p.name: digest(p) for p in root.iterdir()}
+            report = self.accepted(self.command(archive, checksum, self.member, self.copy))
+            self.assertEqual(report["reported_nano_aiu"], 42)
+            self.assertEqual(report["reported_api_duration_ms"], 18)
+            self.assertEqual(report["copies_counted"], 1)
+            self.assertEqual(report["trust"], "candidate-reported")
+            self.assertEqual(set(report["present_members"]), {self.member, self.copy})
+            self.assertEqual(report["archive_sha256"], digest(archive))
+            self.assertNotIn("sessions", report)
+            self.assertNotIn("grades", report)
+            self.assertNotIn("models", report)
+            self.assertNotIn("accounting", report)
+            self.assertEqual({p.name: digest(p) for p in root.iterdir()}, before)
+
+    def test_cli_unknown_null_and_zero_are_distinct(self):
+        for document, expected in (({}, None), ({"totalNanoAiu": None}, None), ({"totalNanoAiu": 0}, 0)):
+            with self.subTest(document=document), tempfile.TemporaryDirectory() as directory:
+                archive, checksum = self.make_archive(Path(directory), {self.member: json.dumps(document).encode()})
+                report = self.accepted(self.command(archive, checksum, self.member, self.copy))
+                self.assertEqual(report["reported_nano_aiu"], expected)
+                self.assertIsNone(report["reported_api_duration_ms"])
+                self.assertEqual(report["missing_members"], [self.copy])
+        with tempfile.TemporaryDirectory() as directory:
+            archive, checksum = self.make_archive(Path(directory), {})
+            report = self.accepted(self.command(archive, checksum, self.member))
+            self.assertIsNone(report["reported_nano_aiu"])
+            self.assertEqual(report["copies_counted"], 0)
+            self.assertEqual(report["missing_members"], [self.member])
+
+    def test_cli_conflicting_copies_refuse_including_unknown_versus_zero(self):
+        for first, second in ((1, 2), (None, 0)):
+            with self.subTest(first=first, second=second), tempfile.TemporaryDirectory() as directory:
+                archive, checksum = self.make_archive(Path(directory), {
+                    self.member: json.dumps({"totalNanoAiu": first}).encode(),
+                    self.copy: json.dumps({"totalNanoAiu": second}).encode(),
+                })
+                self.refused(self.command(archive, checksum, self.member, self.copy))
+
+    def test_cli_invalid_json_and_counters_refuse(self):
+        documents = [b"not JSON", b"[]", b'{"totalNanoAiu":1,"totalNanoAiu":2}']
+        documents += [json.dumps({field: value}).encode()
+                      for field in ("totalNanoAiu", "totalApiDurationMs")
+                      for value in (True, "1", -1, float("nan"), float("inf"), 1 << 1023)]
+        documents.append(b'{"totalNanoAiu":1,"metadata":{"same":1,"same":2}}')
+        documents.append(b'{"totalNanoAiu":1,"metadata":NaN}')
+        documents.append(b'{"totalNanoAiu":1,"bad":"\xff"}')
+        for data in documents:
+            with self.subTest(data=data[:60]), tempfile.TemporaryDirectory() as directory:
+                archive, checksum = self.make_archive(Path(directory), {self.member: data})
+                self.refused(self.command(archive, checksum, self.member))
+
+    def test_cli_selected_integrity_and_identity_refuse(self):
+        changes = [
+            lambda m: m.update(schemaVersion=True),
+            lambda m: m.update(schemaVersion=2),
+            lambda m: m["files"][0].update(bytes=True),
+            lambda m: m["files"][0].update(bytes=1),
+            lambda m: m["files"][0].update(sha256="0" * 64),
+            lambda m: m["files"].append(dict(m["files"][0])),
+            lambda m: m.update(files=[]),
+            lambda m: m["files"][0].update(path="./" + self.member),
+        ]
+        for change in changes:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                archive, checksum = self.make_archive(Path(directory), {self.member: b"{}"}, change_manifest=change)
+                self.refused(self.command(archive, checksum, self.member))
+        with tempfile.TemporaryDirectory() as directory:
+            archive, checksum = self.make_archive(
+                Path(directory), {self.member: b"{}"}, duplicate=self.member)
+            self.refused(self.command(archive, checksum, self.member))
+        for kind in (tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.GNUTYPE_SPARSE):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                archive, checksum = self.make_archive(Path(directory), {self.member: b"{}"}, member_type=kind)
+                self.refused(self.command(archive, checksum, self.member))
+        for name in ("../usage.json", "/usage.json", "./" + self.member, "run-root//usage.json"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                archive, checksum = self.make_archive(Path(directory), {self.member: b"{}"})
+                self.refused(self.command(archive, checksum, name))
+        with tempfile.TemporaryDirectory() as directory:
+            archive, checksum = self.make_archive(Path(directory), {self.member: b"{}"})
+            with self.assertRaisesRegex(ValueError, "Invalid selected member path"):
+                matrix.recover_retained_usage(archive, checksum, [self.member + "\0"])
+
+    def test_cli_missing_duplicate_and_aliased_evidence_refuses(self):
+        manifest_name = "evidence/retention-manifest.json"
+        fixtures = [
+            ({self.member: b"{}"}, {"include_manifest": False}),
+            ({manifest_name: b'{"schemaVersion":1,"files":[]}'}, {}),
+            ({"./" + self.member: b"{}"}, {}),
+            ({self.member: b"{}"}, {"change_manifest": lambda m: m["files"].append({
+                "path": self.copy, "bytes": 2, "sha256": hashlib.sha256(b"{}").hexdigest()
+            })}),
+        ]
+        for documents, options in fixtures:
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as directory:
+                archive, checksum = self.make_archive(Path(directory), documents, **options)
+                self.refused(self.command(archive, checksum, self.member, self.copy))
+
+    def test_cli_truncated_and_corrupt_gzip_refuses_even_with_matching_checksum(self):
+        for corruption in ("truncate", "crc"):
+            with self.subTest(corruption=corruption), tempfile.TemporaryDirectory() as directory:
+                archive, checksum = self.make_archive(Path(directory), {self.member: b"{}"})
+                data = bytearray(archive.read_bytes())
+                if corruption == "truncate":
+                    del data[-4:]
+                else:
+                    data[-8] ^= 1
+                archive.write_bytes(data)
+                checksum.write_text(f"{digest(archive)}  {archive.name}\n")
+                self.refused(self.command(archive, checksum, self.member))
+
+    def test_cli_malformed_tar_termination_refuses_after_valid_selected_evidence(self):
+        for header in (b"X" * tarfile.BLOCKSIZE, b"X" * 100, b""):
+            with self.subTest(header_bytes=len(header)), tempfile.TemporaryDirectory() as directory:
+                archive, checksum = self.make_archive(Path(directory), {self.member: b"{}"})
+                with tarfile.open(archive, "r:gz") as retained:
+                    last = retained.getmembers()[-1]
+                    end = last.offset_data + (
+                        (last.size + tarfile.BLOCKSIZE - 1) // tarfile.BLOCKSIZE
+                    ) * tarfile.BLOCKSIZE
+                data = gzip.decompress(archive.read_bytes())[:end] + header
+                if len(header) == tarfile.BLOCKSIZE:
+                    data += b"\0" * tarfile.RECORDSIZE
+                archive.write_bytes(gzip.compress(data))
+                checksum.write_text(f"{digest(archive)}  {archive.name}\n")
+                self.refused(self.command(archive, checksum, self.member))
+
+    def test_cli_checksum_name_bytes_and_duplicate_selectors_refuse(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive, checksum = self.make_archive(Path(directory), {self.member: b"{}"})
+            self.refused(self.command(archive, checksum, self.member, self.member))
+            checksum.write_text(f"{digest(archive)}  wrong.tar.gz\n")
+            self.refused(self.command(archive, checksum, self.member))
+            checksum.write_text(f"{'0' * 64}  {archive.name}\n")
+            self.refused(self.command(archive, checksum, self.member))
+
+    def test_consumed_bytes_must_match_even_after_checksum_check_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive, checksum = self.make_archive(root, {self.member: b'{"totalNanoAiu":1}'})
+            replacement = root / "replacement"
+            replacement.mkdir()
+            changed, _ = self.make_archive(replacement, {self.member: b'{"totalNanoAiu":2}'})
+            original = matrix.retained_archive_sha256
+
+            def replace_after_check(path, checksum_path):
+                expected = original(path, checksum_path)
+                path.write_bytes(changed.read_bytes())
+                return expected
+
+            with mock.patch.object(matrix, "retained_archive_sha256", side_effect=replace_after_check):
+                with self.assertRaisesRegex(ValueError, "consumed.*SHA256"):
+                    matrix.recover_retained_usage(archive, checksum, [self.member])
 
 
 class FullProductMatrixTests(unittest.TestCase):

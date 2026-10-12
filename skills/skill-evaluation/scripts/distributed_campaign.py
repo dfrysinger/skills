@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import contextlib
+import gzip
 import hashlib
 import importlib.util
 import json
@@ -3257,6 +3258,140 @@ def retained_archive_sha256(archive: Path, checksum_path: Path) -> str:
     return expected
 
 
+def recover_retained_usage(archive: Path, checksum_path: Path, members: list[str]) -> dict:
+    require(members and len(members) == len(set(members)), "Select unique cumulative usage members")
+    for name in members:
+        relative = PurePosixPath(name)
+        require(relative.parts and "\0" not in name and not relative.is_absolute() and ".." not in relative.parts
+                and name == relative.as_posix(), f"Invalid selected member path: {name}")
+    spec = importlib.util.spec_from_file_location(
+        "retained_usage_measurement", Path(__file__).with_name("measurement.py")
+    )
+    require(spec is not None and spec.loader is not None, "Cannot load usage numeric validation")
+    measurement = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(measurement)
+
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise measurement.MeasurementError("Duplicate JSON key in retained usage evidence")
+            value[key] = item
+        return value
+
+    def invalid_constant(_value):
+        raise measurement.MeasurementError("Nonfinite JSON constant in retained usage evidence")
+
+    class ConsumedArchive:
+        def __init__(self, stream):
+            self.stream = stream
+            self.digest = hashlib.sha256()
+
+        def read(self, size=-1):
+            data = self.stream.read(size)
+            self.digest.update(data)
+            return data
+
+    class ValidatedTarInfo(tarfile.TarInfo):
+        @classmethod
+        def fromtarfile(cls, retained):
+            try:
+                return super().fromtarfile(retained)
+            except (tarfile.InvalidHeaderError, tarfile.EmptyHeaderError,
+                    tarfile.TruncatedHeaderError) as error:
+                # TarFile.next otherwise suppresses these after the first member.
+                raise tarfile.ReadError("Malformed retained tar header") from error
+
+    expected = retained_archive_sha256(archive, checksum_path)
+    manifest_name = "evidence/retention-manifest.json"
+    require(manifest_name not in members, "The retention manifest is not a usage carrier")
+    selected = set(members)
+    relevant = selected | {manifest_name}
+    documents, identities = {}, {}
+    with archive.open("rb") as raw:
+        consumed = ConsumedArchive(raw)
+        with gzip.GzipFile(fileobj=consumed, mode="rb") as compressed:
+            with tarfile.open(fileobj=compressed, mode="r|", bufsize=tarfile.BLOCKSIZE,
+                              tarinfo=ValidatedTarInfo) as retained:
+                for member in retained:
+                    normalized = posixpath.normpath(member.name)
+                    if normalized not in relevant and member.name not in relevant:
+                        continue
+                    require(member.name == normalized, "Aliased selected archive member")
+                    require(member.name not in documents, "Duplicate selected archive member")
+                    require(member.isfile() and not member.issparse(),
+                            "Selected evidence must be an ordinary nonsparse file")
+                    stream = retained.extractfile(member)
+                    require(stream is not None, "Selected archive member is unreadable")
+                    data = stream.read()
+                    require(len(data) == member.size, "Truncated selected archive member")
+                    identities[member.name] = {
+                        "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()
+                    }
+                    documents[member.name] = json.loads(
+                        data.decode("utf-8"), object_pairs_hook=unique_object,
+                        parse_constant=invalid_constant,
+                    )
+            for padding in iter(lambda: compressed.read(1024 * 1024), b""):
+                require(not any(padding), "Unexpected data after retained tar archive")
+        for _ in iter(lambda: consumed.read(1024 * 1024), b""):
+            pass
+        require(consumed.digest.hexdigest() == expected, "Retained consumed bytes SHA256 mismatch")
+    require(manifest_name in documents, "Retention manifest is missing")
+    manifest = documents[manifest_name]
+    require(isinstance(manifest, dict) and type(manifest.get("schemaVersion")) is int
+            and manifest["schemaVersion"] == 1 and isinstance(manifest.get("files"), list),
+            "Invalid retention manifest schema")
+    declared = {}
+    for row in manifest["files"]:
+        require(isinstance(row, dict) and isinstance(row.get("path"), str), "Invalid retention manifest row")
+        normalized = posixpath.normpath(row["path"])
+        if normalized not in selected and row["path"] not in selected:
+            continue
+        require(row["path"] == normalized, "Aliased selected manifest path")
+        require(row["path"] not in declared, "Duplicate selected manifest row")
+        declared[row["path"]] = row
+    projections = []
+    present, missing = [], []
+    for name in members:
+        require((name in documents) == (name in declared), "Selected member/manifest presence mismatch")
+        if name not in documents:
+            missing.append(name)
+            continue
+        row, identity = declared[name], identities[name]
+        require(type(row.get("bytes")) is int and row["bytes"] == identity["bytes"],
+                "Selected member byte count mismatch")
+        require(check_sha256(row.get("sha256"), "selected member") == identity["sha256"],
+                "Selected member SHA256 mismatch")
+        document = documents[name]
+        require(isinstance(document, dict), "Retained usage must be a JSON object")
+        projections.append((
+            measurement.number(document.get("totalNanoAiu"), "totalNanoAiu"),
+            measurement.number(document.get("totalApiDurationMs"), "totalApiDurationMs"),
+        ))
+        present.append(name)
+    require(not projections or all(value == projections[0] for value in projections),
+            "Conflicting retained cumulative usage copies")
+    nano_aiu, duration_ms = projections[0] if projections else (None, None)
+    return {
+        "schemaVersion": 1,
+        "archive_sha256": expected,
+        "manifest": identities[manifest_name],
+        "trust": "candidate-reported",
+        "scope": "caller-selected-cumulative-copies",
+        "reported_nano_aiu": nano_aiu,
+        "reported_api_duration_ms": duration_ms,
+        "selected_members": members,
+        "present_members": present,
+        "missing_members": missing,
+        "member_pins": {name: identities[name] for name in present},
+        "copies_counted": 1 if projections else 0,
+        "unknown_fields": [name for name, value in (
+            ("reported_nano_aiu", nano_aiu), ("reported_api_duration_ms", duration_ms)
+        ) if value is None],
+    }
+
+
 def artifact_name(attempt_id: str, run_id: str, run_attempt: str, kind: str = "final") -> str:
     safe_name(attempt_id, "attempt id")
     require(kind in {"macos", "final", "fallback"}, "Invalid artifact kind")
@@ -3422,6 +3557,11 @@ def build_parser() -> argparse.ArgumentParser:
         add_help=False,
     )
 
+    usage = commands.add_parser("recover-retained-usage")
+    usage.add_argument("archive", type=Path)
+    usage.add_argument("checksum", type=Path)
+    usage.add_argument("--member", action="append", required=True)
+
     retain = commands.add_parser("retain")
     retain.add_argument("--run-root", type=Path, required=True)
     retain.add_argument("--evidence", type=Path, required=True)
@@ -3528,6 +3668,11 @@ def main() -> int:
     elif args.command == "unpack-retained":
         expected = retained_archive_sha256(args.archive, args.checksum)
         print(json.dumps(safe_extract(args.archive, args.destination, expected), sort_keys=True))
+    elif args.command == "recover-retained-usage":
+        print(json.dumps(
+            recover_retained_usage(args.archive, args.checksum, args.member),
+            sort_keys=True, allow_nan=False,
+        ))
     elif args.command == "run-hosted":
         value = run_hosted(
             args.package_root,

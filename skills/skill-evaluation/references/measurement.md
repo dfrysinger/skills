@@ -117,6 +117,38 @@ with no usage evidence does not. Terminal coverage with premium-request-only
 usage still cannot establish credits. Evidence is fixed at invocation end;
 there is no delayed collector or reconciliation command.
 
+### Project retained candidate counters
+
+For a completed local retained archive, select the JSON documents known to be
+copies of one candidate's cumulative usage:
+
+```sh
+python3 scripts/distributed_campaign.py recover-retained-usage \
+  retained.tar.gz retained.tar.gz.sha256 \
+  --member run-root/usage.json --member run-root/usage-copy.json
+```
+
+The checksum must name the archive's basename. Selected relative POSIX paths
+must be unique and unambiguous. The archive's `evidence/retention-manifest.json`
+must declare `schemaVersion: 1` and matching `path`, `bytes` and `sha256` records
+for each present selected member. Members and the manifest must be ordinary
+nonsparse files. The command reads data only: it does not extract, execute,
+download, discover sessions or modify original evidence.
+
+Only optional top-level `totalNanoAiu` and `totalApiDurationMs` counters are
+projected. Missing members, missing fields and nulls remain unknown; explicit
+zero remains zero. Equal normalized copies count once, regardless of other
+metadata. Conflicting counters, malformed JSON, duplicate keys, invalid numeric
+values or failed integrity checks exit nonzero without a recovered report.
+
+Stdout contains a separate JSON report with archive/member provenance,
+`reported_nano_aiu`, `reported_api_duration_ms`, unknown fields and selected
+present/missing members. Its trust is `candidate-reported`; the caller asserts
+the shared cumulative scope. Checksums establish byte integrity, not truth or
+authentication. The report never supplies sessions, terminal coverage, grades
+or `accounting.credits`. API duration is not candidate wall time, and recovered
+counters are not exact full evaluation cost.
+
 ## Independent source quality
 
 ```sh
