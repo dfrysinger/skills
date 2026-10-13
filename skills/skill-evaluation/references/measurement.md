@@ -206,6 +206,9 @@ and point to aggregate records. Only leaves are charged. Distinct owners'
 overlapping work is work, not elapsed wall time. Include unsuccessful audit,
 implementation, review, measurement and retry investment once in the declared
 scope; missing investment is unknown, not free.
+Ordinary per-run preparation and correspondence checks are recurring work,
+even when they create a fresh metadata or proof root. Charge repair investment
+separately rather than hiding repeated preparation in that category.
 
 `outer_timing` retains the Timeline shape: `clock`, nullable `elapsed_seconds`,
 and `stages`. Optional stage `start_seconds` and `end_seconds` are offsets
@@ -215,6 +218,19 @@ covering exactly `0..elapsed_seconds`, known categories and consistent
 optional stage durations. Explicit stage clock/scope mismatches, missing
 offsets, gaps, overlap, zero elapsed or foreign clocks yield a null fraction
 with reasons. UTC timestamps alone do not establish those offsets.
+
+Capture the actual clock implementation, suspend behavior and boot identity
+before the window starts. Full feedback latency requires a clock that includes
+host suspension. On macOS, Python's monotonic clock may use
+`mach_absolute_time()`, which excludes system sleep; Darwin's
+`CLOCK_MONOTONIC_RAW`, where exposed by `time.clock_gettime_ns`, includes it.
+Keep awake elapsed separately: it is neither CPU time nor active work, and
+passive waits still need their own scope. Declare `clock: "monotonic"` only
+when the captured clock covers the claimed interval; otherwise retain a
+descriptive foreign-clock declaration and unknown full wall. Start, end and
+stage offsets must use the same clock origin. UTC comparisons can diagnose
+a coverage gap, but cannot reconstruct an uncaptured clock start or turn
+awake elapsed into verified full feedback latency.
 
 The report separates outer wall per useful product decision, recurring
 coordination/reporting leaf work per useful decision, total leaf work per
