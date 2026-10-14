@@ -49,6 +49,21 @@ The image value accepts a local `sha256:...` ID or a repository reference pinned
 with `@sha256:...`. The image must already exist locally. There is no automatic
 pull or host-execution fallback.
 
+An optional `repository_task.container_user` selects the guest user as numeric
+`"UID:GID"`, for example `"1000:1000"`. Both IDs must be unsigned 32-bit decimal
+integers. Omit the field or set it to `null` to use the image's default user.
+Docker applies the selected user to candidate setup, candidate execution and
+grading; host evaluation and behavioral judges keep their caller identity.
+The container boundary receipt records and checks the selected Docker user.
+
+Choose a user compatible with the pinned image and the host-owned bind mounts.
+Matching IDs can permit file-backed writes without running the host evaluator
+as root, but does not create a guest account or prove CLI/tooling compatibility.
+The image's tools and offline setup must work under that user. The container
+home remains `/tmp/eval-home`; no passwd, permission or privileged fallback is
+provided. Changing the profile changes the frozen case revision and requires
+fresh admission with the selected user.
+
 ```text
 cases/CASE/
   case.json
