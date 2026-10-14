@@ -133,6 +133,148 @@ class RepositoryTaskTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "success_output_contains"):
             repository.validate_definition(definition, case)
 
+    def test_container_user_definition_and_constructor_validation(self):
+        case = self.make_case()
+        definition = evaluator.read_json(case / "case.json")
+        for value in (None, "0:0", "1001:1001", "0001:0002", "4294967295:4294967295"):
+            with self.subTest(value=value):
+                definition["repository_task"]["container_user"] = value
+                repository.validate_definition(definition, case)
+                container = repository.Container(self.image, [], case, user=value)
+                self.assertEqual(container.user, value)
+        for value in (
+            True, 1001, {}, [], "", "1001", "root:root", "-1:1", "1:+1",
+            "1:1:1", " 1:1", "1:1\n", "١:١", "4294967296:1",
+            "1:4294967296", "9" * 5000 + ":1",
+        ):
+            with self.subTest(value=value), mock.patch("repository_task.command_result") as command:
+                definition["repository_task"]["container_user"] = value
+                with self.assertRaisesRegex(ValueError, "container_user"):
+                    repository.validate_definition(definition, case)
+                with self.assertRaisesRegex(ValueError, "container_user"):
+                    repository.Container(self.image, [], case, user=value)
+                command.assert_not_called()
+
+    def inspect_container(self, *, user=None, observed_user=None):
+        source = Path(self.temp.name)
+        artifacts = source / "container-observation"
+        container = repository.Container(
+            self.image, [(source, "/workspace/repo", True)], artifacts, user=user,
+        )
+        commands = []
+        self.container_commands = commands
+        boundary = {
+            "mounts": [{"Destination": "/workspace/repo", "RW": True}],
+            "network": "none",
+        }
+        if user is not None:
+            boundary["user"] = user if observed_user is None else observed_user
+
+        def checked(command, label):
+            commands.append(command)
+            return json.dumps(boundary).encode() if label == "boundary" else b""
+
+        with mock.patch.object(container, "checked", side_effect=checked):
+            with container:
+                pass
+        return container, commands, evaluator.read_json(artifacts / "boundary.json")
+
+    def test_default_container_preserves_exact_create_and_inspect_commands(self):
+        container, commands, boundary = self.inspect_container()
+        self.assertEqual(commands[0], [
+            "docker", "create", "--name", container.name, "--network", "none",
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+            "--workdir", "/workspace/repo",
+            "--env", "HOME=/tmp/eval-home", "--env", "COPILOT_HOME=/tmp/eval-home",
+            "--env", "CI=true", "--env", "BASH_ENV=", "--env", "ENV=",
+            "--entrypoint", "sleep", "--mount",
+            f"type=bind,src={Path(self.temp.name).resolve()},dst=/workspace/repo",
+            self.image, "infinity",
+        ])
+        self.assertEqual(commands[2], [
+            "docker", "inspect", "--format",
+            '{"mounts":{{json .Mounts}},"network":{{json .HostConfig.NetworkMode}}}',
+            container.name,
+        ])
+        self.assertEqual(set(boundary), {"mounts", "network"})
+        self.assertEqual(commands[-1], ["docker", "rm", "--force", container.name])
+
+    def test_selected_container_user_is_applied_and_observed(self):
+        _, commands, boundary = self.inspect_container(user="1001:1001")
+        position = commands[0].index("--user")
+        self.assertEqual(commands[0][position + 1], "1001:1001")
+        self.assertEqual(commands[0].count("--user"), 1)
+        self.assertIn('"user":{{json .Config.User}}', commands[2][3])
+        self.assertNotIn(".Config.Env", commands[2][3])
+        self.assertEqual(boundary["user"], "1001:1001")
+
+    def test_selected_container_user_mismatch_refuses_and_removes_container(self):
+        with self.assertRaisesRegex(repository.InfrastructureError, "user"):
+            self.inspect_container(user="1001:1001", observed_user="0:0")
+        self.assertEqual(self.container_commands[-1][:3], ["docker", "rm", "--force"])
+        self.assertFalse((Path(self.temp.name) / "container-observation" / "boundary.json").exists())
+
+    def test_selected_user_reaches_setup_and_both_grading_containers(self):
+        case = self.make_case()
+        definition = evaluator.read_json(case / "case.json")
+        task = definition["repository_task"]
+        task["container_user"] = "1001:1001"
+        task["candidate_setup"] = [{"argv": ["setup"], "timeout_seconds": 10}]
+        evaluator.write_json(case / "case.json", definition)
+        frozen = evaluator.freeze_case(self.root, "example", False)
+        users = []
+
+        class FakeContainer:
+            def __init__(self, image, mounts, artifacts, **kwargs):
+                users.append(kwargs.get("user"))
+                self.artifacts = artifacts
+                artifacts.mkdir(parents=True, exist_ok=True)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def execute(self, command, label):
+                log = self.artifacts / f"{label}.log"
+                log.write_text(command.get("success_output_contains", ""))
+                return {"exit_code": 0, "timed_out": False, "log": log.name}
+
+        with mock.patch("repository_task.Container", FakeContainer):
+            repository.check_candidate_setup(frozen, task, Path(self.temp.name) / "setup")
+            grades = repository.grade(frozen, task, Path(self.temp.name) / "grades")
+        self.assertEqual(users, ["1001:1001"] * 3)
+        self.assertTrue(all(value["passed"] for value in grades.values()))
+
+    def test_container_profile_changes_binding_and_refuses_old_admission(self):
+        frozen = self.freeze()
+        manifest = (frozen / "case-manifest.json").read_bytes()
+        image = {"id": self.image}
+        binding = repository.admission_binding(frozen, image)
+        admission = self.root / "admission-runs" / "original" / "example"
+        admission.mkdir(parents=True)
+        evaluator.write_json(admission / "admission-receipt.json", {"status": "PASS", **binding})
+        new_root = Path(self.temp.name) / "profile-corpus"
+        evaluator.init_corpus(new_root)
+        evaluator.add_case(new_root, "example", "example-skill", ["candidate"],
+                           case_type="repository-task")
+        case = new_root / "cases" / "example"
+        shutil.copytree(self.root / "cases" / "example", case, dirs_exist_ok=True)
+        definition = evaluator.read_json(case / "case.json")
+        definition["repository_task"]["container_user"] = "1001:1001"
+        evaluator.write_json(case / "case.json", definition)
+        selected = evaluator.freeze_case(new_root, "example", False)
+        changed_binding = repository.admission_binding(selected, image)
+        self.assertNotEqual(binding["case_revision"], changed_binding["case_revision"])
+        self.assertEqual((frozen / "case-manifest.json").read_bytes(), manifest)
+        with self.assertRaisesRegex(ValueError, "matching successful admission"):
+            repository.require_admission(self.root, "example", changed_binding)
+
+    def test_selected_user_reaches_candidate_container(self):
+        result, _, _ = self.fake_execution(container_user="1001:1001")
+        self.assertEqual(result["execution_status"], "PASS", result)
+
     def test_hidden_packet_cannot_be_repository_snapshot(self):
         case = self.make_case()
         definition = evaluator.read_json(case / "case.json")
@@ -1037,8 +1179,13 @@ class RepositoryTaskTests(unittest.TestCase):
             path = repository.validate_repository_case(self.root, "example")
         self.assertEqual(evaluator.read_json(path / "admission-receipt.json")["status"], "INVALID")
 
-    def fake_execution(self, *, timeout=False, grades=None, cli_failure=False):
-        frozen = self.freeze()
+    def fake_execution(self, *, timeout=False, grades=None, cli_failure=False, container_user=None):
+        case = self.make_case()
+        if container_user is not None:
+            definition = evaluator.read_json(case / "case.json")
+            definition["repository_task"]["container_user"] = container_user
+            evaluator.write_json(case / "case.json", definition)
+        frozen = evaluator.freeze_case(self.root, "example", False)
         run = self.root / "runs" / "fake"
         run.mkdir()
         admission = self.root / "admission.json"
@@ -1052,6 +1199,7 @@ class RepositoryTaskTests(unittest.TestCase):
                 self.stopped = False
                 self.created = True
                 owner.assertEqual([item[1] for item in mounts], ["/workspace/repo", "/evidence"])
+                owner.assertEqual(kwargs.get("user"), container_user)
                 artifacts.mkdir(parents=True)
 
             def __enter__(self):

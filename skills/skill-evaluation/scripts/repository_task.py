@@ -183,6 +183,17 @@ def validate_command(command: dict, *, graded: bool = False) -> None:
         raise ValueError("graded commands require nonempty success_output_contains")
 
 
+def validate_container_user(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]+:[0-9]+", value):
+        raise ValueError("repository task container_user must be numeric UID:GID")
+    identifiers = [part.lstrip("0") or "0" for part in value.split(":")]
+    if any(len(part) > 10 or int(part) > 0xFFFFFFFF for part in identifiers):
+        raise ValueError("repository task container_user IDs must be unsigned 32-bit integers")
+    return value
+
+
 def validate_definition(definition: dict, root: Path, *, frozen: bool = False) -> None:
     phases = definition.get("phases")
     if not isinstance(phases, list) or len(phases) != 1 or not isinstance(phases[0], dict):
@@ -213,6 +224,7 @@ def validate_definition(definition: dict, root: Path, *, frozen: bool = False) -
         raise ValueError("repository_task requires candidate_setup")
     if not IMAGE_RE.fullmatch(task.get("image", "")):
         raise ValueError("repository task image must be pinned to sha256")
+    validate_container_user(task.get("container_user"))
     revision = task.get("source_revision")
     if not isinstance(revision, str) or not revision or revision.startswith("replace"):
         raise ValueError("repository task needs an immutable source_revision")
@@ -289,11 +301,12 @@ def image_identity(image: str) -> dict:
 
 class Container:
     def __init__(self, image: str, mounts: list[tuple[Path, str, bool]], artifacts: Path,
-                 *, network: bool = False):
+                 *, network: bool = False, user: str | None = None):
         self.image = image
         self.mounts = mounts
         self.artifacts = artifacts
         self.network = network
+        self.user = validate_container_user(user)
         self.name = f"skill-eval-{uuid.uuid4().hex}"
         self.created = False
         self.stopped = False
@@ -316,6 +329,8 @@ class Container:
             "--env", "CI=true", "--env", "BASH_ENV=", "--env", "ENV=",
             "--entrypoint", "sleep",
         ]
+        if self.user is not None:
+            command += ["--user", self.user]
         for source, destination, writable in self.mounts:
             if "," in str(source):
                 raise ValueError("Docker bind source cannot contain a comma")
@@ -326,10 +341,14 @@ class Container:
             self.checked(command, "create")
             self.created = True
             self.checked(["docker", "start", self.name], "start")
-            # Select only mount/network state: never persist Docker environment inspection.
+            # Never persist Docker environment inspection.
+            boundary_format = '{"mounts":{{json .Mounts}},"network":{{json .HostConfig.NetworkMode}}'
+            if self.user is not None:
+                boundary_format += ',"user":{{json .Config.User}}'
+            boundary_format += "}"
             inspected = self.checked([
                 "docker", "inspect", "--format",
-                '{"mounts":{{json .Mounts}},"network":{{json .HostConfig.NetworkMode}}}',
+                boundary_format,
                 self.name,
             ], "boundary")
             boundary = json.loads(inspected)
@@ -339,6 +358,8 @@ class Container:
                 raise InfrastructureError("unexpected Docker mounts (including image volumes)")
             if boundary["network"] != ("bridge" if self.network else "none"):
                 raise InfrastructureError("unexpected Docker network mode")
+            if self.user is not None and boundary.get("user") != self.user:
+                raise InfrastructureError("unexpected Docker container user")
             write_json(self.artifacts / "boundary.json", boundary)
         except (OSError, ValueError, InfrastructureError):
             if self.created:
@@ -504,7 +525,7 @@ def grade(frozen: Path, task: dict, artifacts: Path, patch: Path | None = None) 
                 (repository, "/workspace/repo", True),
                 (frozen / "judge-reference" / "grader", "/grader", False),
             ]
-            with Container(task["image"], mounts, stage) as container:
+            with Container(task["image"], mounts, stage, user=task.get("container_user")) as container:
                 setup_results = []
                 for index, command in enumerate(task["grading"]["setup"]):
                     record = container.execute(command, f"setup-{index}")
@@ -531,7 +552,8 @@ def check_candidate_setup(frozen: Path, task: dict, artifacts: Path,
             apply_patch(source, patch)
         records = []
         if task["candidate_setup"]:
-            with Container(task["image"], [(source, "/workspace/repo", True)], artifacts) as container:
+            with Container(task["image"], [(source, "/workspace/repo", True)], artifacts,
+                           user=task.get("container_user")) as container:
                 for index, command in enumerate(task["candidate_setup"]):
                     record = container.execute(command, f"setup-{index}")
                     records.append(record)
@@ -824,7 +846,8 @@ def execute_repository(
                     (Path(treatment["output_dir"]), "/treatment-output", True),
                 ])
             stage = "candidate_infrastructure"
-            container = Container(task["image"], mounts, run_root / "candidate", network=True)
+            container = Container(task["image"], mounts, run_root / "candidate", network=True,
+                                  user=task.get("container_user"))
             try:
                 with container:
                     identity = container.execute(
