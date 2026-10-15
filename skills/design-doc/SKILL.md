@@ -16,6 +16,12 @@ This skill owns the scope and architecture call. It ends when the document is
 written and reviewed. It does not build anything; `development-loop` owns
 forward motion.
 
+Before drafting, invoke `explain` for its shared plain-language and
+proposal-status rules. Apply them to the whole document, including tables and
+acceptance criteria. Keep exact technical requirements, identifiers, and
+machine-readable status fields; explain them in ordinary prose. Separate
+agreed scope from suggested extensions and decisions still needed.
+
 ## 0. Align with the user
 
 Invoke `/dfrysinger-skills:grill-me` before fixing scope. Interview the user one

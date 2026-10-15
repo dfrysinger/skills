@@ -292,7 +292,9 @@ Cover five things, in this order:
   saying which reuse and extend candidates you rejected and why — including
   any shipped or in-house product that already covers the outcome.
 
-Follow `explain` for the register.
+Before drafting the report, invoke `explain` for its shared plain-language and
+proposal-status rules. Apply them to comparisons, recommendations, tables, and
+evidence notes as well as the main prose.
 
 Complete when all five sections are present, the recommendation names its
 tradeoff and says why the balance sits there rather than one rung cheaper or

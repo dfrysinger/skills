@@ -1,6 +1,6 @@
 ---
 name: explain
-description: Explain work to someone who steers it but never reads the code and may not know or remember how the system works. Use proactively before summarizing what you built, finished, or found; before presenting options or a recommendation; when handing off or catching someone up on a project; whenever the user asks you to explain, teach, walk through something, or show how it works in practice; and when asking the user a clarifying question.
+description: Explain work to someone who steers it but never reads the code and may not know or remember how the system works. Use when summarizing work, presenting options or recommendations, writing PRDs, product assessments, proposals or design documents, handing off a project, asking a clarifying question, or teaching how something works in practice.
 author: skill-review
 ---
 
@@ -87,12 +87,20 @@ pattern others will build on.
 
 ## Register
 
+Use **ASD-STE100-inspired plain English**: common words, short active sentences,
+and consistent terms. This is a writing guide, not formal compliance with the
+standard or a numerical "80% compliant" score. Keep natural product prose rather
+than forcing a maintenance-manual style.
+
 - **Prefer the ordinary phrase to the term of art.** Most jargon has a plain
   equivalent that costs a few more words and no comprehension: say "the part
-  that decides which agent runs" rather than naming the dispatcher. Reserve a
+  that decides which agent runs" rather than naming the dispatcher, or "small
+  live test" rather than "bounded live canary." Use one term consistently for
+  each concept. Reserve a
   defined term for something with no plain equivalent that recurs often enough
   to earn its keep, and define that one against whatever it would be confused
-  with. A page of defined terms reads as badly as a page of undefined ones.
+  with at first use. Keep exact API fields, code names, numbers, and quoted
+  evidence accurate. Simplify the explanation, not the technical facts.
 - **Describe the approach, not the outcome.** "Handled the edge case" is
   unreviewable. Say what the code now does, concretely enough that a bad choice
   is visible to someone who cannot see it.
@@ -102,15 +110,27 @@ pattern others will build on.
   that owns it.
 - **A long explanation a stranger can follow beats a short one they cannot.**
   Compress only when asked for a shorter version.
-- **Ordinary complete sentences.** Plain is not clipped, and not telegraphic.
+- **Short, active, complete sentences.** Name who does what. Give each sentence
+  one main point and split long lists of abstract nouns into steps or examples.
+  Plain is not clipped, and not telegraphic.
 - **Neutral framing, not alarm.** State blockers as plain sequencing — what has
   to happen in what order — rather than as caution flags, especially when the
   thing is achievable. Alarmist hedging makes work read as bigger than it is.
+  Name the specific known limit and its effect instead of warning broadly
+  against trusting the product. State research limits once where they matter;
+  keep evidence qualifications without repeating blanket disclaimers.
+- **Keep proposals distinct from decisions.** Present the author's idea as a
+  proposal or possible direction. Approval to draft it, or one person's support,
+  is not agreement by a team, a platform owner, or customers. Name who agreed
+  and what they agreed to when that is known. Keep unaccepted extensions
+  separate from the proposed near-term work and the decision being requested.
 - **Questions carry their own context.** Put everything needed to answer inside
   the question; the reader will not go looking.
-- **The same bar in written docs.** Project docs, roadmaps, and handoffs get
-  the same treatment: plain language, detail in the substance, identifier and
-  file-path detail kept clearly secondary.
+- **The same bar in written docs.** PRDs, product assessments, proposals, design
+  documents, roadmaps, and handoffs get the same treatment. Explain the system
+  in the body; keep supporting code and source detail available where needed.
+  Retain citations, dates, and qualifications that establish what the evidence
+  actually shows.
 
 ## Complete when
 
@@ -122,3 +142,8 @@ system easier to understand, and ends with the decision you need or states that
 none is needed. Any invented details are explicitly labeled illustrative. For
 a contained change, it says what changed and what it touches, in words a
 stranger with no memory of the system could follow.
+
+Check the whole artifact, including tables, headings, and appendices, for
+unnecessary jargon and sentences that imply agreement not established by the
+evidence. A plain-language edit is complete only when it preserves the facts,
+important limits, and technical names while making the meaning easier to follow.
