@@ -131,6 +131,14 @@ than forcing a maintenance-manual style.
   in the body; keep supporting code and source detail available where needed.
   Retain citations, dates, and qualifications that establish what the evidence
   actually shows.
+- **Link the relevant words directly to the source.** Where the output supports
+  links, make the appropriate word, phrase, or named reference a descriptive
+  inline link to the supporting material, preferably the relevant section.
+  Prefer this to footnotes, numbered citations, or reference IDs that make the
+  reader look elsewhere. Place the link beside the claim it supports and keep
+  clear which source supports which claim. Use footnotes or a reference list
+  when the user or required format calls for them, or when inline links are not
+  supported. Preserve needed evidence details and use only known source URLs.
 
 ## Complete when
 
