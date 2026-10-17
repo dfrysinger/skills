@@ -140,6 +140,26 @@ with no usage evidence does not. Terminal coverage with premium-request-only
 usage still cannot establish credits. Evidence is fixed at invocation end;
 there is no delayed collector or reconciliation command.
 
+### Coordinator objective counters
+
+For a coordinator using a native Copilot autopilot objective, its own session's
+`autopilot-objective.json` may expose `current.creditCountNanoAiu`. This is a
+separate coordinator observation, not an automatic evaluator collector. Read only
+the coordinating session's objective; do not widen invocation capture to search
+other sessions or authentication stores. A missing counter remains unknown.
+
+Retain the objective ID, objective-text digest, CLI version, source-update and
+capture times, and original decimal-integer string. Convert nano-AIU to AI credits
+with exact arithmetic and the documented mapping above. Before differencing
+snapshots, match the objective identity, unit mapping and counter scope.
+A decreased counter is an explicit reset or measurement error, not negative
+spending or permission to fabricate a delta.
+
+An ongoing snapshot is not a terminal bill or complete campaign cost. It does
+not establish nested-agent coverage, runner cost, active work or currency.
+Keep it separate from invocation accounting; do not add overlapping compaction
+or child counters, or divide it by an unrelated decision population.
+
 ### Project retained candidate counters
 
 For a completed local retained archive, select the JSON documents known to be
