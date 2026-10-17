@@ -11,6 +11,7 @@ import re
 import selectors
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -59,24 +60,61 @@ def write_once(path: Path, value: dict) -> None:
         stream.write(encoded)
 
 
+def timing_sleep_coverage(value: dict) -> bool | None:
+    implementation = value.get("clock_implementation")
+    if "clock_implementation" in value and (
+        not isinstance(implementation, str) or not implementation.strip()
+    ):
+        raise MeasurementError("invalid clock implementation")
+    coverage = value.get("suspend_inclusive")
+    if coverage is not None and type(coverage) is not bool:
+        raise MeasurementError("invalid clock sleep coverage")
+    if coverage is not None and implementation is None:
+        raise MeasurementError("clock sleep coverage requires an implementation")
+    return coverage if value.get("clock") == "monotonic" else None
+
+
 class Timeline:
-    """Sequential stage boundaries; the outer interval is authoritative wall time."""
+    """Sequential elapsed intervals with explicit clock and sleep coverage."""
 
     def __init__(self) -> None:
+        self._clock = time.monotonic
+        self.clock_implementation = time.get_clock_info("monotonic").implementation
+        self.suspend_inclusive: bool | None = None
+        if sys.platform == "darwin" and hasattr(time, "CLOCK_MONOTONIC_RAW"):
+            clock_id = time.CLOCK_MONOTONIC_RAW
+            self._clock = lambda: time.clock_gettime(clock_id)
+            self.clock_implementation = "clock_gettime(CLOCK_MONOTONIC_RAW)"
+            self.suspend_inclusive = True
+        self._last_clock: float | None = None
         self.started_at = instant()
-        self.started_clock = time.monotonic()
+        self.started_clock = self._read_clock()
         self.stages: list[dict] = []
         self.active: dict | None = None
         self.switch("preparation")
 
+    def _read_clock(self) -> float:
+        try:
+            current = self._clock()
+        except OSError as error:
+            raise MeasurementError("elapsed clock read failed") from error
+        if number(current, "elapsed clock") is None:
+            raise MeasurementError("elapsed clock observation is missing")
+        if self._last_clock is not None and current < self._last_clock:
+            raise MeasurementError("elapsed clock moved backward")
+        self._last_clock = current
+        return current
+
     def switch(self, name: str, status: str = "completed") -> None:
         self.end_stage(status)
-        self.active = {"name": name, "started_at": instant(), "started_clock": time.monotonic()}
+        self.active = {"name": name, "started_at": instant(), "started_clock": self._read_clock()}
 
     def end_stage(self, status: str) -> None:
         if self.active is not None:
             stage = self.active
-            stage.update(completed_at=instant(), elapsed_seconds=time.monotonic() - stage.pop("started_clock"),
+            elapsed = self._read_clock() - stage["started_clock"]
+            stage.pop("started_clock")
+            stage.update(completed_at=instant(), elapsed_seconds=elapsed,
                          status=status)
             self.stages.append(stage)
             self.active = None
@@ -85,8 +123,10 @@ class Timeline:
         self.end_stage(status)
         return {
             "schema_version": 1, "started_at": self.started_at, "completed_at": instant(),
-            "elapsed_seconds": time.monotonic() - self.started_clock,
+            "elapsed_seconds": self._read_clock() - self.started_clock,
             "clock": "monotonic", "status": status, "stages": self.stages,
+            "clock_implementation": self.clock_implementation,
+            "suspend_inclusive": self.suspend_inclusive,
         }
 
 

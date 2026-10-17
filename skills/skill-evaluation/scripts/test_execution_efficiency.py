@@ -48,7 +48,8 @@ def view(scope="synthetic-current", overhead=20, *, mode="fresh_window"):
                 ("synthetic-investment", "owner-c", None, "reporting", 0, "leaf", "repair_investment"),
             )
         ],
-        "outer_timing": {"clock": "monotonic", "elapsed_seconds": 100, "stages": [
+        "outer_timing": {"clock": "monotonic", "clock_implementation": "synthetic-sleep-inclusive",
+                         "suspend_inclusive": True, "elapsed_seconds": 100, "stages": [
             {"category": "coordination", "start_seconds": 0, "end_seconds": 20},
             {"category": "execution", "start_seconds": 20, "end_seconds": 100},
         ]},
@@ -231,6 +232,38 @@ class EfficiencyCLITests(unittest.TestCase):
         self.assertFalse(report["reconciliation_ready"])
         self.assertIsNone(report["metrics"]["outer_wall_per_decision"]["value"])
         self.assertIn("foreign_outer_scope", report["metrics"]["outer_wall_per_decision"]["reasons"])
+
+    def test_unestablished_sleep_coverage_cannot_satisfy_required_wall(self):
+        for coverage in ("absent", None, False):
+            with self.subTest(coverage=coverage):
+                current = view()
+                if coverage == "absent":
+                    current["outer_timing"].pop("clock_implementation")
+                    current["outer_timing"].pop("suspend_inclusive")
+                else:
+                    current["outer_timing"]["suspend_inclusive"] = coverage
+                report = self.invoke(
+                    current, policy={"required_metrics": ["outer_wall_per_decision"]})
+                self.assertEqual(report["exit_code"], 3)
+                self.assertFalse(report["reconciliation_ready"])
+                self.assertIsNone(report["metrics"]["outer_wall_seconds"]["value"])
+                self.assertIsNone(report["metrics"]["overhead_wall_fraction"]["value"])
+                self.assertEqual(report["metrics"]["overhead_work_per_decision"]["value"], 10)
+
+    def test_malformed_clock_coverage_is_an_explicit_input_error(self):
+        for metadata in (
+            {"suspend_inclusive": 1},
+            {"suspend_inclusive": "true"},
+            {"clock_implementation": ""},
+            {"clock_implementation": None},
+        ):
+            with self.subTest(metadata=metadata):
+                current = view()
+                current["outer_timing"].update(metadata)
+                report = self.invoke(current)
+                self.assertEqual(report["exit_code"], 1)
+                self.assertEqual(report["state"], "ERROR")
+                self.assertIn("clock", report["error"])
 
     def test_regression_only_boundary_and_intervening_ineligible_window(self):
         baseline = view("synthetic-baseline")

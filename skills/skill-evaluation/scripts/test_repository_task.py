@@ -1356,6 +1356,7 @@ class RepositoryTaskTests(unittest.TestCase):
             return {"complete": False, "reviewers": [{"status": "failed"}]}
 
         with (
+            mock.patch("measurement.sys.platform", "unestablished"),
             mock.patch("skill_eval.time.monotonic", side_effect=lambda: clock[0]),
             mock.patch("repository_task.execute_repository", side_effect=execute),
             mock.patch("skill_eval.run_judges", side_effect=judges),

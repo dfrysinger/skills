@@ -274,7 +274,10 @@ class MeasurementTests(unittest.TestCase):
 
     def test_timeline_outer_interval_does_not_sum_parallel_work(self):
         clock = [0.0]
-        with mock.patch.object(m.time, "monotonic", side_effect=lambda: clock[0]):
+        with (
+            mock.patch.object(sys, "platform", "unestablished"),
+            mock.patch.object(m.time, "monotonic", side_effect=lambda: clock[0]),
+        ):
             timer = m.Timeline()
             clock[0] = 2
             timer.switch("candidate")
@@ -288,6 +291,49 @@ class MeasurementTests(unittest.TestCase):
             result = timer.finish("completed")
         self.assertEqual(result["elapsed_seconds"], 12)
         self.assertEqual([stage["elapsed_seconds"] for stage in result["stages"]], [2, 3, 3, 2, 2])
+        self.assertIsNone(result["suspend_inclusive"])
+
+    def test_timeline_uses_one_darwin_clock_through_modeled_sleep(self):
+        raw, uptime = [0.0], [0.0]
+        with (
+            mock.patch.object(sys, "platform", "darwin"),
+            mock.patch.object(m.time, "CLOCK_MONOTONIC_RAW", 123, create=True),
+            mock.patch.object(m.time, "clock_gettime", side_effect=lambda source: raw[0],
+                              create=True) as selected,
+            mock.patch.object(m.time, "monotonic", side_effect=lambda: uptime[0]) as ordinary,
+        ):
+            timer = m.Timeline()
+            raw[0], uptime[0] = 122, 2
+            timer.switch("candidate")
+            raw[0], uptime[0] = 125, 5
+            result = timer.finish("completed")
+        self.assertEqual(result["elapsed_seconds"], 125)
+        self.assertEqual([stage["elapsed_seconds"] for stage in result["stages"]], [122, 3])
+        self.assertTrue(result["suspend_inclusive"])
+        self.assertEqual(result["clock_implementation"], "clock_gettime(CLOCK_MONOTONIC_RAW)")
+        self.assertTrue(all(call.args == (123,) for call in selected.call_args_list))
+        ordinary.assert_not_called()
+
+    def test_timeline_clock_failure_and_reversal_do_not_fall_back(self):
+        with (
+            mock.patch.object(sys, "platform", "darwin"),
+            mock.patch.object(m.time, "CLOCK_MONOTONIC_RAW", 123, create=True),
+            mock.patch.object(m.time, "clock_gettime", side_effect=OSError("clock unavailable"),
+                              create=True),
+            self.assertRaisesRegex(m.MeasurementError, "clock"),
+        ):
+            m.Timeline()
+        raw = [1.0]
+        with (
+            mock.patch.object(sys, "platform", "darwin"),
+            mock.patch.object(m.time, "CLOCK_MONOTONIC_RAW", 123, create=True),
+            mock.patch.object(m.time, "clock_gettime", side_effect=lambda source: raw[0],
+                              create=True),
+        ):
+            timer = m.Timeline()
+            raw[0] = 0
+            with self.assertRaisesRegex(m.MeasurementError, "backward"):
+                timer.switch("candidate")
 
     def test_host_transport_timeout_and_nonzero_keep_usage(self):
         for index, failure in enumerate((
@@ -1564,6 +1610,36 @@ class HistoryTests(unittest.TestCase):
         for ordinal, group in enumerate(report["populations"], 1):
             self.assertIn(f"## Population `{group['identity']}`", text)
             self.assertIn(f"Scorecard population {ordinal}.", text)
+
+    def test_history_retains_elapsed_and_distinguishes_sleep_coverage(self):
+        paths = []
+        for name, elapsed, metadata in (
+            ("legacy-clock", 2, {}),
+            ("declared-clock", 3, {"clock_implementation": "synthetic-sleep-inclusive",
+                                   "suspend_inclusive": True}),
+            ("declared-missing", None, {"clock_implementation": "synthetic-sleep-inclusive",
+                                       "suspend_inclusive": True}),
+        ):
+            path = self.run_fixture(name, "PASS", 1)
+            skill_eval.write_json(path / "timing.json", {
+                "schema_version": 1, "clock": "monotonic", "elapsed_seconds": elapsed,
+                "status": "completed", "stages": [], **metadata,
+            })
+            paths.append(path)
+        report = evaluation_history.history(self.root)
+        rows = {row["run_path"]: row for row in report["attempts"]}
+        legacy, declared, missing = (rows[str(path.relative_to(self.root))] for path in paths)
+        self.assertEqual(legacy["elapsed_seconds"], 2)
+        self.assertIsNone(legacy["suspend_inclusive"])
+        self.assertEqual(declared["elapsed_seconds"], 3)
+        self.assertTrue(declared["suspend_inclusive"])
+        self.assertIsNone(missing["elapsed_seconds"])
+        text = evaluation_history.markdown(report)
+        self.assertIn("Observed trial elapsed sum (s)", text)
+        self.assertIn("Sleep-inclusive attempts", text)
+        self.assertNotIn("Known trial-wall sum", text)
+        self.assertNotIn("| Wall seconds |", text)
+        self.assertIn("| 5 | 2 / 3 | 1 / 3 |", text)
 
     def test_markdown_scorecard_keeps_zero_duration_and_empty_history_honest(self):
         path = self.run_fixture("zero", "PASS", 0)

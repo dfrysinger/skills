@@ -6,7 +6,7 @@ import json
 import math
 from pathlib import Path
 
-from measurement import MeasurementError, number
+from measurement import MeasurementError, number, timing_sleep_coverage
 
 
 CATEGORIES = {"coordination", "infrastructure", "execution", "reporting"}
@@ -143,7 +143,10 @@ def timing(value: object) -> tuple[dict, dict]:
     text(value.get("clock"), "outer_timing.clock")
     elapsed = number(value.get("elapsed_seconds"), "outer_timing.elapsed_seconds")
     stages = items(value.get("stages"), "outer_timing.stages")
-    reasons = []
+    coverage = timing_sleep_coverage(value)
+    coverage_reasons = [] if coverage is True else [
+        "clock_excludes_sleep" if coverage is False else "clock_sleep_coverage_unknown"]
+    reasons = coverage_reasons.copy()
     if value["clock"] != "monotonic":
         reasons.append("foreign_clock")
     if elapsed is None:
@@ -181,7 +184,7 @@ def timing(value: object) -> tuple[dict, dict]:
     if elapsed == 0:
         reasons.append("zero_outer_denominator")
     fraction = overhead / elapsed if not reasons else None
-    wall_reasons = ["outer_elapsed_missing"] if elapsed is None else []
+    wall_reasons = coverage_reasons + (["outer_elapsed_missing"] if elapsed is None else [])
     if value["clock"] != "monotonic":
         wall_reasons.append("foreign_clock")
     return metric(elapsed if not wall_reasons else None, wall_reasons), metric(fraction, sorted(set(reasons)))
