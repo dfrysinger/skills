@@ -5,7 +5,9 @@ review failures never turn executable `PASS`, `FAIL` or `INVALID` into a
 different correctness result. Quality assessments do not change retry policy.
 
 Markdown history begins with a population scorecard, followed by every retained
-attempt and each population's complete identity and spending details. First
+attempt and each population's complete identity and spending details. Scorecard
+labels include case revision and maximum attempts, so different revisions or
+retry limits remain visible without opening the full identity. First
 outcomes show passes, valid originals and requested originals; behavioral
 outcomes separately show reported passes and judgment coverage. Neither summary
 is a release qualification. Credits distinguish exact totals from observed
