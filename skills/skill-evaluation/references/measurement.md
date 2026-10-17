@@ -187,6 +187,27 @@ work, accepts a repair or grants admission. Coordinator projections are
 conditional observations, not authenticated arbitrary grades or billing.
 Candidate-reported product outcomes remain unresolved.
 
+For routine inspection of a saved report, show coverage counts instead of
+repeating every identity. If `jq` is available:
+
+```sh
+jq '
+  . + {display_only: true}
+  | if .coverage then
+      .coverage |= with_entries(
+        if (.value | type) == "array"
+        then .value = {count: (.value | length)}
+        else . end)
+    else . end
+' report.json
+```
+
+Keep the full report and the auditor's process exit status as audit evidence.
+This display preserves metrics, triggers, readiness, policy and errors; it is
+not a replacement report or reconciliation input. The `jq` exit status reports
+only whether inspection succeeded. Read exact identities from the saved report
+when a coverage count needs investigation.
+
 ### Projection contract
 
 The view requires `schema_version: 1`, nonempty `scope_id` and
