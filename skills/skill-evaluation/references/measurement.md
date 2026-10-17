@@ -11,10 +11,11 @@ retry limits remain visible without opening the full identity. First
 outcomes show passes, valid originals and requested originals; behavioral
 outcomes separately show reported passes and judgment coverage. Neither summary
 is a release qualification. Credits distinguish exact totals from observed
-subtotals. Known trial-wall sums include retries and unsuccessful work and show
-timing coverage; they are not parallel campaign elapsed time or billed runner
-time. Missing full-wall measurements remain unknown rather than borrowing the
-narrower execution duration. The scorecard is a view over JSON history, not a
+subtotals. Observed trial-elapsed sums include retries and unsuccessful work,
+with sleep-inclusive coverage reported separately. They are not parallel
+campaign elapsed time or billed runner time. Missing full-wall measurements
+remain unknown rather than borrowing the narrower execution duration.
+The scorecard is a view over JSON history, not a
 new result artifact.
 
 ## Usage and timing
@@ -31,21 +32,41 @@ uses `candidate_implementer` and `candidate_reviewer`.
 | `attempt.json`, `run-context.json` | Attempt, suite ordinal and frozen task configuration |
 | `measurements/*.json` | Fixed invocation-end observations, ownership, source, CLI version, coverage and errors |
 | `accounting.json` | Candidate, external evaluation and total spending, with session-level coverage |
-| `timing.json` | UTC boundaries and monotonic wall time from before preparation through requested judgments and cleanup |
+| `timing.json` | UTC boundaries and observed monotonic elapsed from before preparation through requested judgments and cleanup, with clock implementation and sleep coverage |
 | `reporting-timing.json` | Subsequent measurement aggregation and report rendering |
-| `suite-timing.json` | Suite wall time including preparation, attempts, reporting and cleanup |
+| `suite-timing.json` | Observed suite elapsed including preparation, attempts, reporting and cleanup; sleep coverage is not established |
 
 Stages name preparation, candidate execution, deterministic grading,
 behavioral judging, optional quality review and cleanup when those stages run.
-Failed and interrupted stages are retained. The outer interval is total wall
-time; overlapping agent/API durations must not be added to it.
+Failed and interrupted stages are retained. The outer interval is elapsed
+within that producer's scope, not active work or complete campaign feedback.
+Overlapping agent/API durations must not be added to it.
+
+`Timeline` records retain `clock: "monotonic"` and `elapsed_seconds`, and
+add `clock_implementation` and nullable Boolean `suspend_inclusive`. On Darwin,
+the available `CLOCK_MONOTONIC_RAW` source counts time during sleep. One selected
+source measures the entire Timeline; a read failure or backward observation is
+an explicit measurement error, not a reason to switch clocks silently. Other
+unestablished runtimes retain ordinary monotonic elapsed with unknown sleep
+coverage. Reporting and suite timers have separate scopes and do not inherit
+the attempt's clock coverage.
+
+Records without clock coverage keep their observed elapsed values. A generic monotonic label
+does not establish sleep-inclusive wall time. Wall-labeled efficiency metrics
+require positive sleep coverage and implementation metadata from the trusted
+producer/coordinator projection; absent, unknown or false coverage remains
+unknown wall time. This metadata is not authenticated model output or billing
+evidence. Malformed metadata is an explicit input error. The history scorecard
+reports observed elapsed sums and counts sleep-inclusive attempts separately,
+without reconstructing historical sleep or combining independent intervals.
 
 `execution-result.json.elapsed_seconds` measures repository execution through
 grading, not subsequent host judging. Command receipts' `elapsed_seconds`
 measure that command and its log handling. `suite-result.json.duration_seconds`
 ends before suite report writing and cleanup. These existing fields retain
-their narrower meanings; use the dedicated timing artifacts for full wall
-time. Historical runs without them have unknown full wall time.
+their narrower meanings. Dedicated timing artifacts establish their own elapsed
+scope; verified full-wall claims additionally require known sleep coverage.
+Historical missing coverage remains unknown.
 
 ### Sources, units and coverage
 
@@ -224,15 +245,16 @@ optional stage durations. Explicit stage clock/scope mismatches, missing
 offsets, gaps, overlap, zero elapsed or foreign clocks yield a null fraction
 with reasons. UTC timestamps alone do not establish those offsets.
 
-Capture the actual clock implementation, suspend behavior and boot identity
-before the window starts. Full feedback latency requires a clock that includes
+Capture the actual clock implementation and suspend behavior before the window
+starts. Cross-process windows also need a common origin and boot identity.
+Full feedback latency requires a clock that includes
 host suspension. On macOS, Python's monotonic clock may use
 `mach_absolute_time()`, which excludes system sleep; Darwin's
 `CLOCK_MONOTONIC_RAW`, where exposed by `time.clock_gettime_ns`, includes it.
 Keep awake elapsed separately: it is neither CPU time nor active work, and
-passive waits still need their own scope. Declare `clock: "monotonic"` only
-when the captured clock covers the claimed interval; otherwise retain a
-descriptive foreign-clock declaration and unknown full wall. Start, end and
+passive waits still need their own scope. The `clock: "monotonic"` marker alone
+does not declare coverage: retain the actual `clock_implementation` and
+`suspend_inclusive` observation, or leave full wall unknown. Start, end and
 stage offsets must use the same clock origin. UTC comparisons can diagnose
 a coverage gap, but cannot reconstruct an uncaptured clock start or turn
 awake elapsed into verified full feedback latency.

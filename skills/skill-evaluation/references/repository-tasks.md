@@ -275,7 +275,8 @@ source-only shipping assessments. This requests additional paid Claude/GPT
 invocations using the case's judge models. Findings remain reviewer-reported;
 they do not rewrite executable or behavioral results or trigger retries.
 
-All attempts retain role-separated usage and full wall timing. Query their
+All attempts retain role-separated usage and elapsed timing with explicit
+clock and sleep coverage where established. Query their
 authoritative artifacts with `history CORPUS --format json|markdown`.
 See [measurement and quality history](measurement.md) for coverage, units,
 failure handling and comparison populations.

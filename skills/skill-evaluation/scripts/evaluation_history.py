@@ -306,6 +306,7 @@ def run_row(root: Path, path: Path, owner: dict | None, suite: dict) -> dict:
     elif records:
         summary = measurement.accounting(records)
     timing = optional(path / "timing.json")
+    sleep_coverage = measurement.timing_sleep_coverage(timing)
     if timing:
         if timing.get("schema_version") != 1 or not isinstance(timing.get("stages"), list):
             raise ValueError("malformed timing artifact")
@@ -359,6 +360,8 @@ def run_row(root: Path, path: Path, owner: dict | None, suite: dict) -> dict:
         "invocations": records, "quality": quality or None,
         "started_at": timing.get("started_at", attempt.get("started_at")),
         "elapsed_seconds": timing.get("elapsed_seconds"),
+        "clock_implementation": timing.get("clock_implementation"),
+        "suspend_inclusive": sleep_coverage,
         "legacy_execution_elapsed_seconds": execution.get("elapsed_seconds"),
         "timing_status": timing.get("status", "unavailable"),
     }
@@ -781,20 +784,24 @@ def markdown(report: dict) -> str:
              "## Population scorecard", "",
              "First outcomes are passes / valid / requested originals. Behavioral outcomes are "
              "reported passes / judged / requested originals, not release qualification. "
-             "AI credits are exact / observed totals. Spending and known trial-wall sums include "
+             "AI credits are exact / observed totals. Spending and observed elapsed sums include "
              "retries, failures and invalid attempts; the sum is not parallel campaign elapsed time "
              "or billed runner time. Labels show case / treatment / model / case revision / "
              "maximum attempts. Compare only matched populations; complete identities follow "
-             "in the numbered details.", "",
+             "in the numbered details. Observed elapsed can exclude sleep; sleep-inclusive "
+             "coverage is separate and does not establish active work.", "",
              "| Population | First outcomes | Behavioral originals | AI credits | "
-             "Known trial-wall sum (s) | Timed attempts |",
-             "| --- | --- | --- | --- | --- | --- |"]
+             "Observed trial elapsed sum (s) | Timed attempts | Sleep-inclusive attempts |",
+             "| --- | --- | --- | --- | --- | --- | --- |"]
     for ordinal, group in enumerate(report["populations"], 1):
         rows = rows_by_population[group["identity"]]
         first = [row for row in rows if row["attempt"] == 1]
         judged = [row for row in first if row["behavioral_verdict"] in {"PASS", "FAIL", "UNANSWERABLE"}]
         timed = [row["elapsed_seconds"] for row in rows if row["elapsed_seconds"] is not None]
-        wall_sum = measurement.number(sum(timed), "summed trial wall seconds") if timed else None
+        elapsed_sum = measurement.number(sum(timed), "summed trial elapsed seconds") if timed else None
+        sleep_inclusive = sum(
+            row.get("suspend_inclusive") is True and row["elapsed_seconds"] is not None
+            for row in rows)
         population = group["population"]
         label = f"{ordinal}: " + " / ".join(
             str(population[field]) if population[field] is not None else "unknown"
@@ -806,10 +813,10 @@ def markdown(report: dict) -> str:
             f"{group['first_attempt_passes']} / {group['valid_first_attempts']} / {group['first_attempts']}",
             f"{sum(row['behavioral_verdict'] == 'PASS' for row in judged)} / {len(judged)} / {len(first)}",
             f"{cell(cost['credits'])} / {cell(cost['observed_credits'])}",
-            wall_sum, f"{len(timed)} / {len(rows)}",
+            elapsed_sum, f"{len(timed)} / {len(rows)}", f"{sleep_inclusive} / {len(rows)}",
         ))) + " |")
     lines += ["",
-             "| Attempt | Treatment | Result | Behavioral | Quality | Wall seconds | "
+             "| Attempt | Treatment | Result | Behavioral | Quality | Observed elapsed seconds | "
              "Candidate credits | Evaluator credits | Intervention | Compatibility |",
              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for row in report["attempts"]:

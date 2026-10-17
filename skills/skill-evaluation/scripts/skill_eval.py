@@ -2125,11 +2125,15 @@ def run_case(
         report = run_root / "REPORT.md"
         if report.is_file():
             timing = read_json(run_root / "timing.json")
+            sleep_coverage = measurement.timing_sleep_coverage(timing)
+            coverage_label = {True: "yes", False: "no", None: "unknown"}[sleep_coverage]
             total = summary.get("total", {})
             with report.open("a", encoding="utf-8") as stream:
                 stream.write(
                     "\n## Measurement\n\n"
-                    f"- Total attempt wall time, including cleanup: {timing['elapsed_seconds']:.3f} seconds\n"
+                    f"- Observed attempt elapsed, including cleanup: {timing['elapsed_seconds']:.3f} seconds\n"
+                    f"- Sleep-inclusive timing: {coverage_label}; "
+                    f"clock: {timing.get('clock_implementation', 'unknown')}\n"
                     f"- Exact total credits: {total.get('credits')}; "
                     f"observed subtotal: {total.get('observed_credits')}\n"
                     f"- Measurement errors: {summary.get('error') or len(summary.get('errors', []))}\n"

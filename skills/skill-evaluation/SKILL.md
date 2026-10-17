@@ -438,8 +438,10 @@ preallocates both possible session UUIDs. Missing, malformed, duplicate,
 wrong-model, or undeclared session evidence remains incomplete and cannot
 produce exact candidate credits.
 
-Every attempt records owned usage observations and full wall time, including
-failed invocations, judgments and cleanup. Missing credits remain unknown.
+Every attempt records owned usage observations and elapsed timing, including
+failed invocations, judgments and cleanup. Clock implementation and sleep
+coverage distinguish observed elapsed from verified sleep-inclusive timing.
+Missing credits or full-wall coverage remain unknown.
 For repository tasks, `--quality-review` adds paid, independent source-only
 shipping assessments without changing correctness or retry policy.
 
