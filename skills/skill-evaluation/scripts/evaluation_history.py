@@ -783,7 +783,9 @@ def markdown(report: dict) -> str:
              "reported passes / judged / requested originals, not release qualification. "
              "AI credits are exact / observed totals. Spending and known trial-wall sums include "
              "retries, failures and invalid attempts; the sum is not parallel campaign elapsed time "
-             "or billed runner time. Compare only matched populations; numbered details follow.", "",
+             "or billed runner time. Labels show case / treatment / model / case revision / "
+             "maximum attempts. Compare only matched populations; complete identities follow "
+             "in the numbered details.", "",
              "| Population | First outcomes | Behavioral originals | AI credits | "
              "Known trial-wall sum (s) | Timed attempts |",
              "| --- | --- | --- | --- | --- | --- |"]
@@ -796,7 +798,7 @@ def markdown(report: dict) -> str:
         population = group["population"]
         label = f"{ordinal}: " + " / ".join(
             str(population[field]) if population[field] is not None else "unknown"
-            for field in ("case_id", "treatment_id", "model")
+            for field in ("case_id", "treatment_id", "model", "case_revision", "max_attempts")
         )
         cost = group["total_spend"]
         lines.append("| " + " | ".join(map(cell, (

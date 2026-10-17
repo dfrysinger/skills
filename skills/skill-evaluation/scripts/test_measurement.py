@@ -1514,7 +1514,7 @@ class HistoryTests(unittest.TestCase):
         text = evaluation_history.markdown(report)
         self.assertLess(text.index("## Population scorecard"), text.index("| Attempt |"))
         self.assertIn(
-            "| 1: example / legacy-skill / gpt-example | "
+            "| 1: example / legacy-skill / gpt-example / fixed / 2 | "
             "1 / 2 / 3 | 0 / 2 / 3 | 10.0 / 10.0 | 40 | 3 / 4 |",
             text,
         )
@@ -1523,6 +1523,30 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("runs/retry-2/example", text)
         self.assertIn("runs/invalid-1/example", text)
         self.assertEqual(json.dumps(report, sort_keys=True), before)
+
+    def test_markdown_scorecard_labels_distinguish_revisions_and_attempt_limits(self):
+        self.run_fixture("original", "PASS", 1)
+        other = self.run_fixture("other-revision", "PASS", 1)
+        execution = skill_eval.read_json(other / "execution-result.json")
+        execution["case_revision"] = "other"
+        skill_eval.write_json(other / "execution-result.json", execution)
+        self.run_fixture("retryable", "PASS", 1, owner={
+            "suite_path": "suite-runs/retryable", "case_id": "example",
+            "attempt": 1, "max_attempts": 2,
+        })
+        report = evaluation_history.history(self.root)
+        text = evaluation_history.markdown(report)
+        labels = {
+            line.split("|")[1].strip().split(": ", 1)[1]
+            for line in text.splitlines()
+            if line.startswith(("| 1:", "| 2:", "| 3:"))
+        }
+        self.assertEqual(len(report["populations"]), 3)
+        self.assertEqual(labels, {
+            "example / legacy-skill / gpt-example / fixed / 1",
+            "example / legacy-skill / gpt-example / other / 1",
+            "example / legacy-skill / gpt-example / fixed / 2",
+        })
 
     def test_markdown_scorecard_preserves_unknown_wall_time_and_partial_credits(self):
         self.run_fixture("legacy", "FAIL", old=True)
