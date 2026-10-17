@@ -241,7 +241,9 @@ def snapshot(view: dict) -> dict:
         text(record.get("source_reference"), "work.source_reference")
         text(record.get("category"), "work.category")
         text(record.get("purpose"), "work.purpose")
-        require(record.get("category") in CATEGORIES, "invalid work category")
+        require(record.get("category") in CATEGORIES,
+                f"invalid work category for {identity!r}: {record['category']!r}; "
+                f"expected one of: {', '.join(sorted(CATEGORIES))}")
         require(record.get("inclusion") in ("leaf", "aggregate"), "invalid work inclusion")
         require(record.get("purpose") in purposes, "invalid work purpose")
         seconds = number(record.get("seconds"), "work.seconds")

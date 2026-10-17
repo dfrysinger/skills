@@ -116,6 +116,18 @@ class EfficiencyCLITests(unittest.TestCase):
         self.assertFalse(report["reconciliation_ready"])
         self.assertIn("overhead_work_per_decision", report["missing_decisive_measurement"])
 
+    def test_invalid_work_category_names_record_and_choices(self):
+        current = view()
+        current["work"][2]["category"] = "result_consumption"
+        report = self.invoke(current)
+        self.assertEqual(report["exit_code"], 1)
+        self.assertEqual(report["state"], "ERROR")
+        self.assertFalse(report["reconciliation_ready"])
+        self.assertIn("synthetic-execution", report["error"])
+        self.assertIn("result_consumption", report["error"])
+        for category in ("coordination", "execution", "infrastructure", "reporting"):
+            self.assertIn(category, report["error"])
+
     def test_malformed_json_numeric_policy_and_id_refusals(self):
         for raw in ('{"schema_version":1,"schema_version":1}', "{", '{"value":NaN}',
                     '{"value":Infinity}'):

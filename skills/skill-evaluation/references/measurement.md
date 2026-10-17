@@ -208,6 +208,9 @@ and point to aggregate records. Only leaves are charged. Distinct owners'
 overlapping work is work, not elapsed wall time. Include unsuccessful audit,
 implementation, review, measurement and retry investment once in the declared
 scope; missing investment is unknown, not free.
+An unsupported work category returns an error naming the work record, rejected
+value and supported categories. Correct the projection; the auditor never
+reclassifies work automatically.
 Ordinary per-run preparation and correspondence checks are recurring work,
 even when they create a fresh metadata or proof root. Charge repair investment
 separately rather than hiding repeated preparation in that category.
