@@ -417,148 +417,295 @@ function liveAttemptRows(items) {
     .join("");
 }
 
-function renderCampaign(data) {
-  const totalSpend = observedTotal(data.populations, "observed_credits");
-  const premium = observedTotal(
-    data.populations,
-    "observed_premium_requests",
-  );
-  const passes = data.attempts.filter(
-    (attempt) => attempt.correctness === "PASS",
+const plural = (count, singular, pluralValue = `${singular}s`) =>
+  `${count} ${count === 1 ? singular : pluralValue}`;
+
+const agrees = (count, singular, pluralValue) =>
+  count === 1 ? singular : pluralValue;
+
+const sentenceCase = (value) => {
+  const words = String(value || "")
+    .replaceAll(/[-_.]+/g, " ")
+    .replaceAll(/\s+/g, " ")
+    .trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : "Untitled task";
+};
+
+const isActive = (item) => ["active", "blocked"].includes(item.state);
+const needsUpdate = (item) => ["stale", "conflicted"].includes(item.state);
+
+function taskView(item, detail) {
+  const sessions = detail?.sessions || [];
+  const attempts = detail?.live_attempts || [];
+  const live = [...sessions, ...attempts];
+  const outcome = detail?.outcome;
+  let state = "waiting";
+  let label = "Not started";
+  if (outcome === "PASS") {
+    state = "passed";
+    label = "Passed";
+  } else if (outcome) {
+    state = "failed";
+    label = outcome === "FAIL" ? "Did not pass" : sentenceCase(outcome);
+  }
+
+  const definingLive =
+    live.find((entry) => entry.state === "conflicted") ||
+    live.find((entry) => entry.state === "blocked") ||
+    live.find((entry) => entry.state === "active") ||
+    live.find((entry) => entry.state === "stale");
+  const activityState = definingLive?.state || null;
+  const activityLabel = {
+    active: "Running",
+    blocked: "Blocked",
+    stale: "Needs update",
+    conflicted: "Conflicted",
+  }[activityState] || null;
+  const progress = detail?.progress;
+  const definingSession = sessions
+    .filter((entry) => entry.state === activityState && entry.summary)
+    .sort((left, right) => left.age_seconds - right.age_seconds)[0];
+  let summary = "No run has reported progress for this task yet.";
+  if (progress?.status === "conflicted") {
+    summary = "Progress records conflict and need review.";
+  } else if (definingSession?.summary) {
+    summary = definingSession.summary;
+  } else if (progress?.status === "available") {
+    summary = progress.summary;
+  } else if (state === "passed") {
+    summary = "This task has a passing evaluator result.";
+  } else if (state === "failed") {
+    summary = "The latest evaluator result did not pass.";
+  }
+  return {
+    caseId: item.case_id,
+    title: sentenceCase(item.case_id),
+    targetSkill: item.target_skill,
+    state,
+    label,
+    activityState,
+    activityLabel,
+    summary,
+  };
+}
+
+function renderRunCards(data, taskViews) {
+  if (data.availability.live_sessions !== "available") {
+    return `
+      <section class="simple-section">
+        <h2>Running now</h2>
+        <p class="quiet-message">Live run status is not available for this campaign.</p>
+      </section>`;
+  }
+  const activeSessions = data.sessions.filter(isActive);
+  const activeAttempts = data.live_attempts.filter(isActive);
+  const staleCount = [...data.sessions, ...data.live_attempts].filter(
+    needsUpdate,
   ).length;
+  if (!activeSessions.length && !activeAttempts.length) {
+    return `
+      <section class="simple-section">
+        <h2>Running now</h2>
+        <p class="quiet-message">Nothing is running right now.${staleCount ? ` ${escapeHtml(plural(staleCount, "previous run"))} ${escapeHtml(agrees(staleCount, "needs", "need"))} an update.` : ""}</p>
+      </section>`;
+  }
+  const tasks = new Map(taskViews.map((item) => [item.caseId, item]));
+  const cards = [
+    ...activeSessions.map((session) => ({
+      state: session.state,
+      caseId: session.case_id,
+      summary: session.summary,
+      ageSeconds: session.age_seconds,
+      href: `/campaign/${escapeHtml(data.campaign.campaign_id)}/session/${escapeHtml(session.session_id)}#cap=${encodeURIComponent(capability)}`,
+    })),
+    ...activeAttempts.map((attempt) => ({
+      state: attempt.state,
+      caseId: attempt.case_id,
+      summary: null,
+      ageSeconds: null,
+      href: `/campaign/${escapeHtml(data.campaign.campaign_id)}/task/${escapeHtml(attempt.case_id)}#cap=${encodeURIComponent(capability)}`,
+    })),
+  ];
+  return `
+    <section class="simple-section">
+      <div class="simple-section-heading">
+        <h2>Running now</h2>
+        <span>${escapeHtml(plural(cards.length, "run"))}</span>
+      </div>
+      <div class="run-list">
+        ${cards
+          .map((run) => {
+            const task = tasks.get(run.caseId);
+            const goal =
+              run.summary ||
+              (task
+                ? `Test whether the current skill can complete ${task.title.toLowerCase()}.`
+                : "Continue the current evaluation work.");
+            return `
+              <a class="run-card" href="${run.href}">
+                <div>
+                  <span class="plain-status status-${escapeHtml(run.state)}">${escapeHtml(sentenceCase(run.state))}</span>
+                  <h3>${escapeHtml(task?.title || sentenceCase(run.caseId || "Unassigned work"))}</h3>
+                  <p>${escapeHtml(goal)}</p>
+                </div>
+                ${run.ageSeconds === null ? "" : `<span class="run-age">Updated ${escapeHtml(formatNumber(run.ageSeconds, 0))}s ago</span>`}
+              </a>`;
+          })
+          .join("")}
+      </div>
+    </section>`;
+}
+
+function renderSimpleExperiments(data) {
+  const experiments = data.experiments;
+  if (!experiments || experiments.status !== "available") {
+    return "";
+  }
+  if (!experiments.items.length) {
+    return experiments.attention.length
+      ? `<section class="simple-section quiet-warning"><h2>Experiment records need attention</h2><p>${escapeHtml(experiments.attention.map((item) => item.summary).join(" "))}</p></section>`
+      : "";
+  }
+  return `
+    <section class="simple-section">
+      <h2>Experiments</h2>
+      <div class="experiment-list-simple">
+        ${experiments.items
+          .map(
+            (experiment) => `
+              <article>
+                <div class="simple-section-heading">
+                  <h3>${escapeHtml(experiment.title)}</h3>
+                  <span>${escapeHtml(selectionLabel(experiment.selection))}</span>
+                </div>
+                <p>${escapeHtml(experiment.summary)}</p>
+                <div class="experiment-goals">
+                  ${experiment.treatments
+                    .map(
+                      (treatment) => `
+                        <div>
+                          <strong>${escapeHtml(sentenceCase(treatment.role || treatment.treatment_id))}</strong>
+                          <span>${escapeHtml(treatment.hypothesis)}</span>
+                          <small>${escapeHtml(`${treatment.terminal_repetitions} of ${treatment.planned_repetitions} runs complete; ${treatment.outcomes.PASS} passed, ${treatment.outcomes.FAIL} did not pass`)}</small>
+                        </div>`,
+                    )
+                    .join("")}
+                </div>
+              </article>`,
+          )
+          .join("")}
+      </div>
+      ${
+        experiments.attention.length
+          ? `<p class="quiet-warning">${escapeHtml(plural(experiments.attention.length, "experiment issue"))} need review.</p>`
+          : ""
+      }
+    </section>`;
+}
+
+function renderCampaign(data) {
+  if (data.campaign.availability !== "available") {
+    app.innerHTML = `
+      <section class="page-heading simple-heading">
+        <div>
+          <h1>${escapeHtml(data.campaign.corpus_name)}</h1>
+          <p>This campaign cannot be read right now.</p>
+        </div>
+        <a href="/#cap=${encodeURIComponent(capability)}">All campaigns</a>
+      </section>
+      <section class="error-state">
+        <h2>Campaign data unavailable</h2>
+        <p>${escapeHtml(sentenceCase(data.campaign.unavailable_reason || "The registered corpus could not be read"))}.</p>
+      </section>`;
+    return;
+  }
+  const totalSpend = observedTotal(data.populations, "observed_credits");
   const details = new Map(
     data.task_details.map((item) => [item.case_id, item]),
   );
+  const tasks = data.cases.map((item) =>
+    taskView(item, details.get(item.case_id)),
+  );
+  const passed = tasks.filter((item) => item.state === "passed").length;
+  const active = tasks.filter((item) =>
+    ["active", "blocked"].includes(item.activityState),
+  ).length;
+  const stale = tasks.filter((item) =>
+    ["stale", "conflicted"].includes(item.activityState),
+  ).length;
+  const needsWork = tasks.length - passed;
+  const skills = data.campaign.target_skills.join(", ");
+  const activeText = [
+    active ? `${plural(active, "task")} currently active.` : "Nothing is running right now.",
+    stale ? `${plural(stale, "task")} ${agrees(stale, "needs", "need")} an update.` : "",
+  ].filter(Boolean).join(" ");
+  const resultText = passed
+    ? `${plural(passed, "task")} passed so far.`
+    : "No tasks have passed yet.";
   app.innerHTML = `
-    <section class="page-heading">
+    <section class="page-heading simple-heading">
       <div>
         <h1>${escapeHtml(data.campaign.corpus_name)}</h1>
-        <p>${escapeHtml(data.campaign.target_skills.join(", ") || "No target skills")} | Completed history grouped by exact observed identity.</p>
+        <p>Testing <strong>${escapeHtml(skills || "the current skill set")}</strong> across ${escapeHtml(plural(tasks.length, "task"))}.</p>
       </div>
       <a href="/#cap=${encodeURIComponent(capability)}">All campaigns</a>
     </section>
-    <section class="metrics">
-      ${metric("Corpus tasks", formatNumber(data.cases.length, 0), "Every indexed case")}
-      ${metric("Completed attempts", formatNumber(data.attempts.length, 0), `${passes} executable passes`)}
-      ${metric("Active sessions", formatNumber(data.sessions.filter((item) => ["active", "blocked"].includes(item.state)).length, 0), `${data.sessions.filter((item) => item.state === "stale").length} stale`)}
-      ${metric("Active attempts", formatNumber(data.live_attempts.filter((item) => item.state === "active").length, 0), "Live events never upgrade results")}
-    </section>
-    <section class="metrics secondary-metrics">
-      ${metric("Observed credits", formatNumber(totalSpend.value, 4), totalSpend.value === null ? observedDetail(totalSpend, "credit") : `${formatNumber(totalSpend.value, 4)} cents by user convention | ${observedDetail(totalSpend, "credit")}`)}
-      ${metric("Premium requests", formatNumber(premium.value, 4), `Separate evaluator-native unit | ${observedDetail(premium, "premium request")}`)}
-    </section>
-    ${renderLineage(data)}
-    ${renderCampaignChange(data)}
-    ${renderAttention(data)}
-    ${renderExperiments(data)}
-    <section class="panel">
-      <div class="panel-header">
-        <div><h2>Local sessions</h2><p>Session-owned heartbeats and assignments; stale is never completed.</p></div>
+    <section class="campaign-brief">
+      <div>
+        <span class="brief-label">Goal</span>
+        <h2>Get a passing evaluator result for every task.</h2>
+        <p>Each task checks a real behavior. A task counts as passed only after the evaluator records a passing result.</p>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Session</th><th>State</th><th>Task</th><th>Skill identity</th><th>Current work</th><th>Freshness</th><th>Authority</th></tr></thead>
-          <tbody>${liveSessionRows(data) || '<tr><td colspan="7">Live session registration unavailable or not started.</td></tr>'}</tbody>
-        </table>
+      <div class="status-sentence">
+        <strong>${escapeHtml(resultText)}</strong>
+        <span>${escapeHtml(activeText)} ${escapeHtml(plural(needsWork, "task"))} still ${escapeHtml(agrees(needsWork, "needs", "need"))} a passing result.</span>
       </div>
     </section>
-    <section class="panel">
-      <div class="panel-header">
-        <div><h2>Local attempts</h2><p>Immutable artifacts supersede matching live attempts.</p></div>
+    <section class="simple-counts" aria-label="Campaign status">
+      <div><strong>${escapeHtml(passed)}</strong><span>Passed</span></div>
+      <div><strong>${escapeHtml(active)}</strong><span>Active or blocked</span></div>
+      ${stale ? `<div><strong>${escapeHtml(stale)}</strong><span>Need an update</span></div>` : ""}
+      <div><strong>${escapeHtml(needsWork)}</strong><span>Still need to pass</span></div>
+      ${
+        totalSpend.value === null
+          ? ""
+          : `<div><strong>${escapeHtml(formatNumber(totalSpend.value, 4))}</strong><span>Observed credits, shown as cents${totalSpend.known === totalSpend.total ? "" : `; partial ${totalSpend.known} of ${totalSpend.total}`}</span></div>`
+      }
+    </section>
+    ${renderRunCards(data, tasks)}
+    <section class="simple-section">
+      <div class="simple-section-heading">
+        <div>
+          <h2>What is being tested</h2>
+          <p>${escapeHtml(plural(tasks.length, "task"))} for ${escapeHtml(skills || "the current skill set")}. Open a task for its latest evidence.</p>
+        </div>
+        <span>${escapeHtml(`${passed} passed`)}</span>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Task</th><th>State</th><th>Model</th><th>Effort</th><th>Arm</th><th>Treatment</th><th>Skill</th><th>Location</th><th>Run</th><th>Authority</th></tr></thead>
-          <tbody>${liveAttemptRows(data.live_attempts) || '<tr><td colspan="10">No local attempt events yet.</td></tr>'}</tbody>
-        </table>
+      <div class="task-list-simple">
+        ${tasks
+          .sort((left, right) => {
+            const order = { blocked: 0, running: 1, stale: 2, failed: 3, waiting: 4, passed: 5 };
+            return order[left.state] - order[right.state] || left.title.localeCompare(right.title);
+          })
+          .map(
+            (task) => `
+              <a href="/campaign/${escapeHtml(data.campaign.campaign_id)}/task/${escapeHtml(task.caseId)}#cap=${encodeURIComponent(capability)}">
+                <span class="task-statuses">
+                  <span class="plain-status status-${escapeHtml(task.state)}">${escapeHtml(task.label)}</span>
+                  ${task.activityLabel ? `<span class="activity-status status-${escapeHtml(task.activityState)}">${escapeHtml(task.activityLabel)}</span>` : ""}
+                </span>
+                <div>
+                  <h3>${escapeHtml(task.title)}</h3>
+                  <p>${escapeHtml(task.summary)}</p>
+                </div>
+                <span class="task-skill">${escapeHtml(task.targetSkill)}</span>
+              </a>`,
+          )
+          .join("")}
       </div>
     </section>
-    <section class="panel">
-      <div class="panel-header">
-        <div><h2>Task status</h2><p>Outcomes stay distinct. Unknown and not-run states are never zero.</p></div>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Task</th><th>Skill</th><th>Type</th><th>Outcome</th><th>Progress</th><th>Authority</th></tr></thead>
-          <tbody>
-            ${data.cases
-              .map((item) => {
-                const progress = details.get(item.case_id)?.progress;
-                const progressLabel =
-                  progress?.status === "available"
-                    ? `${progress.frontier} | ${progress.movement}`
-                    : progress?.status || "unavailable";
-                return `
-                  <tr>
-                    <td><a class="task-link" href="/campaign/${escapeHtml(data.campaign.campaign_id)}/task/${escapeHtml(item.case_id)}#cap=${encodeURIComponent(capability)}"><strong>${escapeHtml(item.case_id)}</strong></a></td>
-                    <td>${escapeHtml(item.target_skill)}</td>
-                    <td>${escapeHtml(item.case_type)}</td>
-                    <td>${escapeHtml(outcomeSummary(item.outcomes))}</td>
-                    <td>${escapeHtml(progressLabel)}</td>
-                    <td><span class="identity">${escapeHtml(item.source.id)}</span></td>
-                  </tr>`;
-              })
-              .join("")}
-          </tbody>
-        </table>
-      </div>
-    </section>
-    <section class="panel">
-      <div class="panel-header">
-        <div><h2>Matched populations</h2><p>Metrics compare only complete identity tuples.</p></div>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Case</th><th>Skill identity</th><th>Model</th><th>Pass at 1</th><th>Coverage</th><th>Total spend</th><th>Premium</th></tr></thead>
-          <tbody>
-            ${data.populations
-              .map(
-                (item) => `
-                  <tr>
-                    <td>${escapeHtml(item.population.case_id)}</td>
-                    <td><span class="identity mono">${escapeHtml(item.population.skill_identity || "Unknown")}</span></td>
-                    <td>${escapeHtml(item.population.model || "Unknown")}</td>
-                    <td class="mono">${escapeHtml(formatNumber(item.pass_at_1))}</td>
-                    <td class="mono">${escapeHtml(formatNumber(item.execution_coverage))}</td>
-                    <td><strong>${escapeHtml(costLabel(item.total_spend))}</strong><span class="identity">${escapeHtml(centsLabel(item.total_spend))}</span></td>
-                    <td class="mono">${escapeHtml(formatNumber(item.total_spend.observed_premium_requests, 4))}</td>
-                  </tr>`,
-              )
-              .join("") || '<tr><td colspan="7">No completed populations yet.</td></tr>'}
-          </tbody>
-        </table>
-      </div>
-    </section>
-    <section class="panel">
-      <div class="panel-header">
-        <div><h2>Attempts</h2><p>Immutable artifacts supersede all future live metadata.</p></div>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Source</th><th>Result</th><th>Behavioral</th><th>Attempt</th><th>Timing</th><th>Accounting</th></tr></thead>
-          <tbody>
-            ${data.attempts
-              .map(
-                (item) => `
-                  <tr>
-                    <td><span class="identity">${escapeHtml(item.source.id)}</span></td>
-                    <td class="outcome-${escapeHtml(item.correctness)}"><strong>${escapeHtml(item.correctness)}</strong></td>
-                    <td>${escapeHtml(item.behavioral_verdict || "Unavailable")}</td>
-                    <td class="mono">${escapeHtml(item.attempt)}</td>
-                    <td class="mono">${escapeHtml(formatNumber(item.elapsed_seconds))}</td>
-                    <td>${escapeHtml(costLabel(item.total_spend))}</td>
-                  </tr>`,
-              )
-              .join("") || '<tr><td colspan="6">No completed attempts yet.</td></tr>'}
-          </tbody>
-        </table>
-      </div>
-    </section>
-    <section class="panel">
-      <div class="panel-header"><div><h2>Availability</h2><p>Unsupported surfaces are explicit.</p></div></div>
-      <div class="table-wrap"><table><tbody>${availabilityRows(data.availability)}</tbody></table></div>
-    </section>
-    <section class="notice"><strong>Accounting note:</strong> ${escapeHtml(data.interpretation)}</section>`;
+    ${renderSimpleExperiments(data)}
+    `;
 }
 
 function progressBadge(progress) {

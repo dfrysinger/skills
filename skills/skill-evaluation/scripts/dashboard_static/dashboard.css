@@ -802,6 +802,330 @@ tbody tr:hover {
   margin-top: 12px;
 }
 
+.simple-heading {
+  margin-bottom: 24px;
+}
+
+.simple-heading p strong {
+  color: var(--text);
+}
+
+.campaign-brief {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.55fr);
+  gap: 48px;
+  align-items: end;
+  padding: clamp(24px, 4vw, 40px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.brief-label {
+  display: block;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.campaign-brief h2 {
+  max-width: 760px;
+  margin: 0;
+  font-size: clamp(24px, 3vw, 36px);
+  letter-spacing: -0.035em;
+  line-height: 1.12;
+}
+
+.campaign-brief p,
+.status-sentence span {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.campaign-brief p {
+  max-width: 68ch;
+  margin: 14px 0 0;
+}
+
+.status-sentence strong,
+.status-sentence span {
+  display: block;
+}
+
+.status-sentence strong {
+  font-size: 18px;
+}
+
+.status-sentence span {
+  margin-top: 7px;
+  font-size: 13px;
+}
+
+.simple-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px;
+  margin: 18px 0 42px;
+  padding: 0 4px;
+}
+
+.simple-counts div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.simple-counts strong {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+.simple-counts span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.simple-section {
+  margin-top: 42px;
+}
+
+.simple-section > h2,
+.simple-section-heading h2 {
+  margin: 0;
+  font-size: 21px;
+  letter-spacing: -0.02em;
+}
+
+.simple-section-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 14px;
+}
+
+.simple-section-heading p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.simple-section-heading > span {
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.quiet-message {
+  margin: 12px 0 0;
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.run-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.run-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 32px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.run-card:hover,
+.task-list-simple a:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 35%, var(--surface));
+}
+
+.run-card:focus-visible,
+.task-list-simple a:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+}
+
+.run-card h3,
+.task-list-simple h3,
+.experiment-list-simple h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.run-card h3 {
+  margin-top: 10px;
+}
+
+.run-card p,
+.task-list-simple p,
+.experiment-list-simple p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.run-age,
+.task-skill {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.plain-status {
+  display: inline-flex;
+  width: fit-content;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.status-passed {
+  color: var(--success);
+}
+
+.status-active,
+.status-running {
+  color: var(--accent);
+}
+
+.status-blocked,
+.status-stale,
+.status-failed,
+.status-conflicted {
+  color: var(--warning);
+}
+
+.task-statuses {
+  display: grid;
+  gap: 5px;
+}
+
+.activity-status {
+  width: fit-content;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.task-list-simple {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.task-list-simple a {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr) minmax(100px, auto);
+  gap: 20px;
+  align-items: center;
+  min-height: 80px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.task-list-simple a:last-child {
+  border-bottom: 0;
+}
+
+.experiment-list-simple {
+  display: grid;
+  gap: 12px;
+}
+
+.experiment-list-simple > article {
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.experiment-list-simple .simple-section-heading {
+  align-items: center;
+  margin-bottom: 0;
+}
+
+.experiment-goals {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.experiment-goals > div {
+  padding: 16px;
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--surface-muted);
+}
+
+.experiment-goals strong,
+.experiment-goals span,
+.experiment-goals small {
+  display: block;
+}
+
+.quiet-warning {
+  margin-top: 14px;
+  color: var(--warning);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.simple-section.quiet-warning {
+  padding: 20px;
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, var(--border));
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.simple-section.quiet-warning p {
+  margin: 8px 0 0;
+}
+
+.experiment-goals span {
+  margin-top: 6px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.experiment-goals small {
+  margin-top: 10px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.attention-summary {
+  padding: 20px;
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, var(--border));
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.attention-summary p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
 .campaign-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -905,7 +1229,8 @@ tbody tr:hover {
 
   .attention-list,
   .progress-layout,
-  .experiment-attention-list {
+  .experiment-attention-list,
+  .campaign-brief {
     grid-template-columns: 1fr;
   }
 
@@ -955,6 +1280,38 @@ tbody tr:hover {
     text-align: left;
   }
 
+  .simple-section-heading,
+  .run-card {
+    align-items: flex-start;
+  }
+
+  .simple-section-heading {
+    display: grid;
+  }
+
+  .simple-section-heading > span {
+    text-align: left;
+  }
+
+  .run-card {
+    display: grid;
+    gap: 12px;
+  }
+
+  .task-list-simple a,
+  .experiment-goals {
+    grid-template-columns: 1fr;
+  }
+
+  .task-list-simple a {
+    gap: 8px;
+  }
+
+  .task-skill,
+  .run-age {
+    white-space: normal;
+  }
+
   .attention-item {
     grid-template-columns: 1fr;
     gap: 6px;
@@ -972,6 +1329,8 @@ tbody tr:hover {
 
 @media (prefers-reduced-motion: no-preference) {
   .campaign-link,
+  .run-card,
+  .task-list-simple a,
   tbody tr {
     transition:
       border-color 120ms ease,
