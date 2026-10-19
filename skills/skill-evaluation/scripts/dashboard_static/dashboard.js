@@ -420,6 +420,9 @@ function liveAttemptRows(items) {
 const plural = (count, singular, pluralValue = `${singular}s`) =>
   `${count} ${count === 1 ? singular : pluralValue}`;
 
+const agrees = (count, singular, pluralValue) =>
+  count === 1 ? singular : pluralValue;
+
 const sentenceCase = (value) => {
   const words = String(value || "")
     .replaceAll(/[-_.]+/g, " ")
@@ -428,73 +431,87 @@ const sentenceCase = (value) => {
   return words ? words[0].toUpperCase() + words.slice(1) : "Untitled task";
 };
 
-function taskView(data, item, detail) {
+const isActive = (item) => ["active", "blocked"].includes(item.state);
+const needsUpdate = (item) => ["stale", "conflicted"].includes(item.state);
+
+function taskView(item, detail) {
   const sessions = detail?.sessions || [];
   const attempts = detail?.live_attempts || [];
   const live = [...sessions, ...attempts];
-  const blocked = live.find((entry) => entry.state === "blocked");
-  const active = live.find((entry) => entry.state === "active");
-  const stale = live.find((entry) => entry.state === "stale");
   const outcome = detail?.outcome;
   let state = "waiting";
   let label = "Not started";
-  if (blocked) {
-    state = "blocked";
-    label = "Blocked";
-  } else if (active) {
-    state = "running";
-    label = "Running";
-  } else if (stale) {
-    state = "stale";
-    label = "Needs update";
-  } else if (outcome === "PASS") {
+  if (outcome === "PASS") {
     state = "passed";
     label = "Passed";
   } else if (outcome) {
     state = "failed";
     label = outcome === "FAIL" ? "Did not pass" : sentenceCase(outcome);
   }
+
+  const definingLive =
+    live.find((entry) => entry.state === "conflicted") ||
+    live.find((entry) => entry.state === "blocked") ||
+    live.find((entry) => entry.state === "active") ||
+    live.find((entry) => entry.state === "stale");
+  const activityState = definingLive?.state || null;
+  const activityLabel = {
+    active: "Running",
+    blocked: "Blocked",
+    stale: "Needs update",
+    conflicted: "Conflicted",
+  }[activityState] || null;
   const progress = detail?.progress;
-  const liveSummary = sessions.find((entry) => entry.summary)?.summary;
-  const summary =
-    liveSummary ||
-    (progress?.status === "available" ? progress.summary : null) ||
-    (state === "passed"
-      ? "This task has a passing evaluator result."
-      : state === "failed"
-        ? "The latest evaluator result did not pass."
-        : "No run has reported progress for this task yet.");
+  const definingSession = sessions
+    .filter((entry) => entry.state === activityState && entry.summary)
+    .sort((left, right) => left.age_seconds - right.age_seconds)[0];
+  let summary = "No run has reported progress for this task yet.";
+  if (progress?.status === "conflicted") {
+    summary = "Progress records conflict and need review.";
+  } else if (definingSession?.summary) {
+    summary = definingSession.summary;
+  } else if (progress?.status === "available") {
+    summary = progress.summary;
+  } else if (state === "passed") {
+    summary = "This task has a passing evaluator result.";
+  } else if (state === "failed") {
+    summary = "The latest evaluator result did not pass.";
+  }
   return {
     caseId: item.case_id,
     title: sentenceCase(item.case_id),
     targetSkill: item.target_skill,
     state,
     label,
+    activityState,
+    activityLabel,
     summary,
   };
 }
 
 function renderRunCards(data, taskViews) {
-  const activeSessions = data.sessions.filter((item) =>
-    ["active", "blocked"].includes(item.state),
-  );
-  const activeAttempts = data.live_attempts.filter((item) =>
-    ["active", "blocked"].includes(item.state),
-  );
+  if (data.availability.live_sessions !== "available") {
+    return `
+      <section class="simple-section">
+        <h2>Running now</h2>
+        <p class="quiet-message">Live run status is not available for this campaign.</p>
+      </section>`;
+  }
+  const activeSessions = data.sessions.filter(isActive);
+  const activeAttempts = data.live_attempts.filter(isActive);
   const staleCount = [...data.sessions, ...data.live_attempts].filter(
-    (item) => item.state === "stale",
+    needsUpdate,
   ).length;
   if (!activeSessions.length && !activeAttempts.length) {
     return `
       <section class="simple-section">
         <h2>Running now</h2>
-        <p class="quiet-message">Nothing is running right now.${staleCount ? ` ${escapeHtml(plural(staleCount, "previous run"))} need an update.` : ""}</p>
+        <p class="quiet-message">Nothing is running right now.${staleCount ? ` ${escapeHtml(plural(staleCount, "previous run"))} ${escapeHtml(agrees(staleCount, "needs", "need"))} an update.` : ""}</p>
       </section>`;
   }
   const tasks = new Map(taskViews.map((item) => [item.caseId, item]));
   const cards = [
     ...activeSessions.map((session) => ({
-      id: session.session_id,
       state: session.state,
       caseId: session.case_id,
       summary: session.summary,
@@ -502,7 +519,6 @@ function renderRunCards(data, taskViews) {
       href: `/campaign/${escapeHtml(data.campaign.campaign_id)}/session/${escapeHtml(session.session_id)}#cap=${encodeURIComponent(capability)}`,
     })),
     ...activeAttempts.map((attempt) => ({
-      id: attempt.attempt_id || attempt.treatment_identity,
       state: attempt.state,
       caseId: attempt.case_id,
       summary: null,
@@ -542,8 +558,13 @@ function renderRunCards(data, taskViews) {
 
 function renderSimpleExperiments(data) {
   const experiments = data.experiments;
-  if (!experiments || experiments.status !== "available" || !experiments.items.length) {
+  if (!experiments || experiments.status !== "available") {
     return "";
+  }
+  if (!experiments.items.length) {
+    return experiments.attention.length
+      ? `<section class="simple-section quiet-warning"><h2>Experiment records need attention</h2><p>${escapeHtml(experiments.attention.map((item) => item.summary).join(" "))}</p></section>`
+      : "";
   }
   return `
     <section class="simple-section">
@@ -574,27 +595,49 @@ function renderSimpleExperiments(data) {
           )
           .join("")}
       </div>
+      ${
+        experiments.attention.length
+          ? `<p class="quiet-warning">${escapeHtml(plural(experiments.attention.length, "experiment issue"))} need review.</p>`
+          : ""
+      }
     </section>`;
 }
 
 function renderCampaign(data) {
+  if (data.campaign.availability !== "available") {
+    app.innerHTML = `
+      <section class="page-heading simple-heading">
+        <div>
+          <h1>${escapeHtml(data.campaign.corpus_name)}</h1>
+          <p>This campaign cannot be read right now.</p>
+        </div>
+        <a href="/#cap=${encodeURIComponent(capability)}">All campaigns</a>
+      </section>
+      <section class="error-state">
+        <h2>Campaign data unavailable</h2>
+        <p>${escapeHtml(sentenceCase(data.campaign.unavailable_reason || "The registered corpus could not be read"))}.</p>
+      </section>`;
+    return;
+  }
   const totalSpend = observedTotal(data.populations, "observed_credits");
   const details = new Map(
     data.task_details.map((item) => [item.case_id, item]),
   );
   const tasks = data.cases.map((item) =>
-    taskView(data, item, details.get(item.case_id)),
+    taskView(item, details.get(item.case_id)),
   );
   const passed = tasks.filter((item) => item.state === "passed").length;
   const active = tasks.filter((item) =>
-    ["running", "blocked"].includes(item.state),
+    ["active", "blocked"].includes(item.activityState),
   ).length;
-  const stale = tasks.filter((item) => item.state === "stale").length;
+  const stale = tasks.filter((item) =>
+    ["stale", "conflicted"].includes(item.activityState),
+  ).length;
   const needsWork = tasks.length - passed;
   const skills = data.campaign.target_skills.join(", ");
   const activeText = [
     active ? `${plural(active, "task")} currently active.` : "Nothing is running right now.",
-    stale ? `${plural(stale, "task")} need an update.` : "",
+    stale ? `${plural(stale, "task")} ${agrees(stale, "needs", "need")} an update.` : "",
   ].filter(Boolean).join(" ");
   const resultText = passed
     ? `${plural(passed, "task")} passed so far.`
@@ -610,12 +653,12 @@ function renderCampaign(data) {
     <section class="campaign-brief">
       <div>
         <span class="brief-label">Goal</span>
-        <h2>Get every task passing with the current skill.</h2>
+        <h2>Get a passing evaluator result for every task.</h2>
         <p>Each task checks a real behavior. A task counts as passed only after the evaluator records a passing result.</p>
       </div>
       <div class="status-sentence">
         <strong>${escapeHtml(resultText)}</strong>
-        <span>${escapeHtml(activeText)} ${escapeHtml(plural(needsWork, "task"))} still need a passing result.</span>
+        <span>${escapeHtml(activeText)} ${escapeHtml(plural(needsWork, "task"))} still ${escapeHtml(agrees(needsWork, "needs", "need"))} a passing result.</span>
       </div>
     </section>
     <section class="simple-counts" aria-label="Campaign status">
@@ -626,7 +669,7 @@ function renderCampaign(data) {
       ${
         totalSpend.value === null
           ? ""
-          : `<div><strong>${escapeHtml(formatNumber(totalSpend.value, 2))}¢</strong><span>Observed cost</span></div>`
+          : `<div><strong>${escapeHtml(formatNumber(totalSpend.value, 4))}</strong><span>Observed credits, shown as cents${totalSpend.known === totalSpend.total ? "" : `; partial ${totalSpend.known} of ${totalSpend.total}`}</span></div>`
       }
     </section>
     ${renderRunCards(data, tasks)}
@@ -647,7 +690,10 @@ function renderCampaign(data) {
           .map(
             (task) => `
               <a href="/campaign/${escapeHtml(data.campaign.campaign_id)}/task/${escapeHtml(task.caseId)}#cap=${encodeURIComponent(capability)}">
-                <span class="plain-status status-${escapeHtml(task.state)}">${escapeHtml(task.label)}</span>
+                <span class="task-statuses">
+                  <span class="plain-status status-${escapeHtml(task.state)}">${escapeHtml(task.label)}</span>
+                  ${task.activityLabel ? `<span class="activity-status status-${escapeHtml(task.activityState)}">${escapeHtml(task.activityLabel)}</span>` : ""}
+                </span>
                 <div>
                   <h3>${escapeHtml(task.title)}</h3>
                   <p>${escapeHtml(task.summary)}</p>

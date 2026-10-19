@@ -1395,10 +1395,12 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn(b"non-atomic snapshot", javascript)
         self.assertIn(b"Experiment attempts", javascript)
         self.assertIn(b"Incompatible current workflow records", javascript)
-        self.assertIn(b"Get every task passing with the current skill", javascript)
+        self.assertIn(b"Get a passing evaluator result for every task", javascript)
         self.assertIn(b"What is being tested", javascript)
         self.assertIn(b"Running now", javascript)
         self.assertIn(b"Nothing is running right now", javascript)
+        self.assertIn(b"Live run status is not available", javascript)
+        self.assertIn(b"Campaign data unavailable", javascript)
         self.assertIn(b"/task/", javascript)
         self.assertNotIn(b"SERVER-HIDDEN-MARKER", javascript)
 

@@ -917,7 +917,8 @@ tbody tr:hover {
 .simple-section-heading > span {
   color: var(--muted);
   font-size: 13px;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .quiet-message {
@@ -952,6 +953,12 @@ tbody tr:hover {
 .task-list-simple a:hover {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent-soft) 35%, var(--surface));
+}
+
+.run-card:focus-visible,
+.task-list-simple a:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
 }
 
 .run-card h3,
@@ -989,16 +996,31 @@ tbody tr:hover {
   font-weight: 700;
 }
 
-.status-passed,
+.status-passed {
+  color: var(--success);
+}
+
 .status-active,
 .status-running {
-  color: var(--success);
+  color: var(--accent);
 }
 
 .status-blocked,
 .status-stale,
-.status-failed {
+.status-failed,
+.status-conflicted {
   color: var(--warning);
+}
+
+.task-statuses {
+  display: grid;
+  gap: 5px;
+}
+
+.activity-status {
+  width: fit-content;
+  font-size: 11px;
+  font-weight: 650;
 }
 
 .task-list-simple {
@@ -1058,6 +1080,24 @@ tbody tr:hover {
 .experiment-goals span,
 .experiment-goals small {
   display: block;
+}
+
+.quiet-warning {
+  margin-top: 14px;
+  color: var(--warning);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.simple-section.quiet-warning {
+  padding: 20px;
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, var(--border));
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.simple-section.quiet-warning p {
+  margin: 8px 0 0;
 }
 
 .experiment-goals span {
@@ -1243,6 +1283,14 @@ tbody tr:hover {
   .simple-section-heading,
   .run-card {
     align-items: flex-start;
+  }
+
+  .simple-section-heading {
+    display: grid;
+  }
+
+  .simple-section-heading > span {
+    text-align: left;
   }
 
   .run-card {
