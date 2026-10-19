@@ -1305,7 +1305,7 @@ def run_copilot(
                 previous_error = str(error)
         try:
             completed = subprocess.run(
-                command, env=env, text=True, stdout=subprocess.PIPE,
+                command, env=env, text=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, timeout=timeout_seconds, check=False,
             )
         except subprocess.TimeoutExpired as error:

@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 import uuid
@@ -25,12 +26,54 @@ from skill_eval import (
     load_treatment,
     parse_run,
     run_case,
+    run_copilot,
     run_suite,
     require_treatment_admission,
     treatment_admission_binding,
     validate_judgment,
     verify_case,
 )
+
+
+class CopilotInvocationTests(unittest.TestCase):
+    def test_fresh_and_resumed_prompts_do_not_wait_for_parent_stdin(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            copilot = root / "copilot"
+            copilot.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "print('EOF' if sys.stdin.read() == '' else 'UNEXPECTED INPUT', flush=True)\n"
+            )
+            copilot.chmod(0o755)
+            read_fd, write_fd = os.pipe()
+            original_run = subprocess.run
+
+            def run_with_open_parent_input(command, **kwargs):
+                kwargs.setdefault("stdin", read_fd)
+                return original_run(command, **kwargs)
+
+            try:
+                os.write(write_fd, b"unrelated parent input\n")
+                for resume in (False, True):
+                    with (
+                        self.subTest(resume=resume),
+                        mock.patch("skill_eval.subprocess.run", side_effect=run_with_open_parent_input),
+                        mock.patch("skill_eval.measurement.collect") as collect,
+                    ):
+                        log = root / f"output-{resume}.jsonl"
+                        run_copilot(
+                            copilot=copilot, plugin_dir=root, cwd=root,
+                            prompt="public prompt", model="test-model", effort="high",
+                            log=log, session_id=str(uuid.uuid4()), resume=resume,
+                            home_mode="existing", run_home=root / "unused-home",
+                            timeout_seconds=10, allow_skill=False,
+                        )
+                        self.assertEqual(log.read_text(), "EOF\n")
+                        self.assertEqual(collect.call_args.kwargs["outcome"], "completed")
+            finally:
+                os.close(read_fd)
+                os.close(write_fd)
 
 
 class NativeRunTests(unittest.TestCase):

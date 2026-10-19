@@ -27,6 +27,11 @@ invocations have explicit session UUIDs and roles: `candidate`,
 additive subrole. Direct runs use `candidate`; the bounded Sandcastle runner
 uses `candidate_implementer` and `candidate_reviewer`.
 
+Host prompt invocations close child standard input. The complete prompt is
+passed through `-p`; a fresh or resumed run must not read unrelated parent input
+or wait for an inherited input pipe to close. This does not change tool
+permissions, authentication, timeout handling or invocation-end measurements.
+
 | Artifact | Meaning |
 | --- | --- |
 | `attempt.json`, `run-context.json` | Attempt, suite ordinal and frozen task configuration |
