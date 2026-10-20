@@ -1,93 +1,77 @@
-# Skill Evaluation UI unattended charter
+# Skill Evaluation Project Dashboard unattended charter
 
-Keep building against `design/skill-evaluation-ui.md` in
-`/Users/dfrysinger/.copilot/session-state/6f7726ad-c851-4da9-bd16-ffbd015dd0f1/files/skill-eval-ui-design-worktree`.
-Follow the required process skills below.
+Work from `design/skill-evaluation-ui-project-dashboard.md` in
+`/Users/dfrysinger/.copilot/session-state/6f7726ad-c851-4da9-bd16-ffbd015dd0f1/files/skill-eval-ui-slice4-worktree`.
+Keep the work order's current baton, evidence, review state, slice, candidate
+identity, and proof receipts accurate.
 
-If a reminder arrives during a user-directed edit to the work order, charter,
-or objective, finish and persist the coherent edit before reconciling. Never
-replace newer state with an older persisted version.
+Finish a coherent user-directed edit before processing a reminder. Never
+replace newer plan state with an older persisted copy.
 
-Use `/dfrysinger-skills:development-loop`'s critical-path audit at run start,
+Run `/dfrysinger-skills:development-loop`'s critical-path audit at task start,
 compaction or resumption, candidate movement, every phase boundary, failure,
-ownership handoff, material user direction, and each four-hour charter check:
-rebuild ready work and dependencies, identify the critical path, assign every
-substantial independent ready scope to a separate owner when safe, or execute
-cheap direct work. Name the dependency or exclusive gate for any ready scope
-left unowned. The hourly reminder only keeps current work moving.
+ownership handoff, and material user direction. Rebuild dependencies, name the
+critical path, execute cheap direct work, and give substantial independent
+ready work a separate owner only when ownership boundaries are safe. Record an
+actual dependency or exclusive gate for every ready scope left unowned.
 
-For delegated work, record the stable assignment ID, exact agent ID, scope,
-owned path boundary, workspace, owed evidence, blocker, and integration
-boundary in the plan baton. Read the agent's explicit result before reporting
-its status. File-writing delegates require isolated worktrees. Consume a
-completed handoff before inspecting its worktree, then close that assignment.
-
-Batch coherent fixes before expensive review, browser proof, or CI. Preserve
-one owner for live browser proof. Continue independent ready work during waits.
-If genuinely stuck on a new blocker, use one bounded rubber-duck pass for a
-distinguishing check; do not repeat unchanged brainstorming.
-
-Push reviewed work to an owned branch and pull request. The user explicitly
-directed: `"now splice the plan into the smallest useful deliverable end ti wnd
-oieces and commit and merge them as complete"`. Each delivery slice must be
-usable end to end, committed, pushed, reviewed, and merged before the next slice
-starts. Do not keep an unmerged dependent stack.
+Batch coherent changes before expensive proof. Keep one owner for browser
+proof. Preserve every launched attempt's first outcome. Never change hidden
+criteria, frozen outcomes, grading, authority, or admission rules to make a
+candidate pass.
 
 This is critical systemic work. Preserve:
 
 - decision hierarchy:
-  `design/skill-evaluation-ui-decisions.json`;
+  `design/skill-evaluation-ui-project-decisions.json`;
 - constraint provenance and reframe gate:
-  `design/skill-evaluation-ui.md`;
+  `design/skill-evaluation-ui-project-dashboard.md`;
 - independent challenge:
-  `design/skill-evaluation-ui-constraint-challenge.md`; and
-- evidence packet:
-  `design/skill-evaluation-ui-evidence.json`.
+  `design/skill-evaluation-ui-project-constraint-challenge.md`; and
+- sealed evidence:
+  `design/skill-evaluation-ui-project-evidence.json`.
 
-Current independent challenge state is `CLEAR` for Foundation Slices 1 and 2.
-Dual design review is complete with no remaining finding. The exact runner
-disproves the assumed candidate shell/network access: prose candidates receive
-only `skill,view`, and an audited dashboard-state boundary violation rotates
-the service generation before output admission. The reviewed work order lands
-before Slice 1 begins. Deferred Slices 3 through 6 remain gated on their
-recorded entry conditions. No revisit condition is otherwise open.
+The current reframe status is `CLEAR`. No independent project-dashboard
+challenge or dual design review is complete yet. Run the two-pass
+`constraint-challenge` before dual design review. During implementation, rerun
+it only when `development-loop` reports a material scope, architecture, trust,
+authority, policy, or reframe trigger.
 
-Run `/dfrysinger-skills:constraint-challenge` only when
-`development-loop` reports a material scope, architecture, trust, authority,
-policy, or reframe trigger. Time passing alone does not trigger it. After any
-challenge, compare the exact next action with `permitted_scope` and
-`blocked_scope`.
+The user delegated the remaining design branches with the exact statement:
+`"i need to step away, go with your recommendations for the rest"`. This
+delegation does not relax the hidden-evidence, holdout, result-authority,
+read-only, or least-privilege boundaries.
 
-No user-assigned external worker roster is active. Native reviewers and
-specialists receive stable assignment IDs and exact agent IDs in the baton
-when launched.
+Deliver Slices A, B, and C in order. Each slice must be useful end to end,
+reviewed, installed, and proven before the next begins. Use an owned branch and
+pull request when the repository permits it. Do not keep an unmerged dependent
+stack.
 
 Stay on this course until every item under
-"Definition of Done: Skill Evaluation UI Foundation" is verified. Stop this
-run at that boundary. The deferred requested slices require new focused work
-orders, challenge gates, objectives, and charters.
+`Definition of Done: Skill Evaluation Project Dashboard` is verified.
 
 ## Required process skills
 
-- **Governing:** `/dfrysinger-skills:development-loop` for implementation,
-  proof, review, and landing against the merged work order.
+- **Governing:** `/dfrysinger-skills:design-doc` until the reviewed work order
+  is complete, then `/dfrysinger-skills:development-loop` for implementation,
+  proof, review, and landing.
 - **Execution:** `/dfrysinger-skills:constraint-challenge`,
-  `/dfrysinger-skills:dual-review`, `/dfrysinger-skills:skill-evaluation`, and
-  `/dfrysinger-skills:visual-proof`, only in the phases they own.
+  `/dfrysinger-skills:dual-review`, `/dfrysinger-skills:skill-evaluation`,
+  `/dfrysinger-skills:design-taste-frontend`, and
+  `/dfrysinger-skills:visual-proof` only in their owning phases.
 - **Context:** `/dfrysinger-skills:self-compact` at safe governing-workflow
-  compaction points after the baton is complete. Do not compact because a
-  reminder fired or while live proof is active.
+  compaction points after the baton is complete.
 
 ```yaml
 schedule_registry:
   charter_check:
     kind: charter_check
-    id: 3
+    id: 9
     interval: 4h
     status: live
   progress:
     kind: progress
-    id: 4
+    id: 10
     interval: 1h
     status: live
 ```
