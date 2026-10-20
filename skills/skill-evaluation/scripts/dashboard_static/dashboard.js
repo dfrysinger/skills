@@ -865,7 +865,7 @@ function renderProject(data) {
   const regressed = data.tasks.filter((task) => task.result === "regressed").length;
   const active = data.runs.filter((run) => run.state === "active").length;
   const hasConflicts = Object.values(data.conflicts).some(
-    (items) => items.length,
+    (items) => Array.isArray(items) ? items.length : Boolean(items),
   );
   app.innerHTML = `
     <section class="page-heading simple-heading">
@@ -887,7 +887,7 @@ function renderProject(data) {
     </section>
     ${
       hasConflicts
-        ? '<section class="quiet-warning">Conflicting project declarations are visible and excluded from totals.</section>'
+        ? '<section class="quiet-warning">Conflicting project or ablation evidence is visible and excluded from totals.</section>'
         : ""
     }
     <section class="simple-section">
@@ -908,6 +908,7 @@ function renderProject(data) {
                   <p>${escapeHtml(task.summary)}</p>
                   ${taskProgressSummary(task)}
                   <p class="task-effort-copy">${escapeHtml(taskEffortSummary(task))}</p>
+                  ${renderTaskAblation(task.ablation)}
                 </div>
                 <span class="task-skill">${escapeHtml(`${task.bindings.filter((binding) => binding.qualified).length}/${task.bindings.length} qualified`)}</span>
               </article>`,
@@ -930,6 +931,7 @@ function renderProject(data) {
           </section>`
         : ""
     }
+    ${renderWholeSkillAblation(data.whole_skill_ablation)}
     <section class="simple-section">
       <div class="simple-section-heading">
         <div><h2>Runs</h2><p>Compact local and distributed attempts underneath the task goals they support.</p></div>
@@ -955,6 +957,58 @@ function renderProject(data) {
         ? `<section class="simple-section"><div class="simple-section-heading"><div><h2>Pre-project history</h2><p>Readable legacy attempts excluded from all project totals.</p></div></div><div class="panel-empty">${escapeHtml(plural(data.pre_project_history.length, "legacy attempt"))}</div></section>`
         : ""
     }`;
+}
+
+function snapshotSize(size) {
+  return `${formatNumber(size.bytes, 0)} bytes · ${formatNumber(size.lines, 0)} lines · ${plural(size.files, "file")}`;
+}
+
+function reductionCopy(reduction) {
+  if (!reduction) return "Qualification is still in progress.";
+  const direction = reduction.bytes >= 0 ? "smaller" : "larger";
+  return `${formatNumber(Math.abs(reduction.bytes), 0)} bytes (${formatNumber(Math.abs(reduction.percent), 1)}%) ${direction}`;
+}
+
+function renderTaskAblation(ablation) {
+  if (!ablation) return "";
+  const finalCopy = ablation.final
+    ? `<p><strong>Final qualified:</strong> ${escapeHtml(snapshotSize(ablation.final))} · ${escapeHtml(reductionCopy(ablation.reduction.final))}</p>`
+    : "";
+  const restored = ablation.instruction_changes.restored
+    .map((item) => `<li><strong>${escapeHtml(item.instruction_id)}</strong>: ${escapeHtml(item.reason)}</li>`)
+    .join("");
+  return `
+    <div class="ablation-summary">
+      <span class="brief-label">Delta ablation · ${escapeHtml(sentenceCase(ablation.status))}</span>
+      <p><strong>Passing size:</strong> ${escapeHtml(snapshotSize(ablation.exploratory))}</p>
+      <p><strong>Current candidate:</strong> ${escapeHtml(snapshotSize(ablation.current))} · ${escapeHtml(reductionCopy(ablation.reduction.current))}</p>
+      ${finalCopy}
+      <p><strong>Maintained wins:</strong> ${escapeHtml(`${ablation.maintained_wins.passed} passed · ${ablation.maintained_wins.failed} failed · ${ablation.maintained_wins.unavailable} unavailable`)}</p>
+      <p>${escapeHtml(`${ablation.instruction_changes.removed} removed · ${ablation.instruction_changes.retained} retained · ${ablation.instruction_changes.restored.length} restored`)}</p>
+      ${restored ? `<details><summary>Why rules were restored</summary><ul>${restored}</ul></details>` : ""}
+    </div>`;
+}
+
+function renderWholeSkillAblation(ablation) {
+  if (!ablation) return "";
+  return `
+    <section class="simple-section">
+      <div class="simple-section-heading">
+        <div><h2>Whole-skill ablation</h2><p>Shown only because a neutral, lean, and full comparison was explicitly declared.</p></div>
+        <span>${escapeHtml(sentenceCase(ablation.status))}</span>
+      </div>
+      <div class="task-list-simple">
+        ${ablation.arms.map((arm) => `
+          <article>
+            <span class="plain-status status-${escapeHtml(arm.selection_state === "selected" ? "passed" : arm.maintained_wins.failed ? "failed" : "waiting")}">${escapeHtml(sentenceCase(arm.arm))}</span>
+            <div>
+              <h3>${escapeHtml(snapshotSize(arm.size))}</h3>
+              <p>${escapeHtml(`${arm.maintained_wins.passed} of ${arm.maintained_wins.total} maintained tasks passed${arm.retry_dependent ? " · retry dependent" : ""}`)}</p>
+            </div>
+            <span class="task-skill">${escapeHtml(arm.holdout_qualification === true ? "Holdout qualified" : arm.holdout_qualification === false ? "Holdout not qualified" : "Holdout unavailable")}</span>
+          </article>`).join("")}
+      </div>
+    </section>`;
 }
 
 function progressBadge(progress) {

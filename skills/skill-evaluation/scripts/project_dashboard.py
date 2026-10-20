@@ -1257,16 +1257,6 @@ def _task_phase(
     bindings: list[dict],
     attempts: list[dict],
 ) -> dict:
-    if task_result == "passing" and set(lineage.get("roles", [])) & {
-        "published",
-        "released",
-    }:
-        return {
-            "status": "available",
-            "phase": "published",
-            "authority": "lineage",
-            "recorded_at": None,
-        }
     selected_snapshots = set(lineage.get("snapshot_ids", []))
     current_bindings = {
         (binding["case_id"], binding["case_revision"]): binding
@@ -1972,6 +1962,584 @@ def _distributed_projection(project: dict) -> tuple[list[dict], list[dict]]:
     return runs, all_activity
 
 
+def _snapshot_catalog(project: dict) -> tuple[dict[str, dict], bool]:
+    catalog = {}
+    invalid = False
+    for source in project["sources"]:
+        if not source["available"]:
+            continue
+        records, conflicts, rejected = extension_records(source["corpus_root"])
+        invalid = invalid or bool(conflicts or rejected)
+        lineage_records = [
+            item for item in records
+            if item["event_type"] == "lineage_declared"
+        ]
+        for record in lineage_records:
+            snapshot_id = record["subject"]["snapshot_id"]
+            try:
+                manifest = read_skill_snapshot(
+                    source["corpus_root"],
+                    snapshot_id,
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
+                invalid = True
+                continue
+            entry = {
+                "snapshot_id": snapshot_id,
+                "revision_id": json_fingerprint(manifest["skills"]),
+                "manifest": manifest,
+                "parents": sorted(
+                    item["snapshot_id"]
+                    for item in record["payload"]["parents"]
+                ),
+                "roles": sorted(record["payload"]["roles"]),
+            }
+            existing = catalog.get(snapshot_id)
+            if existing is not None:
+                if any(
+                    existing[key] != entry[key]
+                    for key in (
+                        "snapshot_id",
+                        "revision_id",
+                        "manifest",
+                        "parents",
+                    )
+                ):
+                    invalid = True
+                    continue
+                existing["roles"] = sorted(set(
+                    existing["roles"] + entry["roles"]
+                ))
+            else:
+                catalog[snapshot_id] = entry
+    return catalog, invalid
+
+
+def _snapshot_descends(
+    catalog: dict[str, dict],
+    child_snapshot_id: str,
+    ancestor_snapshot_id: str,
+) -> bool:
+    pending = [child_snapshot_id]
+    seen = set()
+    while pending:
+        snapshot_id = pending.pop()
+        if snapshot_id in seen:
+            continue
+        seen.add(snapshot_id)
+        if snapshot_id == ancestor_snapshot_id:
+            return True
+        entry = catalog.get(snapshot_id)
+        if entry is not None:
+            pending.extend(entry["parents"])
+    return False
+
+
+def _snapshot_size(entry: dict, target_skills: list[str]) -> dict | None:
+    skills = {
+        item["name"]: item for item in entry["manifest"]["skills"]
+    }
+    if sorted(skills) != target_skills:
+        return None
+    files = [
+        file
+        for skill_name in target_skills
+        for file in skills[skill_name]["files"]
+    ]
+    return {
+        "snapshot_id": entry["snapshot_id"],
+        "revision_id": entry["revision_id"],
+        "bytes": sum(item["bytes"] for item in files),
+        "lines": sum(
+            item["lines"] for item in files if item["lines"] is not None
+        ),
+        "files": len(files),
+    }
+
+
+def _snapshot_target_skill_identities(
+    entry: dict,
+    target_skills: list[str],
+) -> list[dict] | None:
+    skills = {
+        item["name"]: item for item in entry["manifest"]["skills"]
+    }
+    if sorted(skills) != target_skills:
+        return None
+    return [
+        {
+            "name": name,
+            "evaluator_fingerprint": skills[name][
+                "evaluator_skill_identity"
+            ],
+        }
+        for name in target_skills
+    ]
+
+
+def _size_reduction(before: dict, after: dict | None) -> dict | None:
+    if after is None:
+        return None
+    removed = before["bytes"] - after["bytes"]
+    return {
+        "bytes": removed,
+        "percent": (
+            round((removed / before["bytes"]) * 100, 1)
+            if before["bytes"]
+            else 0.0
+        ),
+    }
+
+
+def _snapshot_task_passes(
+    project: dict,
+    catalog: dict[str, dict],
+    entry: dict,
+    task_id: str,
+    attempts: list[dict],
+) -> bool:
+    lineage = {
+        "snapshot_id": entry["revision_id"],
+        "snapshot_ids": sorted(
+            snapshot_id
+            for snapshot_id, candidate in catalog.items()
+            if candidate["revision_id"] == entry["revision_id"]
+        ),
+        "prior_revisions": [],
+    }
+    scorecard = _task_scorecard(project, lineage, attempts)
+    task = next(
+        (item for item in scorecard if item["task_id"] == task_id),
+        None,
+    )
+    return task is not None and task["result"] == "passing"
+
+
+def _maintained_task_results(
+    declaration: dict,
+    maintained_tasks: list[dict],
+    activity: list[dict],
+    treatment_id: str,
+) -> dict:
+    definitions = {
+        item["task_id"]: item for item in declaration["tasks"]
+    }
+    bindings = declaration["case_bindings"]
+    rows = []
+    for maintained in maintained_tasks:
+        definition = definitions.get(maintained["task_id"])
+        if (
+            definition is None
+            or task_fingerprint(definition)
+            != maintained["task_fingerprint"]
+        ):
+            rows.append({
+                "task_id": maintained["task_id"],
+                "status": "unavailable",
+            })
+            continue
+        rule = definition["qualification"]
+        required = [
+            item for item in bindings
+            if item["task_id"] == maintained["task_id"]
+            and item["role"] in rule["required_roles"]
+        ]
+        statuses = []
+        for binding in required:
+            attempts = [
+                item for item in activity
+                if item["treatment_id"] == treatment_id
+                and item["case_id"] == binding["case_id"]
+                and item["case_revision"] == binding["case_revision"]
+                and item["state"] == "terminal"
+            ]
+            if (
+                len(attempts)
+                < rule["minimum_terminal_repetitions_per_case"]
+            ):
+                statuses.append("unavailable")
+            elif sum(
+                item["evaluator_result"] == "PASS" for item in attempts
+            ) < rule["required_passes_per_case"]:
+                statuses.append("failed")
+            else:
+                statuses.append("passed")
+        status = (
+            "unavailable"
+            if not required or "unavailable" in statuses
+            else "failed"
+            if "failed" in statuses
+            else "passed"
+        )
+        rows.append({
+            "task_id": maintained["task_id"],
+            "status": status,
+        })
+    return {
+        "passed": sum(item["status"] == "passed" for item in rows),
+        "failed": sum(item["status"] == "failed" for item in rows),
+        "unavailable": sum(
+            item["status"] == "unavailable" for item in rows
+        ),
+        "total": len(rows),
+        "tasks": rows,
+    }
+
+
+def _ablation_projection(
+    state_root: Path,
+    project: dict,
+) -> tuple[dict[str, dict], dict | None, bool]:
+    from dashboard_projection import experiment_projection
+    from holdout_dashboard import holdout_projection
+
+    catalog, invalid = _snapshot_catalog(project)
+    attempts, _ = _terminal_attempts(project)
+    current_tasks = {
+        item["task_id"]: item for item in project["tasks"]
+    }
+    experiments = []
+    for source in project["sources"]:
+        if not source["available"]:
+            continue
+        records, conflicts, rejected = experiment_activity_records(
+            source["corpus_root"]
+        )
+        invalid = invalid or bool(conflicts or rejected)
+        declared_at = {
+            item["subject"]["experiment_id"]: item["recorded_at"]
+            for item in records
+            if item["event_type"] == "experiment_declared"
+        }
+        projection = experiment_projection(
+            source["corpus_root"],
+            source["campaign"]["campaign_id"],
+        )
+        for item in projection["items"]:
+            if item["experiment_kind"] == "treatment_search":
+                continue
+            ablation = item["ablation"]
+            if ablation["project_id"] != project["project_id"]:
+                continue
+            try:
+                declaration = archived_project_declaration(
+                    source["corpus_root"],
+                    ablation["project_declaration_sha256"],
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
+                invalid = True
+                continue
+            if declaration["project_id"] != project["project_id"]:
+                invalid = True
+                continue
+            maintained = ablation["maintained_tasks"]
+            if any(
+                task_id not in current_tasks
+                or task_fingerprint(current_tasks[task_id])
+                != maintained_row["task_fingerprint"]
+                for maintained_row in maintained
+                for task_id in [maintained_row["task_id"]]
+            ):
+                continue
+            experiments.append({
+                "item": item,
+                "ablation": ablation,
+                "declaration": declaration,
+                "declared_at": declared_at.get(item["experiment_id"]),
+            })
+
+    delta_candidates: dict[str, list[dict]] = {}
+    whole_candidates = []
+    for experiment in experiments:
+        item = experiment["item"]
+        ablation = experiment["ablation"]
+        if item["experiment_kind"] == "delta_ablation":
+            task_id = ablation["task_id"]
+            baseline = catalog.get(ablation["baseline_snapshot_id"])
+            exploratory = catalog.get(ablation["exploratory_snapshot_id"])
+            candidates = [
+                {
+                    **row,
+                    "entry": catalog.get(row["snapshot_id"]),
+                }
+                for row in ablation["candidate_snapshots"]
+            ]
+            if (
+                task_id not in current_tasks
+                or baseline is None
+                or exploratory is None
+                or any(row["entry"] is None for row in candidates)
+                or not _snapshot_descends(
+                    catalog,
+                    exploratory["snapshot_id"],
+                    baseline["snapshot_id"],
+                )
+                or any(
+                    not _snapshot_descends(
+                        catalog,
+                        row["snapshot_id"],
+                        exploratory["snapshot_id"],
+                    )
+                    for row in candidates
+                )
+            ):
+                invalid = True
+                continue
+            before = _snapshot_size(exploratory, project["target_skills"])
+            candidate_sizes = [
+                {
+                    "treatment_id": row["treatment_id"],
+                    "size": _snapshot_size(
+                        row["entry"],
+                        project["target_skills"],
+                    ),
+                    "target_skill_identities": (
+                        _snapshot_target_skill_identities(
+                            row["entry"],
+                            project["target_skills"],
+                        )
+                    ),
+                }
+                for row in candidates
+            ]
+            treatments = {
+                row["treatment_id"]: row for row in item["treatments"]
+            }
+            if (
+                before is None
+                or not set(baseline["roles"]) & {"published", "released"}
+                or not _snapshot_task_passes(
+                    project,
+                    catalog,
+                    exploratory,
+                    task_id,
+                    attempts,
+                )
+                or any(
+                    row["size"] is None
+                    or row["target_skill_identities"] is None
+                    or row["treatment_id"] not in treatments
+                    or treatments[row["treatment_id"]][
+                        "target_skill_identities"
+                    ] != row["target_skill_identities"]
+                    for row in candidate_sizes
+                )
+            ):
+                invalid = True
+                continue
+            candidate_sizes.sort(
+                key=lambda row: (
+                    row["size"]["bytes"],
+                    row["treatment_id"],
+                )
+            )
+            current = candidate_sizes[0]
+            selected_treatment = item["selection"].get(
+                "selected_treatment_id"
+            )
+            selected = next(
+                (
+                    row for row in candidate_sizes
+                    if row["treatment_id"] == selected_treatment
+                ),
+                None,
+            )
+            maintained = (
+                _maintained_task_results(
+                    experiment["declaration"],
+                    ablation["maintained_tasks"],
+                    item["activity"],
+                    selected_treatment,
+                )
+                if selected is not None
+                else {
+                    "passed": 0,
+                    "failed": 0,
+                    "unavailable": len(ablation["maintained_tasks"]),
+                    "total": len(ablation["maintained_tasks"]),
+                    "tasks": [
+                        {
+                            "task_id": row["task_id"],
+                            "status": "unavailable",
+                        }
+                        for row in ablation["maintained_tasks"]
+                    ],
+                }
+            )
+            qualified = (
+                selected is not None
+                and maintained["passed"] == maintained["total"]
+            )
+            changes = ablation["instruction_changes"]
+            delta_candidates.setdefault(task_id, []).append({
+                "status": (
+                    "qualified"
+                    if qualified
+                    else "regressed"
+                    if selected is not None and maintained["failed"]
+                    else "active"
+                ),
+                "experiment_id": item["experiment_id"],
+                "declared_at": experiment["declared_at"],
+                "baseline": _snapshot_size(
+                    baseline,
+                    project["target_skills"],
+                ),
+                "exploratory": before,
+                "current": current["size"],
+                "final": selected["size"] if qualified else None,
+                "reduction": {
+                    "current": _size_reduction(before, current["size"]),
+                    "final": _size_reduction(
+                        before,
+                        selected["size"] if qualified else None,
+                    ),
+                },
+                "maintained_wins": maintained,
+                "instruction_changes": {
+                    "removed": sum(
+                        row["disposition"] == "removed" for row in changes
+                    ),
+                    "retained": sum(
+                        row["disposition"] == "retained" for row in changes
+                    ),
+                    "restored": [
+                        {
+                            "instruction_id": row["instruction_id"],
+                            "reason": row["reason"],
+                        }
+                        for row in changes
+                        if row["disposition"] == "restored"
+                    ],
+                },
+                "selection": item["selection"],
+            })
+        else:
+            arms = []
+            for row in ablation["arms"]:
+                entry = catalog.get(row["snapshot_id"])
+                size = (
+                    _snapshot_size(entry, project["target_skills"])
+                    if entry is not None
+                    else None
+                )
+                if size is None:
+                    invalid = True
+                    arms = []
+                    break
+                treatment = next(
+                    (
+                        treatment for treatment in item["treatments"]
+                        if treatment["treatment_id"]
+                        == row["treatment_id"]
+                    ),
+                    None,
+                )
+                if (
+                    treatment is None
+                    or treatment["target_skill_identities"]
+                    != _snapshot_target_skill_identities(
+                        entry,
+                        project["target_skills"],
+                    )
+                ):
+                    invalid = True
+                    arms = []
+                    break
+                maintained = _maintained_task_results(
+                    experiment["declaration"],
+                    ablation["maintained_tasks"],
+                    item["activity"],
+                    row["treatment_id"],
+                )
+                holdouts = holdout_projection(
+                    state_root,
+                    project["project_id"],
+                    project["holdout_requirements"],
+                    size["revision_id"],
+                )
+                holdout_qualification = (
+                    None
+                    if not holdouts
+                    or any(record["status"] != "completed" for record in holdouts)
+                    else all(
+                        record["qualification"] is True for record in holdouts
+                    )
+                )
+                repetitions = [
+                    activity["repetition"]
+                    for activity in item["activity"]
+                    if activity["treatment_id"] == row["treatment_id"]
+                    and activity["state"] == "terminal"
+                    and activity["evaluator_result"] == "PASS"
+                ]
+                arms.append({
+                    "arm": row["arm"],
+                    "treatment_id": row["treatment_id"],
+                    "size": size,
+                    "maintained_wins": maintained,
+                    "holdout_qualification": holdout_qualification,
+                    "retry_dependent": bool(repetitions)
+                    and min(repetitions) > 1,
+                    "selection_state": next(
+                        treatment["selection_state"]
+                        for treatment in item["treatments"]
+                        if treatment["treatment_id"] == row["treatment_id"]
+                    ),
+                })
+            if arms:
+                whole_candidates.append({
+                    "status": item["selection"]["status"],
+                    "experiment_id": item["experiment_id"],
+                    "declared_at": experiment["declared_at"],
+                    "arms": sorted(arms, key=lambda row: row["arm"]),
+                    "selection": item["selection"],
+                })
+
+    delta = {}
+    for task_id, rows in delta_candidates.items():
+        rows.sort(
+            key=lambda row: (
+                row["declared_at"] or "",
+                row["experiment_id"],
+            ),
+            reverse=True,
+        )
+        if len(rows) > 1 and rows[0]["declared_at"] == rows[1]["declared_at"]:
+            invalid = True
+            continue
+        delta[task_id] = rows[0]
+    whole = None
+    if whole_candidates:
+        whole_candidates.sort(
+            key=lambda row: (
+                row["declared_at"] or "",
+                row["experiment_id"],
+            ),
+            reverse=True,
+        )
+        if (
+            len(whole_candidates) > 1
+            and whole_candidates[0]["declared_at"]
+            == whole_candidates[1]["declared_at"]
+        ):
+            invalid = True
+        else:
+            whole = whole_candidates[0]
+    return delta, whole, invalid
+
+
+def _ablation_qualifies_selected_revision(
+    ablation: dict | None,
+    lineage: dict,
+) -> bool:
+    return (
+        ablation is not None
+        and ablation["status"] == "qualified"
+        and ablation["final"]["revision_id"] == lineage.get("snapshot_id")
+    )
+
+
 def project_projection(state_root: Path, project_id: str) -> dict:
     from holdout_dashboard import holdout_projection
 
@@ -2002,6 +2570,11 @@ def project_projection(state_root: Path, project_id: str) -> dict:
         project["holdout_requirements"],
         lineage.get("snapshot_id"),
     ) if project["available"] else []
+    delta_ablation, whole_skill_ablation, ablation_invalid = (
+        _ablation_projection(state_root, project)
+        if project["available"]
+        else ({}, None, False)
+    )
     local_runs = [
         row
         for source in project["sources"]
@@ -2032,6 +2605,7 @@ def project_projection(state_root: Path, project_id: str) -> dict:
             attempts,
             distributed_activity,
         )
+        task["ablation"] = delta_ablation.get(task["task_id"])
         task_holdouts = [
             item for item in holdouts
             if task["task_id"] in item["task_ids"]
@@ -2048,8 +2622,11 @@ def project_projection(state_root: Path, project_id: str) -> dict:
             }
         elif (
             task["phase"]["phase"] != "published"
-            and task["result"] == "passing"
-            and task_holdouts
+            and             task["result"] == "passing"
+            and _ablation_qualifies_selected_revision(
+                task["ablation"],
+                lineage,
+            )
             and all(
                 item["status"] == "completed"
                 and item["qualification"] is True
@@ -2060,6 +2637,19 @@ def project_projection(state_root: Path, project_id: str) -> dict:
                 "status": "available",
                 "phase": "ready_to_publish",
                 "authority": "holdout_receipt",
+                "recorded_at": None,
+            }
+        if (
+            task["result"] == "passing"
+            and task["ablation"] is not None
+            and task["ablation"]["status"] == "qualified"
+            and task["phase"]["phase"] == "ready_to_publish"
+            and set(lineage.get("roles", [])) & {"published", "released"}
+        ):
+            task["phase"] = {
+                "status": "available",
+                "phase": "published",
+                "authority": "lineage",
                 "recorded_at": None,
             }
         qualified_at = task["timing"]["first_qualified_pass_at"]
@@ -2107,13 +2697,17 @@ def project_projection(state_root: Path, project_id: str) -> dict:
         "tasks": tasks,
         "runs": runs,
         "holdouts": holdouts,
+        "whole_skill_ablation": whole_skill_ablation,
         "pre_project_history": pre_project,
-        "conflicts": project["conflicts"],
+        "conflicts": {
+            **project["conflicts"],
+            "ablation": ablation_invalid,
+        },
         "unsupported": {
             "task_phase": True,
             "safe_progress": True,
             "holdout_execution": True,
-            "ablation": False,
+            "ablation": True,
             "distributed_runs": True,
         },
     }

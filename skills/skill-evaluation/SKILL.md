@@ -243,6 +243,23 @@ no-selection result. Missing or duplicate attempt results return
 `selection_incomplete` and write no terminal selection. A later conflicting or
 additional result invalidates an older terminal selection at read time.
 
+For per-task minimization, use the same experiment declaration and result
+authority with `experiment_kind: "delta_ablation"`. Its `ablation` object binds
+the exact project declaration, newly conquered task, published baseline,
+exploratory passing snapshot, treatment-to-candidate snapshot map, maintained
+task fingerprints, and removed, retained, or restored instruction identities.
+A restored instruction requires a plain-language reason. Every candidate
+snapshot must descend from the exploratory pass. The dashboard derives bytes,
+text lines, and file counts from the captured snapshots and calls a selected
+candidate final only when every maintained task meets its declared
+qualification rule.
+
+Use `experiment_kind: "whole_skill_ablation"` only when the workflow explicitly
+starts the separate neutral, lean, and full comparison. Its `ablation` object
+maps declared arms to treatments and exact snapshots and binds the maintained
+task set. Missing arms remain absent. Without this declaration, the project
+page does not show a whole-skill ablation section.
+
 Bind an evaluator run to the snapshot whose bytes it is meant to exercise:
 
 ```sh
@@ -281,8 +298,9 @@ infrastructure failures, tokens, credits, compact local and distributed runs,
 and authenticated aggregate holdout status. Unknown and partial accounting
 stay labeled as unknown or partial. AI credits are interpreted as cents by user
 convention; premium requests remain a separate evaluator unit. Distributed
-cost without canonical accounting remains incomplete. Ablation remains
-explicitly unavailable.
+cost without canonical accounting remains incomplete. Delta-ablation size and
+maintained-win status remain unavailable until the exact declaration,
+snapshots, terminal results, and selection are admitted.
 
 ## 1. Define the behavioral claim
 

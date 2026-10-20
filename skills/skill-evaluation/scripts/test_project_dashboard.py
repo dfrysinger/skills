@@ -43,6 +43,9 @@ from holdout_dashboard import (
     sign_private_receipt,
 )
 from project_dashboard import (
+    _ablation_qualifies_selected_revision,
+    _ablation_projection,
+    _snapshot_catalog,
     _task_phase,
     _task_safe_progress,
     _distributed_projection,
@@ -848,6 +851,324 @@ class ProjectScorecardTests(ProjectFixture):
             runs[0]["source_identity"]["experiment_fingerprint"],
             "e" * 64,
         )
+
+    def test_delta_ablation_reports_exact_size_and_maintained_wins(self):
+        corpus = self.corpus("delta-ablation")
+        declaration = self.write_declaration(
+            corpus,
+            self.declaration(corpus),
+        )
+        registration = create_campaign(self.state_root, corpus)
+        session_id = str(uuid.uuid4())
+        session, _ = register_session(
+            self.state_root,
+            corpus,
+            session_id,
+        )
+        writer = {
+            "kind": "session",
+            "id": session_id,
+            "generation": session["writer_generation"],
+        }
+        baseline = capture_skill_snapshot(
+            corpus,
+            write_plugin(self.root, "# Example\nBaseline guidance.\n"),
+            ["example-skill"],
+        )
+        exploratory = capture_skill_snapshot(
+            corpus,
+            write_plugin(
+                self.root,
+                "# Example\nPassing guidance with extra procedure.\n"
+                "Keep authority.\n",
+            ),
+            ["example-skill"],
+        )
+        minimized = capture_skill_snapshot(
+            corpus,
+            write_plugin(self.root, "# Example\nKeep authority.\n"),
+            ["example-skill"],
+        )
+        emit_lineage_event(
+            corpus,
+            campaign_id=registration["campaign_id"],
+            writer=writer,
+            snapshot_id=baseline["snapshot_id"],
+            roles=["integrated", "published"],
+            parents=[],
+            summary="Published baseline",
+            recorded_at="2026-01-01T00:00:00+00:00",
+        )
+        emit_lineage_event(
+            corpus,
+            campaign_id=registration["campaign_id"],
+            writer=writer,
+            snapshot_id=exploratory["snapshot_id"],
+            roles=["integrated"],
+            parents=[{
+                "relation": "derived_from",
+                "snapshot_id": baseline["snapshot_id"],
+            }],
+            summary="Exploratory pass",
+            recorded_at="2026-01-01T00:01:00+00:00",
+        )
+        emit_lineage_event(
+            corpus,
+            campaign_id=registration["campaign_id"],
+            writer=writer,
+            snapshot_id=minimized["snapshot_id"],
+            roles=["integrated"],
+            parents=[{
+                "relation": "derived_from",
+                "snapshot_id": exploratory["snapshot_id"],
+            }],
+            summary="Minimized pass",
+            recorded_at="2026-01-01T00:02:00+00:00",
+        )
+        task = declaration["tasks"][0]
+        binding = declaration["case_bindings"][0]
+        experiment = {
+            "experiment_id": "delta-task-1",
+            "experiment_kind": "delta_ablation",
+            "ablation": {
+                "project_id": declaration["project_id"],
+                "project_declaration_sha256": (
+                    project_declaration_fingerprint(declaration)
+                ),
+                "task_id": task["task_id"],
+                "baseline_snapshot_id": baseline["snapshot_id"],
+                "exploratory_snapshot_id": exploratory["snapshot_id"],
+                "candidate_snapshots": [{
+                    "treatment_id": "lean",
+                    "snapshot_id": minimized["snapshot_id"],
+                }],
+                "maintained_tasks": [{
+                    "task_id": task["task_id"],
+                    "task_fingerprint": task_fingerprint(task),
+                }],
+                "instruction_changes": [
+                    {
+                        "instruction_id": "extra-procedure",
+                        "disposition": "removed",
+                        "reason": None,
+                    },
+                    {
+                        "instruction_id": "preserve-authority",
+                        "disposition": "restored",
+                        "reason": "Its removal regressed the maintained task.",
+                    },
+                ],
+            },
+            "selection": {
+                "status": "selected",
+                "selected_treatment_id": "lean",
+                "reasons": ["best-qualified"],
+                "authority": "experiment_evaluator",
+            },
+            "treatments": [{
+                "treatment_id": "lean",
+                "selection_state": "selected",
+                "target_skill_identities": [{
+                    "name": "example-skill",
+                    "evaluator_fingerprint": minimized["skills"][0][
+                        "evaluator_skill_identity"
+                    ],
+                }],
+            }],
+            "activity": [{
+                "treatment_id": "lean",
+                "case_id": binding["case_id"],
+                "case_revision": binding["case_revision"],
+                "state": "terminal",
+                "evaluator_result": "PASS",
+                "repetition": 1,
+            }],
+        }
+        project = reconciled_project(
+            self.state_root,
+            declaration["project_id"],
+        )
+        with mock.patch(
+            "dashboard_projection.experiment_projection",
+            return_value={"items": [experiment]},
+        ), mock.patch(
+            "project_dashboard._snapshot_task_passes",
+            return_value=True,
+        ):
+            delta, whole, invalid = _ablation_projection(
+                self.state_root,
+                project,
+            )
+
+        result = delta[task["task_id"]]
+        self.assertFalse(invalid)
+        self.assertIsNone(whole)
+        self.assertEqual(result["status"], "qualified")
+        self.assertEqual(result["maintained_wins"]["passed"], 1)
+        self.assertGreater(result["reduction"]["final"]["bytes"], 0)
+        self.assertEqual(
+            result["instruction_changes"]["restored"],
+            [{
+                "instruction_id": "preserve-authority",
+                "reason": "Its removal regressed the maintained task.",
+            }],
+        )
+
+        experiment["activity"][0]["evaluator_result"] = "FAIL"
+        with mock.patch(
+            "dashboard_projection.experiment_projection",
+            return_value={"items": [experiment]},
+        ), mock.patch(
+            "project_dashboard._snapshot_task_passes",
+            return_value=True,
+        ):
+            regressed, _, _ = _ablation_projection(
+                self.state_root,
+                project,
+            )
+        self.assertEqual(
+            regressed[task["task_id"]]["status"],
+            "regressed",
+        )
+        self.assertIsNone(regressed[task["task_id"]]["final"])
+
+        experiment["activity"][0]["evaluator_result"] = "PASS"
+        whole_experiment = {
+            **experiment,
+            "experiment_id": "whole-skill-ablation",
+            "experiment_kind": "whole_skill_ablation",
+            "ablation": {
+                "project_id": declaration["project_id"],
+                "project_declaration_sha256": (
+                    project_declaration_fingerprint(declaration)
+                ),
+                "arms": [{
+                    "arm": "lean",
+                    "treatment_id": "lean",
+                    "snapshot_id": minimized["snapshot_id"],
+                }],
+                "maintained_tasks": [{
+                    "task_id": task["task_id"],
+                    "task_fingerprint": task_fingerprint(task),
+                }],
+            },
+        }
+        with mock.patch(
+            "dashboard_projection.experiment_projection",
+            return_value={"items": [experiment, whole_experiment]},
+        ), mock.patch(
+            "project_dashboard._snapshot_task_passes",
+            return_value=True,
+        ):
+            _, whole, invalid = _ablation_projection(
+                self.state_root,
+                project,
+            )
+        self.assertFalse(invalid)
+        self.assertEqual(whole["arms"][0]["arm"], "lean")
+        self.assertEqual(
+            whole["arms"][0]["maintained_wins"]["passed"],
+            1,
+        )
+
+        later = json.loads(json.dumps(experiment))
+        later["experiment_id"] = "delta-task-1-later"
+        declaration_records = [
+            {
+                "event_type": "experiment_declared",
+                "recorded_at": "2026-01-01T00:00:00+00:00",
+                "subject": {"experiment_id": experiment["experiment_id"]},
+            },
+            {
+                "event_type": "experiment_declared",
+                "recorded_at": "2026-01-02T00:00:00+00:00",
+                "subject": {"experiment_id": later["experiment_id"]},
+            },
+        ]
+        with mock.patch(
+            "dashboard_projection.experiment_projection",
+            return_value={"items": [experiment, later]},
+        ), mock.patch(
+            "project_dashboard.experiment_activity_records",
+            return_value=(declaration_records, [], []),
+        ), mock.patch(
+            "project_dashboard._snapshot_task_passes",
+            return_value=True,
+        ):
+            latest, _, invalid = _ablation_projection(
+                self.state_root,
+                project,
+            )
+        self.assertFalse(invalid)
+        self.assertEqual(
+            latest[task["task_id"]]["experiment_id"],
+            later["experiment_id"],
+        )
+
+        mismatched = json.loads(json.dumps(experiment))
+        mismatched["treatments"][0]["target_skill_identities"][0][
+            "evaluator_fingerprint"
+        ] = "0" * 64
+        with mock.patch(
+            "dashboard_projection.experiment_projection",
+            return_value={"items": [mismatched]},
+        ), mock.patch(
+            "project_dashboard._snapshot_task_passes",
+            return_value=True,
+        ):
+            rejected, _, invalid = _ablation_projection(
+                self.state_root,
+                project,
+            )
+        self.assertTrue(invalid)
+        self.assertEqual(rejected, {})
+
+        with mock.patch(
+            "dashboard_projection.experiment_projection",
+            return_value={"items": [experiment]},
+        ), mock.patch(
+            "project_dashboard._snapshot_task_passes",
+            return_value=False,
+        ):
+            rejected, _, invalid = _ablation_projection(
+                self.state_root,
+                project,
+            )
+        self.assertTrue(invalid)
+        self.assertEqual(rejected, {})
+
+        catalog, _ = _snapshot_catalog(project)
+        catalog[baseline["snapshot_id"]]["roles"] = ["integrated"]
+        with mock.patch(
+            "dashboard_projection.experiment_projection",
+            return_value={"items": [experiment]},
+        ), mock.patch(
+            "project_dashboard._snapshot_catalog",
+            return_value=(catalog, False),
+        ), mock.patch(
+            "project_dashboard._snapshot_task_passes",
+            return_value=True,
+        ):
+            rejected, _, invalid = _ablation_projection(
+                self.state_root,
+                project,
+            )
+        self.assertTrue(invalid)
+        self.assertEqual(rejected, {})
+
+    def test_ablation_must_qualify_selected_revision_for_publication(self):
+        ablation = {
+            "status": "qualified",
+            "final": {"revision_id": "a" * 64},
+        }
+        self.assertTrue(_ablation_qualifies_selected_revision(
+            ablation,
+            {"snapshot_id": "a" * 64},
+        ))
+        self.assertFalse(_ablation_qualifies_selected_revision(
+            ablation,
+            {"snapshot_id": "b" * 64},
+        ))
 
     def test_distributed_safe_progress_uses_stage_identity(self):
         corpus = self.corpus("distributed-progress")

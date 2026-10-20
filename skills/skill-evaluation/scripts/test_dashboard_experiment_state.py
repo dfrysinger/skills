@@ -30,6 +30,7 @@ from dashboard_state import (
     experiment_activity_records,
     experiment_plan_fingerprint,
     register_session,
+    validate_experiment_declaration,
     validate_experiment_activity_event,
     writer_directory,
 )
@@ -213,6 +214,73 @@ class DashboardExperimentStateTests(unittest.TestCase):
                 }],
             },
         }
+
+    def test_ablation_declaration_fields_fail_closed(self):
+        payload = self.declaration_payload()
+        payload["experiment_kind"] = "delta_ablation"
+        payload["ablation"] = {
+            "project_id": "example-project",
+            "project_declaration_sha256": "1" * 64,
+            "task_id": "task-1",
+            "baseline_snapshot_id": "2" * 64,
+            "exploratory_snapshot_id": "3" * 64,
+            "candidate_snapshots": [{
+                "treatment_id": "candidate",
+                "snapshot_id": "4" * 64,
+            }],
+            "maintained_tasks": [{
+                "task_id": "task-1",
+                "task_fingerprint": "5" * 64,
+            }],
+            "instruction_changes": [{
+                "instruction_id": "preserve-authority",
+                "disposition": "restored",
+                "reason": "Removing it regressed the maintained task.",
+            }],
+        }
+        self.assertEqual(validate_experiment_declaration(payload), payload)
+        self.assertEqual(
+            experiment_plan_fingerprint(payload),
+            experiment_plan_fingerprint(payload),
+        )
+
+        broken = json.loads(json.dumps(payload))
+        broken["ablation"]["maintained_tasks"] = []
+        with self.assertRaisesRegex(ValueError, "maintained tasks"):
+            validate_experiment_declaration(broken)
+
+        broken = json.loads(json.dumps(payload))
+        broken["ablation"]["instruction_changes"][0]["reason"] = None
+        with self.assertRaisesRegex(ValueError, "requires a reason"):
+            validate_experiment_declaration(broken)
+
+        broken = json.loads(json.dumps(payload))
+        broken["ablation"]["candidate_snapshots"][0][
+            "treatment_id"
+        ] = "unknown"
+        with self.assertRaisesRegex(ValueError, "candidate treatment"):
+            validate_experiment_declaration(broken)
+
+    def test_whole_skill_ablation_requires_declared_arm_treatments(self):
+        payload = self.declaration_payload()
+        payload["experiment_kind"] = "whole_skill_ablation"
+        payload["ablation"] = {
+            "project_id": "example-project",
+            "project_declaration_sha256": "1" * 64,
+            "arms": [{
+                "arm": "lean",
+                "treatment_id": "candidate",
+                "snapshot_id": "2" * 64,
+            }],
+            "maintained_tasks": [{
+                "task_id": "task-1",
+                "task_fingerprint": "3" * 64,
+            }],
+        }
+        self.assertEqual(validate_experiment_declaration(payload), payload)
+        payload["ablation"]["arms"][0]["treatment_id"] = "undeclared"
+        with self.assertRaisesRegex(ValueError, "arm treatment"):
+            validate_experiment_declaration(payload)
 
     def publish_declaration(self, *, tied: bool = False, event_id: str = "4" * 32):
         payload = self.declaration_payload(tied=tied)
