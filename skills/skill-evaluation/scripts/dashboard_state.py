@@ -453,6 +453,11 @@ def ensure_state_root(path: Path) -> Path:
         raise ValueError(f"dashboard campaigns path must be a directory: {campaigns}")
     campaigns.mkdir(mode=0o700, exist_ok=True)
     os.chmod(campaigns, 0o700)
+    projects = path / "projects"
+    if projects.exists() and (projects.is_symlink() or not projects.is_dir()):
+        raise ValueError(f"dashboard projects path must be a directory: {projects}")
+    projects.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(projects, 0o700)
     return path.resolve()
 
 
@@ -1002,6 +1007,13 @@ def create_campaign(state_root: Path, corpus_root: Path) -> dict:
                 atomic_json(global_path, registration)
         else:
             write_exclusive(global_path, registration)
+    from project_dashboard import register_project_declaration
+
+    register_project_declaration(
+        state_root,
+        corpus_root,
+        registration["campaign_id"],
+    )
     return registration
 
 

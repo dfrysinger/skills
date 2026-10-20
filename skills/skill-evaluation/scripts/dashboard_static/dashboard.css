@@ -949,6 +949,22 @@ tbody tr:hover {
   text-decoration: none;
 }
 
+.run-summary {
+  min-width: 0;
+}
+
+.run-summary strong,
+.run-summary span {
+  display: block;
+}
+
+.run-summary span {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .run-card:hover,
 .task-list-simple a:hover {
   border-color: var(--accent);
@@ -1030,7 +1046,7 @@ tbody tr:hover {
   background: var(--surface);
 }
 
-.task-list-simple a {
+.task-list-simple :is(a, article) {
   display: grid;
   grid-template-columns: 110px minmax(0, 1fr) minmax(100px, auto);
   gap: 20px;
@@ -1042,7 +1058,7 @@ tbody tr:hover {
   text-decoration: none;
 }
 
-.task-list-simple a:last-child {
+.task-list-simple :is(a, article):last-child {
   border-bottom: 0;
 }
 
@@ -1134,11 +1150,15 @@ tbody tr:hover {
 
 .campaign-link {
   display: block;
+  width: 100%;
   padding: 20px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
   color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
   text-decoration: none;
   box-shadow: var(--shadow);
 }
@@ -1298,12 +1318,12 @@ tbody tr:hover {
     gap: 12px;
   }
 
-  .task-list-simple a,
+  .task-list-simple :is(a, article),
   .experiment-goals {
     grid-template-columns: 1fr;
   }
 
-  .task-list-simple a {
+  .task-list-simple :is(a, article) {
     gap: 8px;
   }
 

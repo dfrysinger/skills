@@ -1,0 +1,169 @@
+{
+  "schema_version": 1,
+  "revision": "skill-evaluation-ui-project-evidence-r1",
+  "objective": "Replace retry- and corpus-centered dashboard navigation with one explicit skill-improvement project view that explains the goal, task progress, generalization, minimization, cost, active work, and compact run history.",
+  "decision_record": {
+    "path": "design/skill-evaluation-ui-project-decisions.json",
+    "revision": "skill-evaluation-ui-project-decisions-r2",
+    "unresolved_event_ids": []
+  },
+  "user_evidence": [
+    {
+      "event_id": "user-project-first-ux-2026-10-19",
+      "authority": "top-level product direction",
+      "quote": "so i have a ton of these that keep getting opened and the all campaigns page is broken and I'm not convinced each of these needs its own page, arent these just retries of failed runs? and why do they never show a run having run? and this goal at the top isnt useful, it should state what skill is being tested (i thinkn it does that) and what we are trying to improve, or validate in that skill, and how many tasks from the test corpus have passed and how many have not, and what each task is in brief. Like the ux architecture here should be that there is an overall project like: improve unattended run so it can pass all 15 tasks and the holdout tasks in the most generalized minimal way we can find. Then it should list the tasks we are trying to tackle, and show how many are passing and for those that arent what % of the individual tests or subtasks or whatever the sub-units are have passed. The actual runs then go below that, and most runs will fail due to infrastructure failures, so we can just list them and say how many parallel experiments are being run in each run, and if the run actually ran or if it failed due to infrastructure issues, and if it did run, how many experiments ran and of the ones that ran how many were successful and how many failed. But each run can be one line with the timestamp and those basic run stats. The main goal is to get all the tasks to pass and for the skill to prove its generalized, and then to minimize the skill with ablation so we should show all of those steps first, the runs are just attempts at improving those top level goals."
+    },
+    {
+      "event_id": "user-explicit-project-identity-2026-10-19",
+      "authority": "top-level product decision",
+      "quote": "agreed and we dont need backfill support the agents can do that if needed"
+    },
+    {
+      "event_id": "user-supported-launcher-run-boundary-2026-10-19",
+      "authority": "top-level product decision",
+      "quote": "yes"
+    },
+    {
+      "event_id": "user-adapter-declared-task-progress-2026-10-19",
+      "authority": "top-level product decision",
+      "quote": "yes thats fine, oh and for each task at the top level we should show how long it took to go from not passing to passing (like when we started experiments, and when we finished if it passes now, and how many runs it took and how many credits/tokens if we know) so that would be part of the rollup, and similarly the ablation should show the size difference we saw before and after ablation (and we should figure out if ablation is happening after every successful new passing of a task (which I think its supposed to) or all at the end, if its per task then ablation is just a step in the task process, so a task could be passing but now in ablation phase"
+    },
+    {
+      "event_id": "user-separate-task-result-and-phase-2026-10-19",
+      "authority": "top-level product decision",
+      "quote": "yes"
+    },
+    {
+      "event_id": "user-explicit-task-case-grouping-2026-10-19",
+      "authority": "top-level product decision",
+      "quote": "yes"
+    },
+    {
+      "event_id": "user-delegated-remaining-design-decisions-2026-10-19",
+      "authority": "top-level delegation for remaining design branches",
+      "quote": "i need to step away, go with your recommendations for the rest"
+    }
+  ],
+  "existing_capabilities": [
+    {
+      "fact": "The dashboard already has validated create-once corpus campaign registration, append-only writer-owned events, immutable result projection, a loopback service, and scoped browser capabilities.",
+      "evidence": [
+        "skills/skill-evaluation/scripts/dashboard_state.py",
+        "skills/skill-evaluation/scripts/dashboard_projection.py",
+        "skills/skill-evaluation/scripts/dashboard_server.py",
+        "skills/skill-evaluation/scripts/dashboard_cli.py"
+      ]
+    },
+    {
+      "fact": "Local single-case and suite execution have supported launch boundaries and create run directories before candidate execution.",
+      "evidence": [
+        "skills/skill-evaluation/scripts/skill_eval.py::run_case",
+        "skills/skill-evaluation/scripts/skill_eval.py::run_suite"
+      ]
+    },
+    {
+      "fact": "Distributed evaluation already has validated package, matrix, dispatch, stage, result, accounting, and exact execution identity records.",
+      "evidence": [
+        "skills/skill-evaluation/scripts/distributed_campaign.py",
+        "skills/skill-evaluation/scripts/package_distributed_campaign.py"
+      ]
+    },
+    {
+      "fact": "Completed local suites already contain selected cases, planned and actual attempts, per-case outcomes, overall outcome, timing, accounting, treatment identity, and skill identity.",
+      "evidence": [
+        "fresh-qualification-transition-checklist-r2/suite-runs/20261020T004858Z-bc84dc11",
+        "fresh-qualification-full-r3/suite-runs/20261020T004939Z-89c27174"
+      ]
+    },
+    {
+      "fact": "The cumulative hill-climb requires minimization of each newly added task increment before publication and preserves earlier wins.",
+      "evidence": [
+        "skills/skill-evaluation/references/cumulative-skill-hill-climb.md",
+        "skills/skill-evaluation/references/ablation-campaign.md",
+        "skills/skill-evaluation/SKILL.md"
+      ]
+    },
+    {
+      "fact": "Generalization requires separately labeled development, regression, and genuinely unexposed transfer cases. Source tasks cannot become held out again after influencing changes.",
+      "evidence": [
+        "skills/skill-evaluation/references/release-qualification-and-generalization.md",
+        "skills/skill-evaluation/references/parallel-treatment-search.md"
+      ]
+    }
+  ],
+  "observed_failures": [
+    {
+      "failure": "Every registered agent session can open another browser tab.",
+      "cause": "dashboard_cli.py::register_dashboard uses session opened_at rather than project and service-generation state."
+    },
+    {
+      "failure": "Refreshing a page can show Missing browser capability.",
+      "cause": "The static client removes the fragment capability and does not retain it in tab-scoped browser state."
+    },
+    {
+      "failure": "Retry corpora appear as separate top-level campaigns.",
+      "cause": "The projection and routes have corpus campaign identity but no explicit project identity."
+    },
+    {
+      "failure": "An active or completed suite can appear as if no evaluator run occurred.",
+      "cause": "The live view uses agent-session heartbeat events and waits for final suite artifacts instead of following evaluator-owned suite lifecycle."
+    },
+    {
+      "failure": "The campaign page exposes many empty or unavailable schema fields instead of the user's improvement goal.",
+      "cause": "The prior product hierarchy treats storage records as primary user objects."
+    }
+  ],
+  "hard_boundaries": [
+    {
+      "constraint": "The dashboard remains read-only and cannot launch, cancel, mutate, approve, or publish evaluations."
+    },
+    {
+      "constraint": "Hidden judge references, criteria, prompts, private packets, and answer-shaped evidence remain unavailable through every projection and route."
+    },
+    {
+      "constraint": "True holdout identities and behavioral failure details cannot influence the optimizing agent."
+    },
+    {
+      "constraint": "Project, task, case, and run grouping is explicit. Names, paths, timestamps, and suffixes are not identity evidence."
+    },
+    {
+      "constraint": "Immutable evaluator results outrank live or session records. Liveness never implies PASS, FAIL, or completion."
+    },
+    {
+      "constraint": "Unknown and partial accounting remains labeled. The dashboard cannot present incomplete totals as exact."
+    },
+    {
+      "constraint": "Legacy corpora without explicit project metadata are not auto-grouped or auto-migrated."
+    },
+    {
+      "constraint": "Unsupported custom launch paths may be absent. Supported evaluator launchers are the automatic monitoring boundary."
+    }
+  ],
+  "scope": {
+    "included": [
+      "explicit project and task identity",
+      "project and task projection",
+      "automatic local and distributed run lifecycle",
+      "task result and workflow phase",
+      "safe declared subprogress",
+      "time, run, attempt, token, and cost rollups",
+      "per-task delta ablation",
+      "project-level whole-skill ablation",
+      "aggregate-only holdout qualification",
+      "compact run history",
+      "open-once browser behavior",
+      "refresh-safe tab-scoped capability retention",
+      "legacy unassigned evaluations"
+    ],
+    "excluded": [
+      "execution controls",
+      "remote hosting",
+      "arbitrary corpus discovery",
+      "name-based migration",
+      "mutable result database",
+      "hidden evidence drill-down",
+      "candidate access to dashboard authority",
+      "automatic support for custom launch scripts"
+    ]
+  }
+}

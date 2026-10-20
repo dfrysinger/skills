@@ -20,16 +20,69 @@ for the complete process.
 
 ## Local evaluation dashboard
 
-After choosing or initializing the corpus, ensure at least one case identifies
-the target skill, then register this Copilot session once using its exact
-session UUID. The first registration opens the focused read-only dashboard;
-resumption refreshes the same session without opening another browser window.
-Additional cases may add target skills to the same campaign later.
+Declare a project in each participating corpus with
+`evaluation-project.json`. The declaration uses one stable project ID, lists
+each task, and binds every frozen case to one task and exact case revision.
+Multiple corpora join only when they declare the same compatible project.
+
+```json
+{
+  "schema_version": 1,
+  "supersedes": null,
+  "project_id": "example-skill-improvement",
+  "title": "Improve example-skill",
+  "goal": "Pass the declared behavior checks on one exact skill revision.",
+  "target_skills": ["example-skill"],
+  "tasks": [{
+    "task_id": "example-behavior",
+    "title": "Handle the example behavior",
+    "summary": "Produce the required behavior without breaking regression cases.",
+    "qualification": {
+      "kind": "all_bound_cases",
+      "required_roles": ["development", "regression"],
+      "minimum_terminal_repetitions_per_case": 1,
+      "required_passes_per_case": 1
+    }
+  }],
+  "case_bindings": [{
+    "binding_id": "example-case-development",
+    "case_id": "example-case",
+    "case_revision": "<case-manifest-sha256>",
+    "task_id": "example-behavior",
+    "role": "development",
+    "safe_progress": null
+  }],
+  "holdout_requirements": []
+}
+```
+
+Publish an additive revision by setting `supersedes` to the exact fingerprint
+of the current declaration. Keep all existing task, binding, and holdout IDs.
+Registration archives each accepted declaration so older runs retain their
+original meaning.
+
+Register this Copilot session once using its exact session UUID. The dashboard
+opens the project at most once for the current service process. Later sessions,
+retries, and runs update the same page without opening another tab.
 
 ```sh
 python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard register CORPUS \
   --session-id SESSION_UUID
 ```
+
+Use the explicit commands to reopen a project, list projects, or inspect
+legacy corpora that do not declare a project:
+
+```sh
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard open-project PROJECT_ID
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard projects
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard unassigned
+```
+
+The browser keeps its scoped read capability in tab-only `sessionStorage`, so
+refresh works without putting authority in a query string, cookie, or
+persistent browser storage. A project capability cannot read another project
+or the unassigned legacy view.
 
 Publish a short non-final assignment event when work starts, blocks, or
 completes. Use the frozen case ID; the command resolves its exact revision.
@@ -163,7 +216,8 @@ Bind an evaluator run to the snapshot whose bytes it is meant to exercise:
 ```sh
 python3 "$SKILL_DIR/scripts/skill_eval.py" run-suite CORPUS \
   --plugin-dir /path/to/plugin \
-  --dashboard-snapshot SNAPSHOT_ID
+  --dashboard-snapshot SNAPSHOT_ID \
+  --run-goal "Check whether the current revision passes every declared task"
 ```
 
 The evaluator pins the plugin first and refuses the run before model execution
@@ -171,6 +225,13 @@ if the pinned target-skill identities do not match the snapshot. Campaign-level
 passing requires one bound full-corpus suite on one exact snapshot, plugin
 identity, case-revision set, and evaluation contract. Separate cases, suites,
 or revisions never pool into passing.
+
+Project-aware `run` and `run-suite` commands require a plain-language
+`--run-goal`. They write startup and renewable lease artifacts before risky
+setup, then use immutable result or typed failure artifacts as terminal
+authority. An expired run without a terminal artifact appears as
+`liveness_lost`; it is not labeled interrupted unless an explicit interruption
+artifact exists.
 
 Manual lifecycle commands remain available:
 

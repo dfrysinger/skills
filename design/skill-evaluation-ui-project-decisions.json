@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "revision": "skill-evaluation-ui-project-decisions-r2",
+  "events": [
+    {
+      "event_id": "user-project-first-ux-2026-10-19",
+      "question": "What should the dashboard treat as the primary object, and where should individual runs appear?",
+      "recommended_answer": "Use one skill-improvement project as the primary object. Show its skill, improvement and validation goal, corpus and holdout task progress, then ablation progress. List retries and execution attempts as compact run rows below those outcomes.",
+      "answer": "so i have a ton of these that keep getting opened and the all campaigns page is broken and I'm not convinced each of these needs its own page, arent these just retries of failed runs? and why do they never show a run having run? and this goal at the top isnt useful, it should state what skill is being tested (i thinkn it does that) and what we are trying to improve, or validate in that skill, and how many tasks from the test corpus have passed and how many have not, and what each task is in brief. Like the ux architecture here should be that there is an overall project like: improve unattended run so it can pass all 15 tasks and the holdout tasks in the most generalized minimal way we can find. Then it should list the tasks we are trying to tackle, and show how many are passing and for those that arent what % of the individual tests or subtasks or whatever the sub-units are have passed. The actual runs then go below that, and most runs will fail due to infrastructure failures, so we can just list them and say how many parallel experiments are being run in each run, and if the run actually ran or if it failed due to infrastructure issues, and if it did run, how many experiments ran and of the ones that ran how many were successful and how many failed. But each run can be one line with the timestamp and those basic run stats. The main goal is to get all the tasks to pass and for the skill to prove its generalized, and then to minimize the skill with ablation so we should show all of those steps first, the runs are just attempts at improving those top level goals.",
+      "context": "The user reviewed five screenshots showing many retry-specific campaign tabs, a broken refreshed index route, and near-identical 15-task pages. This replaces the campaign-first product hierarchy.",
+      "authority": "top-level product direction",
+      "resolved": true
+    },
+    {
+      "event_id": "user-explicit-project-identity-2026-10-19",
+      "question": "Should explicit project identity be canonical, with inferred grouping used only to backfill existing campaigns?",
+      "recommended_answer": "Require a stable explicit project ID and project goal for project views. Do not infer identity from retry names. Existing data may be migrated separately.",
+      "answer": "agreed and we dont need backfill support the agents can do that if needed",
+      "context": "This determines whether retry corpora can be grouped by naming heuristics. The user rejected automatic backfill and authorized agents to add explicit metadata when needed.",
+      "authority": "top-level product decision",
+      "resolved": true
+    },
+    {
+      "event_id": "user-supported-launcher-run-boundary-2026-10-19",
+      "question": "Should supported evaluator launchers be the required automatic run boundary, with unsupported custom launch paths intentionally absent from the dashboard?",
+      "recommended_answer": "Yes. Instrument local run, local suite, and distributed launch owners so they create and update run lifecycle records automatically. Do not depend on agent-authored run events.",
+      "answer": "yes",
+      "context": "Repository inspection found that ordinary evaluations consistently use skill_eval.py run or run-suite, while distributed evaluations use the canonical package, matrix, dispatch, stage, and result scripts. Completed real suites already contain planned attempts, outcomes, timing, and accounting.",
+      "authority": "top-level product decision",
+      "resolved": true
+    },
+    {
+      "event_id": "user-adapter-declared-task-progress-2026-10-19",
+      "question": "Should task progress use adapter-declared, validated, candidate-safe subchecks and omit a percentage when safe subchecks do not exist?",
+      "recommended_answer": "Yes. Show named denominators only for safe declared checks. Preserve a final verdict without a fabricated percentage for prose tasks whose criteria are hidden.",
+      "answer": "yes thats fine, oh and for each task at the top level we should show how long it took to go from not passing to passing (like when we started experiments, and when we finished if it passes now, and how many runs it took and how many credits/tokens if we know) so that would be part of the rollup, and similarly the ablation should show the size difference we saw before and after ablation (and we should figure out if ablation is happening after every successful new passing of a task (which I think its supposed to) or all at the end, if its per task then ablation is just a step in the task process, so a task could be passing but now in ablation phase",
+      "context": "The user accepted safe adapter-declared subcheck progress and extended the task rollup to include time-to-pass, run count, known cost or token use, and ablation status.",
+      "authority": "top-level product decision",
+      "resolved": true
+    },
+    {
+      "event_id": "user-task-journey-and-ablation-rollup-2026-10-19",
+      "question": "Should each task roll up its experiment-to-pass journey and ablation size change, and is ablation a per-task phase when the workflow requires delta minimization?",
+      "recommended_answer": "Track first experiment, first qualified pass, elapsed time, supported run and attempt counts, known credits and tokens, then the before/after size of the delta-ablation candidate. Keep full-skill ablation as a separate project-level stage.",
+      "answer": "yes thats fine, oh and for each task at the top level we should show how long it took to go from not passing to passing (like when we started experiments, and when we finished if it passes now, and how many runs it took and how many credits/tokens if we know) so that would be part of the rollup, and similarly the ablation should show the size difference we saw before and after ablation (and we should figure out if ablation is happening after every successful new passing of a task (which I think its supposed to) or all at the end, if its per task then ablation is just a step in the task process, so a task could be passing but now in ablation phase",
+      "context": "Repository evidence in references/cumulative-skill-hill-climb.md requires delta ablation after each newly conquered task and reserves full neutral/lean/full ablation for accumulated skill dilution or contradiction.",
+      "authority": "top-level product decision plus binding workflow evidence",
+      "resolved": true
+    },
+    {
+      "event_id": "user-separate-task-result-and-phase-2026-10-19",
+      "question": "Should each task show evaluator result and workflow phase separately, allowing a task to be passing while delta ablation or qualification remains underway?",
+      "recommended_answer": "Yes. Keep factual evaluator outcome separate from the task's improvement phase. Measure time-to-pass at the first qualified pass, while later phases show minimization, regression, holdout, and publication work.",
+      "answer": "yes",
+      "context": "The canonical task presentation uses independent result and phase axes. Result records evaluator truth; phase records the improvement workflow and may remain incomplete after a passing result.",
+      "authority": "top-level product decision",
+      "resolved": true
+    },
+    {
+      "event_id": "repository-project-metadata-authority-2026-10-19",
+      "question": "Which component owns project identity, goal, and corpus membership metadata?",
+      "recommended_answer": "Agents author explicit versioned project metadata with the corpus. Supported evaluator launchers validate and snapshot it into run authority, dashboard state registers it with conflict rejection, and the read-only browser only projects it.",
+      "answer": "Repository evidence: corpus identity already originates in corpus-local evaluator inputs; dashboard_state.py validates create-once registrations and rejects changed identity; skill_eval.py owns local run snapshots and lifecycle events. Extending that boundary avoids UI-authored truth and allows distributed packages to carry the same explicit declaration.",
+      "context": "Relevant ownership paths are skill_eval.py::load_corpus/run_suite and dashboard_state.py::corpus_identity/create_campaign. Legacy schema-v1 corpora remain unassigned unless an agent explicitly adds project metadata; no name-based grouping or automatic backfill is permitted.",
+      "authority": "binding repository evidence consistent with prior user decisions",
+      "resolved": true
+    },
+    {
+      "event_id": "user-explicit-task-case-grouping-2026-10-19",
+      "question": "Should multiple evaluator cases that represent the same user-facing task be grouped under an explicit stable task ID?",
+      "recommended_answer": "Yes. Declare project tasks once, map ordinary cases, variants, safe subchecks, and holdouts to them explicitly, and treat retries only as run attempts. Never infer grouping from names.",
+      "answer": "yes",
+      "context": "The project task is the primary user-facing unit. Evaluator cases are explicit tests beneath it, allowing task-level status, timing, cost, ablation, and generalization rollups without duplicating tasks or campaigns.",
+      "authority": "top-level product decision",
+      "resolved": true
+    },
+    {
+      "event_id": "user-delegated-remaining-design-decisions-2026-10-19",
+      "question": "How should the remaining project-dashboard design branches be resolved?",
+      "recommended_answer": "Use the recommendation supplied with each remaining branch, preserving the agreed project-first outcome and evidence boundaries.",
+      "answer": "i need to step away, go with your recommendations for the rest",
+      "context": "The user delegated the remaining design interview decisions after approving project-first hierarchy, explicit identity, automatic supported-launcher monitoring, safe task progress, task journey metrics, separate result and phase, and explicit task-to-case grouping.",
+      "authority": "top-level delegation for the remaining design branches",
+      "resolved": true
+    },
+    {
+      "event_id": "recommended-aggregate-only-holdouts-2026-10-19",
+      "question": "How should true holdout cases appear?",
+      "recommended_answer": "Show aggregate transfer counts, frozen candidate identity, run state, cost, and qualification outcome. Do not expose holdout identities, descriptions, prompts, criteria, or per-case behavioral failures. Relabel any revealed holdout as development evidence before reuse.",
+      "answer": "i need to step away, go with your recommendations for the rest",
+      "context": "The recommendation was shown immediately before the user delegated the remaining decisions. It preserves the existing hidden-evidence and genuine-generalization contract.",
+      "authority": "delegated product decision plus binding evaluator evidence boundary",
+      "resolved": true
+    },
+    {
+      "event_id": "recommended-project-contract-2026-10-19",
+      "question": "What is the explicit project metadata contract?",
+      "recommended_answer": "Use a versioned corpus-local project declaration with a stable project ID, immutable project goal, target skills, explicit task definitions, explicit case-to-task mappings, and case roles. The same project ID may add non-conflicting tasks and corpora; conflicting identity, goal, task meaning, or role is rejected. Materially changing the goal creates a new project.",
+      "answer": "i need to step away, go with your recommendations for the rest",
+      "context": "The declaration travels with local and distributed evaluator inputs. Supported launchers snapshot its exact fingerprint into every run. Legacy corpora without it remain unassigned.",
+      "authority": "delegated product and architecture decision",
+      "resolved": true
+    },
+    {
+      "event_id": "recommended-run-lifecycle-contract-2026-10-19",
+      "question": "How should local and distributed runs become visible automatically?",
+      "recommended_answer": "Each supported launcher writes one normalized create-once run manifest before risky work, append-only progress records during execution, and one terminal record on every exit path. Terminal classes are completed, infrastructure_failed, cancelled, or interrupted; evaluator PASS and FAIL remain attempt outcomes rather than infrastructure states.",
+      "answer": "i need to step away, go with your recommendations for the rest",
+      "context": "Local run and run-suite plus distributed package, dispatch, stage, and result owners emit the same safe projection fields while retaining source-specific evidence.",
+      "authority": "delegated architecture decision",
+      "resolved": true
+    },
+    {
+      "event_id": "recommended-project-open-and-capability-2026-10-19",
+      "question": "How should browser opening and refresh authority work?",
+      "recommended_answer": "Auto-open a project at most once per dashboard service generation, never once per agent session or retry. Keep explicit dashboard open available. Mint project-scoped browser capabilities and retain them only in tab-scoped sessionStorage after removing them from the URL, so refresh works without granting all-project access.",
+      "answer": "i need to step away, go with your recommendations for the rest",
+      "context": "This removes duplicate tabs, repairs refresh, and preserves the existing loopback capability boundary.",
+      "authority": "delegated product and security-boundary decision",
+      "resolved": true
+    },
+    {
+      "event_id": "recommended-task-and-ablation-state-2026-10-19",
+      "question": "What task and ablation states should the project use?",
+      "recommended_answer": "Task result is not_passing, passing, regressed, or unavailable. Task phase is not_started, experimenting, candidate_pass, qualifying, delta_ablation, regression_check, holdout_validation, ready_to_publish, or published. Per-task delta ablation compares the exploratory passing increment with its smallest qualified increment. Whole-skill neutral, lean, and full ablation is a separate project stage used only when accumulated procedure needs rebuilding.",
+      "answer": "i need to step away, go with your recommendations for the rest",
+      "context": "The state model follows the cumulative hill-climb and ablation references and allows a task to be passing while minimization remains unfinished.",
+      "authority": "delegated product decision plus binding workflow evidence",
+      "resolved": true
+    },
+    {
+      "event_id": "recommended-legacy-and-migration-boundary-2026-10-19",
+      "question": "How should legacy campaigns without project metadata be handled?",
+      "recommended_answer": "Do not infer or auto-migrate them. Keep them available under a clearly labeled unassigned evaluations view and exclude them from project totals until an agent adds valid explicit metadata.",
+      "answer": "i need to step away, go with your recommendations for the rest",
+      "context": "This applies the user's earlier rejection of backfill support while preserving access to existing evidence.",
+      "authority": "delegated product decision consistent with explicit prior direction",
+      "resolved": true
+    }
+  ],
+  "unresolved_event_ids": []
+}

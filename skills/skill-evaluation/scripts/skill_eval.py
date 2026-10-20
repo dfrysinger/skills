@@ -8,10 +8,12 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import uuid
@@ -63,6 +65,143 @@ def digest(path: Path) -> str:
 def write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+
+
+def atomic_write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+class RunLeaseError(RuntimeError):
+    pass
+
+
+class SuiteInfrastructureError(RuntimeError):
+    def __init__(self, stage: str, cause: BaseException) -> None:
+        super().__init__(str(cause))
+        self.stage = stage
+
+
+class RunLease:
+    def __init__(
+        self,
+        path: Path,
+        run_id: str,
+        generation: str,
+        *,
+        duration_seconds: float | None = None,
+        renewal_seconds: float | None = None,
+    ):
+        self.path = path
+        self.run_id = run_id
+        self.generation = generation
+        self.duration_seconds = duration_seconds or float(
+            os.environ.get("SKILL_EVAL_RUN_LEASE_SECONDS", "20")
+        )
+        self.renewal_seconds = renewal_seconds or float(
+            os.environ.get("SKILL_EVAL_RUN_LEASE_RENEW_SECONDS", "5")
+        )
+        if (
+            self.duration_seconds <= 0
+            or self.renewal_seconds <= 0
+            or self.renewal_seconds * 2 >= self.duration_seconds
+        ):
+            raise ValueError(
+                "run lease renewal must be shorter than half the lease duration"
+            )
+        self._stop = threading.Event()
+        self._state_lock = threading.Lock()
+        self._failure: BaseException | None = None
+        self._thread: threading.Thread | None = None
+
+    def _value(self) -> dict:
+        renewed = datetime.now(timezone.utc)
+        return {
+            "schema_version": 1,
+            "run_id": self.run_id,
+            "generation": self.generation,
+            "renewed_at": renewed.isoformat(),
+            "expires_at": (
+                renewed.timestamp() + self.duration_seconds
+            ),
+        }
+
+    def renew(self) -> None:
+        value = self._value()
+        value["expires_at"] = datetime.fromtimestamp(
+            value["expires_at"],
+            timezone.utc,
+        ).isoformat()
+        try:
+            atomic_write_json(self.path, value)
+        except Exception as error:
+            raise RunLeaseError(
+                f"unable to renew run lease: {error}"
+            ) from error
+
+    def start(self) -> None:
+        self.renew()
+
+        def heartbeat() -> None:
+            while not self._stop.wait(self.renewal_seconds):
+                try:
+                    self.renew()
+                except Exception as error:
+                    failure = (
+                        error
+                        if isinstance(error, RunLeaseError)
+                        else RunLeaseError(
+                            f"run lease renewal failed: {error}"
+                        )
+                    )
+                    with self._state_lock:
+                        self._failure = failure
+                    self._stop.set()
+                    return
+
+        self._thread = threading.Thread(
+            target=heartbeat,
+            name=f"skill-eval-lease-{self.run_id}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def check(self) -> None:
+        with self._state_lock:
+            self._check_locked()
+
+    def _check_locked(self) -> None:
+        if self._failure is None:
+            return
+        if isinstance(self._failure, RunLeaseError):
+            raise self._failure
+        raise RunLeaseError(
+            f"run lease renewal failed: {self._failure}"
+        )
+
+    def admit_start(self) -> None:
+        with self._state_lock:
+            self._check_locked()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=max(1.0, self.renewal_seconds * 2))
+        self.check()
 
 
 def read_json(path: Path) -> dict:
@@ -1962,6 +2101,7 @@ def run_case(
     expected_revision: str | None = None, quality_review: bool = False,
     suite_owner: dict | None = None,
     dashboard_snapshot_id: str | None = None,
+    run_goal: str | None = None,
 ) -> Path:
     timeline = measurement.Timeline()
     ensure_case_id(case_id)
@@ -1984,6 +2124,70 @@ def run_case(
     run_parent = "treatment-admission-runs" if treatment_admission else "runs"
     run_root = root / run_parent / f"{utc_stamp()}-{uuid.uuid4().hex[:8]}" / case_id
     run_root.mkdir(parents=True)
+    from dashboard_cli import state_root as dashboard_state_root
+    from dashboard_state import create_campaign
+    from project_dashboard import (
+        binding_fingerprint,
+        project_binding_for_case,
+        project_run_binding,
+        task_fingerprint,
+        validate_run_start,
+    )
+
+    project_binding = project_run_binding(root, [case_id], run_goal)
+    project_start = None
+    project_attempt = None
+    lease = None
+    if project_binding is not None:
+        registration = create_campaign(dashboard_state_root(), root)
+        selected_binding = project_binding["case_bindings"][0]
+        declaration, _, task, binding = project_binding_for_case(
+            root,
+            case_id,
+        )
+        if suite_owner is None:
+            lease_generation = secrets.token_hex(32)
+            project_start = {
+                "schema_version": 1,
+                "run_id": run_root.parent.name,
+                "project_id": project_binding["project_id"],
+                "project_declaration_sha256": project_binding[
+                    "project_declaration_sha256"
+                ],
+                "campaign_id": registration["campaign_id"],
+                "launcher_kind": "local_case",
+                "run_goal": project_binding["run_goal"],
+                "requested_plugin_path": str(plugin_dir),
+                "treatment_reference": (
+                    str(treatment_file or sandcastle_treatment_file)
+                    if treatment_file or sandcastle_treatment_file
+                    else None
+                ),
+                "arm": arm,
+                "task_ids": project_binding["task_ids"],
+                "case_bindings": project_binding["case_bindings"],
+                "planned_workers": 1,
+                "planned_attempts": 1,
+                "lease_generation": lease_generation,
+                "started_at": timeline.started_at,
+            }
+            validate_run_start(project_start)
+        project_attempt = {
+            "project_id": declaration["project_id"],
+            "declaration_sha256": project_binding[
+                "project_declaration_sha256"
+            ],
+            "task_id": task["task_id"],
+            "task_fingerprint": task_fingerprint(task),
+            "binding_id": binding["binding_id"],
+            "binding_fingerprint": binding_fingerprint(binding),
+        }
+        if suite_owner is None:
+            lease = RunLease(
+                run_root / "run-lease.json",
+                run_root.parent.name,
+                lease_generation,
+            )
     dashboard_writer_id = uuid.uuid4().hex
     dashboard_writer_generation = uuid.uuid4().hex
     dashboard_planned_event_id = uuid.uuid4().hex
@@ -1999,6 +2203,8 @@ def run_case(
         "compatibility_status": compatibility["status"],
         "dashboard_writer_id": dashboard_writer_id,
         "dashboard_writer_generation": dashboard_writer_generation,
+        "project_start": project_start,
+        "project": project_attempt,
     }
     measurement.write_once(run_root / "attempt.json", attempt)
     dashboard_attempt_event(
@@ -2036,6 +2242,9 @@ def run_case(
     status = "failed"
     resources = ExitStack()
     try:
+        if lease is not None:
+            lease.start()
+            lease.check()
         result = _run_case(
             root, case_id, plugin_dir, copilot, model, effort, home_mode, timeout_seconds,
             copilot_identity_record, harness_identity_record, arm=arm,
@@ -2167,6 +2376,32 @@ def run_case(
                         "sha256": digest(path),
                     },
                 )
+        if lease is not None:
+            try:
+                lease.stop()
+            except RunLeaseError as error:
+                failure_path = run_root / "attempt-failure-receipt.json"
+                terminal = (
+                    (run_root / "REPORT.md").is_file()
+                    or (run_root / "execution-result.json").is_file()
+                    or (run_root / "repository-result.json").is_file()
+                )
+                if terminal:
+                    print(
+                        f"skill-evaluation run lease renewal failed after "
+                        f"terminal result: {error}",
+                        file=sys.stderr,
+                    )
+                elif not failure_path.exists():
+                    write_failure_receipt(
+                        failure_path,
+                        case_id=case_id,
+                        case_revision=case_revision,
+                        stage="lease_unavailable",
+                        error=error,
+                        log=run_root / "absent.log",
+                    )
+                    raise
 
 
 def result_from_run(run_root: Path, *, behavioral_only: bool = False) -> str:
@@ -2184,7 +2419,7 @@ def result_from_run(run_root: Path, *, behavioral_only: bool = False) -> str:
     return "FAIL"
 
 
-def run_suite(
+def _run_suite_impl(
     root: Path,
     plugin_dir: Path,
     copilot: Path,
@@ -2202,6 +2437,9 @@ def run_suite(
     sandcastle_treatment_file: Path | None = None,
     sandcastle_adapter_dir: Path | None = None,
     dashboard_snapshot_id: str | None = None,
+    run_goal: str | None = None,
+    suite_root: Path | None = None,
+    lease: RunLease | None = None,
 ) -> tuple[Path, bool]:
     if workers <= 0:
         raise ValueError("workers must be positive")
@@ -2227,11 +2465,15 @@ def run_suite(
 
     started_at = utc_instant()
     started_clock = time.monotonic()
-    suite_root = root / "suite-runs" / f"{utc_stamp()}-{uuid.uuid4().hex[:8]}"
-    suite_root.mkdir(parents=True)
+    if suite_root is None:
+        suite_root = root / "suite-runs" / f"{utc_stamp()}-{uuid.uuid4().hex[:8]}"
+        suite_root.mkdir(parents=True)
     harness_identity_record = harness_identity(suite_root)
     suite_plugin = suite_root / "target-plugin"
-    snapshot_plugin(plugin_dir, suite_plugin)
+    try:
+        snapshot_plugin(plugin_dir, suite_plugin)
+    except (OSError, ValueError) as error:
+        raise SuiteInfrastructureError("plugin_snapshot", error) from error
     suite_lineage_identity = None
     if dashboard_snapshot_id is not None:
         if arm != "skill":
@@ -2276,34 +2518,42 @@ def run_suite(
     failures = []
     pending = list(selected)
     for attempt_number in range(1, max_attempts + 1):
+        if lease is not None:
+            lease.check()
         if not pending:
             break
         next_pending = []
-        with ThreadPoolExecutor(max_workers=workers) as executor:
+        def run_started_case(case_id: str) -> Path:
+            if lease is not None:
+                lease.admit_start()
+            return run_case(
+                root,
+                case_id,
+                suite_plugin,
+                frozen_copilot,
+                model,
+                effort,
+                home_mode,
+                timeout_seconds,
+                copilot_identity_record,
+                harness_identity_record,
+                arm=arm,
+                treatment_file=suite_treatment_file,
+                sandcastle_treatment_file=suite_sandcastle_file,
+                sandcastle_adapter_dir=suite_adapter_dir,
+                expected_revision=revisions[case_id],
+                quality_review=quality_review,
+                dashboard_snapshot_id=dashboard_snapshot_id,
+                run_goal=run_goal,
+                suite_owner={"suite_path": str(suite_root.relative_to(root)),
+                             "case_id": case_id, "attempt": attempt_number,
+                             "max_attempts": max_attempts},
+            )
+
+        executor = ThreadPoolExecutor(max_workers=workers)
+        try:
             futures = {
-                executor.submit(
-                    run_case,
-                    root,
-                    case_id,
-                    suite_plugin,
-                    frozen_copilot,
-                    model,
-                    effort,
-                    home_mode,
-                    timeout_seconds,
-                    copilot_identity_record,
-                    harness_identity_record,
-                    arm=arm,
-                    treatment_file=suite_treatment_file,
-                    sandcastle_treatment_file=suite_sandcastle_file,
-                    sandcastle_adapter_dir=suite_adapter_dir,
-                    expected_revision=revisions[case_id],
-                    quality_review=quality_review,
-                    dashboard_snapshot_id=dashboard_snapshot_id,
-                    suite_owner={"suite_path": str(suite_root.relative_to(root)),
-                                 "case_id": case_id, "attempt": attempt_number,
-                                 "max_attempts": max_attempts},
-                ): case_id
+                executor.submit(run_started_case, case_id): case_id
                 for case_id in pending
             }
             for future in as_completed(futures):
@@ -2331,6 +2581,10 @@ def run_suite(
                         "behavioral_verdict" in attempt and attempt["behavioral_verdict"] != "PASS"
                     ):
                         next_pending.append(case_id)
+                except RunLeaseError:
+                    for pending_future in futures:
+                        pending_future.cancel()
+                    raise
                 except Exception as error:
                     attempt = {
                         "attempt": attempt_number,
@@ -2349,6 +2603,8 @@ def run_suite(
                         next_pending.append(case_id)
                     else:
                         failures.append({"case_id": case_id, **attempt})
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
         pending = next_pending
 
     results = []
@@ -2515,6 +2771,200 @@ def run_suite(
     return suite_root, passed
 
 
+def run_suite(
+    root: Path,
+    plugin_dir: Path,
+    copilot: Path,
+    model: str,
+    effort: str,
+    home_mode: str,
+    timeout_seconds: int,
+    workers: int,
+    case_ids: list[str] | None = None,
+    max_attempts: int = 1,
+    *,
+    arm: str = "skill",
+    quality_review: bool = False,
+    treatment_file: Path | None = None,
+    sandcastle_treatment_file: Path | None = None,
+    sandcastle_adapter_dir: Path | None = None,
+    dashboard_snapshot_id: str | None = None,
+    run_goal: str | None = None,
+) -> tuple[Path, bool]:
+    if workers <= 0:
+        raise ValueError("workers must be positive")
+    if max_attempts <= 0:
+        raise ValueError("max attempts must be positive")
+    corpus = load_corpus(root)
+    selected = case_ids or corpus["cases"]
+    if not selected:
+        raise ValueError("the corpus contains no cases")
+    if len(selected) != len(set(selected)):
+        raise ValueError("suite case IDs must be unique")
+    unknown = sorted(set(selected) - set(corpus["cases"]))
+    if unknown:
+        raise ValueError(f"unknown suite cases: {unknown}")
+    from project_dashboard import (
+        project_run_binding,
+        validate_run_start,
+        validate_suite_failure,
+    )
+
+    project_binding = project_run_binding(root, selected, run_goal)
+    if project_binding is None:
+        return _run_suite_impl(
+            root,
+            plugin_dir,
+            copilot,
+            model,
+            effort,
+            home_mode,
+            timeout_seconds,
+            workers,
+            case_ids,
+            max_attempts,
+            arm=arm,
+            quality_review=quality_review,
+            treatment_file=treatment_file,
+            sandcastle_treatment_file=sandcastle_treatment_file,
+            sandcastle_adapter_dir=sandcastle_adapter_dir,
+            dashboard_snapshot_id=dashboard_snapshot_id,
+            run_goal=run_goal,
+        )
+
+    suite_root = root / "suite-runs" / f"{utc_stamp()}-{uuid.uuid4().hex[:8]}"
+    suite_root.mkdir(parents=True)
+    from dashboard_cli import state_root as dashboard_state_root
+    from dashboard_state import create_campaign
+
+    registration = create_campaign(dashboard_state_root(), root)
+    lease_generation = secrets.token_hex(32)
+    start = {
+        "schema_version": 1,
+        "run_id": suite_root.name,
+        "project_id": project_binding["project_id"],
+        "project_declaration_sha256": project_binding[
+            "project_declaration_sha256"
+        ],
+        "campaign_id": registration["campaign_id"],
+        "launcher_kind": "local_suite",
+        "run_goal": project_binding["run_goal"],
+        "requested_plugin_path": str(plugin_dir),
+        "treatment_reference": (
+            str(treatment_file or sandcastle_treatment_file)
+            if treatment_file or sandcastle_treatment_file
+            else None
+        ),
+        "arm": arm,
+        "task_ids": project_binding["task_ids"],
+        "case_bindings": project_binding["case_bindings"],
+        "planned_workers": workers,
+        "planned_attempts": len(selected) * max_attempts,
+        "lease_generation": lease_generation,
+        "started_at": utc_instant(),
+    }
+    validate_run_start(start)
+    measurement.write_once(suite_root / "suite-start.json", start)
+    lease = None
+    try:
+        lease = RunLease(
+            suite_root / "run-lease.json",
+            suite_root.name,
+            lease_generation,
+        )
+        lease.start()
+        lease.check()
+        result = _run_suite_impl(
+            root,
+            plugin_dir,
+            copilot,
+            model,
+            effort,
+            home_mode,
+            timeout_seconds,
+            workers,
+            case_ids,
+            max_attempts,
+            arm=arm,
+            quality_review=quality_review,
+            treatment_file=treatment_file,
+            sandcastle_treatment_file=sandcastle_treatment_file,
+            sandcastle_adapter_dir=sandcastle_adapter_dir,
+            dashboard_snapshot_id=dashboard_snapshot_id,
+            run_goal=run_goal,
+            suite_root=suite_root,
+            lease=lease,
+        )
+        return result
+    except (
+        KeyboardInterrupt,
+        OSError,
+        RunLeaseError,
+        SuiteInfrastructureError,
+        ValueError,
+        subprocess.TimeoutExpired,
+    ) as error:
+        if not (suite_root / "suite-result.json").exists():
+            suite_path = str(suite_root.relative_to(root))
+            started_attempts = []
+            for path in sorted((root / "runs").glob("*/*/attempt.json")):
+                try:
+                    owner = read_json(path).get("suite_owner")
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
+                if isinstance(owner, dict) and owner.get("suite_path") == suite_path:
+                    started_attempts.append(path)
+            stage = (
+                error.stage
+                if isinstance(error, SuiteInfrastructureError)
+                else "lease"
+                if isinstance(error, RunLeaseError)
+                else "launcher_setup"
+            )
+            if stage == "lease" or not started_attempts:
+                failure = {
+                    "schema_version": 1,
+                    "run_id": suite_root.name,
+                    "stage": stage,
+                    "error_type": type(error).__name__,
+                    "message": str(error)[:400] or type(error).__name__,
+                    "failed_at": utc_instant(),
+                }
+                validate_suite_failure(failure, start=start)
+                if not (suite_root / "suite-failure.json").exists():
+                    measurement.write_once(
+                        suite_root / "suite-failure.json",
+                        failure,
+                    )
+        raise
+    finally:
+        if lease is not None:
+            try:
+                lease.stop()
+            except RunLeaseError as error:
+                if not (suite_root / "suite-result.json").exists():
+                    failure = {
+                        "schema_version": 1,
+                        "run_id": suite_root.name,
+                        "stage": "lease",
+                        "error_type": type(error).__name__,
+                        "message": str(error)[:400],
+                        "failed_at": utc_instant(),
+                    }
+                    validate_suite_failure(failure, start=start)
+                    if not (suite_root / "suite-failure.json").exists():
+                        measurement.write_once(
+                            suite_root / "suite-failure.json",
+                            failure,
+                        )
+                else:
+                    print(
+                        f"skill-evaluation run lease renewal failed after "
+                        f"terminal result: {error}",
+                        file=sys.stderr,
+                    )
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser()
     sub = result.add_subparsers(dest="command", required=True)
@@ -2561,6 +3011,7 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--treatment-admission", action="store_true")
     run.add_argument("--quality-review", action="store_true")
     run.add_argument("--dashboard-snapshot")
+    run.add_argument("--run-goal")
 
     suite = sub.add_parser("run-suite")
     suite.add_argument("corpus", type=Path)
@@ -2583,6 +3034,7 @@ def parser() -> argparse.ArgumentParser:
     suite.add_argument("--sandcastle-adapter-dir", type=Path)
     suite.add_argument("--quality-review", action="store_true")
     suite.add_argument("--dashboard-snapshot")
+    suite.add_argument("--run-goal")
     history = sub.add_parser("history")
     history.add_argument("corpus", type=Path)
     history.add_argument("--format", choices=("json", "markdown"), default="markdown")
@@ -2641,6 +3093,7 @@ def main(argv: list[str] | None = None) -> int:
                     treatment_admission=args.treatment_admission,
                     quality_review=args.quality_review,
                     dashboard_snapshot_id=args.dashboard_snapshot,
+                    run_goal=args.run_goal,
                 )
             print(run_path)
             repository_result = run_path / "repository-result.json"
@@ -2669,6 +3122,7 @@ def main(argv: list[str] | None = None) -> int:
                 if args.sandcastle_adapter_dir else None,
                 quality_review=args.quality_review,
                 dashboard_snapshot_id=args.dashboard_snapshot,
+                run_goal=args.run_goal,
             )
             print(suite_root)
             if not passed:
