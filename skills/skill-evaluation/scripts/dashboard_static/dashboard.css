@@ -949,6 +949,22 @@ tbody tr:hover {
   text-decoration: none;
 }
 
+.run-summary {
+  min-width: 0;
+}
+
+.run-summary strong,
+.run-summary span {
+  display: block;
+}
+
+.run-summary span {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .run-card:hover,
 .task-list-simple a:hover {
   border-color: var(--accent);

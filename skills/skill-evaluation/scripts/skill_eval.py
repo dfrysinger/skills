@@ -2865,12 +2865,13 @@ def run_suite(
     }
     validate_run_start(start)
     measurement.write_once(suite_root / "suite-start.json", start)
-    lease = RunLease(
-        suite_root / "run-lease.json",
-        suite_root.name,
-        lease_generation,
-    )
+    lease = None
     try:
+        lease = RunLease(
+            suite_root / "run-lease.json",
+            suite_root.name,
+            lease_generation,
+        )
         lease.start()
         lease.check()
         result = _run_suite_impl(
@@ -2937,30 +2938,31 @@ def run_suite(
                     )
         raise
     finally:
-        try:
-            lease.stop()
-        except RunLeaseError as error:
-            if not (suite_root / "suite-result.json").exists():
-                failure = {
-                    "schema_version": 1,
-                    "run_id": suite_root.name,
-                    "stage": "lease",
-                    "error_type": type(error).__name__,
-                    "message": str(error)[:400],
-                    "failed_at": utc_instant(),
-                }
-                validate_suite_failure(failure, start=start)
-                if not (suite_root / "suite-failure.json").exists():
-                    measurement.write_once(
-                        suite_root / "suite-failure.json",
-                        failure,
+        if lease is not None:
+            try:
+                lease.stop()
+            except RunLeaseError as error:
+                if not (suite_root / "suite-result.json").exists():
+                    failure = {
+                        "schema_version": 1,
+                        "run_id": suite_root.name,
+                        "stage": "lease",
+                        "error_type": type(error).__name__,
+                        "message": str(error)[:400],
+                        "failed_at": utc_instant(),
+                    }
+                    validate_suite_failure(failure, start=start)
+                    if not (suite_root / "suite-failure.json").exists():
+                        measurement.write_once(
+                            suite_root / "suite-failure.json",
+                            failure,
+                        )
+                else:
+                    print(
+                        f"skill-evaluation run lease renewal failed after "
+                        f"terminal result: {error}",
+                        file=sys.stderr,
                     )
-            else:
-                print(
-                    f"skill-evaluation run lease renewal failed after "
-                    f"terminal result: {error}",
-                    file=sys.stderr,
-                )
 
 
 def parser() -> argparse.ArgumentParser:

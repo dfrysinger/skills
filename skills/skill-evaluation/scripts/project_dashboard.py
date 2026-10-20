@@ -1088,6 +1088,16 @@ def _suite_started_attempts(corpus_root: Path, suite_root: Path) -> int:
     return count
 
 
+def _attempt_outcome_counts(outcome: str | None) -> dict:
+    return {
+        "passing_attempts": int(outcome == "PASS"),
+        "failing_attempts": int(outcome in {"FAIL", "UNANSWERABLE"}),
+        "unavailable_attempts": int(
+            outcome not in {"PASS", "FAIL", "UNANSWERABLE"}
+        ),
+    }
+
+
 def _run_projection(source: dict) -> list[dict]:
     if not source["available"]:
         return []
@@ -1201,14 +1211,17 @@ def _run_projection(source: dict) -> list[dict]:
                         "repository result",
                     )
                     outcome = (
-                        "PASS"
+                        value.get("behavioral_verdict")
                         if value.get("execution_status") == "PASS"
-                        and value.get("behavioral_verdict") == "PASS"
-                        else "FAIL"
+                        else value.get("execution_status")
                     )
                 elif result_path.is_file():
                     value = regular_json(result_path, "execution result")
-                    outcome = value.get("execution_status")
+                    outcome = (
+                        value.get("behavioral_verdict")
+                        if value.get("execution_status") == "PASS"
+                        else value.get("execution_status")
+                    )
                 else:
                     verdicts = [
                         regular_json(path, "judgment").get("verdict")
@@ -1223,9 +1236,7 @@ def _run_projection(source: dict) -> list[dict]:
                             and "UNANSWERABLE" in verdicts
                             else "FAIL"
                         )
-                if outcome is not None:
-                    row["passing_attempts"] = int(outcome == "PASS")
-                    row["failing_attempts"] = int(outcome != "PASS")
+                row.update(_attempt_outcome_counts(outcome))
             if failure:
                 try:
                     failure_value = regular_json(

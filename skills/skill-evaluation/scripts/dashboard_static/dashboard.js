@@ -518,6 +518,33 @@ const sentenceCase = (value) => {
   return words ? words[0].toUpperCase() + words.slice(1) : "Untitled task";
 };
 
+const conciseTimestamp = (value) => {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(parsed);
+};
+
+const runAttemptSummary = (run) => {
+  const summary = `${run.planned_attempts} planned attempts; ${run.started_attempts} started`;
+  if (run.completed_attempts === undefined) {
+    return summary;
+  }
+  const counts = [
+    run.passing_attempts,
+    run.failing_attempts,
+    run.unavailable_attempts,
+  ];
+  if (!counts.every(Number.isInteger)) {
+    return `${summary}; ${run.completed_attempts} completed; outcome counts unavailable`;
+  }
+  return `${summary}; ${run.completed_attempts} completed, ${run.passing_attempts} passing, ${run.failing_attempts} failing, ${run.unavailable_attempts} unavailable`;
+};
+
 const isActive = (item) => ["active", "blocked"].includes(item.state);
 const needsUpdate = (item) => ["stale", "conflicted"].includes(item.state);
 
@@ -850,9 +877,12 @@ function renderProject(data) {
           .map(
             (run) => `
               <article class="run-card">
-                <div><strong>${escapeHtml(run.run_goal)}</strong><span>${escapeHtml(run.launcher_kind.replaceAll("_", " "))} | ${escapeHtml(run.started_at)}</span></div>
+                <div class="run-summary">
+                  <strong>${escapeHtml(run.run_goal)}</strong>
+                  <span>${escapeHtml(run.launcher_kind.replaceAll("_", " "))} · ${escapeHtml(conciseTimestamp(run.started_at))}</span>
+                </div>
                 <span class="plain-status status-${escapeHtml(run.state === "completed" ? "passed" : run.state === "active" ? "running" : "failed")}">${escapeHtml(sentenceCase(run.state))}</span>
-                <p>${escapeHtml(`${run.planned_attempts} planned attempts; ${run.started_attempts} started${run.completed_attempts === undefined ? "" : `; ${run.completed_attempts} completed, ${run.passing_attempts} passing, ${run.failing_attempts} failing, ${run.unavailable_attempts} unavailable`}`)}</p>
+                <p>${escapeHtml(runAttemptSummary(run))}</p>
               </article>`,
           )
           .join("") || '<div class="panel-empty">No project-bound local runs.</div>'}

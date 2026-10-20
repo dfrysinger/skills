@@ -564,6 +564,58 @@ class ProjectLifecycleProjectionTests(ProjectFixture):
         self.assertEqual(row["failing_attempts"], 1)
         self.assertEqual(row["unavailable_attempts"], 1)
 
+    def test_local_case_unavailable_outcome_has_complete_counts(self):
+        run = self.corpus_root / "runs" / "local-case" / "case-one"
+        run.mkdir(parents=True)
+        binding = self.declaration_value["case_bindings"][0]
+        start = {
+            "schema_version": 1,
+            "run_id": "local-case",
+            "project_id": "example-project",
+            "project_declaration_sha256": project_declaration_fingerprint(
+                self.declaration_value
+            ),
+            "campaign_id": self.registration["campaign_id"],
+            "launcher_kind": "local_case",
+            "run_goal": "Check one project behavior.",
+            "requested_plugin_path": "/requested/plugin",
+            "treatment_reference": None,
+            "arm": "skill",
+            "task_ids": ["task-1"],
+            "case_bindings": [{
+                "binding_id": binding["binding_id"],
+                "binding_fingerprint": binding_fingerprint(binding),
+                "case_id": binding["case_id"],
+                "case_revision": binding["case_revision"],
+                "task_id": binding["task_id"],
+            }],
+            "planned_workers": 1,
+            "planned_attempts": 1,
+            "lease_generation": "d" * 64,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        (run / "attempt.json").write_text(
+            json.dumps({"project_start": start}) + "\n"
+        )
+        (run / "repository-result.json").write_text(json.dumps({
+            "execution_status": "INVALID",
+            "behavioral_verdict": None,
+        }) + "\n")
+
+        row = next(
+            item
+            for item in project_projection(
+                self.state_root,
+                "example-project",
+            )["runs"]
+            if item["run_id"] == "local-case"
+        )
+
+        self.assertEqual(row["completed_attempts"], 1)
+        self.assertEqual(row["passing_attempts"], 0)
+        self.assertEqual(row["failing_attempts"], 0)
+        self.assertEqual(row["unavailable_attempts"], 1)
+
     def test_fingerprintless_attempt_remains_pre_project_history(self):
         run = self.corpus_root / "runs" / "legacy-run" / "case-one"
         run.mkdir(parents=True)
@@ -669,6 +721,32 @@ class ProjectLauncherLifecycleTests(ProjectFixture):
         failure = json.loads((suite / "suite-failure.json").read_text())
         self.assertEqual(failure["stage"], "lease")
         self.assertIn("lease storage unavailable", failure["message"])
+
+    def test_invalid_lease_configuration_writes_typed_suite_failure(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SKILL_EVAL_DASHBOARD_STATE_ROOT": str(self.state_root),
+                "SKILL_EVAL_RUN_LEASE_SECONDS": "10",
+                "SKILL_EVAL_RUN_LEASE_RENEW_SECONDS": "5",
+            },
+        ):
+            with self.assertRaisesRegex(ValueError, "run lease renewal"):
+                run_suite(
+                    self.corpus_root,
+                    write_plugin(self.root),
+                    self.root / "missing-copilot",
+                    "model",
+                    "high",
+                    "existing",
+                    60,
+                    workers=1,
+                    run_goal="Exercise invalid lease configuration.",
+                )
+        suite = next((self.corpus_root / "suite-runs").iterdir())
+        failure = json.loads((suite / "suite-failure.json").read_text())
+        self.assertEqual(failure["stage"], "launcher_setup")
+        self.assertEqual(failure["error_type"], "ValueError")
 
     def test_queued_case_does_not_start_after_lease_failure(self):
         corpus = self.corpus("queued", ("case-one", "case-two"))
