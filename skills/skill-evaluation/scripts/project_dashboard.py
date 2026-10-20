@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import evaluation_history
@@ -12,6 +12,7 @@ from dashboard_state import (
     atomic_json,
     campaign_registration,
     ensure_state_root,
+    experiment_activity_records,
     extension_records,
     locked,
     parse_instant,
@@ -99,6 +100,12 @@ SUITE_FAILURE_FIELDS = {
     "failed_at",
 }
 PROJECT_ROLES = {"published", "integrated", "released"}
+SAFE_PROGRESS_FIELDS = {"kind", "checks"}
+SAFE_PROGRESS_KINDS = {
+    "repository_checks",
+    "distributed_product_stages",
+}
+REPOSITORY_PROGRESS_CHECKS = {"regression", "target"}
 
 
 def _bounded_text(value: object, label: str, limit: int = 400) -> str:
@@ -231,10 +238,32 @@ def canonical_project_declaration(value: object) -> dict:
             raise ValueError("case binding references an unknown task")
         if binding.get("role") not in {"development", "regression"}:
             raise ValueError("case binding role is invalid")
-        if binding.get("safe_progress") is not None:
-            raise ValueError(
-                "safe progress declarations are not supported in Slice A"
+        safe_progress = binding.get("safe_progress")
+        if safe_progress is not None:
+            safe_progress = _exact_object(
+                safe_progress,
+                SAFE_PROGRESS_FIELDS,
+                "safe progress declaration",
             )
+            if safe_progress.get("kind") not in SAFE_PROGRESS_KINDS:
+                raise ValueError("safe progress reader kind is invalid")
+            checks = _sorted_unique_strings(
+                safe_progress.get("checks"),
+                "safe progress checks",
+            )
+            for check in checks:
+                validate_safe_id(check, "safe progress check")
+            if (
+                safe_progress["kind"] == "repository_checks"
+                and set(checks) != REPOSITORY_PROGRESS_CHECKS
+            ):
+                raise ValueError(
+                    "repository safe progress checks are invalid"
+                )
+            safe_progress = {
+                "kind": safe_progress["kind"],
+                "checks": checks,
+            }
         prior = bound_cases.setdefault(binding["case_id"], binding["task_id"])
         if prior != binding["task_id"]:
             raise ValueError("one case is bound to multiple tasks")
@@ -244,7 +273,7 @@ def canonical_project_declaration(value: object) -> dict:
             "case_revision": binding["case_revision"],
             "task_id": binding["task_id"],
             "role": binding["role"],
-            "safe_progress": None,
+            "safe_progress": safe_progress,
         })
 
     required_cases = {
@@ -924,6 +953,15 @@ def _project_lineage(project: dict) -> dict:
         for revision_id in candidates
         if not has_descendant(revision_id, candidates)
     )
+    selected = tips[0] if len(tips) == 1 and not conflicts else None
+    prior_revisions = []
+    if selected is not None:
+        prior_revisions = sorted(
+            revision_id
+            for revision_id in snapshot_revisions
+            if revision_id != selected
+            and has_descendant(revision_id, {selected})
+        )
     return {
         "status": (
             "conflicted"
@@ -932,12 +970,30 @@ def _project_lineage(project: dict) -> dict:
             if len(tips) == 1
             else "unavailable"
         ),
-        "snapshot_id": tips[0] if len(tips) == 1 and not conflicts else None,
+        "snapshot_id": selected,
         "snapshot_ids": (
-            sorted(snapshot_revisions[tips[0]])
-            if len(tips) == 1 and not conflicts
+            sorted(snapshot_revisions[selected])
+            if selected is not None
             else []
         ),
+        "roles": sorted(roles.get(selected, set())) if selected else [],
+        "prior_revisions": [
+            {
+                "snapshot_id": revision_id,
+                "snapshot_ids": sorted(snapshot_revisions[revision_id]),
+                "roles": sorted(roles.get(revision_id, set())),
+            }
+            for revision_id in prior_revisions
+        ],
+        "known_revisions": [
+            {
+                "snapshot_id": revision_id,
+                "snapshot_ids": sorted(snapshot_ids),
+                "roles": sorted(roles.get(revision_id, set())),
+            }
+            for revision_id, snapshot_ids in sorted(snapshot_revisions.items())
+            if revision_skills.get(revision_id) == project["target_skills"]
+        ],
         "conflicts": sorted(set(conflicts)),
     }
 
@@ -991,12 +1047,489 @@ def _terminal_attempts(project: dict) -> tuple[list[dict], list[dict]]:
     return assigned, pre_project
 
 
+def _attempt_completed_at(row: dict) -> datetime | None:
+    started_at = row.get("started_at")
+    elapsed = row.get("elapsed_seconds")
+    if not isinstance(started_at, str) or not isinstance(elapsed, (int, float)):
+        return None
+    if elapsed < 0:
+        return None
+    return parse_instant(started_at) + timedelta(seconds=elapsed)
+
+
+def _matching_task_attempts(
+    task: dict,
+    bindings: list[dict],
+    snapshot_ids: set[str],
+    attempts: list[dict],
+) -> list[dict]:
+    binding_by_id = {item["binding_id"]: item for item in bindings}
+    matching = []
+    for item in attempts:
+        row = item["row"]
+        project_binding = item["project"]
+        binding = binding_by_id.get(project_binding.get("binding_id"))
+        if (
+            binding is None
+            or row["population"].get("lineage_snapshot_id") not in snapshot_ids
+            or project_binding.get("binding_fingerprint")
+            != binding_fingerprint(binding)
+            or project_binding.get("task_fingerprint") != task_fingerprint(task)
+            or row["population"]["case_id"] != binding["case_id"]
+            or row["population"]["case_revision"] != binding["case_revision"]
+        ):
+            continue
+        matching.append(item)
+    return matching
+
+
+def _qualification_state(
+    task: dict,
+    bindings: list[dict],
+    matching: list[dict],
+) -> tuple[list[dict], bool, bool]:
+    qualification = task["qualification"]
+    binding_rows = []
+    for binding in bindings:
+        rows = [
+            item["row"]
+            for item in matching
+            if item["project"].get("binding_id") == binding["binding_id"]
+            and item["row"]["correctness"]
+            in {"PASS", "FAIL", "UNANSWERABLE", "BLOCKED"}
+        ]
+        terminal = len(rows)
+        passing = sum(item["correctness"] == "PASS" for item in rows)
+        binding_rows.append({
+            "binding_id": binding["binding_id"],
+            "case_id": binding["case_id"],
+            "terminal_attempts": terminal,
+            "passing_attempts": passing,
+            "qualified": (
+                terminal
+                >= qualification["minimum_terminal_repetitions_per_case"]
+                and passing >= qualification["required_passes_per_case"]
+            ),
+        })
+    complete = bool(bindings) and all(
+        item["terminal_attempts"]
+        >= qualification["minimum_terminal_repetitions_per_case"]
+        for item in binding_rows
+    )
+    return binding_rows, complete, complete and all(
+        item["qualified"] for item in binding_rows
+    )
+
+
+def _first_qualified_prefix(
+    task: dict,
+    bindings: list[dict],
+    matching: list[dict],
+) -> tuple[str | None, list[dict] | None]:
+    terminal = [
+        item
+        for item in matching
+        if item["row"]["correctness"]
+        in {"PASS", "FAIL", "UNANSWERABLE", "BLOCKED"}
+    ]
+    if any(_attempt_completed_at(item["row"]) is None for item in terminal):
+        return None, None
+    terminal.sort(key=lambda item: (
+        _attempt_completed_at(item["row"]),
+        item["row"].get("run_path") or "",
+        item["row"].get("attempt") or 0,
+    ))
+    prefix = []
+    for item in terminal:
+        prefix.append(item)
+        _, _, passing = _qualification_state(task, bindings, prefix)
+        if passing:
+            completed = _attempt_completed_at(item["row"])
+            return completed.isoformat() if completed else None, prefix
+    return None, None
+
+
+def _token_summary(rows: list[dict], role: str) -> dict:
+    records = [
+        record
+        for row in rows
+        for record in row.get("invocations", [])
+        if (
+            record.get("role") == "candidate"
+            if role == "candidate"
+            else record.get("role") != "candidate"
+        )
+    ]
+    latest = {}
+    for record in records:
+        key = record.get("session_id")
+        if not isinstance(key, str):
+            continue
+        prior = latest.get(key)
+        if prior is None or record.get("completed_at", "") > prior.get(
+            "completed_at", ""
+        ):
+            latest[key] = record
+    totals = {"input_tokens": 0, "output_tokens": 0}
+    complete = bool(latest) or not rows
+    known = 0
+    for record in latest.values():
+        selected = record.get("selected_observation")
+        observations = record.get("observations")
+        observation = (
+            observations[selected]
+            if isinstance(observations, list)
+            and type(selected) is int
+            and 0 <= selected < len(observations)
+            else None
+        )
+        metrics = (
+            observation.get("raw", {}).get("modelMetrics")
+            if isinstance(observation, dict)
+            else None
+        )
+        if (
+            record.get("completeness") != "complete"
+            or not isinstance(metrics, dict)
+        ):
+            complete = False
+            continue
+        known += 1
+        for values in metrics.values():
+            usage = values.get("usage") if isinstance(values, dict) else None
+            if not isinstance(usage, dict):
+                continue
+            totals["input_tokens"] += usage.get("inputTokens", 0)
+            totals["output_tokens"] += usage.get("outputTokens", 0)
+    return {
+        **({
+            "input_tokens": totals["input_tokens"],
+            "output_tokens": totals["output_tokens"],
+        } if complete else {
+            "input_tokens": None,
+            "output_tokens": None,
+        }),
+        "complete": complete,
+        "known_sessions": known,
+        "total_sessions": len(latest),
+    }
+
+
+def _effort_summary(rows: list[dict]) -> dict:
+    attempt_rows = [
+        {
+            **item["row"],
+            "accounting": item["row"].get("accounting", {}),
+            "invocations": item["row"].get("invocations", []),
+        }
+        for item in rows
+    ]
+    return {
+        "runs": len({
+            row.get("suite_path") or row.get("run_path")
+            for row in attempt_rows
+            if row.get("suite_path") or row.get("run_path")
+        }),
+        "attempts": len(attempt_rows),
+        "candidate_tokens": _token_summary(attempt_rows, "candidate"),
+        "judge_tokens": _token_summary(attempt_rows, "judge"),
+        "candidate_cost": evaluation_history.cost_summary(
+            attempt_rows,
+            "candidate",
+        ),
+        "judge_cost": evaluation_history.cost_summary(
+            attempt_rows,
+            "evaluation",
+        ),
+        "total_cost": evaluation_history.cost_summary(attempt_rows),
+        "retry_dependent": any(
+            (row.get("attempt") or 1) > 1 and row.get("correctness") == "PASS"
+            for row in attempt_rows
+        ),
+    }
+
+
+def _task_phase(
+    project: dict,
+    lineage: dict,
+    task: dict,
+    task_result: str,
+    bindings: list[dict],
+    attempts: list[dict],
+) -> dict:
+    if task_result == "passing" and set(lineage.get("roles", [])) & {
+        "published",
+        "released",
+    }:
+        return {
+            "status": "available",
+            "phase": "published",
+            "authority": "lineage",
+            "recorded_at": None,
+        }
+    selected_snapshots = set(lineage.get("snapshot_ids", []))
+    current_bindings = {
+        (binding["case_id"], binding["case_revision"]): binding
+        for binding in bindings
+    }
+    records = []
+    invalid = False
+    for source in project["sources"]:
+        if not source["available"]:
+            continue
+        source_records, conflicts, rejected = extension_records(
+            source["corpus_root"]
+        )
+        invalid = invalid or bool(conflicts or rejected)
+        for record in source_records:
+            if record["event_type"] != "task_progress_recorded":
+                continue
+            payload = record["payload"]
+            subject = record["subject"]
+            if (
+                "task_id" not in payload
+                or payload["task_id"] != task["task_id"]
+                or subject["snapshot_id"] not in selected_snapshots
+                or (subject["case_id"], subject["case_revision"])
+                not in current_bindings
+                or payload["phase"] is None
+            ):
+                continue
+            try:
+                declaration = archived_project_declaration(
+                    source["corpus_root"],
+                    payload["project_declaration_sha256"],
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
+                invalid = True
+                continue
+            declared_tasks = [
+                item for item in declaration["tasks"]
+                if item["task_id"] == task["task_id"]
+            ]
+            declared_bindings = [
+                item for item in declaration["case_bindings"]
+                if item["task_id"] == task["task_id"]
+                and item["case_id"] == subject["case_id"]
+                and item["case_revision"] == subject["case_revision"]
+            ]
+            current_binding = current_bindings[
+                (subject["case_id"], subject["case_revision"])
+            ]
+            if (
+                len(declared_tasks) != 1
+                or task_fingerprint(declared_tasks[0])
+                != task_fingerprint(task)
+                or len(declared_bindings) != 1
+                or binding_fingerprint(declared_bindings[0])
+                != binding_fingerprint(current_binding)
+            ):
+                continue
+            records.append(record)
+    selected_attempts = _matching_task_attempts(
+        task,
+        bindings,
+        selected_snapshots,
+        attempts,
+    ) if selected_snapshots else []
+    if (
+        task_result == "unavailable"
+        and any(
+            item["row"]["correctness"] == "PASS"
+            for item in selected_attempts
+        )
+    ):
+        return {
+            "status": "available",
+            "phase": "candidate_pass",
+            "authority": "evaluator",
+            "recorded_at": None,
+        }
+    if (
+        task_result == "unavailable"
+        and any(
+            item["row"]["correctness"]
+            in {"PASS", "FAIL", "UNANSWERABLE", "BLOCKED"}
+            for item in selected_attempts
+        )
+    ):
+        return {
+            "status": "available",
+            "phase": "qualifying",
+            "authority": "evaluator",
+            "recorded_at": None,
+        }
+    if records:
+        latest_at = max(parse_instant(item["recorded_at"]) for item in records)
+        latest = [
+            item for item in records
+            if parse_instant(item["recorded_at"]) == latest_at
+        ]
+        phases = sorted({item["payload"]["phase"] for item in latest})
+        if len(phases) != 1:
+            return {
+                "status": "conflicted",
+                "phase": None,
+                "authority": "session_intent",
+                "recorded_at": latest_at.isoformat(),
+            }
+        return {
+            "status": "available",
+            "phase": phases[0],
+            "authority": "session_intent",
+            "recorded_at": latest_at.isoformat(),
+        }
+    return {
+        "status": "conflicted" if invalid else "available",
+        "phase": None if invalid else "not_started",
+        "authority": None if invalid else "project",
+        "recorded_at": None,
+    }
+
+
+def _valid_repository_checks(path: Path) -> dict[str, bool] | None:
+    try:
+        value = regular_json(path, "repository grading")
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if set(value) != REPOSITORY_PROGRESS_CHECKS:
+        return None
+    result = {}
+    for name in sorted(REPOSITORY_PROGRESS_CHECKS):
+        row = value.get(name)
+        if not isinstance(row, dict) or type(row.get("passed")) is not bool:
+            return None
+        result[name] = row["passed"]
+    return result
+
+
+def _task_safe_progress(
+    task: dict,
+    bindings: list[dict],
+    lineage: dict,
+    attempts: list[dict],
+    distributed_activity: list[dict],
+) -> dict:
+    declarations = [item.get("safe_progress") for item in bindings]
+    if not declarations or any(item is None for item in declarations):
+        return {
+            "status": "unavailable",
+            "reason": "No safe subcheck breakdown.",
+        }
+    identities = {
+        json.dumps(item, sort_keys=True, separators=(",", ":"))
+        for item in declarations
+    }
+    if len(identities) != 1:
+        return {
+            "status": "conflicted",
+            "reason": "Safe progress declarations disagree.",
+        }
+    declaration = declarations[0]
+    checks = declaration["checks"]
+    selected_snapshots = set(lineage.get("snapshot_ids", []))
+    evidence = []
+    if declaration["kind"] == "repository_checks":
+        matching = _matching_task_attempts(
+            task,
+            bindings,
+            selected_snapshots,
+            attempts,
+        ) if selected_snapshots else []
+        for binding in bindings:
+            candidates = [
+                item for item in matching
+                if item["project"].get("binding_id") == binding["binding_id"]
+                and item["row"].get("run_path")
+            ]
+            candidates.sort(key=lambda item: (
+                _attempt_completed_at(item["row"]) or datetime.min.replace(
+                    tzinfo=timezone.utc
+                ),
+                item["row"]["run_path"],
+            ), reverse=True)
+            valid = None
+            for item in candidates:
+                valid = _valid_repository_checks(
+                    item["corpus_root"]
+                    / item["row"]["run_path"]
+                    / "grading"
+                    / "grading.json"
+                )
+                if valid is not None:
+                    evidence.append({
+                        "binding_id": binding["binding_id"],
+                        "checks": valid,
+                    })
+                    break
+            if valid is None:
+                return {
+                    "status": "unavailable",
+                    "reason": "Declared repository checks are incomplete.",
+                }
+    else:
+        for binding in bindings:
+            rows = [
+                item for item in distributed_activity
+                if item["case_id"] == binding["case_id"]
+                and item["case_revision"] == binding["case_revision"]
+                and item["snapshot_id"] in selected_snapshots
+            ]
+            expected = {
+                stage
+                for item in rows
+                for stage in item.get("_expected_stage_kinds", [])
+            }
+            if any(check not in expected for check in checks):
+                return {
+                    "status": "unavailable",
+                    "reason": "Declared distributed stages are incomplete.",
+                }
+            by_check = {}
+            for check in checks:
+                by_check[check] = any(
+                    check in item.get("_completed_stage_kinds", [])
+                    for item in rows
+                )
+            if not rows:
+                return {
+                    "status": "unavailable",
+                    "reason": "Declared distributed stages are incomplete.",
+                }
+            evidence.append({
+                "binding_id": binding["binding_id"],
+                "checks": by_check,
+            })
+    total = len(bindings) * len(checks)
+    passed = sum(
+        value
+        for item in evidence
+        for value in item["checks"].values()
+    )
+    return {
+        "status": "available",
+        "kind": declaration["kind"],
+        "checks": checks,
+        "passed": passed,
+        "total": total,
+        "evidence": evidence,
+    }
+
+
 def _task_scorecard(
     project: dict,
     lineage: dict,
     attempts: list[dict],
 ) -> list[dict]:
     selected_snapshots = set(lineage["snapshot_ids"])
+    known_revisions = lineage.get("known_revisions") or [{
+        "snapshot_id": lineage.get("snapshot_id"),
+        "snapshot_ids": lineage.get("snapshot_ids", []),
+        "roles": [],
+    }]
+    prior_ids = {
+        item["snapshot_id"] for item in lineage.get("prior_revisions", [])
+    }
     result = []
     for task in project["tasks"]:
         task_id = task["task_id"]
@@ -1006,59 +1539,87 @@ def _task_scorecard(
             if item["task_id"] == task_id
             and item["role"] in qualification["required_roles"]
         ]
-        binding_rows = []
-        for binding in bindings:
-            matching = []
-            for item in attempts:
-                project_binding = item["project"]
-                if (
-                    not selected_snapshots
-                    or item["row"]["population"].get("lineage_snapshot_id")
-                    not in selected_snapshots
-                    or project_binding.get("binding_id") != binding["binding_id"]
-                    or project_binding.get("binding_fingerprint")
-                    != binding_fingerprint(binding)
-                    or project_binding.get("task_fingerprint")
-                    != task_fingerprint(task)
-                    or item["row"]["population"]["case_id"]
-                    != binding["case_id"]
-                    or item["row"]["population"]["case_revision"]
-                    != binding["case_revision"]
-                ):
-                    continue
-                matching.append(item["row"])
-            terminal_rows = [
-                item
-                for item in matching
-                if item["correctness"]
-                in {"PASS", "FAIL", "UNANSWERABLE", "BLOCKED"}
-            ]
-            terminal = len(terminal_rows)
-            passing = sum(
-                item["correctness"] == "PASS"
-                for item in terminal_rows
-            )
-            binding_rows.append({
-                "binding_id": binding["binding_id"],
-                "case_id": binding["case_id"],
-                "terminal_attempts": terminal,
-                "passing_attempts": passing,
-                "qualified": (
-                    terminal
-                    >= qualification["minimum_terminal_repetitions_per_case"]
-                    and passing >= qualification["required_passes_per_case"]
-                ),
-            })
-        complete = (
-            bool(selected_snapshots)
-            and bool(bindings)
-            and all(
-                item["terminal_attempts"]
-                >= qualification["minimum_terminal_repetitions_per_case"]
-                for item in binding_rows
-            )
+        current = _matching_task_attempts(
+            task,
+            bindings,
+            selected_snapshots,
+            attempts,
+        ) if selected_snapshots else []
+        binding_rows, complete, passing = _qualification_state(
+            task,
+            bindings,
+            current,
         )
-        passing = complete and all(item["qualified"] for item in binding_rows)
+        prior_passing = False
+        journey_attempts = []
+        first_qualified = None
+        for revision in known_revisions:
+            revision_matching = _matching_task_attempts(
+                task,
+                bindings,
+                set(revision["snapshot_ids"]),
+                attempts,
+            )
+            journey_attempts.extend(revision_matching)
+            _, revision_complete, revision_passing = _qualification_state(
+                task,
+                bindings,
+                revision_matching,
+            )
+            if (
+                revision["snapshot_id"] in prior_ids
+                and revision_complete
+                and revision_passing
+            ):
+                prior_passing = True
+            qualified_at, _ = _first_qualified_prefix(
+                task,
+                bindings,
+                revision_matching,
+            )
+            if qualified_at is not None and (
+                first_qualified is None
+                or parse_instant(qualified_at) < parse_instant(first_qualified)
+            ):
+                first_qualified = qualified_at
+        unique_journey = {
+            (
+                item.get("campaign_id"),
+                item["row"].get("run_path"),
+                item["row"].get("attempt"),
+            ): item
+            for item in journey_attempts
+        }
+        journey_attempts = list(unique_journey.values())
+        completed = [
+            (
+                _attempt_completed_at(item["row"]),
+                item,
+            )
+            for item in journey_attempts
+        ]
+        observed_passes = [
+            (instant, item)
+            for instant, item in completed
+            if instant is not None and item["row"]["correctness"] == "PASS"
+        ]
+        first_run = min(
+            (
+                parse_instant(item["row"]["started_at"])
+                for item in journey_attempts
+                if isinstance(item["row"].get("started_at"), str)
+            ),
+            default=None,
+        )
+        bounded_rows = [
+            item
+            for completed_at, item in completed
+            if (
+                first_qualified is None
+                or completed_at is not None
+                and completed_at <= parse_instant(first_qualified)
+            )
+        ]
         result.append({
             "task_id": task_id,
             "title": task["title"],
@@ -1066,11 +1627,29 @@ def _task_scorecard(
             "result": (
                 "passing"
                 if passing
+                else "regressed"
+                if complete and prior_passing
                 else "not_passing"
                 if complete
                 else "unavailable"
             ),
             "bindings": binding_rows,
+            "timing": {
+                "first_run_at": first_run.isoformat() if first_run else None,
+                "first_observed_pass_at": (
+                    min(observed_passes, key=lambda item: item[0])[0].isoformat()
+                    if observed_passes else None
+                ),
+                "first_qualified_pass_at": first_qualified,
+                "elapsed_seconds": (
+                    (
+                        parse_instant(first_qualified) - first_run
+                    ).total_seconds()
+                    if first_run and first_qualified
+                    else None
+                ),
+            },
+            "effort": _effort_summary(bounded_rows),
         })
     return result
 
@@ -1175,7 +1754,20 @@ def _run_projection(source: dict) -> list[dict]:
                     else _suite_started_attempts(corpus_root, run_root)
                 ),
                 "state": state,
+                "_task_fingerprints": {},
             }
+            try:
+                run_declaration = archived_project_declaration(
+                    corpus_root,
+                    start["project_declaration_sha256"],
+                )
+                row["_task_fingerprints"] = {
+                    item["task_id"]: task_fingerprint(item)
+                    for item in run_declaration["tasks"]
+                    if item["task_id"] in start["task_ids"]
+                }
+            except (OSError, ValueError, json.JSONDecodeError):
+                row["_task_fingerprints"] = {}
             if launcher_kind == "local_suite" and result_path.is_file():
                 result_value = regular_json(result_path, "suite result")
                 attempts = [
@@ -1255,26 +1847,253 @@ def _run_projection(source: dict) -> list[dict]:
     return runs
 
 
+def _distributed_projection(project: dict) -> tuple[list[dict], list[dict]]:
+    from dashboard_projection import experiment_projection
+
+    bindings = {
+        (item["case_id"], item["case_revision"]): item
+        for item in project["case_bindings"]
+    }
+    runs = []
+    all_activity = []
+    for source in project["sources"]:
+        if not source["available"]:
+            continue
+        projection = experiment_projection(
+            source["corpus_root"],
+            source["campaign"]["campaign_id"],
+        )
+        records, _, _ = experiment_activity_records(source["corpus_root"])
+        experiment_times = {}
+        expected_stages = {}
+        completed_stages = {}
+        for record in records:
+            if record["event_type"] == "experiment_declared":
+                experiment_times[
+                    record["subject"]["experiment_id"]
+                ] = record["recorded_at"]
+            elif record["event_type"] == "cloud_dispatch_bound":
+                for job in record["payload"]["jobs"]:
+                    attempt_id = job["attempt_id"]
+                    if attempt_id is not None:
+                        expected_stages.setdefault(attempt_id, set()).add(
+                            job["stage_kind"]
+                        )
+            elif (
+                record["event_type"] == "distributed_stage_recorded"
+                and record["payload"]["status"] != "FAIL"
+            ):
+                completed_stages.setdefault(
+                    record["subject"]["attempt_id"],
+                    set(),
+                ).add(record["payload"]["stage_kind"])
+        for item in projection["items"]:
+            activity = [
+                {
+                    **row,
+                    "_expected_stage_kinds": sorted(
+                        expected_stages.get(row["attempt_id"], set())
+                    ),
+                    "_completed_stage_kinds": sorted(
+                        completed_stages.get(row["attempt_id"], set())
+                    ),
+                }
+                for row in item["activity"]
+                if (row["case_id"], row["case_revision"]) in bindings
+            ]
+            if not activity:
+                continue
+            all_activity.extend(activity)
+            task_ids = sorted({
+                bindings[(row["case_id"], row["case_revision"])]["task_id"]
+                for row in activity
+            })
+            terminal = [
+                row for row in activity if row["state"] == "terminal"
+            ]
+            started = [
+                row for row in activity if row["state"] != "planned"
+            ]
+            conflicted = any(row["state"] == "conflicted" for row in activity)
+            active = any(row["state"] in {
+                "cloud_nonterminal",
+                "distributed_pending",
+            } for row in activity)
+            awaiting = any(
+                row["state"] == "cloud_completed_awaiting_result"
+                for row in activity
+            )
+            state = (
+                "conflicted"
+                if conflicted
+                else "completed"
+                if len(terminal) == len(activity)
+                else "active"
+                if active
+                else "liveness_unavailable"
+                if awaiting
+                else "planned"
+            )
+            runs.append({
+                "run_id": (
+                    f"distributed:{source['campaign']['campaign_id']}:"
+                    f"{item['experiment_id']}"
+                ),
+                "launcher_kind": "distributed_experiment",
+                "source_identity": {
+                    "campaign_id": source["campaign"]["campaign_id"],
+                    "experiment_id": item["experiment_id"],
+                    "experiment_fingerprint": item[
+                        "experiment_fingerprint"
+                    ],
+                    "route": item["route"],
+                },
+                "selected_revision": item["snapshot_id"],
+                "started_at": experiment_times.get(item["experiment_id"]),
+                "run_goal": item["summary"],
+                "task_ids": task_ids,
+                "planned_workers": item["planned_attempts"],
+                "planned_attempts": len(activity),
+                "started_attempts": len(started),
+                "completed_attempts": len(terminal),
+                "passing_attempts": sum(
+                    row["evaluator_result"] == "PASS" for row in terminal
+                ),
+                "failing_attempts": sum(
+                    row["evaluator_result"] == "FAIL" for row in terminal
+                ),
+                "unavailable_attempts": sum(
+                    row["evaluator_result"] not in {"PASS", "FAIL"}
+                    for row in terminal
+                ),
+                "state": state,
+                "cost": item["cost"],
+            })
+    return runs, all_activity
+
+
 def project_projection(state_root: Path, project_id: str) -> dict:
+    from holdout_dashboard import holdout_projection
+
     project = reconciled_project(state_root, project_id)
     lineage = _project_lineage(project) if project["available"] else {
         "status": "unavailable",
         "snapshot_id": None,
         "snapshot_ids": [],
+        "roles": [],
+        "prior_revisions": [],
+        "known_revisions": [],
         "conflicts": [],
     }
     attempts, pre_project = _terminal_attempts(project)
+    distributed_runs, distributed_activity = (
+        _distributed_projection(project)
+        if project["available"]
+        else ([], [])
+    )
     tasks = (
         _task_scorecard(project, lineage, attempts)
         if project["available"]
         else []
     )
-    runs = [
+    holdouts = holdout_projection(
+        state_root,
+        project_id,
+        project["holdout_requirements"],
+        lineage.get("snapshot_id"),
+    ) if project["available"] else []
+    local_runs = [
         row
         for source in project["sources"]
         for row in _run_projection(source)
     ]
-    runs.sort(key=lambda item: (item["started_at"], item["run_id"]), reverse=True)
+    for task in tasks:
+        definition = next(
+            item for item in project["tasks"]
+            if item["task_id"] == task["task_id"]
+        )
+        bindings = [
+            item for item in project["case_bindings"]
+            if item["task_id"] == task["task_id"]
+            and item["role"] in definition["qualification"]["required_roles"]
+        ]
+        task["phase"] = _task_phase(
+            project,
+            lineage,
+            definition,
+            task["result"],
+            bindings,
+            attempts,
+        )
+        task["safe_progress"] = _task_safe_progress(
+            definition,
+            bindings,
+            lineage,
+            attempts,
+            distributed_activity,
+        )
+        task_holdouts = [
+            item for item in holdouts
+            if task["task_id"] in item["task_ids"]
+        ]
+        if (
+            task["phase"]["phase"] != "published"
+            and any(item["status"] == "active" for item in task_holdouts)
+        ):
+            task["phase"] = {
+                "status": "available",
+                "phase": "holdout_validation",
+                "authority": "holdout_receipt",
+                "recorded_at": None,
+            }
+        elif (
+            task["phase"]["phase"] != "published"
+            and task["result"] == "passing"
+            and task_holdouts
+            and all(
+                item["status"] == "completed"
+                and item["qualification"] is True
+                for item in task_holdouts
+            )
+        ):
+            task["phase"] = {
+                "status": "available",
+                "phase": "ready_to_publish",
+                "authority": "holdout_receipt",
+                "recorded_at": None,
+            }
+        qualified_at = task["timing"]["first_qualified_pass_at"]
+        bounded_runs = [
+            run for run in local_runs + distributed_runs
+            if task["task_id"] in run["task_ids"]
+            and (
+                run["launcher_kind"] == "distributed_experiment"
+                or run.get("_task_fingerprints", {}).get(task["task_id"])
+                == task_fingerprint(definition)
+            )
+            and (
+                qualified_at is None
+                or run.get("started_at") is None
+                or parse_instant(run["started_at"])
+                <= parse_instant(qualified_at)
+            )
+        ]
+        task["effort"]["infrastructure_failures"] = sum(
+            run["state"] in {
+                "infrastructure_failed",
+                "liveness_lost",
+                "liveness_unavailable",
+                "conflicted",
+            }
+            for run in bounded_runs
+        )
+    runs = local_runs + distributed_runs
+    for run in runs:
+        run.pop("_task_fingerprints", None)
+    runs.sort(
+        key=lambda item: (item.get("started_at") or "", item["run_id"]),
+        reverse=True,
+    )
     return {
         "schema_version": 1,
         "project": {
@@ -1287,14 +2106,15 @@ def project_projection(state_root: Path, project_id: str) -> dict:
         "selected_revision": lineage,
         "tasks": tasks,
         "runs": runs,
+        "holdouts": holdouts,
         "pre_project_history": pre_project,
         "conflicts": project["conflicts"],
         "unsupported": {
-            "task_phase": False,
-            "safe_progress": False,
-            "holdout_execution": False,
+            "task_phase": True,
+            "safe_progress": True,
+            "holdout_execution": True,
             "ablation": False,
-            "distributed_runs": False,
+            "distributed_runs": True,
         },
     }
 
@@ -1325,6 +2145,7 @@ def project_index_projection(state_root: Path) -> dict:
                     "task_counts": {
                         "passing": 0,
                         "not_passing": 0,
+                        "regressed": 0,
                         "unavailable": 0,
                     },
                     "active_runs": 0,
@@ -1340,6 +2161,10 @@ def project_index_projection(state_root: Path) -> dict:
                     ),
                     "not_passing": sum(
                         item["result"] == "not_passing"
+                        for item in projection["tasks"]
+                    ),
+                    "regressed": sum(
+                        item["result"] == "regressed"
                         for item in projection["tasks"]
                     ),
                     "unavailable": sum(

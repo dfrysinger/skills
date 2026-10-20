@@ -353,6 +353,16 @@ PROGRESS_PAYLOAD_FIELDS = {
     "comparison_snapshot_id",
     "sources",
 }
+PROJECT_PROGRESS_PAYLOAD_FIELDS = PROGRESS_PAYLOAD_FIELDS | {
+    "task_id",
+    "project_declaration_sha256",
+    "phase",
+}
+PROJECT_PROGRESS_PHASES = {
+    "experimenting",
+    "delta_ablation",
+    "regression_check",
+}
 PROGRESS_FRONTIERS = {
     "admission",
     "candidate",
@@ -1641,7 +1651,11 @@ def validate_extension_event(value: dict) -> dict:
         if subject["case_id"] is not None or subject["case_revision"] is not None:
             raise ValueError("lineage declaration cannot target a case")
     else:
-        if set(payload) != PROGRESS_PAYLOAD_FIELDS:
+        payload_fields = set(payload)
+        if payload_fields not in {
+            frozenset(PROGRESS_PAYLOAD_FIELDS),
+            frozenset(PROJECT_PROGRESS_PAYLOAD_FIELDS),
+        }:
             raise ValueError("task progress payload is invalid")
         if (
             subject["case_id"] is None
@@ -1658,6 +1672,17 @@ def validate_extension_event(value: dict) -> dict:
             "task progress next action",
             required=False,
         )
+        if payload_fields == PROJECT_PROGRESS_PAYLOAD_FIELDS:
+            validate_safe_id(payload.get("task_id"), "task ID")
+            validate_sha256(
+                payload.get("project_declaration_sha256"),
+                "project declaration fingerprint",
+            )
+            if (
+                payload.get("phase") is not None
+                and payload.get("phase") not in PROJECT_PROGRESS_PHASES
+            ):
+                raise ValueError("task progress phase is invalid")
         validate_sha256(
             payload.get("comparison_snapshot_id"),
             "comparison snapshot ID",
@@ -1688,6 +1713,7 @@ def validate_extension_event(value: dict) -> dict:
                 raise ValueError("task progress source is invalid")
             if item.get("kind") not in {
                 "attempt",
+                "experiment",
                 "report",
                 "session_event",
                 "review_receipt",
@@ -1826,12 +1852,43 @@ def emit_task_progress_event(
     next_action: str | None = None,
     comparison_snapshot_id: str | None = None,
     sources: list[dict] | None = None,
+    task_id: str | None = None,
+    project_declaration_sha256: str | None = None,
+    phase: str | None = None,
     event_id: str | None = None,
     observed_at: str | None = None,
     recorded_at: str | None = None,
 ) -> dict:
     if comparison_snapshot_id is not None:
         read_skill_snapshot(corpus_root, comparison_snapshot_id)
+    payload = {
+        "frontier": frontier,
+        "classification": classification,
+        "movement": movement,
+        "summary": summary,
+        "uptake": sorted(
+            uptake or [],
+            key=lambda item: item["rule_id"],
+        ),
+        "blocker": blocker,
+        "next_action": next_action,
+        "comparison_snapshot_id": comparison_snapshot_id,
+        "sources": sorted(
+            sources or [],
+            key=lambda item: (item["kind"], item["id"]),
+        ),
+    }
+    project_values = (task_id, project_declaration_sha256)
+    if any(item is not None for item in (*project_values, phase)):
+        if any(item is None for item in project_values):
+            raise ValueError(
+                "project task progress requires task and declaration identity"
+            )
+        payload.update({
+            "task_id": task_id,
+            "project_declaration_sha256": project_declaration_sha256,
+            "phase": phase,
+        })
     return emit_extension_event(
         corpus_root,
         campaign_id=campaign_id,
@@ -1840,23 +1897,7 @@ def emit_task_progress_event(
         snapshot_id=snapshot_id,
         case_id=case_id,
         case_revision=case_revision,
-        payload={
-            "frontier": frontier,
-            "classification": classification,
-            "movement": movement,
-            "summary": summary,
-            "uptake": sorted(
-                uptake or [],
-                key=lambda item: item["rule_id"],
-            ),
-            "blocker": blocker,
-            "next_action": next_action,
-            "comparison_snapshot_id": comparison_snapshot_id,
-            "sources": sorted(
-                sources or [],
-                key=lambda item: (item["kind"], item["id"]),
-            ),
-        },
+        payload=payload,
         event_id=event_id,
         observed_at=observed_at,
         recorded_at=recorded_at,
