@@ -162,3 +162,26 @@ does not justify paying for another stochastic implementation attempt.
 Complete when old and corrected results are both addressable, the report names
 which contract produced each verdict, and no corrected claim is backdated onto
 the old receipt.
+
+## 7. Verify that the judge can read its evidence
+
+Tool permission does not establish file access. Exercise the judge from its
+declared working directory with the same file-access settings used by the
+evaluation.
+
+The distributed evaluator copies the task, case manifest and the declared
+admission receipt's parent directory into its judge-input directory. Relative
+receipt links, file contents and modes are preserved. Unsafe receipt paths,
+links, special files, missing declared receipts and digest mismatches stop the
+invocation. Changes to the copied inputs during a judge call also stop it.
+An absent manifest or task is explicitly unavailable, not fabricated admission.
+
+Use a small synthetic diagnostic before an expensive wave. Put a fresh opaque
+identifier only in a receipt reached through the manifest. Require the actual
+judge to return it while still reporting missing product evidence honestly.
+Verify the original and copied inputs stay unchanged. A passing diagnostic
+proves that evidence path, not product correctness or complete case answerability.
+
+Keep an evidence-delivery repair separate from the frozen skill comparison.
+Preserve the original result and establish downstream applicability before
+using a repaired judge contract on retained or newly admitted work.
