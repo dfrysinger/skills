@@ -629,6 +629,10 @@ function taskView(item, detail) {
   } else if (state === "failed") {
     summary = "The latest evaluator result did not pass.";
   }
+  if (activityState) {
+    state = activityState === "active" ? "running" : activityState;
+    label = activityLabel;
+  }
   return {
     caseId: item.case_id,
     title: sentenceCase(item.case_id),
@@ -636,7 +640,7 @@ function taskView(item, detail) {
     state,
     label,
     activityState,
-    activityLabel,
+    activityLabel: null,
     summary,
   };
 }
@@ -649,9 +653,10 @@ function renderRunCards(data, taskViews) {
         <p class="quiet-message">Live run status is not available for this campaign.</p>
       </section>`;
   }
-  const activeSessions = data.sessions.filter(isActive);
+  const trackedSessions = data.sessions.filter((session) => session.last_event_id);
+  const activeSessions = trackedSessions.filter(isActive);
   const activeAttempts = data.live_attempts.filter(isActive);
-  const staleCount = [...data.sessions, ...data.live_attempts].filter(
+  const staleCount = [...trackedSessions, ...data.live_attempts].filter(
     needsUpdate,
   ).length;
   if (!activeSessions.length && !activeAttempts.length) {
@@ -798,7 +803,7 @@ function renderCampaign(data) {
     <section class="page-heading simple-heading">
       <div>
         <h1>${escapeHtml(data.campaign.corpus_name)}</h1>
-        <p>Testing <strong>${escapeHtml(skills || "the current skill set")}</strong> across ${escapeHtml(plural(tasks.length, "task"))}.</p>
+        <p>Standalone corpus testing <strong>${escapeHtml(skills || "the current skill set")}</strong> across ${escapeHtml(plural(tasks.length, "task"))}. Related retries and treatments are not grouped because this corpus has no project declaration.</p>
       </div>
       <a href="/unassigned">Unassigned evaluations</a>
     </section>
@@ -1239,10 +1244,12 @@ function renderSession(data) {
     </section>`;
 }
 
-async function start() {
-  if (!capability) {
-    throw new Error("Missing browser capability. Run the dashboard open command again.");
-  }
+const REFRESH_INTERVAL_MS = 5000;
+let refreshTimer = null;
+let refreshInFlight = false;
+let lastProjection = null;
+
+function currentRoute() {
   const projectMatch = window.location.pathname.match(
     /^\/project\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/,
   );
@@ -1253,8 +1260,12 @@ async function start() {
     /^\/campaign\/([0-9a-f]{32})\/task\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/,
   );
   const match = window.location.pathname.match(/^\/campaign\/([0-9a-f]{32})$/);
-  const data = await loadJson(
-    projectMatch
+  return {
+    projectMatch,
+    sessionMatch,
+    taskMatch,
+    match,
+    path: projectMatch
       ? `/api/project/${projectMatch[1]}`
       : window.location.pathname === "/unassigned"
         ? "/api/unassigned"
@@ -1265,15 +1276,67 @@ async function start() {
       : match
         ? `/api/campaign/${match[1]}`
         : "/api/projects",
-  );
-  serviceState.textContent = "Read only";
-  serviceState.classList.add("available");
-  if (projectMatch) renderProject(data);
+  };
+}
+
+function renderRoute(route, data) {
+  if (route.projectMatch) renderProject(data);
   else if (window.location.pathname === "/unassigned") renderUnassigned(data);
-  else if (sessionMatch) renderSession(data);
-  else if (taskMatch) renderTask(data, taskMatch[2]);
-  else if (match) renderCampaign(data);
+  else if (route.sessionMatch) renderSession(data);
+  else if (route.taskMatch) renderTask(data, route.taskMatch[2]);
+  else if (route.match) renderCampaign(data);
   else renderIndex(data);
+}
+
+function scheduleRefresh() {
+  clearTimeout(refreshTimer);
+  refreshTimer = null;
+  if (!document.hidden) {
+    refreshTimer = setTimeout(() => refreshDashboard(false), REFRESH_INTERVAL_MS);
+  }
+}
+
+async function refreshDashboard(initial) {
+  if (refreshInFlight || document.hidden) {
+    scheduleRefresh();
+    return;
+  }
+  refreshInFlight = true;
+  try {
+    const route = currentRoute();
+    const data = await loadJson(route.path);
+    const projection = JSON.stringify(data);
+    if (projection !== lastProjection) {
+      renderRoute(route, data);
+      lastProjection = projection;
+    }
+    serviceState.textContent = "Read only";
+    serviceState.classList.remove("unavailable");
+    serviceState.classList.add("available");
+  } catch (error) {
+    serviceState.textContent = "Update failed";
+    serviceState.classList.remove("available");
+    serviceState.classList.add("unavailable");
+    if (initial) throw error;
+  } finally {
+    refreshInFlight = false;
+    scheduleRefresh();
+  }
+}
+
+async function start() {
+  if (!capability) {
+    throw new Error("Missing browser capability. Run the dashboard open command again.");
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      clearTimeout(refreshTimer);
+      refreshTimer = null;
+    } else {
+      refreshDashboard(false);
+    }
+  });
+  await refreshDashboard(true);
 }
 
 start().catch((error) => {

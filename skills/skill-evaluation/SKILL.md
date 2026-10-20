@@ -73,6 +73,14 @@ Register this Copilot session once using its exact session UUID. The dashboard
 opens the project at most once for the current service process. Later sessions,
 retries, and runs update the same page without opening another tab.
 
+Run dashboard registration and browser lifecycle commands through the current
+installed `skill-evaluation` skill. Do not use a copy embedded in a candidate
+plugin, run snapshot, or frozen experiment bundle. Those copies are evidence
+for the evaluator that produced them, but an older dashboard client can open
+one legacy page per corpus instead of joining the current project page. A
+frozen evaluator may still publish attempt events during `run` or `run-suite`;
+the installed client owns registration, project opening, status, and stop.
+
 ```sh
 python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard register CORPUS \
   --session-id SESSION_UUID
