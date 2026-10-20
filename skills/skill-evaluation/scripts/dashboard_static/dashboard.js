@@ -519,6 +519,9 @@ const sentenceCase = (value) => {
 };
 
 const conciseTimestamp = (value) => {
+  if (!value) {
+    return "Start time unavailable";
+  }
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
     return value;
@@ -527,6 +530,41 @@ const conciseTimestamp = (value) => {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(parsed);
+};
+
+const conciseDuration = (seconds) => {
+  if (!Number.isFinite(seconds)) return null;
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `${(seconds / 3600).toFixed(seconds < 36000 ? 1 : 0)}h`;
+  return `${(seconds / 86400).toFixed(seconds < 864000 ? 1 : 0)}d`;
+};
+
+const taskEffortSummary = (task) => {
+  const effort = task.effort;
+  const timing = task.timing;
+  const duration = conciseDuration(timing.elapsed_seconds);
+  const lead = timing.first_qualified_pass_at
+    ? `First qualified${duration ? ` in ${duration}` : ""}`
+    : timing.first_run_at
+      ? `Started ${conciseTimestamp(timing.first_run_at)}`
+      : "No qualified attempt evidence yet";
+  const attempts = `${plural(effort.runs, "run")}, ${plural(effort.attempts, "attempt")}`;
+  const infrastructure = effort.infrastructure_failures
+    ? `, ${plural(effort.infrastructure_failures, "infrastructure failure")}`
+    : "";
+  const cost = effort.total_cost;
+  const costValue = cost.complete ? cost.credits : cost.observed_credits;
+  const costLabel = Number.isFinite(costValue)
+    ? ` · ${formatNumber(costValue)} ${costValue === 1 ? "credit" : "credits"}${cost.complete ? "" : " observed (partial)"}`
+    : "";
+  return `${lead} · ${attempts}${infrastructure}${costLabel}`;
+};
+
+const taskProgressSummary = (task) => {
+  const progress = task.safe_progress;
+  if (!progress || progress.status !== "available") return "";
+  return `<p class="task-progress-copy">${escapeHtml(`${progress.passed} of ${progress.total} named checks passing`)}</p>`;
 };
 
 const runAttemptSummary = (run) => {
@@ -824,6 +862,7 @@ function renderCampaign(data) {
 
 function renderProject(data) {
   const passing = data.tasks.filter((task) => task.result === "passing").length;
+  const regressed = data.tasks.filter((task) => task.result === "regressed").length;
   const active = data.runs.filter((run) => run.state === "active").length;
   const hasConflicts = Object.values(data.conflicts).some(
     (items) => items.length,
@@ -843,7 +882,7 @@ function renderProject(data) {
       </div>
       <div class="status-sentence">
         <strong>${escapeHtml(`${passing} of ${data.tasks.length} tasks passing`)}</strong>
-        <span>${escapeHtml(`${active} active local runs`)}</span>
+        <span>${escapeHtml(`${active} active runs${regressed ? ` · ${regressed} regressed` : ""}`)}</span>
       </div>
     </section>
     ${
@@ -853,24 +892,47 @@ function renderProject(data) {
     }
     <section class="simple-section">
       <div class="simple-section-heading">
-        <div><h2>Tasks</h2><p>Basic scorecard for the exact selected revision.</p></div>
+        <div><h2>Tasks</h2><p>What must pass, what is happening now, and the effort spent to get there.</p></div>
       </div>
       <div class="task-list-simple">
         ${data.tasks
           .map(
             (task) => `
               <article>
-                <span class="plain-status status-${escapeHtml(task.result === "passing" ? "passed" : task.result === "not_passing" ? "failed" : "waiting")}">${escapeHtml(sentenceCase(task.result))}</span>
-                <div><h3>${escapeHtml(task.title)}</h3><p>${escapeHtml(task.summary)}</p></div>
-                <span class="task-skill">${escapeHtml(`${task.bindings.filter((binding) => binding.qualified).length}/${task.bindings.length} bindings`)}</span>
+                <span class="task-statuses">
+                  <span class="plain-status status-${escapeHtml(task.result === "passing" ? "passed" : ["not_passing", "regressed"].includes(task.result) ? "failed" : "waiting")}">${escapeHtml(sentenceCase(task.result))}</span>
+                  <span class="activity-status status-${escapeHtml(task.phase.status === "conflicted" ? "conflicted" : task.phase.phase ? "active" : "waiting")}">${escapeHtml(task.phase.phase ? sentenceCase(task.phase.phase) : sentenceCase(task.phase.status))}</span>
+                </span>
+                <div>
+                  <h3>${escapeHtml(task.title)}</h3>
+                  <p>${escapeHtml(task.summary)}</p>
+                  ${taskProgressSummary(task)}
+                  <p class="task-effort-copy">${escapeHtml(taskEffortSummary(task))}</p>
+                </div>
+                <span class="task-skill">${escapeHtml(`${task.bindings.filter((binding) => binding.qualified).length}/${task.bindings.length} qualified`)}</span>
               </article>`,
           )
           .join("") || '<div class="panel-empty">Task totals are unavailable while project identity conflicts.</div>'}
       </div>
     </section>
+    ${
+      data.holdouts.length
+        ? `<section class="simple-section">
+            <div class="simple-section-heading"><div><h2>Generalization</h2><p>Authenticated aggregate holdout evidence only. Private cases and outputs never enter this page.</p></div></div>
+            <div class="task-list-simple">
+              ${data.holdouts.map((holdout) => `
+                <article>
+                  <span class="plain-status status-${escapeHtml(holdout.status === "completed" && holdout.qualification ? "passed" : holdout.status === "active" ? "running" : holdout.status === "invalid" ? "failed" : "waiting")}">${escapeHtml(sentenceCase(holdout.status))}</span>
+                  <div><h3>${escapeHtml(holdout.summary)}</h3><p>${escapeHtml(holdout.status === "completed" ? `${holdout.aggregate.passed_cases} of ${holdout.aggregate.total_cases} aggregate checks passed` : holdout.status === "active" ? "Independent validation is running." : holdout.status === "invalid" ? "Holdout evidence failed closed." : "No authenticated holdout result yet.")}</p></div>
+                  <span class="task-skill">${escapeHtml(holdout.qualification === true ? "Qualified" : holdout.qualification === false ? "Not qualified" : holdout.infrastructure_state)}</span>
+                </article>`).join("")}
+            </div>
+          </section>`
+        : ""
+    }
     <section class="simple-section">
       <div class="simple-section-heading">
-        <div><h2>Local runs</h2><p>Startup and lease state yield to immutable completion and typed failure artifacts.</p></div>
+        <div><h2>Runs</h2><p>Compact local and distributed attempts underneath the task goals they support.</p></div>
       </div>
       <div class="run-list">
         ${data.runs
@@ -885,7 +947,7 @@ function renderProject(data) {
                 <p>${escapeHtml(runAttemptSummary(run))}</p>
               </article>`,
           )
-          .join("") || '<div class="panel-empty">No project-bound local runs.</div>'}
+          .join("") || '<div class="panel-empty">No project-bound runs.</div>'}
       </div>
     </section>
     ${

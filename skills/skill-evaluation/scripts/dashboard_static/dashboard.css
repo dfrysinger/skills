@@ -997,6 +997,15 @@ tbody tr:hover {
   line-height: 1.5;
 }
 
+.task-list-simple .task-progress-copy {
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.task-list-simple .task-effort-copy {
+  font-size: 12px;
+}
+
 .run-age,
 .task-skill {
   color: var(--muted);

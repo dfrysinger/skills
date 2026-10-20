@@ -50,7 +50,10 @@ Multiple corpora join only when they declare the same compatible project.
     "case_revision": "<case-manifest-sha256>",
     "task_id": "example-behavior",
     "role": "development",
-    "safe_progress": null
+    "safe_progress": {
+      "kind": "repository_checks",
+      "checks": ["regression", "target"]
+    }
   }],
   "holdout_requirements": []
 }
@@ -60,6 +63,11 @@ Publish an additive revision by setting `supersedes` to the exact fingerprint
 of the current declaration. Keep all existing task, binding, and holdout IDs.
 Registration archives each accepted declaration so older runs retain their
 original meaning.
+
+For `distributed_product_stages`, each declared check is an exact
+`stage_kind` from the bound distributed dispatch plan. It counts as complete
+only after a validated non-failing stage receipt exists; unknown stage names
+make the safe breakdown unavailable instead of displaying a fabricated zero.
 
 Register this Copilot session once using its exact session UUID. The dashboard
 opens the project at most once for the current service process. Later sessions,
@@ -116,7 +124,10 @@ python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard lineage-snapshot CORPUS \
 
 Publish task progress against the exact frozen case revision and associated
 snapshot. Progress explains the current frontier, movement, blockers, and
-instruction uptake; it does not change evaluator correctness.
+instruction uptake; it does not change evaluator correctness. A project task
+may record only the work intent phases `experimenting`, `delta_ablation`, or
+`regression_check`. Qualification, holdout validation, publication readiness,
+and publication come from evaluator, holdout, or lineage evidence.
 
 ```sh
 python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard task-progress CORPUS \
@@ -127,11 +138,32 @@ python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard task-progress CORPUS \
   --frontier behavioral \
   --classification skill_defect \
   --movement "Strict improvement" \
+  --phase experimenting \
   --summary "The remaining failure is isolated to behavioral review" \
   --uptake preserve-authority OBSERVED "The candidate preserved authority" \
   --blocker "One behavioral criterion still fails" \
   --next-action "Refine the general rule" \
   --source review_receipt REVIEW_ID
+```
+
+For aggregate holdout validation, create one owner-protected Ed25519 authority,
+then import its signed started and terminal receipts. Receipts bind the exact
+project, holdout set, candidate revision, task set, claim, and lifetime. They
+contain aggregate counts and accounting only. Case identities, prompts,
+criteria, outputs, private paths, and per-case failures are rejected.
+
+```sh
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard holdout-authority \
+  --authority-id independent-evaluator \
+  --public-key BASE64_ED25519_PUBLIC_KEY
+
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard holdout-private-sign \
+  --private-key /protected/private-key \
+  --unsigned-receipt /protected/aggregate-receipt.json \
+  --output /protected/signed-receipt.json
+
+python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard holdout-import \
+  /protected/signed-receipt.json
 ```
 
 For a distributed treatment experiment, publish each bounded projection only
@@ -242,12 +274,12 @@ python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard status
 python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard stop
 ```
 
-The dashboard shows registered corpora, completed attempts, local sessions,
-active or stale attempts, exact observed skill identities, outcomes, timing,
-AI credits, premium requests, admitted skill lineage, exact relevant
-comparisons, task progress, predeclared distributed experiments, exact-known
-cloud observations, first outcomes, recovery, effective results, deterministic
-selection, and derived attention. AI credits are interpreted as cents by user
+The project page shows each task result and work phase separately. It shows
+safe named checks only when the declaration selects a supported reader. It also
+shows time to the first qualified pass, covered run and attempt counts,
+infrastructure failures, tokens, credits, compact local and distributed runs,
+and authenticated aggregate holdout status. Unknown and partial accounting
+stay labeled as unknown or partial. AI credits are interpreted as cents by user
 convention; premium requests remain a separate evaluator unit. Distributed
 cost without canonical accounting remains incomplete. Ablation remains
 explicitly unavailable.

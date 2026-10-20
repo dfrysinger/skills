@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import base64
 import signal
 import tempfile
 import threading
@@ -15,22 +16,36 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from dashboard_cli import (
     STARTED_PROCESSES,
+    dispatch,
     register_dashboard,
     service_status,
     stop_service,
+    task_progress_dashboard,
 )
 from dashboard_server import DashboardHTTPServer
 from dashboard_state import (
     capture_skill_snapshot,
     create_campaign,
     emit_lineage_event,
+    emit_task_progress_event,
+    extension_records,
     register_session,
 )
+from holdout_dashboard import (
+    create_authority,
+    holdout_projection,
+    import_receipt,
+    sign_private_receipt,
+)
 from project_dashboard import (
+    _task_phase,
+    _task_safe_progress,
+    _distributed_projection,
     _task_scorecard,
     archived_project_declaration,
     binding_fingerprint,
@@ -213,6 +228,39 @@ class ProjectDeclarationTests(ProjectFixture):
             projection["selected_revision"]["status"],
             "conflicted",
         )
+
+    def test_project_index_counts_regressed_tasks_separately(self):
+        corpus = self.corpus("regressed-index")
+        self.write_declaration(corpus, self.declaration(corpus))
+        create_campaign(self.state_root, corpus)
+        projection = {
+            "project": {
+                "project_id": "example-project",
+                "title": "Improve example skill",
+                "goal": "Pass the declared behavior checks.",
+                "target_skills": ["example-skill"],
+                "availability": "available",
+            },
+            "selected_revision": {"status": "available"},
+            "tasks": [
+                {"result": "passing"},
+                {"result": "regressed"},
+            ],
+            "runs": [],
+        }
+
+        with mock.patch(
+            "project_dashboard.project_projection",
+            return_value=projection,
+        ):
+            index = project_index_projection(self.state_root)
+
+        self.assertEqual(index["projects"][0]["task_counts"], {
+            "passing": 1,
+            "not_passing": 0,
+            "regressed": 1,
+            "unavailable": 0,
+        })
 
     def test_conflicting_task_is_visible_and_excluded(self):
         first = self.corpus("first")
@@ -398,6 +446,842 @@ class ProjectScorecardTests(ProjectFixture):
             0,
         )
         self.assertEqual(scorecard[0]["result"], "unavailable")
+
+    def test_regression_and_effort_follow_exact_revision_history(self):
+        corpus = self.corpus("regression")
+        declaration = canonical_project_declaration(self.declaration(corpus))
+        task = declaration["tasks"][0]
+        binding = declaration["case_bindings"][0]
+
+        def attempt(snapshot: str, outcome: str, started: str, run: str):
+            return {
+                "campaign_id": "a" * 32,
+                "row": {
+                    "correctness": outcome,
+                    "population": {
+                        "lineage_snapshot_id": snapshot,
+                        "case_id": binding["case_id"],
+                        "case_revision": binding["case_revision"],
+                    },
+                    "started_at": started,
+                    "elapsed_seconds": 10,
+                    "run_path": run,
+                    "attempt": 1,
+                    "accounting": {},
+                    "invocations": [],
+                },
+                "project": {
+                    "binding_id": binding["binding_id"],
+                    "binding_fingerprint": binding_fingerprint(binding),
+                    "task_fingerprint": task_fingerprint(task),
+                },
+            }
+
+        scorecard = _task_scorecard(
+            {
+                "tasks": declaration["tasks"],
+                "case_bindings": declaration["case_bindings"],
+            },
+            {
+                "snapshot_id": "revision-b",
+                "snapshot_ids": ["b" * 64],
+                "prior_revisions": [{
+                    "snapshot_id": "revision-a",
+                    "snapshot_ids": ["a" * 64],
+                    "roles": ["integrated"],
+                }],
+                "known_revisions": [
+                    {
+                        "snapshot_id": "revision-a",
+                        "snapshot_ids": ["a" * 64],
+                        "roles": ["integrated"],
+                    },
+                    {
+                        "snapshot_id": "revision-b",
+                        "snapshot_ids": ["b" * 64],
+                        "roles": ["integrated"],
+                    },
+                ],
+            },
+            [
+                attempt(
+                    "a" * 64,
+                    "PASS",
+                    "2026-01-01T00:00:00+00:00",
+                    "runs/prior/case-one",
+                ),
+                attempt(
+                    "b" * 64,
+                    "FAIL",
+                    "2026-01-02T00:00:00+00:00",
+                    "runs/current/case-one",
+                ),
+            ],
+        )
+
+        self.assertEqual(scorecard[0]["result"], "regressed")
+        self.assertEqual(
+            scorecard[0]["timing"]["first_qualified_pass_at"],
+            "2026-01-01T00:00:10+00:00",
+        )
+        self.assertEqual(scorecard[0]["effort"]["attempts"], 1)
+
+    def test_equal_recorded_phase_disagreement_is_conflicted(self):
+        corpus = self.corpus("phase")
+        declaration = canonical_project_declaration(self.declaration(corpus))
+        task = declaration["tasks"][0]
+        binding = declaration["case_bindings"][0]
+        project = {
+            "sources": [{
+                "available": True,
+                "corpus_root": corpus,
+                "campaign": {"campaign_id": "a" * 32},
+                "registration": {
+                    "declaration_sha256": "e" * 64,
+                },
+            }],
+        }
+
+        def record(phase: str, event_id: str):
+            return {
+                "event_id": event_id,
+                "event_type": "task_progress_recorded",
+                "recorded_at": "2026-01-01T00:00:00+00:00",
+                "subject": {
+                    "snapshot_id": "s" * 64,
+                    "case_id": binding["case_id"],
+                    "case_revision": binding["case_revision"],
+                },
+                "payload": {
+                    "task_id": task["task_id"],
+                    "project_declaration_sha256": "d" * 64,
+                    "phase": phase,
+                },
+            }
+
+        with mock.patch(
+            "project_dashboard.extension_records",
+            return_value=(
+                [
+                    record("experimenting", "1" * 32),
+                    record("delta_ablation", "2" * 32),
+                ],
+                [],
+                [],
+            ),
+        ), mock.patch(
+            "project_dashboard.archived_project_declaration",
+            return_value=declaration,
+        ):
+            phase = _task_phase(
+                project,
+                {"snapshot_ids": ["s" * 64], "roles": []},
+                task,
+                "passing",
+                [binding],
+                [],
+            )
+
+        self.assertEqual(phase["status"], "conflicted")
+        self.assertIsNone(phase["phase"])
+
+    def test_passing_task_can_remain_in_delta_ablation(self):
+        corpus = self.corpus("ablation-phase")
+        declaration = canonical_project_declaration(self.declaration(corpus))
+        task = declaration["tasks"][0]
+        binding = declaration["case_bindings"][0]
+        project = {
+            "sources": [{
+                "available": True,
+                "corpus_root": corpus,
+                "campaign": {"campaign_id": "a" * 32},
+                "registration": {
+                    "declaration_sha256": "e" * 64,
+                },
+            }],
+        }
+        record = {
+            "event_id": "1" * 32,
+            "event_type": "task_progress_recorded",
+            "recorded_at": "2026-01-01T00:00:00+00:00",
+            "subject": {
+                "snapshot_id": "s" * 64,
+                "case_id": binding["case_id"],
+                "case_revision": binding["case_revision"],
+            },
+            "payload": {
+                "task_id": task["task_id"],
+                "project_declaration_sha256": "d" * 64,
+                "phase": "delta_ablation",
+            },
+        }
+
+        with mock.patch(
+            "project_dashboard.extension_records",
+            return_value=([record], [], []),
+        ), mock.patch(
+            "project_dashboard.archived_project_declaration",
+            return_value=declaration,
+        ):
+            phase = _task_phase(
+                project,
+                {"snapshot_ids": ["s" * 64], "roles": []},
+                task,
+                "passing",
+                [binding],
+                [],
+            )
+
+        self.assertEqual(phase["status"], "available")
+        self.assertEqual(phase["phase"], "delta_ablation")
+
+    def test_passing_task_without_intent_is_not_candidate_pass(self):
+        corpus = self.corpus("passing-no-intent")
+        declaration = canonical_project_declaration(self.declaration(corpus))
+        task = declaration["tasks"][0]
+        binding = declaration["case_bindings"][0]
+
+        with mock.patch(
+            "project_dashboard.extension_records",
+            return_value=([], [], []),
+        ):
+            phase = _task_phase(
+                {
+                    "sources": [{
+                        "available": True,
+                        "corpus_root": corpus,
+                    }],
+                },
+                {"snapshot_ids": ["s" * 64], "roles": []},
+                task,
+                "passing",
+                [binding],
+                [],
+            )
+
+        self.assertEqual(phase["status"], "available")
+        self.assertEqual(phase["phase"], "not_started")
+
+    def test_repository_safe_progress_reads_only_named_boolean_checks(self):
+        corpus = self.corpus("safe-progress")
+        declaration = self.declaration(corpus)
+        declaration["case_bindings"][0]["safe_progress"] = {
+            "kind": "repository_checks",
+            "checks": ["regression", "target"],
+        }
+        declaration = canonical_project_declaration(declaration)
+        task = declaration["tasks"][0]
+        binding = declaration["case_bindings"][0]
+        run = corpus / "runs" / "one" / "case-one"
+        (run / "grading").mkdir(parents=True)
+        (run / "grading" / "grading.json").write_text(json.dumps({
+            "target": {"passed": True, "hidden": "not projected"},
+            "regression": {"passed": False},
+        }))
+        attempts = [{
+            "campaign_id": "a" * 32,
+            "corpus_root": corpus,
+            "row": {
+                "correctness": "FAIL",
+                "population": {
+                    "lineage_snapshot_id": "s" * 64,
+                    "case_id": binding["case_id"],
+                    "case_revision": binding["case_revision"],
+                },
+                "run_path": "runs/one/case-one",
+                "started_at": "2026-01-01T00:00:00+00:00",
+                "elapsed_seconds": 1,
+            },
+            "project": {
+                "binding_id": binding["binding_id"],
+                "binding_fingerprint": binding_fingerprint(binding),
+                "task_fingerprint": task_fingerprint(task),
+            },
+        }]
+
+        progress = _task_safe_progress(
+            task,
+            [binding],
+            {"snapshot_ids": ["s" * 64]},
+            attempts,
+            [],
+        )
+
+        self.assertEqual(progress["status"], "available")
+        self.assertEqual((progress["passed"], progress["total"]), (1, 2))
+        self.assertNotIn("hidden", json.dumps(progress))
+
+    def test_prose_task_has_no_safe_progress_percentage(self):
+        corpus = self.corpus("prose-progress")
+        declaration = canonical_project_declaration(self.declaration(corpus))
+        progress = _task_safe_progress(
+            declaration["tasks"][0],
+            declaration["case_bindings"],
+            {"snapshot_ids": ["s" * 64]},
+            [],
+            [],
+        )
+        self.assertEqual(progress, {
+            "status": "unavailable",
+            "reason": "No safe subcheck breakdown.",
+        })
+
+    def test_task_progress_binds_current_project_task_and_phase(self):
+        corpus = self.corpus("progress-command")
+        declaration = self.write_declaration(
+            corpus,
+            self.declaration(corpus),
+        )
+        registration = create_campaign(self.state_root, corpus)
+        session_id = str(uuid.uuid4())
+        register_session(self.state_root, corpus, session_id, state="active")
+        snapshot = capture_skill_snapshot(
+            corpus,
+            write_plugin(self.root),
+            ["example-skill"],
+        )
+
+        task_progress_dashboard(
+            corpus,
+            session_id,
+            "case-one",
+            snapshot["snapshot_id"],
+            "behavioral",
+            "skill_defect",
+            "Strict improvement",
+            "Testing the next general revision.",
+            phase="experimenting",
+            root=self.state_root,
+        )
+
+        records, _, _ = extension_records(corpus)
+        progress = next(
+            item for item in records
+            if item["event_type"] == "task_progress_recorded"
+        )
+        self.assertEqual(progress["payload"]["task_id"], "task-1")
+        self.assertEqual(
+            progress["payload"]["project_declaration_sha256"],
+            project_declaration_fingerprint(declaration),
+        )
+        self.assertEqual(progress["payload"]["phase"], "experimenting")
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            task_progress_dashboard(
+                corpus,
+                session_id,
+                "case-one",
+                snapshot["snapshot_id"],
+                "behavioral",
+                "skill_defect",
+                "Strict improvement",
+                "Invalid task identity.",
+                task_id="wrong-task",
+                root=self.state_root,
+            )
+
+    def test_distributed_experiment_uses_shared_compact_run_fields(self):
+        corpus = self.corpus("distributed")
+        declaration = canonical_project_declaration(self.declaration(corpus))
+        binding = declaration["case_bindings"][0]
+        project = {
+            "case_bindings": declaration["case_bindings"],
+            "sources": [{
+                "available": True,
+                "corpus_root": corpus,
+                "campaign": {"campaign_id": "a" * 32},
+            }],
+        }
+        activity = [{
+            "attempt_id": "attempt-1",
+            "case_id": binding["case_id"],
+            "case_revision": binding["case_revision"],
+            "snapshot_id": "s" * 64,
+            "state": "terminal",
+            "evaluator_result": "PASS",
+        }]
+        projection = {
+            "items": [{
+                "experiment_id": "experiment-1",
+                "experiment_fingerprint": "e" * 64,
+                "summary": "Test the general fix on the distributed runner.",
+                "snapshot_id": "s" * 64,
+                "route": "cloud",
+                "planned_attempts": 1,
+                "cost": {
+                    "known_attempts": 0,
+                    "total_attempts": 1,
+                    "credits": None,
+                    "premium_requests": None,
+                    "complete": False,
+                },
+                "activity": activity,
+            }],
+        }
+        declared = [{
+            "event_type": "experiment_declared",
+            "recorded_at": "2026-01-01T00:00:00+00:00",
+            "subject": {"experiment_id": "experiment-1"},
+        }]
+        with mock.patch(
+            "dashboard_projection.experiment_projection",
+            return_value=projection,
+        ), mock.patch(
+            "project_dashboard.experiment_activity_records",
+            return_value=(declared, [], []),
+        ):
+            runs, rows = _distributed_projection(project)
+
+        self.assertEqual(
+            [
+                {
+                    key: value for key, value in row.items()
+                    if not key.startswith("_")
+                }
+                for row in rows
+            ],
+            activity,
+        )
+        self.assertEqual(runs[0]["launcher_kind"], "distributed_experiment")
+        self.assertEqual(runs[0]["state"], "completed")
+        self.assertEqual(runs[0]["passing_attempts"], 1)
+        self.assertEqual(
+            runs[0]["source_identity"]["experiment_fingerprint"],
+            "e" * 64,
+        )
+
+    def test_distributed_safe_progress_uses_stage_identity(self):
+        corpus = self.corpus("distributed-progress")
+        declaration = canonical_project_declaration(self.declaration(corpus))
+        task = declaration["tasks"][0]
+        binding = {
+            **declaration["case_bindings"][0],
+            "safe_progress": {
+                "kind": "distributed_product_stages",
+                "checks": ["linux-final"],
+            },
+        }
+        lineage = {"snapshot_ids": ["s" * 64]}
+        activity = [{
+            "case_id": binding["case_id"],
+            "case_revision": binding["case_revision"],
+            "snapshot_id": "s" * 64,
+            "_expected_stage_kinds": ["linux-final"],
+            "_completed_stage_kinds": [],
+        }]
+
+        progress = _task_safe_progress(
+            task,
+            [binding],
+            lineage,
+            [],
+            activity,
+        )
+        self.assertEqual(progress["status"], "available")
+        self.assertEqual(progress["passed"], 0)
+        self.assertEqual(progress["total"], 1)
+
+        binding["safe_progress"]["checks"] = ["unknown-stage"]
+        unavailable = _task_safe_progress(
+            task,
+            [binding],
+            lineage,
+            [],
+            activity,
+        )
+        self.assertEqual(unavailable["status"], "unavailable")
+
+    def test_effort_includes_failed_ancestor_before_descendant_pass(self):
+        corpus = self.corpus("effort-prefix")
+        declaration = canonical_project_declaration(self.declaration(corpus))
+        task = declaration["tasks"][0]
+        binding = declaration["case_bindings"][0]
+
+        def attempt(snapshot: str, outcome: str, started: str, run: str):
+            return {
+                "campaign_id": "a" * 32,
+                "row": {
+                    "correctness": outcome,
+                    "population": {
+                        "lineage_snapshot_id": snapshot,
+                        "case_id": binding["case_id"],
+                        "case_revision": binding["case_revision"],
+                    },
+                    "started_at": started,
+                    "elapsed_seconds": 10,
+                    "run_path": run,
+                    "attempt": 1,
+                    "accounting": {},
+                    "invocations": [],
+                },
+                "project": {
+                    "binding_id": binding["binding_id"],
+                    "binding_fingerprint": binding_fingerprint(binding),
+                    "task_fingerprint": task_fingerprint(task),
+                },
+            }
+
+        scorecard = _task_scorecard(
+            {
+                "tasks": declaration["tasks"],
+                "case_bindings": declaration["case_bindings"],
+            },
+            {
+                "snapshot_id": "revision-b",
+                "snapshot_ids": ["b" * 64],
+                "prior_revisions": [{
+                    "snapshot_id": "revision-a",
+                    "snapshot_ids": ["a" * 64],
+                    "roles": ["integrated"],
+                }],
+                "known_revisions": [
+                    {
+                        "snapshot_id": "revision-a",
+                        "snapshot_ids": ["a" * 64],
+                        "roles": ["integrated"],
+                    },
+                    {
+                        "snapshot_id": "revision-b",
+                        "snapshot_ids": ["b" * 64],
+                        "roles": ["integrated"],
+                    },
+                ],
+            },
+            [
+                attempt(
+                    "a" * 64,
+                    "FAIL",
+                    "2026-01-01T00:00:00+00:00",
+                    "runs/prior/case-one",
+                ),
+                attempt(
+                    "b" * 64,
+                    "PASS",
+                    "2026-01-02T00:00:00+00:00",
+                    "runs/current/case-one",
+                ),
+            ],
+        )
+
+        self.assertEqual(scorecard[0]["result"], "passing")
+        self.assertEqual(scorecard[0]["effort"]["runs"], 2)
+        self.assertEqual(scorecard[0]["effort"]["attempts"], 2)
+
+
+class ProjectHoldoutTests(ProjectFixture):
+    def setUp(self):
+        super().setUp()
+        try:
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+                Ed25519PrivateKey,
+            )
+        except ImportError:
+            self.skipTest("cryptography is unavailable")
+        self.serialization = serialization
+        self.private = Ed25519PrivateKey.generate()
+        public = self.private.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        create_authority(
+            self.state_root,
+            "independent-evaluator",
+            base64.b64encode(public).decode("ascii"),
+        )
+
+    def signed(self, value: dict) -> dict:
+        unsigned = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        return {
+            **value,
+            "signature": base64.b64encode(
+                self.private.sign(unsigned)
+            ).decode("ascii"),
+        }
+
+    def started(self) -> dict:
+        return self.signed({
+            "schema_version": 1,
+            "receipt_id": "started-1",
+            "kind": "started",
+            "authority_id": "independent-evaluator",
+            "project_id": "example-project",
+            "holdout_set_id": "transfer-v1",
+            "candidate_revision": "c" * 64,
+            "task_ids": ["task-1"],
+            "claim": "transfer",
+            "started_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "2026-01-01T01:00:00+00:00",
+            "nonce": "nonce-1",
+        })
+
+    def test_signed_chain_projects_only_aggregate_data(self):
+        started = self.started()
+        started_import = import_receipt(self.state_root, started)
+        terminal = self.signed({
+            "schema_version": 1,
+            "receipt_id": "terminal-1",
+            "kind": "terminal",
+            "authority_id": "independent-evaluator",
+            "project_id": "example-project",
+            "holdout_set_id": "transfer-v1",
+            "candidate_revision": "c" * 64,
+            "task_ids": ["task-1"],
+            "claim": "transfer",
+            "started_receipt_sha256": started_import["receipt_sha256"],
+            "completed_at": "2026-01-01T00:30:00+00:00",
+            "infrastructure_state": "completed",
+            "total_cases": 5,
+            "passed_cases": 5,
+            "failed_cases": 0,
+            "candidate_tokens": 100,
+            "judge_tokens": 20,
+            "credits": 1.5,
+            "accounting_complete": True,
+            "qualified": True,
+        })
+        import_receipt(self.state_root, terminal)
+
+        projection = holdout_projection(
+            self.state_root,
+            "example-project",
+            [{
+                "holdout_set_id": "transfer-v1",
+                "summary": "Reserved transfer checks",
+                "required_claim": "transfer",
+                "task_ids": ["task-1"],
+                "authority_id": "independent-evaluator",
+            }],
+            "c" * 64,
+        )
+
+        self.assertEqual(projection[0]["status"], "completed")
+        self.assertTrue(projection[0]["qualification"])
+        self.assertEqual(projection[0]["aggregate"]["passed_cases"], 5)
+        self.assertNotIn("case_id", json.dumps(projection))
+
+    def test_forgery_detail_replay_and_writable_registry_fail_closed(self):
+        started = self.started()
+        forged = {**started, "nonce": "changed"}
+        with self.assertRaisesRegex(ValueError, "signature"):
+            import_receipt(self.state_root, forged)
+        detail = {
+            **started,
+            "case_id": "secret-case",
+        }
+        detail = self.signed({
+            key: value for key, value in detail.items()
+            if key != "signature"
+        })
+        with self.assertRaisesRegex(ValueError, "forbidden detail"):
+            import_receipt(self.state_root, detail)
+        import_receipt(self.state_root, started)
+        with self.assertRaisesRegex(ValueError, "replayed"):
+            import_receipt(self.state_root, started)
+
+        registry = self.state_root / "holdout-authorities"
+        os.chmod(registry, 0o777)
+        projection = holdout_projection(
+            self.state_root,
+            "example-project",
+            [{
+                "holdout_set_id": "transfer-v1",
+                "summary": "Reserved transfer checks",
+                "required_claim": "transfer",
+                "task_ids": ["task-1"],
+                "authority_id": "independent-evaluator",
+            }],
+            "c" * 64,
+        )
+        self.assertEqual(projection[0]["status"], "invalid")
+
+    def test_unknown_authority_and_late_terminal_are_rejected(self):
+        unknown = {
+            **self.started(),
+            "authority_id": "unknown-evaluator",
+        }
+        unknown = self.signed({
+            key: value for key, value in unknown.items()
+            if key != "signature"
+        })
+        with self.assertRaisesRegex(ValueError, "holdout authority"):
+            import_receipt(self.state_root, unknown)
+
+        started = self.started()
+        imported = import_receipt(self.state_root, started)
+        late = self.signed({
+            "schema_version": 1,
+            "receipt_id": "terminal-late",
+            "kind": "terminal",
+            "authority_id": "independent-evaluator",
+            "project_id": "example-project",
+            "holdout_set_id": "transfer-v1",
+            "candidate_revision": "c" * 64,
+            "task_ids": ["task-1"],
+            "claim": "transfer",
+            "started_receipt_sha256": imported["receipt_sha256"],
+            "completed_at": "2026-01-01T02:00:00+00:00",
+            "infrastructure_state": "completed",
+            "total_cases": 1,
+            "passed_cases": 1,
+            "failed_cases": 0,
+            "candidate_tokens": None,
+            "judge_tokens": None,
+            "credits": None,
+            "accounting_complete": False,
+            "qualified": True,
+        })
+        with self.assertRaisesRegex(ValueError, "outside its lifetime"):
+            import_receipt(self.state_root, late)
+
+    def test_duplicate_terminal_is_rejected_and_expired_start_fails(self):
+        started = self.signed({
+            "schema_version": 1,
+            "receipt_id": "started-expired",
+            "kind": "started",
+            "authority_id": "independent-evaluator",
+            "project_id": "example-project",
+            "holdout_set_id": "transfer-v1",
+            "candidate_revision": "c" * 64,
+            "task_ids": ["task-1"],
+            "claim": "transfer",
+            "started_at": "2020-01-01T00:00:00+00:00",
+            "expires_at": "2020-01-01T01:00:00+00:00",
+            "nonce": "expired-nonce",
+        })
+        imported = import_receipt(self.state_root, started)
+        projection = holdout_projection(
+            self.state_root,
+            "example-project",
+            [{
+                "holdout_set_id": "transfer-v1",
+                "summary": "Reserved transfer checks",
+                "required_claim": "transfer",
+                "task_ids": ["task-1"],
+                "authority_id": "independent-evaluator",
+            }],
+            "c" * 64,
+        )
+        self.assertEqual(projection[0]["status"], "expired")
+        self.assertEqual(projection[0]["infrastructure_state"], "failed")
+        self.assertIsNone(projection[0]["qualification"])
+
+        terminal_fields = {
+            "schema_version": 1,
+            "kind": "terminal",
+            "authority_id": "independent-evaluator",
+            "project_id": "example-project",
+            "holdout_set_id": "transfer-v1",
+            "candidate_revision": "c" * 64,
+            "task_ids": ["task-1"],
+            "claim": "transfer",
+            "started_receipt_sha256": imported["receipt_sha256"],
+            "completed_at": "2020-01-01T00:30:00+00:00",
+            "infrastructure_state": "completed",
+            "total_cases": 1,
+            "passed_cases": 1,
+            "failed_cases": 0,
+            "candidate_tokens": None,
+            "judge_tokens": None,
+            "credits": None,
+            "accounting_complete": False,
+            "qualified": True,
+        }
+        import_receipt(self.state_root, self.signed({
+            **terminal_fields,
+            "receipt_id": "terminal-first",
+        }))
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            import_receipt(self.state_root, self.signed({
+                **terminal_fields,
+                "receipt_id": "terminal-second",
+            }))
+
+    def test_private_signer_returns_no_private_paths_or_case_detail(self):
+        private_path = self.root / "private.key"
+        private_bytes = self.private.private_bytes(
+            encoding=self.serialization.Encoding.Raw,
+            format=self.serialization.PrivateFormat.Raw,
+            encryption_algorithm=self.serialization.NoEncryption(),
+        )
+        private_path.write_text(
+            base64.b64encode(private_bytes).decode("ascii"),
+            encoding="ascii",
+        )
+        os.chmod(private_path, 0o600)
+        unsigned_path = self.root / "aggregate.json"
+        unsigned = {
+            key: value for key, value in self.started().items()
+            if key != "signature"
+        }
+        unsigned_path.write_text(json.dumps(unsigned), encoding="utf-8")
+        output = self.root / "signed.json"
+
+        response = sign_private_receipt(
+            private_path,
+            unsigned_path,
+            output,
+        )
+
+        self.assertNotIn(str(self.root), json.dumps(response))
+        self.assertNotIn("case", json.dumps(response))
+
+    def test_private_signer_rejects_symlink_and_hides_missing_key_path(self):
+        private_path = self.root / "private.key"
+        private_bytes = self.private.private_bytes(
+            encoding=self.serialization.Encoding.Raw,
+            format=self.serialization.PrivateFormat.Raw,
+            encryption_algorithm=self.serialization.NoEncryption(),
+        )
+        private_path.write_text(base64.b64encode(private_bytes).decode())
+        os.chmod(private_path, 0o600)
+        symlink = self.root / "private-link"
+        symlink.symlink_to(private_path)
+        unsigned = self.root / "unsigned.json"
+        unsigned.write_text("{}\n")
+
+        with self.assertRaisesRegex(ValueError, "owner protected"):
+            sign_private_receipt(
+                symlink,
+                unsigned,
+                self.root / "signed.json",
+            )
+
+        missing = self.root / "secret-name.key"
+        with self.assertRaises(ValueError) as raised:
+            sign_private_receipt(
+                missing,
+                unsigned,
+                self.root / "missing.json",
+            )
+        self.assertNotIn(str(missing), str(raised.exception))
+
+    def test_private_sign_cli_preserves_symlink_for_validation(self):
+        symlink = self.root / "private-link"
+        with mock.patch(
+            "dashboard_cli.sign_private_receipt",
+            return_value={"schema_version": 1},
+        ) as signer:
+            dispatch(SimpleNamespace(
+                dashboard_command="holdout-private-sign",
+                private_key=symlink,
+                unsigned_receipt=self.root / "unsigned.json",
+                output=self.root / "signed.json",
+            ))
+
+        self.assertEqual(signer.call_args.args[0], symlink)
+
+    def test_holdout_path_components_reject_parent_traversal(self):
+        receipt = {
+            key: value for key, value in self.started().items()
+            if key != "signature"
+        }
+        receipt["project_id"] = ".."
+        with self.assertRaisesRegex(ValueError, "project ID"):
+            import_receipt(self.state_root, self.signed(receipt))
 
 
 class ProjectLifecycleProjectionTests(ProjectFixture):

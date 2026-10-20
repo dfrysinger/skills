@@ -43,7 +43,13 @@ from dashboard_state import (
 )
 from project_dashboard import (
     campaign_project_registration,
+    project_binding_for_case,
     project_projection,
+)
+from holdout_dashboard import (
+    create_authority,
+    import_receipt,
+    sign_private_receipt,
 )
 
 
@@ -636,6 +642,9 @@ def task_progress_dashboard(
     next_action: str | None = None,
     comparison_snapshot_id: str | None = None,
     sources: list[dict] | None = None,
+    task_id: str | None = None,
+    project_declaration_sha256: str | None = None,
+    phase: str | None = None,
     event_id: str | None = None,
     observed_at: str | None = None,
     root: Path | None = None,
@@ -647,6 +656,25 @@ def task_progress_dashboard(
     from skill_eval import digest, frozen_case_path
 
     revision = digest(frozen_case_path(corpus, case_id) / "case-manifest.json")
+    project_binding = project_binding_for_case(corpus, case_id)
+    if project_binding is not None:
+        _, declaration_sha256, task, _ = project_binding
+        if task_id is not None and task_id != task["task_id"]:
+            raise ValueError("task progress task does not match project binding")
+        if (
+            project_declaration_sha256 is not None
+            and project_declaration_sha256 != declaration_sha256
+        ):
+            raise ValueError(
+                "task progress declaration does not match current project"
+            )
+        task_id = task["task_id"]
+        project_declaration_sha256 = declaration_sha256
+    elif any(
+        item is not None
+        for item in (task_id, project_declaration_sha256, phase)
+    ):
+        raise ValueError("project task progress requires a project declaration")
     event = emit_task_progress_event(
         corpus,
         campaign_id=registration["campaign_id"],
@@ -667,6 +695,9 @@ def task_progress_dashboard(
         next_action=next_action,
         comparison_snapshot_id=comparison_snapshot_id,
         sources=sources,
+        task_id=task_id,
+        project_declaration_sha256=project_declaration_sha256,
+        phase=phase,
         event_id=event_id,
         observed_at=observed_at,
     )
@@ -1885,6 +1916,12 @@ def configure_parser(sub: argparse._SubParsersAction) -> None:
     progress.add_argument("--blocker")
     progress.add_argument("--next-action")
     progress.add_argument("--comparison-snapshot")
+    progress.add_argument("--task")
+    progress.add_argument("--project-declaration")
+    progress.add_argument(
+        "--phase",
+        choices=("experimenting", "delta_ablation", "regression_check"),
+    )
     progress.add_argument(
         "--source",
         action="append",
@@ -1894,6 +1931,17 @@ def configure_parser(sub: argparse._SubParsersAction) -> None:
     progress.add_argument("--event-id")
     progress.add_argument("--observed-at")
     progress.add_argument("--state-root", type=Path)
+    holdout_authority = commands.add_parser("holdout-authority")
+    holdout_authority.add_argument("--authority-id", required=True)
+    holdout_authority.add_argument("--public-key", required=True)
+    holdout_authority.add_argument("--state-root", type=Path)
+    holdout_import = commands.add_parser("holdout-import")
+    holdout_import.add_argument("receipt", type=Path)
+    holdout_import.add_argument("--state-root", type=Path)
+    holdout_sign = commands.add_parser("holdout-private-sign")
+    holdout_sign.add_argument("--private-key", type=Path, required=True)
+    holdout_sign.add_argument("--unsigned-receipt", type=Path, required=True)
+    holdout_sign.add_argument("--output", type=Path, required=True)
     declaration = commands.add_parser("experiment-declaration")
     declaration.add_argument("corpus", type=Path)
     declaration.add_argument("source", type=Path)
@@ -2033,6 +2081,9 @@ def dispatch(args: argparse.Namespace) -> dict:
             blocker=args.blocker,
             next_action=args.next_action,
             comparison_snapshot_id=args.comparison_snapshot,
+            task_id=args.task,
+            project_declaration_sha256=args.project_declaration,
+            phase=args.phase,
             sources=[
                 {"kind": kind, "id": identifier}
                 for kind, identifier in (args.source or [])
@@ -2040,6 +2091,26 @@ def dispatch(args: argparse.Namespace) -> dict:
             event_id=args.event_id,
             observed_at=args.observed_at,
             root=args.state_root,
+        )
+    if args.dashboard_command == "holdout-authority":
+        return create_authority(
+            state_root(args.state_root),
+            args.authority_id,
+            args.public_key,
+        )
+    if args.dashboard_command == "holdout-import":
+        return import_receipt(
+            state_root(args.state_root),
+            regular_json(
+                args.receipt.expanduser().resolve(),
+                "holdout receipt",
+            ),
+        )
+    if args.dashboard_command == "holdout-private-sign":
+        return sign_private_receipt(
+            args.private_key.expanduser(),
+            args.unsigned_receipt.expanduser().resolve(),
+            args.output.expanduser().resolve(),
         )
     if args.dashboard_command == "experiment-declaration":
         return experiment_declaration_dashboard(
