@@ -2016,6 +2016,91 @@ class FullProductMatrixTests(unittest.TestCase):
             self.assertNotIn("environment", result)
             self.assertNotIn("model-token", json.dumps(result))
             self.assertEqual(result["judgment"]["verdict"], "FAIL")
+            prompt = Runner.command[Runner.command.index("-p") + 1]
+            self.assertIn(str(run_root / "judge-input/judge-model/task.md"), prompt)
+            self.assertIn("unavailable; no case manifest supplied", prompt)
+
+    def test_judge_projection_preserves_proof_and_refuses_invalid_inputs(self):
+        for fault in (None, "traversal", "digest", "missing", "symlink"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                case = root / "case"
+                candidate = root / "candidate"
+                proof = case / "hidden/admission"
+                proof.mkdir(parents=True)
+                candidate.mkdir()
+                (candidate / "task.md").write_text("task")
+                receipt = proof / "receipt.json"
+                receipt.write_text('{"synthetic":true}\n')
+                receipt.chmod(0o640)
+                (proof / "support.txt").write_text("supporting evidence")
+                manifest = {
+                    "admission": {
+                        "status": "admitted", "receipt": "hidden/admission/receipt.json",
+                        "receiptSha256": digest(receipt),
+                    },
+                }
+                if fault == "traversal":
+                    manifest["admission"]["receipt"] = "../receipt.json"
+                elif fault == "digest":
+                    manifest["admission"]["receiptSha256"] = "0" * 64
+                elif fault == "missing":
+                    receipt.unlink()
+                elif fault == "symlink":
+                    (proof / "outside").symlink_to(candidate / "task.md")
+                matrix.write_json(case / "case-manifest.json", manifest)
+                before = (matrix.dependency_metadata(case), matrix.dependency_content_sha256(case))
+                if fault:
+                    with self.assertRaises(ValueError):
+                        matrix.project_judge_inputs(case, candidate, root / "packet")
+                else:
+                    task, projected = matrix.project_judge_inputs(case, candidate, root / "packet")
+                    self.assertEqual(task.read_bytes(), (candidate / "task.md").read_bytes())
+                    self.assertEqual(projected.read_bytes(), (case / "case-manifest.json").read_bytes())
+                    copied = projected.parent / manifest["admission"]["receipt"]
+                    self.assertEqual(copied.read_bytes(), receipt.read_bytes())
+                    self.assertEqual(copied.stat().st_mode & 0o777, 0o640)
+                    self.assertEqual((copied.parent / "support.txt").read_text(), "supporting evidence")
+                self.assertEqual(before, (
+                    matrix.dependency_metadata(case), matrix.dependency_content_sha256(case),
+                ))
+
+    def test_judge_refuses_same_size_packet_mutation_on_either_format_attempt(self):
+        for mutate_at in (1, 2):
+            with self.subTest(mutate_at=mutate_at), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                case = root / "case"
+                candidate = root / "candidate"
+                run = root / "run"
+                (case / "hidden/authority/prompts").mkdir(parents=True)
+                (case / "hidden/authority/criteria.md").write_text("criteria")
+                (case / "hidden/authority/prompts/judge.md").write_text("judge")
+                candidate.mkdir()
+                (candidate / "task.md").write_text("task")
+                run.mkdir()
+
+                class Runner:
+                    calls = 0
+
+                    @staticmethod
+                    def load_copilot_model_token():
+                        return "model-token"
+
+                    @classmethod
+                    def run_command(cls, command, **kwargs):
+                        cls.calls += 1
+                        if cls.calls == mutate_at:
+                            task = run / "judge-input/judge-model/task.md"
+                            task.write_bytes(b"x" * len(task.read_bytes()))
+                        kwargs["log"].write_text("not JSON")
+                        return {"exitCode": 0, "timedOut": False}
+
+                with self.assertRaisesRegex(ValueError, "input packet changed"):
+                    matrix.secure_run_judge(
+                        Runner(), case_root=case, candidate_root=candidate,
+                        run_root=run, model="judge-model", timeout=1,
+                    )
+                self.assertEqual(Runner.calls, mutate_at)
 
     def test_judge_retries_one_contract_format_failure(self):
         class Runner:

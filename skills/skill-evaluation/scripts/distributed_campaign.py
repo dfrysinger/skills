@@ -1608,6 +1608,56 @@ def parse_judge_output(text: str) -> dict:
     return value
 
 
+def project_judge_inputs(
+    case_root: Path, candidate_root: Path, destination: Path,
+) -> tuple[Path | None, Path | None]:
+    require(not case_root.is_symlink(), "Judge case root must not be a symlink")
+    destination.mkdir(parents=True)
+    task = candidate_root / "task.md"
+    require(not task.is_symlink(), "Judge task must not be a symlink")
+    projected_task = None
+    if task.exists():
+        require(task.is_file(), "Judge task is not a file")
+        projected_task = destination / "task.md"
+        shutil.copy2(task, projected_task)
+    manifest = case_root / "case-manifest.json"
+    require(not manifest.is_symlink(), "Judge case manifest must not be a symlink")
+    if not manifest.exists():
+        return projected_task, None
+    require(manifest.is_file(), "Judge case manifest is not a file")
+    admission = read_json(manifest).get("admission", {})
+    require(isinstance(admission, dict), "Invalid judge admission metadata")
+    declared = admission.get("receipt")
+    projected_case = destination / "case"
+    projected_case.mkdir()
+    if declared is None:
+        require(admission.get("status") != "admitted", "Admitted case has no receipt")
+    else:
+        require(isinstance(declared, str), "Invalid judge admission receipt path")
+        relative = PurePosixPath(declared)
+        require(len(relative.parts) >= 2 and not relative.is_absolute()
+                and ".." not in relative.parts, "Unsafe judge admission receipt path")
+        path = case_root
+        for part in relative.parts:
+            path = path / part
+            require(not path.is_symlink(), "Judge admission path contains a symlink")
+        require(path.is_file(), "Declared judge admission receipt is missing")
+        require(sha256(path) == check_sha256(admission.get("receiptSha256"), "admission receipt"),
+                "Judge admission receipt digest mismatch")
+        source = path.parent
+        require(all(not item.is_symlink() and (item.is_file() or item.is_dir())
+                    for item in source.rglob("*")), "Unsupported judge admission evidence entry")
+        target = projected_case / relative.parent
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, target)
+        require(dependency_metadata(source) == dependency_metadata(target)
+                and dependency_content_sha256(source) == dependency_content_sha256(target),
+                "Judge admission projection differs from its source")
+    projected_manifest = projected_case / manifest.name
+    shutil.copy2(manifest, projected_manifest)
+    return projected_task, projected_manifest
+
+
 def secure_run_judge(runner, *, case_root: Path, candidate_root: Path, run_root: Path,
                      model: str, timeout: int) -> dict:
     judge_root = run_root / "judge" / model
@@ -1616,11 +1666,14 @@ def secure_run_judge(runner, *, case_root: Path, candidate_root: Path, run_root:
     judge_inputs.mkdir(exist_ok=True)
     criteria = judge_inputs / "criteria.md"
     shutil.copy2(case_root / "hidden/authority/criteria.md", criteria)
+    task, manifest = project_judge_inputs(case_root, candidate_root, judge_inputs / model)
+    input_identity = (dependency_metadata(judge_inputs), dependency_content_sha256(judge_inputs))
     prompt = (case_root / "hidden/authority/prompts/judge.md").read_text()
     prompt += (
         "\n\nInspect these exact local artifacts before deciding:\n"
         f"- hidden criteria: {criteria}\n"
-        f"- candidate task: {candidate_root / 'task.md'}\n"
+        f"- case manifest and its declared corpus-admission evidence: {manifest or 'unavailable; no case manifest supplied'}\n"
+        f"- candidate task: {task or 'unavailable; no candidate task supplied'}\n"
         f"- candidate transcript: {run_root / 'candidate-transcript.md'}\n"
         f"- candidate source deltas: {run_root / 'candidate-source'}\n"
         f"- deterministic receipt and logs: {run_root / 'deterministic'}\n"
@@ -1688,6 +1741,8 @@ def secure_run_judge(runner, *, case_root: Path, candidate_root: Path, run_root:
             log=raw_output,
             timeout=timeout,
         )
+        require(input_identity == (dependency_metadata(judge_inputs), dependency_content_sha256(judge_inputs)),
+                "Judge input packet changed during invocation")
         require(execution.get("exitCode") == 0, f"Judge failed: {model}")
         require(not execution.get("timedOut"), f"Judge timed out: {model}")
         try:
