@@ -138,7 +138,7 @@ EXPERIMENT_SUBJECT_FIELDS = {
     "run_binding_fingerprint",
     "selection_rule_fingerprint",
 }
-EXPERIMENT_DECLARATION_FIELDS = {
+LEGACY_EXPERIMENT_DECLARATION_FIELDS = {
     "title",
     "summary",
     "snapshot_id",
@@ -151,6 +151,10 @@ EXPERIMENT_DECLARATION_FIELDS = {
     "treatments",
     "attempts",
     "selection_rule",
+}
+EXPERIMENT_DECLARATION_FIELDS = LEGACY_EXPERIMENT_DECLARATION_FIELDS | {
+    "experiment_kind",
+    "ablation",
 }
 EXPERIMENT_CASE_FIELDS = {"case_id", "case_revision"}
 EXPERIMENT_TREATMENT_FIELDS = {
@@ -180,6 +184,38 @@ SELECTION_RULE_FIELDS = {"metrics", "coverage", "disqualifiers"}
 SELECTION_METRIC_FIELDS = {"name", "direction"}
 SELECTION_COVERAGE_FIELDS = {"kind", "value"}
 SELECTION_DISQUALIFIER_FIELDS = {"kind", "field", "bound"}
+DELTA_ABLATION_FIELDS = {
+    "project_id",
+    "project_declaration_sha256",
+    "task_id",
+    "baseline_snapshot_id",
+    "exploratory_snapshot_id",
+    "candidate_snapshots",
+    "maintained_tasks",
+    "instruction_changes",
+}
+ABLATION_CANDIDATE_FIELDS = {"treatment_id", "snapshot_id"}
+ABLATION_TASK_FIELDS = {"task_id", "task_fingerprint"}
+ABLATION_INSTRUCTION_FIELDS = {"instruction_id", "disposition", "reason"}
+WHOLE_SKILL_ABLATION_FIELDS = {
+    "project_id",
+    "project_declaration_sha256",
+    "arms",
+    "maintained_tasks",
+}
+WHOLE_SKILL_ARM_FIELDS = {"arm", "treatment_id", "snapshot_id"}
+EXPERIMENT_KINDS = {
+    "treatment_search",
+    "delta_ablation",
+    "whole_skill_ablation",
+}
+WHOLE_SKILL_ARMS = {
+    "original",
+    "current_passing",
+    "neutral",
+    "lean",
+    "full",
+}
 SELECTION_METRICS = {
     "valid_terminal_repetition_count": "count",
     "terminal_pass_count": "count",
@@ -1460,7 +1496,7 @@ def experiment_plan_fingerprint(payload: dict) -> str:
     validate_experiment_declaration(payload)
     identity = {
         key: payload[key]
-        for key in EXPERIMENT_DECLARATION_FIELDS - {"title", "summary"}
+        for key in set(payload) - {"title", "summary"}
     }
     return json_fingerprint(identity)
 
@@ -1470,11 +1506,26 @@ def selection_rule_fingerprint(rule: dict) -> str:
 
 
 def validate_experiment_declaration(value: object) -> dict:
-    payload = _exact_object(
-        value,
-        EXPERIMENT_DECLARATION_FIELDS,
-        "experiment declaration",
-    )
+    if (
+        not isinstance(value, dict)
+        or frozenset(value) not in {
+            frozenset(LEGACY_EXPERIMENT_DECLARATION_FIELDS),
+            frozenset(EXPERIMENT_DECLARATION_FIELDS),
+        }
+    ):
+        raise ValueError("experiment declaration is invalid")
+    payload = value
+    experiment_kind = payload.get("experiment_kind", "treatment_search")
+    if experiment_kind not in EXPERIMENT_KINDS:
+        raise ValueError("experiment kind is invalid")
+    ablation = payload.get("ablation")
+    if experiment_kind == "treatment_search":
+        if ablation is not None:
+            raise ValueError("treatment search cannot declare ablation")
+    elif experiment_kind == "delta_ablation":
+        _validate_delta_ablation(ablation)
+    else:
+        _validate_whole_skill_ablation(ablation)
     _bounded_text(payload.get("title"), "experiment title")
     _bounded_text(payload.get("summary"), "experiment summary")
     validate_sha256(payload.get("snapshot_id"), "experiment snapshot ID")
@@ -1541,6 +1592,17 @@ def validate_experiment_declaration(value: object) -> dict:
             raise ValueError("treatment provenance IDs are invalid")
         for identifier in provenance_ids:
             validate_safe_id(identifier, "treatment provenance ID")
+    if experiment_kind == "delta_ablation":
+        candidate_ids = {
+            item["treatment_id"]
+            for item in ablation["candidate_snapshots"]
+        }
+        if not candidate_ids.issubset(treatment_ids):
+            raise ValueError("ablation candidate treatment is invalid")
+    elif experiment_kind == "whole_skill_ablation":
+        arm_ids = {item["treatment_id"] for item in ablation["arms"]}
+        if not arm_ids.issubset(treatment_ids):
+            raise ValueError("whole-skill arm treatment is invalid")
     if control_count != 1:
         raise ValueError("experiment requires exactly one control")
 
@@ -1584,6 +1646,120 @@ def validate_experiment_declaration(value: object) -> dict:
         raise ValueError("experiment attempt repetitions are invalid")
     validate_selection_rule(payload.get("selection_rule"))
     return payload
+
+
+def _validate_ablation_tasks(value: object) -> list[dict]:
+    tasks = _sorted_unique_objects(
+        value,
+        ABLATION_TASK_FIELDS,
+        lambda item: item["task_id"],
+        "ablation maintained tasks",
+    )
+    if not tasks:
+        raise ValueError("ablation maintained tasks are invalid")
+    for item in tasks:
+        validate_safe_id(item.get("task_id"), "ablation task ID")
+        validate_sha256(
+            item.get("task_fingerprint"),
+            "ablation task fingerprint",
+        )
+    return tasks
+
+
+def _validate_delta_ablation(value: object) -> dict:
+    ablation = _exact_object(
+        value,
+        DELTA_ABLATION_FIELDS,
+        "delta ablation",
+    )
+    validate_safe_id(ablation.get("project_id"), "ablation project ID")
+    validate_sha256(
+        ablation.get("project_declaration_sha256"),
+        "ablation project declaration",
+    )
+    task_id = validate_safe_id(ablation.get("task_id"), "ablation task ID")
+    validate_sha256(
+        ablation.get("baseline_snapshot_id"),
+        "ablation baseline snapshot",
+    )
+    validate_sha256(
+        ablation.get("exploratory_snapshot_id"),
+        "ablation exploratory snapshot",
+    )
+    candidates = _sorted_unique_objects(
+        ablation.get("candidate_snapshots"),
+        ABLATION_CANDIDATE_FIELDS,
+        lambda item: item["treatment_id"],
+        "ablation candidate snapshots",
+    )
+    if not candidates:
+        raise ValueError("ablation candidate snapshots are invalid")
+    for item in candidates:
+        validate_safe_id(item.get("treatment_id"), "ablation treatment ID")
+        validate_sha256(
+            item.get("snapshot_id"),
+            "ablation candidate snapshot",
+        )
+    tasks = _validate_ablation_tasks(ablation.get("maintained_tasks"))
+    if task_id not in {item["task_id"] for item in tasks}:
+        raise ValueError("ablation task is not maintained")
+    changes = _sorted_unique_objects(
+        ablation.get("instruction_changes"),
+        ABLATION_INSTRUCTION_FIELDS,
+        lambda item: item["instruction_id"],
+        "ablation instruction changes",
+    )
+    for item in changes:
+        validate_safe_id(
+            item.get("instruction_id"),
+            "ablation instruction ID",
+        )
+        if item.get("disposition") not in {"removed", "retained", "restored"}:
+            raise ValueError("ablation instruction disposition is invalid")
+        reason = _bounded_text(
+            item.get("reason"),
+            "ablation instruction reason",
+            required=False,
+        )
+        if (item["disposition"] == "restored") != (reason is not None):
+            raise ValueError("restored ablation instruction requires a reason")
+    return ablation
+
+
+def _validate_whole_skill_ablation(value: object) -> dict:
+    ablation = _exact_object(
+        value,
+        WHOLE_SKILL_ABLATION_FIELDS,
+        "whole-skill ablation",
+    )
+    validate_safe_id(ablation.get("project_id"), "ablation project ID")
+    validate_sha256(
+        ablation.get("project_declaration_sha256"),
+        "ablation project declaration",
+    )
+    arms = _sorted_unique_objects(
+        ablation.get("arms"),
+        WHOLE_SKILL_ARM_FIELDS,
+        lambda item: item["arm"],
+        "whole-skill ablation arms",
+    )
+    if not arms:
+        raise ValueError("whole-skill ablation arms are invalid")
+    if len({item["treatment_id"] for item in arms}) != len(arms):
+        raise ValueError("whole-skill ablation treatments are duplicated")
+    for item in arms:
+        if item.get("arm") not in WHOLE_SKILL_ARMS:
+            raise ValueError("whole-skill ablation arm is invalid")
+        validate_safe_id(
+            item.get("treatment_id"),
+            "whole-skill treatment ID",
+        )
+        validate_sha256(
+            item.get("snapshot_id"),
+            "whole-skill arm snapshot",
+        )
+    _validate_ablation_tasks(ablation.get("maintained_tasks"))
+    return ablation
 
 
 def validate_extension_event(value: dict) -> dict:

@@ -1064,6 +1064,10 @@ def experiment_projection(corpus_root: Path, campaign_id: str) -> dict:
                 "role": treatment["role"],
                 "hypothesis": treatment["hypothesis"],
                 "snapshot_id": treatment["snapshot_id"],
+                "content_fingerprint": treatment["content_fingerprint"],
+                "target_skill_identities": treatment[
+                    "target_skill_identities"
+                ],
                 "planned_repetitions": len(treatment_attempts),
                 "observed_repetitions": sum(
                     bool(observation_rows.get(item["attempt_id"]))
@@ -1300,6 +1304,11 @@ def experiment_projection(corpus_root: Path, campaign_id: str) -> dict:
         items.append({
             "experiment_id": experiment_id,
             "experiment_fingerprint": experiment_fingerprint,
+            "experiment_kind": plan.get(
+                "experiment_kind",
+                "treatment_search",
+            ),
+            "ablation": plan.get("ablation"),
             "title": plan["title"],
             "summary": plan["summary"],
             "snapshot_id": plan["snapshot_id"],

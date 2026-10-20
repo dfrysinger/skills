@@ -34,30 +34,35 @@ This is critical systemic work. Preserve:
 The current reframe status is `CLEAR`. The independent project-dashboard
 constraint challenge ended at `CONTINUE`, and dual design review closed all
 material findings. Slice A is merged at
-`2fa23007d823f494b79925bc23aae7ad4d9ec4aa`; Slice B is active on
-`dfrysinger/skill-eval-project-slice-b`. During implementation, rerun the
+`2fa23007d823f494b79925bc23aae7ad4d9ec4aa`; Slice B is merged through
+PR 107 at `fb2ed57c3c06c5baca8dacf930f2c0227e489522`; Slice C is active on
+`dfrysinger/skill-eval-project-slice-c`. During implementation, rerun the
 challenge only when `development-loop` reports a material scope, architecture,
 trust, authority, policy, or reframe trigger.
 
 ## Current baton
 
 - **Workspace:** the worktree named above, on
-  `dfrysinger/skill-eval-project-slice-b` from merged Slice A commit
-  `2fa23007d823f494b79925bc23aae7ad4d9ec4aa`.
-- **Objective and phase:** finish Slice B only. Implementation, proof, dual
-  implementation review, and installed-plugin proof are complete; commit,
-  push, pull request, CI, merge, and merged/installed correspondence remain.
-- **Frozen-candidate gate:** candidate
-  `sha256:66827f9d5fdaeefc0a3cf2be262d2770d4ccf1708b23a7a28db55625f36c956e`
-  passed 508 tests with 56 skips plus Python, JavaScript, and diff syntax
-  checks.
-- **Proof ownership:** accepted source receipt:
-  `files/slice-b-live-proof/receipt.json`; accepted installed receipt:
-  `files/slice-b-installed-proof/receipt.json`. Both bind the same reviewed
-  candidate. Rollback bytes are retained under the installed-proof directory.
+  `dfrysinger/skill-eval-project-slice-c` from merged Slice B commit
+  `fb2ed57c3c06c5baca8dacf930f2c0227e489522`.
+- **Objective and phase:** finish Slice C delivery. Per-task delta ablation,
+  exact size comparison, maintained-win qualification, conditional whole-skill
+  comparison, and the integrated project presentation are implemented, proven,
+  and dual-reviewed; exact installation and PR delivery remain.
+- **Delivered baseline:** Slice B exact candidate
+  `sha256:61fddd26d32e3cd5d0101dd32588781042dd59d4cb0818958567690ec1111d9e`
+  passed 508 tests with 56 skips and accepted source and installed receipts.
+  PR 107 passed CI and merged without content movement; merged skill bytes
+  correspond to the installed plugin.
+- **Proof ownership:** accepted source evidence is under
+  `files/slice-c-live-proof`; it proves both tasks passing and published,
+  qualified per-task delta ablation, a 40-byte / 29.9% reduction, maintained
+  wins, qualified aggregate holdout evidence, absent undeclared whole-skill
+  ablation, responsive layouts, and refresh-safe authority.
 - **Review ownership:** Claude Opus and GPT Terra completed two bounded packets
-  and one fix-verification round. All seven kept findings are resolved; no
-  material or non-blocking finding remains.
+  and one fix-verification round. Four verified contract gaps were fixed; the
+  disputed holdout-identity claim was dropped against the canonical revision
+  contract. Round 2 has no findings.
 - **Independent ready scopes:** no independent writable scope is ready. Runtime
   fixture generation, browser capture, receipt validation, and later install
   proof all consume the same frozen candidate and remain serial under the proof
@@ -66,10 +71,11 @@ trust, authority, policy, or reframe trigger.
 - **Constraint gate:** `CLEAR` / `CONTINUE`; no revisit or reframe trigger has
   fired. The final fixes preserve the reviewed architecture and add no new
   trust, authority, storage, or policy boundary.
-- **Next action:** commit only the Slice B files, excluding
-  `design/skill-evaluation-ui-native-package-decisions.json`; push the owned
-  branch, open the focused pull request, verify CI, merge, and prove merged
-  source still corresponds to the installed plugin before starting Slice C.
+- **Next action:** replay source proof after this baton-only movement, install
+  the exact reviewed skill with a rollback copy, run the final representative
+  installed journey, validate its receipt, then commit, push, open the focused
+  PR, verify CI, merge, prove merged/installed correspondence, and close the
+  Definition of Done.
 
 The user delegated the remaining design branches with the exact statement:
 `"i need to step away, go with your recommendations for the rest"`. This
