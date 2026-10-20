@@ -3,7 +3,44 @@
 const app = document.querySelector("#app");
 const serviceState = document.querySelector("#service-state");
 const fragment = new URLSearchParams(window.location.hash.slice(1));
-const capability = fragment.get("cap");
+const fragmentCapability = fragment.get("cap");
+const projectRoute = window.location.pathname.match(
+  /^\/project\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})/,
+);
+const routeScope = projectRoute
+  ? `project:${projectRoute[1]}`
+  : window.location.pathname === "/unassigned" ||
+      window.location.pathname.startsWith("/campaign/")
+    ? "unassigned"
+    : "project_index";
+let capability = fragmentCapability;
+let capabilityStorageKey = null;
+if (capability) {
+  const generation = capability.split(".", 1)[0];
+  if (generation) {
+    capabilityStorageKey = `skill-eval-cap:${generation}:${routeScope}`;
+    try {
+      sessionStorage.setItem(capabilityStorageKey, capability);
+    } catch {
+      capabilityStorageKey = null;
+    }
+  }
+} else {
+  try {
+    const matches = [];
+    for (let index = 0; index < sessionStorage.length; index += 1) {
+      const key = sessionStorage.key(index);
+      if (key?.startsWith("skill-eval-cap:") && key.endsWith(`:${routeScope}`)) {
+        matches.push([key, sessionStorage.getItem(key)]);
+      }
+    }
+    if (matches.length === 1) {
+      [capabilityStorageKey, capability] = matches[0];
+    }
+  } catch {
+    capability = null;
+  }
+}
 window.history.replaceState(null, "", window.location.pathname);
 
 const escapeHtml = (value) =>
@@ -44,6 +81,13 @@ async function loadJson(path) {
   });
   const value = await response.json();
   if (!response.ok) {
+    if ([401, 403].includes(response.status) && capabilityStorageKey) {
+      try {
+        sessionStorage.removeItem(capabilityStorageKey);
+      } catch {
+        capabilityStorageKey = null;
+      }
+    }
     throw new Error(value.error || `Request failed: ${response.status}`);
   }
   return value;
@@ -68,38 +112,81 @@ function availabilityRows(availability) {
     .join("");
 }
 
+async function openProject(projectId) {
+  const response = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/capability`,
+    {
+      method: "POST",
+      headers: { Authorization: "Bearer " + capability },
+      cache: "no-store",
+    },
+  );
+  const value = await response.json();
+  if (!response.ok) {
+    throw new Error(value.error || `Request failed: ${response.status}`);
+  }
+  window.location.assign(
+    `${value.route}#cap=${encodeURIComponent(value.capability)}`,
+  );
+}
+
 function renderIndex(data) {
-  const available = data.campaigns.filter(
-    (campaign) => campaign.availability === "available",
-  ).length;
-  const liveAvailable = data.availability.live_sessions === "available";
   app.innerHTML = `
     <section class="page-heading">
       <div>
-        <h1>Evaluation campaigns</h1>
-        <p>Completed evaluator artifacts remain authoritative. Live local work is labeled separately.</p>
+        <h1>Skill improvement projects</h1>
+        <p>Each scorecard uses one exact current revision. Results from different revisions are never pooled.</p>
       </div>
     </section>
     <section class="metrics">
-      ${metric("Registered campaigns", formatNumber(data.campaigns.length, 0), "Local corpus registrations")}
-      ${metric("Available", formatNumber(available, 0), "Corpus identity verified")}
-      ${metric("Live sessions", liveAvailable ? formatNumber(data.session_counts.active + data.session_counts.blocked, 0) : "Unavailable", liveAvailable ? `${data.session_counts.stale} stale | ${data.active_attempts} active attempts` : "No registered corpus has live session state")}
-      ${metric("Cloud activity", data.availability.cloud_activity === "available" ? formatNumber(data.cloud_counts.nonterminal + data.cloud_counts.completed_awaiting_result + data.cloud_counts.distributed_pending, 0) : "Unavailable", data.availability.cloud_activity === "available" ? `${data.cloud_counts.terminal} terminal | observed ${data.cloud_observed_as_of || "without a timestamp"}` : "No exact known cloud observations")}
+      ${metric("Projects", formatNumber(data.projects.length, 0), "Explicit corpus-local declarations")}
+      ${metric("Active local runs", formatNumber(data.projects.reduce((sum, project) => sum + project.active_runs, 0), 0), "Supported evaluator launchers")}
     </section>
     ${
-      data.campaigns.length
+      data.projects.length
         ? `<section class="campaign-grid">
-            ${data.campaigns
+            ${data.projects
               .map(
-                (campaign) => `
-                  <a class="campaign-link" href="/campaign/${escapeHtml(campaign.campaign_id)}#cap=${encodeURIComponent(capability)}">
-                    <strong>${escapeHtml(campaign.corpus_name)}</strong>
-                    <span>${escapeHtml(campaign.target_skills.join(", ") || "No target skills")} | ${escapeHtml(campaign.availability)} | ${escapeHtml(campaign.session_counts.active)} active sessions</span>
-                  </a>`,
+                (project) => `
+                  <button class="campaign-link project-open" data-project-id="${escapeHtml(project.project_id)}">
+                    <strong>${escapeHtml(project.title)}</strong>
+                    <span>${escapeHtml(project.goal)}</span>
+                    <small>${escapeHtml(project.target_skills.join(", "))} | ${escapeHtml(project.task_counts.passing)} passing | ${escapeHtml(project.active_runs)} active runs</small>
+                  </button>`,
               )
               .join("")}
           </section>`
-        : `<section class="empty-state"><h1>No campaigns registered</h1><p>Run the dashboard ensure command for an evaluation corpus.</p></section>`
+        : `<section class="empty-state"><h1>No projects registered</h1><p>Add a valid evaluation-project.json to a corpus and register it.</p></section>`
+    }`;
+  document.querySelectorAll(".project-open").forEach((button) => {
+    button.addEventListener("click", () => {
+      openProject(button.dataset.projectId).catch((error) => {
+        app.innerHTML = `<section class="error-state"><h1>Project unavailable</h1><p>${escapeHtml(error.message)}</p></section>`;
+      });
+    });
+  });
+}
+
+function renderUnassigned(data) {
+  app.innerHTML = `
+    <section class="page-heading simple-heading">
+      <div>
+        <h1>Unassigned evaluations</h1>
+        <p>Legacy corpora remain readable here until they explicitly declare a project.</p>
+      </div>
+    </section>
+    ${
+      data.campaigns.length
+        ? `<section class="campaign-grid">${data.campaigns
+            .map(
+              (campaign) => `
+                <a class="campaign-link" href="/campaign/${escapeHtml(campaign.campaign_id)}">
+                  <strong>${escapeHtml(campaign.corpus_name)}</strong>
+                  <span>${escapeHtml(campaign.target_skills.join(", ") || "No target skills")}</span>
+                </a>`,
+            )
+            .join("")}</section>`
+        : '<section class="empty-state"><h2>No unassigned evaluations</h2></section>'
     }`;
 }
 
@@ -233,7 +320,7 @@ function renderAttention(data) {
               ${data.attention
                 .map(
                   (item) => `
-                    <a class="attention-item" href="/campaign/${escapeHtml(data.campaign.campaign_id)}/task/${escapeHtml(item.case_id)}#cap=${encodeURIComponent(capability)}">
+                    <a class="attention-item" href="/campaign/${escapeHtml(data.campaign.campaign_id)}/task/${escapeHtml(item.case_id)}">
                       <span class="attention-kind">${escapeHtml(item.kind.replaceAll("_", " "))}</span>
                       <strong>${escapeHtml(item.case_id)}</strong>
                       <span>${escapeHtml(item.summary)}</span>
@@ -288,7 +375,7 @@ function experimentActivityRows(items) {
     .map(
       (item) => `
               <tr>
-                <td><a class="task-link" href="/campaign/${escapeHtml(item.campaign_id || "")}/task/${escapeHtml(item.case_id)}#cap=${encodeURIComponent(capability)}">${escapeHtml(item.case_id)}</a><span class="identity mono">${escapeHtml(shortId(item.case_revision))}</span></td>
+                <td><a class="task-link" href="/campaign/${escapeHtml(item.campaign_id || "")}/task/${escapeHtml(item.case_id)}">${escapeHtml(item.case_id)}</a><span class="identity mono">${escapeHtml(shortId(item.case_revision))}</span></td>
                 <td>${escapeHtml(item.treatment_id)}<span class="identity">repetition ${escapeHtml(item.repetition)}</span></td>
                 <td>${escapeHtml(item.model)}<span class="identity">${escapeHtml(item.platform)} | ${escapeHtml(item.route)}</span></td>
                 <td>${stateBadge(item.state)}</td>
@@ -385,7 +472,7 @@ function liveSessionRows(data) {
     .map(
       (item) => `
         <tr>
-          <td><a href="/campaign/${escapeHtml(data.campaign.campaign_id)}/session/${escapeHtml(item.session_id)}#cap=${encodeURIComponent(capability)}"><span class="identity mono">${escapeHtml(item.session_id)}</span></a></td>
+          <td><a href="/campaign/${escapeHtml(data.campaign.campaign_id)}/session/${escapeHtml(item.session_id)}"><span class="identity mono">${escapeHtml(item.session_id)}</span></a></td>
           <td>${stateBadge(item.state)}</td>
           <td>${escapeHtml(item.case_id || "Unassigned")}</td>
           <td><span class="identity mono">${escapeHtml(item.skill_identity || "Unknown")}</span></td>
@@ -516,14 +603,14 @@ function renderRunCards(data, taskViews) {
       caseId: session.case_id,
       summary: session.summary,
       ageSeconds: session.age_seconds,
-      href: `/campaign/${escapeHtml(data.campaign.campaign_id)}/session/${escapeHtml(session.session_id)}#cap=${encodeURIComponent(capability)}`,
+      href: `/campaign/${escapeHtml(data.campaign.campaign_id)}/session/${escapeHtml(session.session_id)}`,
     })),
     ...activeAttempts.map((attempt) => ({
       state: attempt.state,
       caseId: attempt.case_id,
       summary: null,
       ageSeconds: null,
-      href: `/campaign/${escapeHtml(data.campaign.campaign_id)}/task/${escapeHtml(attempt.case_id)}#cap=${encodeURIComponent(capability)}`,
+      href: `/campaign/${escapeHtml(data.campaign.campaign_id)}/task/${escapeHtml(attempt.case_id)}`,
     })),
   ];
   return `
@@ -611,7 +698,7 @@ function renderCampaign(data) {
           <h1>${escapeHtml(data.campaign.corpus_name)}</h1>
           <p>This campaign cannot be read right now.</p>
         </div>
-        <a href="/#cap=${encodeURIComponent(capability)}">All campaigns</a>
+        <a href="/unassigned">Unassigned evaluations</a>
       </section>
       <section class="error-state">
         <h2>Campaign data unavailable</h2>
@@ -648,7 +735,7 @@ function renderCampaign(data) {
         <h1>${escapeHtml(data.campaign.corpus_name)}</h1>
         <p>Testing <strong>${escapeHtml(skills || "the current skill set")}</strong> across ${escapeHtml(plural(tasks.length, "task"))}.</p>
       </div>
-      <a href="/#cap=${encodeURIComponent(capability)}">All campaigns</a>
+      <a href="/unassigned">Unassigned evaluations</a>
     </section>
     <section class="campaign-brief">
       <div>
@@ -689,7 +776,7 @@ function renderCampaign(data) {
           })
           .map(
             (task) => `
-              <a href="/campaign/${escapeHtml(data.campaign.campaign_id)}/task/${escapeHtml(task.caseId)}#cap=${encodeURIComponent(capability)}">
+              <a href="/campaign/${escapeHtml(data.campaign.campaign_id)}/task/${escapeHtml(task.caseId)}">
                 <span class="task-statuses">
                   <span class="plain-status status-${escapeHtml(task.state)}">${escapeHtml(task.label)}</span>
                   ${task.activityLabel ? `<span class="activity-status status-${escapeHtml(task.activityState)}">${escapeHtml(task.activityLabel)}</span>` : ""}
@@ -706,6 +793,76 @@ function renderCampaign(data) {
     </section>
     ${renderSimpleExperiments(data)}
     `;
+}
+
+function renderProject(data) {
+  const passing = data.tasks.filter((task) => task.result === "passing").length;
+  const active = data.runs.filter((run) => run.state === "active").length;
+  const hasConflicts = Object.values(data.conflicts).some(
+    (items) => items.length,
+  );
+  app.innerHTML = `
+    <section class="page-heading simple-heading">
+      <div>
+        <h1>${escapeHtml(data.project.title)}</h1>
+        <p>${escapeHtml(data.project.goal)}</p>
+      </div>
+    </section>
+    <section class="campaign-brief">
+      <div>
+        <span class="brief-label">Current exact revision</span>
+        <h2>${escapeHtml(data.selected_revision.snapshot_id ? shortId(data.selected_revision.snapshot_id) : sentenceCase(data.selected_revision.status))}</h2>
+        <p>Improving ${escapeHtml(data.project.target_skills.join(", "))}. No result is pooled across revisions.</p>
+      </div>
+      <div class="status-sentence">
+        <strong>${escapeHtml(`${passing} of ${data.tasks.length} tasks passing`)}</strong>
+        <span>${escapeHtml(`${active} active local runs`)}</span>
+      </div>
+    </section>
+    ${
+      hasConflicts
+        ? '<section class="quiet-warning">Conflicting project declarations are visible and excluded from totals.</section>'
+        : ""
+    }
+    <section class="simple-section">
+      <div class="simple-section-heading">
+        <div><h2>Tasks</h2><p>Basic scorecard for the exact selected revision.</p></div>
+      </div>
+      <div class="task-list-simple">
+        ${data.tasks
+          .map(
+            (task) => `
+              <article>
+                <span class="plain-status status-${escapeHtml(task.result === "passing" ? "passed" : task.result === "not_passing" ? "failed" : "waiting")}">${escapeHtml(sentenceCase(task.result))}</span>
+                <div><h3>${escapeHtml(task.title)}</h3><p>${escapeHtml(task.summary)}</p></div>
+                <span class="task-skill">${escapeHtml(`${task.bindings.filter((binding) => binding.qualified).length}/${task.bindings.length} bindings`)}</span>
+              </article>`,
+          )
+          .join("") || '<div class="panel-empty">Task totals are unavailable while project identity conflicts.</div>'}
+      </div>
+    </section>
+    <section class="simple-section">
+      <div class="simple-section-heading">
+        <div><h2>Local runs</h2><p>Startup and lease state yield to immutable completion and typed failure artifacts.</p></div>
+      </div>
+      <div class="run-list">
+        ${data.runs
+          .map(
+            (run) => `
+              <article class="run-card">
+                <div><strong>${escapeHtml(run.run_goal)}</strong><span>${escapeHtml(run.launcher_kind.replaceAll("_", " "))} | ${escapeHtml(run.started_at)}</span></div>
+                <span class="plain-status status-${escapeHtml(run.state === "completed" ? "passed" : run.state === "active" ? "running" : "failed")}">${escapeHtml(sentenceCase(run.state))}</span>
+                <p>${escapeHtml(`${run.planned_attempts} planned attempts; ${run.started_attempts} started${run.completed_attempts === undefined ? "" : `; ${run.completed_attempts} completed, ${run.passing_attempts} passing, ${run.failing_attempts} failing, ${run.unavailable_attempts} unavailable`}`)}</p>
+              </article>`,
+          )
+          .join("") || '<div class="panel-empty">No project-bound local runs.</div>'}
+      </div>
+    </section>
+    ${
+      data.pre_project_history.length
+        ? `<section class="simple-section"><div class="simple-section-heading"><div><h2>Pre-project history</h2><p>Readable legacy attempts excluded from all project totals.</p></div></div><div class="panel-empty">${escapeHtml(plural(data.pre_project_history.length, "legacy attempt"))}</div></section>`
+        : ""
+    }`;
 }
 
 function progressBadge(progress) {
@@ -781,7 +938,7 @@ function renderTask(data, caseId) {
         <h1>${escapeHtml(caseId)}</h1>
         <p>${escapeHtml(summary.target_skill)} | Exact case revision <span class="mono">${escapeHtml(shortId(detail.case_revision))}</span></p>
       </div>
-      <a href="/campaign/${escapeHtml(data.campaign.campaign_id)}#cap=${encodeURIComponent(capability)}">Campaign</a>
+      <a href="/campaign/${escapeHtml(data.campaign.campaign_id)}">Campaign</a>
     </section>
     <section class="metrics">
       ${metric("Outcome", detail.outcome || "Not run", "Immutable evaluator authority")}
@@ -894,7 +1051,7 @@ function renderSession(data) {
         <h1>Session ${escapeHtml(item.session_id.slice(0, 8))}</h1>
         <p>${escapeHtml(data.campaign.corpus_name)} | ${escapeHtml(item.summary || "No current assignment")}</p>
       </div>
-      <a href="/campaign/${escapeHtml(data.campaign.campaign_id)}#cap=${encodeURIComponent(capability)}">Campaign</a>
+      <a href="/campaign/${escapeHtml(data.campaign.campaign_id)}">Campaign</a>
     </section>
     <section class="metrics">
       ${metric("State", item.state, `Reported ${item.reported_state}`)}
@@ -940,6 +1097,9 @@ async function start() {
   if (!capability) {
     throw new Error("Missing browser capability. Run the dashboard open command again.");
   }
+  const projectMatch = window.location.pathname.match(
+    /^\/project\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/,
+  );
   const sessionMatch = window.location.pathname.match(
     /^\/campaign\/([0-9a-f]{32})\/session\/([0-9a-f-]{36})$/,
   );
@@ -948,17 +1108,23 @@ async function start() {
   );
   const match = window.location.pathname.match(/^\/campaign\/([0-9a-f]{32})$/);
   const data = await loadJson(
-    sessionMatch
+    projectMatch
+      ? `/api/project/${projectMatch[1]}`
+      : window.location.pathname === "/unassigned"
+        ? "/api/unassigned"
+      : sessionMatch
       ? `/api/campaign/${sessionMatch[1]}/session/${sessionMatch[2]}`
       : taskMatch
         ? `/api/campaign/${taskMatch[1]}`
       : match
         ? `/api/campaign/${match[1]}`
-        : "/api/index",
+        : "/api/projects",
   );
   serviceState.textContent = "Read only";
   serviceState.classList.add("available");
-  if (sessionMatch) renderSession(data);
+  if (projectMatch) renderProject(data);
+  else if (window.location.pathname === "/unassigned") renderUnassigned(data);
+  else if (sessionMatch) renderSession(data);
   else if (taskMatch) renderTask(data, taskMatch[2]);
   else if (match) renderCampaign(data);
   else renderIndex(data);

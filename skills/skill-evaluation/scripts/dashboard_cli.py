@@ -34,13 +34,16 @@ from dashboard_state import (
     emit_task_progress_event,
     ensure_state_root,
     experiment_activity_records,
-    mark_session_opened,
     read_session,
     register_session,
     regular_json,
     selection_rule_fingerprint,
     session_event,
     update_session,
+)
+from project_dashboard import (
+    campaign_project_registration,
+    project_projection,
 )
 
 
@@ -297,14 +300,18 @@ def ensure_dashboard(
     root = state_root(root)
     registration = create_campaign(root, corpus)
     service, started = ensure_service(root)
+    project = campaign_project_registration(root, registration["campaign_id"])
+    route = (
+        f"/project/{project['project_id']}"
+        if project is not None
+        else "/unassigned"
+    )
     return {
         "schema_version": 1,
         "campaign_id": registration["campaign_id"],
+        "project_id": project["project_id"] if project else None,
         "service_started": started,
-        "url": (
-            f"http://127.0.0.1:{service['port']}"
-            f"/campaign/{registration['campaign_id']}"
-        ),
+        "url": f"http://127.0.0.1:{service['port']}{route}",
         "opened": False,
     }
 
@@ -320,12 +327,38 @@ def open_dashboard(
     service = healthy_service(root)
     if service is None:
         raise ValueError("dashboard service is unavailable after ensure")
+    project = campaign_project_registration(root, ensured["campaign_id"])
+    scope = (
+        f"project:{project['project_id']}"
+        if project is not None
+        else "unassigned"
+    )
+    return open_scope(
+        root,
+        service,
+        scope,
+        browser_open=browser_open,
+        result={
+            **ensured,
+            "project_id": project["project_id"] if project else None,
+        },
+    )
+
+
+def open_scope(
+    root: Path,
+    service: dict,
+    scope: str,
+    *,
+    browser_open=webbrowser.open,
+    result: dict | None = None,
+) -> dict:
     opened = control_request(
         service,
         read_root_secret(root),
         "/_control/open",
         method="POST",
-        payload={"campaign_id": ensured["campaign_id"]},
+        payload={"scope": scope},
     )
     capability = opened.get("capability")
     route = opened.get("route")
@@ -338,10 +371,106 @@ def open_dashboard(
     if not browser_open(browser_url):
         raise ValueError("browser open failed; run dashboard open again")
     return {
-        **ensured,
+        **(result or {"schema_version": 1}),
         "url": f"http://127.0.0.1:{service['port']}{route}",
         "opened": True,
     }
+
+
+def open_project_dashboard(
+    project_id: str,
+    root: Path | None = None,
+    *,
+    browser_open=webbrowser.open,
+) -> dict:
+    root = state_root(root)
+    project_projection(root, project_id)
+    service, started = ensure_service(root)
+    return open_scope(
+        root,
+        service,
+        f"project:{project_id}",
+        browser_open=browser_open,
+        result={
+            "schema_version": 1,
+            "project_id": project_id,
+            "service_started": started,
+        },
+    )
+
+
+def open_project_index(
+    root: Path | None = None,
+    *,
+    browser_open=webbrowser.open,
+) -> dict:
+    root = state_root(root)
+    service, started = ensure_service(root)
+    return open_scope(
+        root,
+        service,
+        "project_index",
+        browser_open=browser_open,
+        result={
+            "schema_version": 1,
+            "service_started": started,
+        },
+    )
+
+
+def _project_open_receipt(root: Path, service: dict, project_id: str) -> Path:
+    return (
+        root
+        / "opened"
+        / service["generation"]
+        / f"{project_id}.json"
+    )
+
+
+def _auto_open_project(
+    root: Path,
+    service: dict,
+    project_id: str,
+    *,
+    browser_open,
+) -> bool:
+    receipt = _project_open_receipt(root, service, project_id)
+    lock = root / "opened" / service["generation"] / f"{project_id}.lock"
+    lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with lock.open("a+", encoding="utf-8") as stream:
+        os.chmod(lock, 0o600)
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        if receipt.exists():
+            value = regular_json(receipt, "project open receipt")
+            if (
+                set(value)
+                != {
+                    "schema_version",
+                    "service_generation",
+                    "project_id",
+                    "opened_at",
+                }
+                or value.get("schema_version") != 1
+                or value.get("service_generation") != service["generation"]
+                or value.get("project_id") != project_id
+                or not isinstance(value.get("opened_at"), str)
+            ):
+                raise ValueError("project open receipt is invalid")
+            datetime.fromisoformat(value["opened_at"])
+            return False
+        open_scope(
+            root,
+            service,
+            f"project:{project_id}",
+            browser_open=browser_open,
+        )
+        atomic_json(receipt, {
+            "schema_version": 1,
+            "service_generation": service["generation"],
+            "project_id": project_id,
+            "opened_at": datetime.now(timezone.utc).isoformat(),
+        })
+        return True
 
 
 def register_dashboard(
@@ -355,39 +484,29 @@ def register_dashboard(
     session, created = register_session(root, corpus, session_id)
     service, started = ensure_service(root)
     opened = False
-    if session["opened_at"] is None:
-        response = control_request(
+    project = campaign_project_registration(root, session["campaign_id"])
+    if project is not None:
+        opened = _auto_open_project(
+            root,
             service,
-            read_root_secret(root),
-            "/_control/open",
-            method="POST",
-            payload={"campaign_id": session["campaign_id"]},
-        )
-        capability = response.get("capability")
-        route = response.get("route")
-        if not isinstance(capability, str) or not isinstance(route, str):
-            raise ValueError("dashboard open response is malformed")
-        browser_url = (
-            f"http://127.0.0.1:{service['port']}{route}"
-            f"#cap={quote(capability, safe='')}"
-        )
-        if not browser_open(browser_url):
-            raise ValueError("browser open failed; run dashboard register again")
-        session, opened = mark_session_opened(
-            corpus,
-            session_id,
-            session["writer_generation"],
+            project["project_id"],
+            browser_open=browser_open,
         )
     return {
         "schema_version": 1,
         "campaign_id": session["campaign_id"],
+        "project_id": project["project_id"] if project else None,
         "session_id": session["session_id"],
         "writer_generation": session["writer_generation"],
         "session_created": created,
         "service_started": started,
         "url": (
             f"http://127.0.0.1:{service['port']}"
-            f"/campaign/{session['campaign_id']}"
+            + (
+                f"/project/{project['project_id']}"
+                if project
+                else "/unassigned"
+            )
         ),
         "opened": opened,
     }
@@ -1651,6 +1770,13 @@ def configure_parser(sub: argparse._SubParsersAction) -> None:
         command = commands.add_parser(name)
         command.add_argument("corpus", type=Path)
         command.add_argument("--state-root", type=Path)
+    projects = commands.add_parser("projects")
+    projects.add_argument("--state-root", type=Path)
+    open_project = commands.add_parser("open-project")
+    open_project.add_argument("project_id")
+    open_project.add_argument("--state-root", type=Path)
+    unassigned = commands.add_parser("unassigned")
+    unassigned.add_argument("--state-root", type=Path)
     register = commands.add_parser("register")
     register.add_argument("corpus", type=Path)
     register.add_argument("--session-id", required=True)
@@ -1833,6 +1959,22 @@ def dispatch(args: argparse.Namespace) -> dict:
         return ensure_dashboard(args.corpus, args.state_root)
     if args.dashboard_command == "open":
         return open_dashboard(args.corpus, args.state_root)
+    if args.dashboard_command == "projects":
+        return open_project_index(args.state_root)
+    if args.dashboard_command == "open-project":
+        return open_project_dashboard(args.project_id, args.state_root)
+    if args.dashboard_command == "unassigned":
+        root = state_root(args.state_root)
+        service, started = ensure_service(root)
+        return open_scope(
+            root,
+            service,
+            "unassigned",
+            result={
+                "schema_version": 1,
+                "service_started": started,
+            },
+        )
     if args.dashboard_command == "register":
         return register_dashboard(
             args.corpus,

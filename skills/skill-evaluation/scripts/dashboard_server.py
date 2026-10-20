@@ -15,14 +15,20 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from dashboard_projection import (
-    campaign_index_projection,
     campaign_projection,
     session_projection,
 )
 from dashboard_state import (
     ensure_state_root,
     validate_campaign_id,
+    validate_safe_id,
     validate_session_id,
+)
+from project_dashboard import (
+    campaign_project_registration,
+    project_index_projection,
+    project_projection,
+    unassigned_projection,
 )
 
 
@@ -54,11 +60,11 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         self.state_root = ensure_state_root(state_root)
         self.generation = generation
         self.root_secret = root_secret
-        self.capabilities: dict[str, str | None] = {}
+        self.capabilities: dict[str, str] = {}
 
-    def mint_capability(self, campaign_id: str | None) -> str:
+    def mint_capability(self, scope: str) -> str:
         capability = f"{self.generation}.{secrets.token_urlsafe(32)}"
-        self.capabilities[capability] = campaign_id
+        self.capabilities[capability] = scope
         return capability
 
 
@@ -133,9 +139,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if separator and prefix != self.server.generation:
             self.refusal(HTTPStatus.UNAUTHORIZED, "generation_replaced")
             return False, None
-        for capability, campaign_id in self.server.capabilities.items():
+        for capability, scope in self.server.capabilities.items():
             if hmac.compare_digest(supplied, capability):
-                return True, campaign_id
+                return True, scope
         self.refusal(HTTPStatus.UNAUTHORIZED, "invalid_capability")
         return False, None
 
@@ -167,24 +173,85 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except (UnicodeError, json.JSONDecodeError):
             self.refusal(HTTPStatus.BAD_REQUEST, "invalid_json")
             return
-        if not isinstance(request, dict) or set(request) != {"campaign_id"}:
+        if not isinstance(request, dict):
             self.refusal(HTTPStatus.BAD_REQUEST, "invalid_open_request")
             return
-        campaign_id = request["campaign_id"]
-        if campaign_id is not None:
-            try:
-                validate_campaign_id(campaign_id)
-                campaign_projection(self.server.state_root, campaign_id)
-            except (OSError, ValueError):
-                self.refusal(HTTPStatus.NOT_FOUND, "campaign_unavailable")
+        if set(request) == {"campaign_id"}:
+            campaign_id = request["campaign_id"]
+            if campaign_id is None:
+                scope = "project_index"
+            else:
+                try:
+                    validate_campaign_id(campaign_id)
+                    if campaign_project_registration(
+                        self.server.state_root,
+                        campaign_id,
+                    ) is not None:
+                        self.refusal(
+                            HTTPStatus.FORBIDDEN,
+                            "campaign_is_project_assigned",
+                        )
+                        return
+                    campaign_projection(self.server.state_root, campaign_id)
+                except (OSError, ValueError):
+                    self.refusal(HTTPStatus.NOT_FOUND, "campaign_unavailable")
+                    return
+                scope = "unassigned"
+        elif set(request) == {"scope"} and isinstance(request["scope"], str):
+            scope = request["scope"]
+        else:
+            self.refusal(HTTPStatus.BAD_REQUEST, "invalid_open_request")
+            return
+        try:
+            if scope == "project_index":
+                project_index_projection(self.server.state_root)
+                route = "/"
+            elif scope == "unassigned":
+                unassigned_projection(self.server.state_root)
+                route = "/unassigned"
+            elif scope.startswith("project:"):
+                project_id = scope.removeprefix("project:")
+                validate_safe_id(project_id, "project ID")
+                project_projection(self.server.state_root, project_id)
+                route = f"/project/{project_id}"
+            else:
+                self.refusal(HTTPStatus.BAD_REQUEST, "invalid_open_scope")
                 return
-        capability = self.server.mint_capability(campaign_id)
-        route = "/" if campaign_id is None else f"/campaign/{campaign_id}"
+        except (OSError, ValueError):
+            self.refusal(HTTPStatus.NOT_FOUND, "scope_unavailable")
+            return
+        capability = self.server.mint_capability(scope)
         self.json_response(HTTPStatus.OK, {
             "schema_version": 1,
             "generation": self.server.generation,
             "route": route,
             "capability": capability,
+            "scope": scope,
+        })
+
+    def child_project_capability(self, path: str, scope: str) -> None:
+        if scope != "project_index":
+            self.refusal(HTTPStatus.FORBIDDEN, "capability_scope")
+            return
+        project_id = path.removeprefix("/api/projects/").removesuffix(
+            "/capability"
+        )
+        try:
+            validate_safe_id(project_id, "project ID")
+            projects = project_index_projection(self.server.state_root)["projects"]
+        except (OSError, ValueError):
+            self.refusal(HTTPStatus.NOT_FOUND, "project_unavailable")
+            return
+        if project_id not in {item["project_id"] for item in projects}:
+            self.refusal(HTTPStatus.NOT_FOUND, "project_unavailable")
+            return
+        child_scope = f"project:{project_id}"
+        self.json_response(HTTPStatus.OK, {
+            "schema_version": 1,
+            "generation": self.server.generation,
+            "route": f"/project/{project_id}",
+            "scope": child_scope,
+            "capability": self.server.mint_capability(child_scope),
         })
 
     def api_response(self, path: str) -> None:
@@ -193,10 +260,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         try:
             if path == "/api/index":
-                if scope is not None:
+                self.refusal(HTTPStatus.FORBIDDEN, "capability_scope")
+                return
+            if path == "/api/projects":
+                if scope != "project_index":
                     self.refusal(HTTPStatus.FORBIDDEN, "capability_scope")
                     return
-                value = campaign_index_projection(self.server.state_root)
+                value = project_index_projection(self.server.state_root)
+            elif path == "/api/unassigned":
+                if scope != "unassigned":
+                    self.refusal(HTTPStatus.FORBIDDEN, "capability_scope")
+                    return
+                value = unassigned_projection(self.server.state_root)
+            elif path.startswith("/api/project/"):
+                project_id = validate_safe_id(
+                    path.removeprefix("/api/project/"),
+                    "project ID",
+                )
+                if scope != f"project:{project_id}":
+                    self.refusal(HTTPStatus.FORBIDDEN, "capability_scope")
+                    return
+                value = project_projection(self.server.state_root, project_id)
             elif "/session/" in path and path.startswith("/api/campaign/"):
                 remainder = path.removeprefix("/api/campaign/")
                 campaign_part, separator, session_part = remainder.partition(
@@ -206,7 +290,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     raise ValueError("dashboard session route is malformed")
                 campaign_id = validate_campaign_id(campaign_part)
                 session_id = validate_session_id(session_part)
-                if scope not in {None, campaign_id}:
+                if scope != "unassigned" or campaign_project_registration(
+                    self.server.state_root,
+                    campaign_id,
+                ) is not None:
                     self.refusal(HTTPStatus.FORBIDDEN, "capability_scope")
                     return
                 value = session_projection(
@@ -216,7 +303,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 )
             elif path.startswith("/api/campaign/"):
                 campaign_id = validate_campaign_id(path.removeprefix("/api/campaign/"))
-                if scope not in {None, campaign_id}:
+                if scope != "unassigned" or campaign_project_registration(
+                    self.server.state_root,
+                    campaign_id,
+                ) is not None:
                     self.refusal(HTTPStatus.FORBIDDEN, "capability_scope")
                     return
                 value = campaign_projection(self.server.state_root, campaign_id)
@@ -232,7 +322,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.json_response(HTTPStatus.OK, value)
 
     def static_response(self, path: str) -> None:
-        if path in {"/", "/index.html"} or path.startswith("/campaign/"):
+        if (
+            path in {"/", "/index.html", "/unassigned"}
+            or path.startswith("/project/")
+            or path.startswith("/campaign/")
+        ):
             file = STATIC_ROOT / "index.html"
             content_type = "text/html; charset=utf-8"
         elif path == "/dashboard.css":
@@ -268,6 +362,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/_control/open":
             self.control_open()
+        elif (
+            path.startswith("/api/projects/")
+            and path.endswith("/capability")
+        ):
+            authorized, scope = self.browser_scope()
+            if authorized:
+                self.child_project_capability(path, scope)
         else:
             self.refusal(HTTPStatus.NOT_FOUND, "route_not_found")
 

@@ -1457,7 +1457,7 @@ class DashboardLifecycleTests(unittest.TestCase):
         self.assertEqual(service_status(self.state_root)["status"], "stopped")
         self.assertFalse((self.state_root / "root-secret").exists())
 
-    def test_session_registration_opens_only_once(self):
+    def test_unassigned_session_registration_does_not_auto_open(self):
         session_id = str(uuid.uuid4())
         urls = []
         first = register_dashboard(
@@ -1473,10 +1473,10 @@ class DashboardLifecycleTests(unittest.TestCase):
             browser_open=lambda url: urls.append(url) or True,
         )
         self.assertTrue(first["session_created"])
-        self.assertTrue(first["opened"])
+        self.assertFalse(first["opened"])
         self.assertFalse(second["session_created"])
         self.assertFalse(second["opened"])
-        self.assertEqual(len(urls), 1)
+        self.assertEqual(len(urls), 0)
         self.assertNotIn("#cap=", json.dumps(first))
 
     def test_dashboard_state_view_violation_rotates_generation(self):
