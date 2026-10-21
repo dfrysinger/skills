@@ -77,9 +77,11 @@ Run dashboard registration and browser lifecycle commands through the current
 installed `skill-evaluation` skill. Do not use a copy embedded in a candidate
 plugin, run snapshot, or frozen experiment bundle. Those copies are evidence
 for the evaluator that produced them, but an older dashboard client can open
-one legacy page per corpus instead of joining the current project page. A
-frozen evaluator may still publish attempt events during `run` or `run-suite`;
-the installed client owns registration, project opening, status, and stop.
+one legacy page per corpus instead of joining the current project page. The
+dashboard service rejects the obsolete campaign-open protocol so stale clients
+fail before opening a browser tab. A frozen evaluator may still publish attempt
+events during `run` or `run-suite`; the installed client owns registration,
+project opening, status, and stop.
 
 ```sh
 python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard register CORPUS \

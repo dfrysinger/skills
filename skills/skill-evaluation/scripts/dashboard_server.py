@@ -177,27 +177,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.refusal(HTTPStatus.BAD_REQUEST, "invalid_open_request")
             return
         if set(request) == {"campaign_id"}:
-            campaign_id = request["campaign_id"]
-            if campaign_id is None:
-                scope = "project_index"
-            else:
-                try:
-                    validate_campaign_id(campaign_id)
-                    if campaign_project_registration(
-                        self.server.state_root,
-                        campaign_id,
-                    ) is not None:
-                        self.refusal(
-                            HTTPStatus.FORBIDDEN,
-                            "campaign_is_project_assigned",
-                        )
-                        return
-                    campaign_projection(self.server.state_root, campaign_id)
-                except (OSError, ValueError):
-                    self.refusal(HTTPStatus.NOT_FOUND, "campaign_unavailable")
-                    return
-                scope = "unassigned"
-        elif set(request) == {"scope"} and isinstance(request["scope"], str):
+            self.refusal(
+                HTTPStatus.CONFLICT,
+                "legacy_open_client_unsupported",
+            )
+            return
+        if set(request) == {"scope"} and isinstance(request["scope"], str):
             scope = request["scope"]
         else:
             self.refusal(HTTPStatus.BAD_REQUEST, "invalid_open_request")
