@@ -941,11 +941,9 @@ function renderProject(data) {
             const resultLabel = hasTaskRuns
               ? sentenceCase(task.result)
               : "Not started";
-            const phaseLabel = task.phase.phase
-              ? sentenceCase(task.phase.phase)
-              : hasTaskRuns
-                ? sentenceCase(task.phase.status)
-                : null;
+            const phaseLabel = hasTaskRuns
+              ? sentenceCase(task.phase.phase || task.phase.status)
+              : null;
             return `
               <article>
                 <span class="task-statuses">
