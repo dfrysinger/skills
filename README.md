@@ -44,6 +44,7 @@ For cross-computer messaging setup, see the
 | When you want to... | Use |
 | --- | --- |
 | Explore how a project should solve a problem | [`scout`](./skills/scout/SKILL.md) |
+| Map implemented architecture or audit a call-flow diagram | [`arch-map`](./skills/arch-map/SKILL.md) |
 | Design a systemic or high-risk change | [`design-doc`](./skills/design-doc/SKILL.md) |
 | Challenge whether a design's premises still justify its scope | [`constraint-challenge`](./skills/constraint-challenge/SKILL.md) |
 | Build, fix, and ship a change | [`development-loop`](./skills/development-loop/SKILL.md) |
