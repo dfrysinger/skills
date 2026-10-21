@@ -1092,6 +1092,36 @@ tbody tr:hover {
   border-bottom: 0;
 }
 
+.task-run-list {
+  grid-column: 2 / -1;
+  display: grid;
+  gap: 0;
+  border-top: 1px solid var(--border);
+}
+
+.task-run-row {
+  display: grid;
+  grid-template-columns: minmax(140px, auto) minmax(220px, 1fr) auto minmax(240px, auto);
+  gap: 16px;
+  align-items: center;
+  padding: 10px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.task-run-row + .task-run-row {
+  border-top: 1px solid var(--border);
+}
+
+.task-run-row strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.task-run-row time {
+  white-space: nowrap;
+}
+
 .experiment-list-simple {
   display: grid;
   gap: 12px;
@@ -1355,6 +1385,15 @@ tbody tr:hover {
 
   .task-list-simple :is(a, article) {
     gap: 8px;
+  }
+
+  .task-run-list {
+    grid-column: 1;
+  }
+
+  .task-run-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
   }
 
   .task-skill,

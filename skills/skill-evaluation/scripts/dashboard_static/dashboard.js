@@ -542,6 +542,9 @@ const conciseDuration = (seconds) => {
 
 const taskEffortSummary = (task) => {
   const effort = task.effort;
+  if (effort.runs === 0 && effort.attempts === 0) {
+    return "No evaluation run yet.";
+  }
   const timing = task.timing;
   const duration = conciseDuration(timing.elapsed_seconds);
   const lead = timing.first_qualified_pass_at
@@ -582,6 +585,30 @@ const runAttemptSummary = (run) => {
   }
   return `${summary}; ${run.completed_attempts} completed, ${run.passing_attempts} passing, ${run.failing_attempts} failing, ${run.unavailable_attempts} unavailable`;
 };
+
+const taskRuns = (task, runs) =>
+  runs.filter(
+    (run) => Array.isArray(run.task_ids) && run.task_ids.includes(task.task_id),
+  );
+
+function renderTaskRuns(task, runs) {
+  const matching = taskRuns(task, runs);
+  if (!matching.length) return "";
+  return `
+    <div class="task-run-list">
+      ${matching
+        .map(
+          (run) => `
+            <div class="task-run-row">
+              <time>${escapeHtml(conciseTimestamp(run.started_at))}</time>
+              <strong>${escapeHtml(run.run_goal)}</strong>
+              <span class="plain-status status-${escapeHtml(run.state === "completed" ? "passed" : run.state === "active" ? "running" : "failed")}">${escapeHtml(sentenceCase(run.state))}</span>
+              <span>${escapeHtml(runAttemptSummary(run))}</span>
+            </div>`,
+        )
+        .join("")}
+    </div>`;
+}
 
 const isActive = (item) => ["active", "blocked"].includes(item.state);
 const needsUpdate = (item) => ["stale", "conflicted"].includes(item.state);
@@ -869,6 +896,8 @@ function renderProject(data) {
   const passing = data.tasks.filter((task) => task.result === "passing").length;
   const regressed = data.tasks.filter((task) => task.result === "regressed").length;
   const active = data.runs.filter((run) => run.state === "active").length;
+  const hasRuns = data.runs.length > 0;
+  const hasRevision = Boolean(data.selected_revision.snapshot_id);
   const hasConflicts = Object.values(data.conflicts).some(
     (items) => Array.isArray(items) ? items.length : Boolean(items),
   );
@@ -881,13 +910,13 @@ function renderProject(data) {
     </section>
     <section class="campaign-brief">
       <div>
-        <span class="brief-label">Current exact revision</span>
-        <h2>${escapeHtml(data.selected_revision.snapshot_id ? shortId(data.selected_revision.snapshot_id) : sentenceCase(data.selected_revision.status))}</h2>
-        <p>Improving ${escapeHtml(data.project.target_skills.join(", "))}. No result is pooled across revisions.</p>
+        <span class="brief-label">${hasRevision ? "Current skill revision" : "Project status"}</span>
+        <h2>${escapeHtml(hasRevision ? shortId(data.selected_revision.snapshot_id) : "Ready for first evaluation")}</h2>
+        <p>${escapeHtml(hasRevision ? `Improving ${data.project.target_skills.join(", ")}. Results shown here use this exact revision.` : `Improving ${data.project.target_skills.join(", ")}. The exact revision appears when the first evaluation starts.`)}</p>
       </div>
       <div class="status-sentence">
-        <strong>${escapeHtml(`${passing} of ${data.tasks.length} tasks passing`)}</strong>
-        <span>${escapeHtml(`${active} active runs${regressed ? ` · ${regressed} regressed` : ""}`)}</span>
+        <strong>${escapeHtml(`${passing} of ${data.tasks.length} tasks passed`)}</strong>
+        <span>${escapeHtml(hasRuns ? `${active} active runs${regressed ? `, ${regressed} regressed` : ""}` : "No evaluation runs yet")}</span>
       </div>
     </section>
     ${
@@ -901,12 +930,27 @@ function renderProject(data) {
       </div>
       <div class="task-list-simple">
         ${data.tasks
-          .map(
-            (task) => `
+          .map((task) => {
+            const matchingRuns = taskRuns(task, data.runs);
+            const hasTaskRuns = matchingRuns.length > 0;
+            const resultState = task.result === "passing"
+              ? "passed"
+              : ["not_passing", "regressed"].includes(task.result)
+                ? "failed"
+                : "waiting";
+            const resultLabel = hasTaskRuns
+              ? sentenceCase(task.result)
+              : "Not started";
+            const phaseLabel = task.phase.phase
+              ? sentenceCase(task.phase.phase)
+              : hasTaskRuns
+                ? sentenceCase(task.phase.status)
+                : null;
+            return `
               <article>
                 <span class="task-statuses">
-                  <span class="plain-status status-${escapeHtml(task.result === "passing" ? "passed" : ["not_passing", "regressed"].includes(task.result) ? "failed" : "waiting")}">${escapeHtml(sentenceCase(task.result))}</span>
-                  <span class="activity-status status-${escapeHtml(task.phase.status === "conflicted" ? "conflicted" : task.phase.phase ? "active" : "waiting")}">${escapeHtml(task.phase.phase ? sentenceCase(task.phase.phase) : sentenceCase(task.phase.status))}</span>
+                  <span class="plain-status status-${escapeHtml(resultState)}">${escapeHtml(resultLabel)}</span>
+                  ${phaseLabel ? `<span class="activity-status status-${escapeHtml(task.phase.status === "conflicted" ? "conflicted" : task.phase.phase ? "active" : "waiting")}">${escapeHtml(phaseLabel)}</span>` : ""}
                 </span>
                 <div>
                   <h3>${escapeHtml(task.title)}</h3>
@@ -915,9 +959,10 @@ function renderProject(data) {
                   <p class="task-effort-copy">${escapeHtml(taskEffortSummary(task))}</p>
                   ${renderTaskAblation(task.ablation)}
                 </div>
-                <span class="task-skill">${escapeHtml(`${task.bindings.filter((binding) => binding.qualified).length}/${task.bindings.length} qualified`)}</span>
-              </article>`,
-          )
+                <span class="task-skill">${escapeHtml(hasTaskRuns ? `${task.bindings.filter((binding) => binding.qualified).length}/${task.bindings.length} passed` : "Not evaluated")}</span>
+                ${renderTaskRuns(task, matchingRuns)}
+              </article>`;
+          })
           .join("") || '<div class="panel-empty">Task totals are unavailable while project identity conflicts.</div>'}
       </div>
     </section>
@@ -937,26 +982,6 @@ function renderProject(data) {
         : ""
     }
     ${renderWholeSkillAblation(data.whole_skill_ablation)}
-    <section class="simple-section">
-      <div class="simple-section-heading">
-        <div><h2>Runs</h2><p>Compact local and distributed attempts underneath the task goals they support.</p></div>
-      </div>
-      <div class="run-list">
-        ${data.runs
-          .map(
-            (run) => `
-              <article class="run-card">
-                <div class="run-summary">
-                  <strong>${escapeHtml(run.run_goal)}</strong>
-                  <span>${escapeHtml(run.launcher_kind.replaceAll("_", " "))} · ${escapeHtml(conciseTimestamp(run.started_at))}</span>
-                </div>
-                <span class="plain-status status-${escapeHtml(run.state === "completed" ? "passed" : run.state === "active" ? "running" : "failed")}">${escapeHtml(sentenceCase(run.state))}</span>
-                <p>${escapeHtml(runAttemptSummary(run))}</p>
-              </article>`,
-          )
-          .join("") || '<div class="panel-empty">No project-bound runs.</div>'}
-      </div>
-    </section>
     ${
       data.pre_project_history.length
         ? `<section class="simple-section"><div class="simple-section-heading"><div><h2>Pre-project history</h2><p>Readable legacy attempts excluded from all project totals.</p></div></div><div class="panel-empty">${escapeHtml(plural(data.pre_project_history.length, "legacy attempt"))}</div></section>`
