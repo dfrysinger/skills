@@ -6,6 +6,18 @@ and only `gh api --method GET`. It does not read or print tokens, dispatch runs,
 upload artifacts, cancel work, or change remote state. Python's standard
 library and an authenticated `gh` executable are the only dependencies.
 
+Keep repeated observation separate from package and execution admission.
+Pass the frozen run bindings to this metadata-only tool; do not rebuild,
+copy or rehash a candidate package before each metadata read. Keep required
+package checks at the boundary that admits or consumes that package.
+
+Measure the complete caller, including binding preparation, validation,
+downloads and result consumption. A faster metadata request alone does not
+prove faster feedback or lower total cost. Retain any additional caller
+requirements, such as actor identity or a complete historical namespace:
+this tool does not establish them. Reuse requires checked correspondence;
+a matching run ID alone is insufficient.
+
 ## Input and invocation
 
 Create a JSON array of the runs to observe. Each entry requires these fields:
