@@ -539,6 +539,11 @@ The runner:
    command configuration, tool-boundary audit, and receipts; and
 7. produces `REPORT.md`.
 
+Required skill loading needs a matching successful tool completion. A denied
+call or a start without completion does not prove loading, even if the CLI
+exits successfully. When target-skill invocation is forbidden, an attempt is
+enough to reject the run, whether or not that call succeeds.
+
 Use `--home-mode isolated` when `COPILOT_GITHUB_TOKEN` is available. The default
 `existing` mode uses the current authenticated Copilot home while still
 disabling custom instructions and built-in MCP servers; its receipt states that
