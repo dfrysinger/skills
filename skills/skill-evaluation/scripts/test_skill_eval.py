@@ -620,7 +620,9 @@ class SkillEvalTests(unittest.TestCase):
             "'missed':[],'overcorrections':[],'generalized_skill_defect':None})\n"
             "else:\n"
             " print(json.dumps({'type':'tool.execution_start','data':{'toolName':'skill',"
-            "'arguments':{'skill':'alternate-skill'},'model':model}}))\n"
+            "'toolCallId':'skill-load','arguments':{'skill':'alternate-skill'},'model':model}}))\n"
+            " print(json.dumps({'type':'tool.execution_complete','data':"
+            "{'toolCallId':'skill-load','success':True}}))\n"
             " out='candidate-result'\n"
             "print(json.dumps({'type':'assistant.message','data':{'content':out,'model':model}}))\n"
             "print(json.dumps({'type':'result','exitCode':0}))\n"
@@ -784,6 +786,48 @@ class SkillEvalTests(unittest.TestCase):
                 require_skill=True,
             )
 
+    def test_skill_loading_requires_matching_successful_completion(self) -> None:
+        log = Path(self.temp.name) / "skill-completions.jsonl"
+        for boundary in ("prose", "repository"):
+            for outcomes in ((False,), (None,), (True,), (False, True), (True, False)):
+                events = []
+                for index, success in enumerate(outcomes):
+                    call_id = f"skill-{index}"
+                    events.append({
+                        "type": "tool.execution_start",
+                        "data": {
+                            "toolCallId": call_id, "toolName": "skill",
+                            "arguments": {"skill": "example-skill"},
+                        },
+                    })
+                    if success is not None:
+                        events.append({
+                            "type": "tool.execution_complete",
+                            "data": {"toolCallId": call_id, "success": success},
+                        })
+                events.extend([
+                    {"type": "assistant.message",
+                     "data": {"content": "answer", "model": "fake-model"}},
+                    {"type": "result", "exitCode": 0},
+                ])
+                log.write_text("".join(json.dumps(event) + "\n" for event in events))
+                for required in (True, False):
+                    with self.subTest(
+                        boundary=boundary, outcomes=outcomes, required=required,
+                    ):
+                        arguments = {
+                            "skill": "example-skill", "expected_model": "fake-model",
+                            "cwd": Path(self.temp.name), "require_skill": required,
+                            "boundary": boundary,
+                        }
+                        if required and True in outcomes:
+                            self.assertTrue(parse_run(log, **arguments)["skill_loaded"])
+                        else:
+                            with self.assertRaisesRegex(
+                                ValueError, "must.*invoke|baseline must not attempt",
+                            ):
+                                parse_run(log, **arguments)
+
     def test_resumed_phase_can_reuse_loaded_skill_context(self) -> None:
         workdir = Path(self.temp.name) / "resumed-workdir"
         workdir.mkdir()
@@ -922,8 +966,10 @@ class SkillEvalTests(unittest.TestCase):
             " raise SystemExit(0)\n"
             "model=sys.argv[sys.argv.index('--model')+1]\n"
             "print(json.dumps({'type':'tool.execution_start','data':"
-            "{'toolName':'skill','arguments':{'skill':'example-skill'},"
+            "{'toolName':'skill','toolCallId':'skill-load','arguments':{'skill':'example-skill'},"
             "'model':model}}))\n"
+            "print(json.dumps({'type':'tool.execution_complete','data':"
+            "{'toolCallId':'skill-load','success':True}}))\n"
             "print(json.dumps({'type':'assistant.message','data':"
             "{'content':'candidate-result','model':model}}))\n"
             "print(json.dumps({'type':'result','exitCode':0}))\n",
@@ -997,8 +1043,10 @@ class SkillEvalTests(unittest.TestCase):
             "  out='PASS\\nThe custom criterion was met.'\n"
             "else:\n"
             " print(json.dumps({'type':'tool.execution_start','data':"
-            "{'toolName':'skill','arguments':{'skill':'example-skill'},"
+            "{'toolName':'skill','toolCallId':'skill-load','arguments':{'skill':'example-skill'},"
             "'model':model}}))\n"
+            " print(json.dumps({'type':'tool.execution_complete','data':"
+            "{'toolCallId':'skill-load','success':True}}))\n"
             " out='candidate-result'\n"
             "print(json.dumps({'type':'assistant.message','data':"
             "{'content':out,'model':model}}))\n"
@@ -1079,8 +1127,10 @@ class SkillEvalTests(unittest.TestCase):
             "'generalized_skill_defect':None})\n"
             "else:\n"
             " print(json.dumps({'type':'tool.execution_start','data':"
-            "{'toolName':'skill','arguments':{'skill':'example-skill'},"
+            "{'toolName':'skill','toolCallId':'skill-load','arguments':{'skill':'example-skill'},"
             "'model':model}}))\n"
+            " print(json.dumps({'type':'tool.execution_complete','data':"
+            "{'toolCallId':'skill-load','success':True}}))\n"
             " out='candidate-result'\n"
             "print(json.dumps({'type':'assistant.message','data':"
             "{'content':out,'model':model}}))\n"
@@ -1306,8 +1356,10 @@ class SkillEvalTests(unittest.TestCase):
             "'generalized_skill_defect':None})\n"
             "else:\n"
             " print(json.dumps({'type':'tool.execution_start','data':"
-            "{'toolName':'skill','arguments':{'skill':'example-skill'},"
+            "{'toolName':'skill','toolCallId':'skill-load','arguments':{'skill':'example-skill'},"
             "'model':model}}))\n"
+            " print(json.dumps({'type':'tool.execution_complete','data':"
+            "{'toolCallId':'skill-load','success':True}}))\n"
             " out='wrong-result'\n"
             "print(json.dumps({'type':'assistant.message','data':"
             "{'content':out,'model':model}}))\n"

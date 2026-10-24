@@ -1082,9 +1082,7 @@ def parse_run(
                     and arguments.get("skill") == skill
                 ):
                     skill_attempted = True
-                    if boundary == "prose":
-                        skill_loaded = True
-                    elif isinstance(data.get("toolCallId"), str):
+                    if isinstance(data.get("toolCallId"), str):
                         pending_skills.add(data["toolCallId"])
                 if data.get("toolName") == "view" and isinstance(arguments, dict):
                     call_id = data.get("toolCallId")
@@ -1113,11 +1111,10 @@ def parse_run(
             f"run used model identities {sorted(models)!r}, "
             f"expected {expected_model!r}"
         )
-    if require_skill is not None and skill_loaded != require_skill:
-        action = "invoke" if require_skill else "not invoke"
-        raise ValueError(f"run must {action} target skill {skill!r}")
-    if boundary != "prose" and require_skill is False and skill_attempted:
-        raise ValueError("baseline must not attempt target skill invocation")
+    if require_skill is True and not skill_loaded:
+        raise ValueError(f"run must invoke target skill {skill!r}")
+    if require_skill is False and skill_attempted:
+        raise ValueError(f"run must not invoke target skill {skill!r}")
     return {
         "answer": messages[-1],
         "skill_loaded": skill_loaded,
