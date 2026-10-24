@@ -851,6 +851,68 @@ class ProjectScorecardTests(ProjectFixture):
             runs[0]["source_identity"]["experiment_fingerprint"],
             "e" * 64,
         )
+        self.assertEqual(
+            runs[0]["attempts"][0]["experiments"][0]["outcome"],
+            "positive",
+        )
+
+    def test_distributed_attempt_awaiting_result_projects_checking(self):
+        corpus = self.corpus("distributed-checking")
+        declaration = canonical_project_declaration(self.declaration(corpus))
+        binding = declaration["case_bindings"][0]
+        project = {
+            "target_skills": ["example-skill"],
+            "case_bindings": declaration["case_bindings"],
+            "sources": [{
+                "available": True,
+                "corpus_root": corpus,
+                "campaign": {"campaign_id": "a" * 32},
+            }],
+        }
+        activity = [{
+            "attempt_id": "attempt-1",
+            "case_id": binding["case_id"],
+            "case_revision": binding["case_revision"],
+            "snapshot_id": "s" * 64,
+            "state": "cloud_completed_awaiting_result",
+            "evaluator_result": None,
+        }]
+        projection = {
+            "items": [{
+                "experiment_id": "experiment-1",
+                "experiment_fingerprint": "e" * 64,
+                "summary": "Wait for the distributed result.",
+                "snapshot_id": "s" * 64,
+                "route": "cloud",
+                "planned_attempts": 1,
+                "cost": {
+                    "known_attempts": 0,
+                    "total_attempts": 1,
+                    "credits": None,
+                    "premium_requests": None,
+                    "complete": False,
+                },
+                "activity": activity,
+            }],
+        }
+        declared = [{
+            "event_type": "experiment_declared",
+            "recorded_at": "2026-01-01T00:00:00+00:00",
+            "subject": {"experiment_id": "experiment-1"},
+        }]
+        with mock.patch(
+            "dashboard_projection.experiment_projection",
+            return_value=projection,
+        ), mock.patch(
+            "project_dashboard.experiment_activity_records",
+            return_value=(declared, [], []),
+        ):
+            runs, _ = _distributed_projection(project)
+
+        self.assertEqual(runs[0]["state"], "liveness_unavailable")
+        experiment = runs[0]["attempts"][0]["experiments"][0]
+        self.assertEqual(experiment["step"], "checking")
+        self.assertIsNone(experiment["outcome"])
 
     def test_delta_ablation_reports_exact_size_and_maintained_wins(self):
         corpus = self.corpus("delta-ablation")
@@ -1688,6 +1750,9 @@ class ProjectLifecycleProjectionTests(ProjectFixture):
         projection = project_projection(self.state_root, "example-project")
         row = next(item for item in projection["runs"] if item["run_id"] == active.name)
         self.assertEqual(row["state"], "active")
+        self.assertEqual(len(row["attempts"]), 1)
+        self.assertEqual(row["attempts"][0]["state"], "active")
+        self.assertEqual(row["attempts"][0]["experiments"], [])
 
         lease = json.loads((active / "run-lease.json").read_text())
         lease["renewed_at"] = (
@@ -1722,6 +1787,8 @@ class ProjectLifecycleProjectionTests(ProjectFixture):
         row = next(item for item in projection["runs"] if item["run_id"] == failed.name)
         self.assertEqual(row["state"], "infrastructure_failed")
         self.assertEqual(row["failure_stage"], "launcher_setup")
+        self.assertEqual(row["attempts"][0]["state"], "infrastructure_failed")
+        self.assertEqual(row["attempts"][0]["experiments"], [])
         self.assertEqual(projection["tasks"][0]["result"], "unavailable")
 
     def test_immutable_result_outranks_expired_lease(self):
@@ -1748,7 +1815,18 @@ class ProjectLifecycleProjectionTests(ProjectFixture):
             "cases": [{
                 "case_id": "case-one",
                 "attempts": [
-                    {"attempt": 1, "result": "PASS"},
+                    {
+                        "attempt": 1,
+                        "result": "PASS",
+                        "timing": {"elapsed_seconds": 3.5},
+                        "accounting": {
+                            "total": {
+                                "complete": True,
+                                "credits": 2.5,
+                                "observed_credits": 2.5,
+                            },
+                        },
+                    },
                     {"attempt": 2, "result": "FAIL"},
                     {"attempt": 3, "result": "ERROR"},
                 ],
@@ -1768,6 +1846,19 @@ class ProjectLifecycleProjectionTests(ProjectFixture):
         self.assertEqual(row["passing_attempts"], 1)
         self.assertEqual(row["failing_attempts"], 1)
         self.assertEqual(row["unavailable_attempts"], 1)
+        experiments = row["attempts"][0]["experiments"]
+        self.assertEqual(
+            [item["outcome"] for item in experiments],
+            ["positive", "negative", "failed"],
+        )
+        self.assertEqual(
+            [item["step"] for item in experiments],
+            ["complete", "complete", "failed"],
+        )
+        self.assertEqual(experiments[0]["task_ids"], ["task-1"])
+        self.assertEqual(experiments[0]["skill_ids"], ["example-skill"])
+        self.assertEqual(experiments[0]["duration_seconds"], 3.5)
+        self.assertEqual(experiments[0]["cost"]["credits"], 2.5)
 
     def test_local_case_unavailable_outcome_has_complete_counts(self):
         run = self.corpus_root / "runs" / "local-case" / "case-one"
@@ -1806,6 +1897,17 @@ class ProjectLifecycleProjectionTests(ProjectFixture):
             "execution_status": "INVALID",
             "behavioral_verdict": None,
         }) + "\n")
+        unrelated = self.corpus_root / "runs" / "suite-child" / "case-one"
+        unrelated.mkdir(parents=True)
+        (unrelated / "attempt.json").write_text(json.dumps({
+            "schema_version": 1,
+            "run_id": "suite-child",
+            "case_id": "case-one",
+            "project_start": None,
+            "suite_owner": {
+                "suite_path": "suite-runs/another-suite",
+            },
+        }) + "\n")
 
         row = next(
             item
@@ -1820,6 +1922,10 @@ class ProjectLifecycleProjectionTests(ProjectFixture):
         self.assertEqual(row["passing_attempts"], 0)
         self.assertEqual(row["failing_attempts"], 0)
         self.assertEqual(row["unavailable_attempts"], 1)
+        self.assertEqual(
+            row["attempts"][0]["experiments"][0]["outcome"],
+            "failed",
+        )
 
     def test_fingerprintless_attempt_remains_pre_project_history(self):
         run = self.corpus_root / "runs" / "legacy-run" / "case-one"
@@ -2252,7 +2358,11 @@ class ProjectOpenOnceTests(ProjectFixture):
         self.assertIn("window.history.replaceState", source)
         self.assertIn("Ready for first evaluation", source)
         self.assertIn("No evaluation runs yet", source)
-        self.assertIn("renderTaskRuns", source)
+        self.assertIn("renderProjectRuns", source)
+        self.assertIn("Run attempt", source)
+        self.assertIn("Positive or negative when complete", source)
+        self.assertIn("Private final check", source)
+        self.assertIn("No experiments launched", source)
         self.assertNotIn("No project-bound runs", source)
         self.assertIn("removeItem(capabilityStorageKey)", source)
         self.assertNotIn("localStorage", source)

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "revision": "skill-evaluation-ui-project-decisions-r2",
+  "revision": "skill-evaluation-ui-project-decisions-r3",
   "events": [
     {
       "event_id": "user-project-first-ux-2026-10-19",
@@ -135,6 +135,51 @@
       "answer": "i need to step away, go with your recommendations for the rest",
       "context": "This applies the user's earlier rejection of backfill support while preserving access to existing evidence.",
       "authority": "delegated product decision consistent with explicit prior direction",
+      "resolved": true
+    },
+    {
+      "event_id": "user-project-page-run-ledger-2026-10-21",
+      "question": "Should runs open as standalone pages or remain subordinate records on the project page?",
+      "recommended_answer": "Keep the project as the page. Show its complete task corpus first, then list runs below it as expandable records.",
+      "answer": "Also runs arent supposed to be standalone pages, right? didnt we agree that the project was the page that gets opened? and that has single line items for each run under the tasks section",
+      "context": "The user rejected duplicate run tabs and restated that a project, not a run, is the browser navigation unit.",
+      "authority": "top-level product decision",
+      "resolved": true
+    },
+    {
+      "event_id": "user-run-attempt-experiment-vocabulary-2026-10-21",
+      "question": "What visible hierarchy and wording should the project dashboard use for evaluation work?",
+      "recommended_answer": "Use project, task, run, run attempt, and experiment. Keep the many-to-many target model even though one skill and one task are the usual case.",
+      "answer": "I think a run can contain attempts and inside each attempt are experiments and each experiment is targeting one or more skills and one or more tasks (but 99% of the time it will be one skill and one task per experiment, and also one skill and one task per run 99% of the time too, but just in case we should be flexible).",
+      "context": "This replaces overloaded evaluator terms with the product vocabulary used in the approved Round 5 mockup.",
+      "authority": "top-level product decision",
+      "resolved": true
+    },
+    {
+      "event_id": "user-completion-outcome-semantics-2026-10-21",
+      "question": "How should the dashboard distinguish execution failure from a completed measurement whose result is unfavorable?",
+      "recommended_answer": "Use Failed only when execution did not complete. Use Positive or Negative for completed experiments, because both prove the evaluation system ran successfully.",
+      "answer": "you shod pass/fail at the attempt level but neg/pos on the experiment level, lets reserve fail for when the experiment/run didnt complete, not for negative test results from a successful test.",
+      "context": "The user rejected using failure language for valid negative measurements. Run-attempt status describes whether the launch completed; experiment outcome describes the measured direction.",
+      "authority": "top-level product decision",
+      "resolved": true
+    },
+    {
+      "event_id": "user-experiment-owned-lifecycle-2026-10-21",
+      "question": "Where should preparation, execution, checking, and completion state appear?",
+      "recommended_answer": "Each experiment owns one plain-language lifecycle: Setting up, Running, Checking, Complete. A run only rolls up its child experiments and does not show a second overlapping workflow.",
+      "answer": "But also each experiment in a run could be in different states of the prepare/run... steps, also what is native judge blind review, adjudicate, decide, held out, and why are they shown for a run? wouldnt that be for an experiment, and dont we already have that other process above that said prepare/package/publish/admit... etc? why have a whole different set of steps with some overlap? and what it native vs authoratiative? thats wild, this is too complex",
+      "context": "The user rejected duplicate run-level and review-level pipelines and evaluator-internal labels.",
+      "authority": "top-level product decision",
+      "resolved": true
+    },
+    {
+      "event_id": "user-round5-approved-for-production-2026-10-21",
+      "question": "Is the simplified Round 5 project dashboard approved as the production presentation contract?",
+      "recommended_answer": "Yes. Preserve the existing evidence and authorization boundaries while replacing the primary project presentation with the approved hierarchy and plain-language states.",
+      "answer": "and lets lock in your new revisision and make it real, sorry i forgot that step",
+      "context": "The user approved the simplified Round 5 mockup after reviewing its project summary, Running Now area, full task corpus, and expandable run-attempt-experiment ledger.",
+      "authority": "explicit implementation approval",
       "resolved": true
     }
   ],

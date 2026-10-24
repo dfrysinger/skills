@@ -3,7 +3,7 @@
 **Status:** Reviewed work order  
 **Lane:** Critical  
 **Decision record:** `design/skill-evaluation-ui-project-decisions.json`  
-**Decision revision:** `skill-evaluation-ui-project-decisions-r2`  
+**Decision revision:** `skill-evaluation-ui-project-decisions-r3`
 **Sealed evidence packet:** `design/skill-evaluation-ui-project-evidence.json`  
 **Evidence revision:** `skill-evaluation-ui-project-evidence-r1`
 **Constraint gate:** `CONTINUE`  
@@ -166,6 +166,62 @@ Project
 
 A campaign remains a storage registration for one corpus. It is no longer a
 top-level product object when it belongs to a project.
+
+## Round 5 presentation contract
+
+The project page uses this visible hierarchy:
+
+```text
+Project
+├── tasks in the declared test corpus
+└── runs
+    └── run attempts
+        └── experiments
+```
+
+The browser uses these terms consistently:
+
+- A **task** is one user-facing behavior that the skill must pass. Tasks are
+  not runs.
+- A **run** is one bounded evaluation goal. It may target one or more tasks
+  and skills.
+- A **run attempt** is one launcher invocation for that run. A supported
+  launcher invocation is also the only run-attempt boundary available in the
+  current evidence. Until a future explicit parent run identity is added, one
+  projected run therefore contains one run attempt.
+- An **experiment** is one measured case, repetition, or treatment inside the
+  run attempt. It may target one or more tasks and skills.
+
+Each experiment owns one visible lifecycle:
+
+1. **Setting up** before measured execution starts.
+2. **Running** while the candidate or task execution is active.
+3. **Checking** after execution while the result is being resolved.
+4. **Complete** after a valid terminal result exists.
+
+The run and run attempt show rollups of their child experiments. They do not
+show a second overlapping lifecycle.
+
+Completed experiment outcomes use **Positive** or **Negative**. **Failed** is
+reserved for work that did not complete, including infrastructure-invalid
+execution. A failed run attempt can contain zero experiments when setup failed
+before any measured work started. Preparation can appear as current activity
+without increasing experiment, duration, or cost totals.
+
+The primary page hides evaluator transport, admission, pin, carrier, judge,
+adjudication, and authority terms. A second review appears as **Rechecked**.
+Private final checks remain aggregate-only and never reveal case identity,
+prompt, criteria, output, path, or per-case failure.
+
+Duration and credit spend appear at task, run, run-attempt, and experiment
+level only when retained evidence supports them. Missing or partial accounting
+stays explicit. Every run attempt expands independently and shows every
+projected experiment; the UI does not replace hidden rows with an “other
+experiments” count.
+
+This presentation is additive. Immutable evaluator artifacts, exact revision
+selection, conflict handling, holdout isolation, and scoped browser
+capabilities remain authoritative and unchanged.
 
 ## Project declaration
 
