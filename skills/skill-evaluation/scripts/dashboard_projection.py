@@ -21,6 +21,7 @@ from dashboard_state import (
     read_skill_snapshot,
     regular_json,
     session_records,
+    validate_experiment_result_identity,
 )
 from skill_eval import digest, frozen_case_path, load_corpus
 
@@ -970,6 +971,16 @@ def experiment_projection(corpus_root: Path, campaign_id: str) -> dict:
                 stage["subject"]["attempt_id"],
                 [],
             ).append(stage)
+        invalid_result_treatments = set()
+        for result in results:
+            claimed = result["payload"]["attempt"]
+            expected = planned.get(result["subject"]["attempt_id"])
+            try:
+                validate_experiment_result_identity(declaration, result)
+            except ValueError:
+                invalid_result_treatments.add(claimed["treatment_id"])
+                if expected is not None:
+                    invalid_result_treatments.add(expected["treatment_id"])
 
         valid_dispatch = dispatches[0] if len(dispatches) == 1 else None
         observation_rows: dict[str, list[dict]] = {}
@@ -1079,6 +1090,9 @@ def experiment_projection(corpus_root: Path, campaign_id: str) -> dict:
                 ),
                 "outcomes": outcome_counts,
                 "selection_state": selection_state,
+                "result_integrity": (
+                    treatment_id not in invalid_result_treatments
+                ),
                 "cost": {
                     "known_attempts": 0,
                     "total_attempts": len(treatment_attempts),

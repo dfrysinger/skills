@@ -1171,6 +1171,101 @@ class DashboardExperimentStateTests(unittest.TestCase):
         self.assertEqual(index["cloud_counts"]["terminal"], 2)
         self.assertEqual(index["availability"]["cloud_activity"], "available")
 
+    def test_projection_marks_treatment_invalid_for_undeclared_result(self):
+        declaration = self.publish_declaration()
+        self.publish_results(declaration)
+        extra_attempt = dict(declaration["payload"]["attempts"][0])
+        extra_attempt["attempt_id"] = "attempt-extra"
+        emit_experiment_activity_event(
+            self.corpus,
+            campaign_id=self.registration["campaign_id"],
+            writer=self.coordinator_writer,
+            event_type="distributed_result_recorded",
+            experiment_id="experiment-a",
+            experiment_fingerprint=declaration["subject"][
+                "experiment_fingerprint"
+            ],
+            attempt_id=extra_attempt["attempt_id"],
+            payload=self.result_payload(extra_attempt, passed=True),
+            event_id="a" * 32,
+            observed_at="2026-01-01T00:03:00+00:00",
+            recorded_at="2026-01-01T00:03:01+00:00",
+        )
+
+        projection = campaign_projection(
+            self.state_root,
+            self.registration["campaign_id"],
+        )
+        treatments = {
+            row["treatment_id"]: row
+            for row in projection["experiments"]["items"][0]["treatments"]
+        }
+
+        self.assertFalse(treatments["candidate"]["result_integrity"])
+        self.assertTrue(treatments["control"]["result_integrity"])
+
+    def test_projection_marks_treatment_invalid_for_mismatched_result(self):
+        declaration = self.publish_declaration()
+        self.plan_fingerprint = declaration["subject"]["experiment_fingerprint"]
+        attempt = dict(declaration["payload"]["attempts"][0])
+        claimed_attempt = dict(attempt)
+        claimed_attempt["case_id"] = "different-case"
+        emit_experiment_activity_event(
+            self.corpus,
+            campaign_id=self.registration["campaign_id"],
+            writer=self.coordinator_writer,
+            event_type="distributed_result_recorded",
+            experiment_id="experiment-a",
+            experiment_fingerprint=self.plan_fingerprint,
+            attempt_id=attempt["attempt_id"],
+            payload=self.result_payload(claimed_attempt, passed=True),
+            event_id="b" * 32,
+            observed_at="2026-01-01T00:03:00+00:00",
+            recorded_at="2026-01-01T00:03:01+00:00",
+        )
+
+        projection = campaign_projection(
+            self.state_root,
+            self.registration["campaign_id"],
+        )
+        treatments = {
+            row["treatment_id"]: row
+            for row in projection["experiments"]["items"][0]["treatments"]
+        }
+
+        self.assertFalse(treatments[attempt["treatment_id"]]["result_integrity"])
+
+    def test_projection_marks_treatment_invalid_for_mismatched_execution(self):
+        declaration = self.publish_declaration()
+        self.plan_fingerprint = declaration["subject"]["experiment_fingerprint"]
+        attempt = declaration["payload"]["attempts"][0]
+        payload = self.result_payload(attempt, passed=True)
+        payload["execution"]["candidate_model"] = "different-model"
+        emit_experiment_activity_event(
+            self.corpus,
+            campaign_id=self.registration["campaign_id"],
+            writer=self.coordinator_writer,
+            event_type="distributed_result_recorded",
+            experiment_id="experiment-a",
+            experiment_fingerprint=self.plan_fingerprint,
+            attempt_id=attempt["attempt_id"],
+            payload=payload,
+            event_id="c" * 32,
+            observed_at="2026-01-01T00:03:00+00:00",
+            recorded_at="2026-01-01T00:03:01+00:00",
+        )
+
+        projection = campaign_projection(
+            self.state_root,
+            self.registration["campaign_id"],
+        )
+        treatments = {
+            row["treatment_id"]: row
+            for row in projection["experiments"]["items"][0]["treatments"]
+        }
+
+        self.assertFalse(treatments[attempt["treatment_id"]]["result_integrity"])
+
     def test_projection_keeps_transport_stage_and_result_authority_distinct(self):
         declaration = self.publish_declaration()
         self.plan_fingerprint = declaration["subject"]["experiment_fingerprint"]
