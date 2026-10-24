@@ -1285,10 +1285,23 @@ class DashboardServerTests(unittest.TestCase):
             "/_control/open",
             authorization=f"Root {self.secret}",
             method="POST",
-            payload={"campaign_id": self.registration["campaign_id"]},
+            payload={"scope": "unassigned"},
         )
         self.assertEqual(status, 200)
         return json.loads(body)["capability"]
+
+    def test_legacy_campaign_open_client_is_refused(self):
+        status, _, body = self.request(
+            "/_control/open",
+            authorization=f"Root {self.secret}",
+            method="POST",
+            payload={"campaign_id": self.registration["campaign_id"]},
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(
+            json.loads(body),
+            {"error": "legacy_open_client_unsupported"},
+        )
 
     def test_control_and_browser_authority_are_separate(self):
         status, _, body = self.request("/_control/health")
@@ -1540,7 +1553,7 @@ class DashboardLifecycleTests(unittest.TestCase):
             secret,
             "/_control/open",
             method="POST",
-            payload={"campaign_id": None},
+            payload={"scope": "project_index"},
         )
         os.kill(original["pid"], signal.SIGTERM)
         STARTED_PROCESSES.pop(original["pid"]).wait(timeout=5)

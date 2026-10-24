@@ -484,13 +484,26 @@ def register_dashboard(
     session_id: str,
     root: Path | None = None,
     *,
+    launch_service: bool = True,
     browser_open=webbrowser.open,
 ) -> dict:
     root = state_root(root)
     session, created = register_session(root, corpus, session_id)
+    project = campaign_project_registration(root, session["campaign_id"])
+    if not launch_service:
+        return {
+            "schema_version": 1,
+            "campaign_id": session["campaign_id"],
+            "project_id": project["project_id"] if project else None,
+            "session_id": session["session_id"],
+            "writer_generation": session["writer_generation"],
+            "session_created": created,
+            "service_started": False,
+            "url": None,
+            "opened": False,
+        }
     service, started = ensure_service(root)
     opened = False
-    project = campaign_project_registration(root, session["campaign_id"])
     if project is not None:
         opened = _auto_open_project(
             root,
@@ -1812,6 +1825,11 @@ def configure_parser(sub: argparse._SubParsersAction) -> None:
     register.add_argument("corpus", type=Path)
     register.add_argument("--session-id", required=True)
     register.add_argument("--state-root", type=Path)
+    register.add_argument(
+        "--open",
+        action="store_true",
+        help="start and open a dashboard when registering into a custom state root",
+    )
     heartbeat = commands.add_parser("heartbeat")
     heartbeat.add_argument("corpus", type=Path)
     heartbeat.add_argument("--session-id", required=True)
@@ -2028,6 +2046,7 @@ def dispatch(args: argparse.Namespace) -> dict:
             args.corpus,
             args.session_id,
             args.state_root,
+            launch_service=args.state_root is None or args.open,
         )
     if args.dashboard_command == "heartbeat":
         return heartbeat_dashboard(

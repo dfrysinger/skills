@@ -2226,6 +2226,23 @@ class ProjectOpenOnceTests(ProjectFixture):
         )
         self.assertTrue(retried["opened"])
 
+    def test_custom_state_registration_can_skip_service_and_browser(self):
+        urls = []
+        registered = register_dashboard(
+            self.first,
+            str(uuid.uuid4()),
+            self.state_root,
+            launch_service=False,
+            browser_open=lambda url: urls.append(url) or True,
+        )
+
+        self.assertEqual(registered["project_id"], "example-project")
+        self.assertFalse(registered["service_started"])
+        self.assertFalse(registered["opened"])
+        self.assertIsNone(registered["url"])
+        self.assertEqual(urls, [])
+        self.assertEqual(service_status(self.state_root)["status"], "stopped")
+
     def test_static_client_uses_only_session_storage(self):
         source = (
             Path(__file__).with_name("dashboard_static") / "dashboard.js"
@@ -2233,6 +2250,10 @@ class ProjectOpenOnceTests(ProjectFixture):
         self.assertIn("sessionStorage", source)
         self.assertIn("skill-eval-cap:", source)
         self.assertIn("window.history.replaceState", source)
+        self.assertIn("Ready for first evaluation", source)
+        self.assertIn("No evaluation runs yet", source)
+        self.assertIn("renderTaskRuns", source)
+        self.assertNotIn("No project-bound runs", source)
         self.assertIn("removeItem(capabilityStorageKey)", source)
         self.assertNotIn("localStorage", source)
         self.assertNotIn("document.cookie", source)

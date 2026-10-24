@@ -72,19 +72,28 @@ make the safe breakdown unavailable instead of displaying a fabricated zero.
 Register this Copilot session once using its exact session UUID. The dashboard
 opens the project at most once for the current service process. Later sessions,
 retries, and runs update the same page without opening another tab.
+The project is the only auto-opened page. Runs remain compact rows underneath
+the tasks they support; retries, treatments, repetitions, and canaries never
+open standalone pages.
 
 Run dashboard registration and browser lifecycle commands through the current
 installed `skill-evaluation` skill. Do not use a copy embedded in a candidate
 plugin, run snapshot, or frozen experiment bundle. Those copies are evidence
 for the evaluator that produced them, but an older dashboard client can open
-one legacy page per corpus instead of joining the current project page. A
-frozen evaluator may still publish attempt events during `run` or `run-suite`;
-the installed client owns registration, project opening, status, and stop.
+one legacy page per corpus instead of joining the current project page. The
+dashboard service rejects the obsolete campaign-open protocol so stale clients
+fail before opening a browser tab. A frozen evaluator may still publish attempt
+events during `run` or `run-suite`; the installed client owns registration,
+project opening, status, and stop.
 
 ```sh
 python3 "$SKILL_DIR/scripts/skill_eval.py" dashboard register CORPUS \
   --session-id SESSION_UUID
 ```
+
+Registration into an explicit `--state-root` is noninteractive: it records the
+session without starting a service or opening a browser. Use `--open` only when
+that private state root is intentionally being inspected by a person.
 
 Use the explicit commands to reopen a project, list projects, or inspect
 legacy corpora that do not declare a project:
