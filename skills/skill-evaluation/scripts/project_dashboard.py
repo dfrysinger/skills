@@ -45,6 +45,14 @@ QUALIFICATION_FIELDS = {
     "minimum_terminal_repetitions_per_case",
     "required_passes_per_case",
 }
+EXACT_POPULATION_QUALIFICATION_FIELDS = {
+    "kind",
+    "required_roles",
+    "experiment_id",
+    "experiment_fingerprint",
+    "treatment_id",
+    "required_passes_per_case",
+}
 BINDING_FIELDS = {
     "binding_id",
     "case_id",
@@ -185,38 +193,74 @@ def canonical_project_declaration(value: object) -> dict:
         raise ValueError("project tasks are empty")
     normalized_tasks = []
     for task in tasks:
+        qualification_value = task.get("qualification")
+        if not isinstance(qualification_value, dict):
+            raise ValueError("task qualification is invalid")
+        qualification_kind = qualification_value.get("kind")
+        qualification_fields = (
+            QUALIFICATION_FIELDS
+            if qualification_kind == "all_bound_cases"
+            else EXACT_POPULATION_QUALIFICATION_FIELDS
+            if qualification_kind == "exact_experiment_population"
+            else None
+        )
+        if qualification_fields is None:
+            raise ValueError("unsupported task qualification kind")
         qualification = _exact_object(
-            task.get("qualification"),
-            QUALIFICATION_FIELDS,
+            qualification_value,
+            qualification_fields,
             "task qualification",
         )
-        if qualification.get("kind") != "all_bound_cases":
-            raise ValueError("unsupported task qualification kind")
         roles = _sorted_unique_strings(
             qualification.get("required_roles"),
             "qualification roles",
             allowed={"development", "regression"},
         )
-        minimum = _positive_integer(
-            qualification.get("minimum_terminal_repetitions_per_case"),
-            "minimum terminal repetitions",
-        )
         required = _positive_integer(
             qualification.get("required_passes_per_case"),
             "required passes",
         )
-        if required > minimum:
-            raise ValueError("required passes exceed terminal repetitions")
+        if qualification_kind == "all_bound_cases":
+            minimum = _positive_integer(
+                qualification.get("minimum_terminal_repetitions_per_case"),
+                "minimum terminal repetitions",
+            )
+            if required > minimum:
+                raise ValueError("required passes exceed terminal repetitions")
+            normalized_qualification = {
+                "kind": qualification_kind,
+                "required_roles": roles,
+                "minimum_terminal_repetitions_per_case": minimum,
+                "required_passes_per_case": required,
+            }
+        else:
+            validate_safe_id(
+                qualification.get("experiment_id"),
+                "qualification experiment ID",
+            )
+            validate_sha256(
+                qualification.get("experiment_fingerprint"),
+                "qualification experiment fingerprint",
+            )
+            validate_safe_id(
+                qualification.get("treatment_id"),
+                "qualification treatment ID",
+            )
+            normalized_qualification = {
+                "kind": qualification_kind,
+                "required_roles": roles,
+                "experiment_id": qualification["experiment_id"],
+                "experiment_fingerprint": qualification[
+                    "experiment_fingerprint"
+                ],
+                "treatment_id": qualification["treatment_id"],
+                "required_passes_per_case": required,
+            }
         normalized_tasks.append({
             "task_id": task["task_id"],
             "title": _bounded_text(task.get("title"), "task title", 160),
             "summary": _bounded_text(task.get("summary"), "task summary", 400),
-            "qualification": {
-                "kind": "all_bound_cases",
-                "required_roles": roles,
-                "minimum_terminal_repetitions_per_case": minimum,
-                "required_passes_per_case": required,
-            },
+            "qualification": normalized_qualification,
         })
 
     bindings = _canonical_rows(
@@ -1506,11 +1550,184 @@ def _task_safe_progress(
     }
 
 
+def _distributed_task_effort(
+    attempts: int,
+    retry_dependent: bool,
+    cost: object,
+) -> dict:
+    unknown_tokens = {
+        "input_tokens": None,
+        "output_tokens": None,
+        "complete": False,
+        "known_sessions": 0,
+        "total_sessions": 0,
+    }
+    unknown_cost = {
+        "credits": None,
+        "observed_credits": None,
+        "premium_requests": None,
+        "observed_premium_requests": None,
+        "complete": False,
+        "attempts": attempts,
+        "complete_attempts": 0,
+        "known_subtotal_attempts": 0,
+        "known_premium_attempts": 0,
+        "complete_premium_attempts": 0,
+    }
+    total_cost = (
+        dict(cost)
+        if isinstance(cost, dict)
+        else dict(unknown_cost)
+    )
+    return {
+        "runs": int(attempts > 0),
+        "attempts": attempts,
+        "candidate_tokens": dict(unknown_tokens),
+        "judge_tokens": dict(unknown_tokens),
+        "candidate_cost": dict(unknown_cost),
+        "judge_cost": dict(unknown_cost),
+        "total_cost": total_cost,
+        "retry_dependent": retry_dependent,
+    }
+
+
+def _exact_population_task_score(
+    task: dict,
+    bindings: list[dict],
+    project_bindings: list[dict],
+    selected_snapshots: set[str],
+    activity: list[dict],
+) -> dict:
+    qualification = task["qualification"]
+    population = [
+        row for row in activity
+        if (
+            row.get("experiment_id") == qualification["experiment_id"]
+            and row.get("experiment_fingerprint")
+            == qualification["experiment_fingerprint"]
+            and row.get("treatment_id") == qualification["treatment_id"]
+        )
+    ]
+    attempt_ids = [row.get("attempt_id") for row in population]
+    project_cases = {
+        (binding["case_id"], binding["case_revision"])
+        for binding in project_bindings
+    }
+    identities_valid = (
+        bool(population)
+        and all(isinstance(item, str) and item for item in attempt_ids)
+        and len(attempt_ids) == len(set(attempt_ids))
+        and all(
+            (row.get("case_id"), row.get("case_revision")) in project_cases
+            for row in population
+        )
+        and all(
+            row.get("snapshot_id") in selected_snapshots
+            for row in population
+        )
+        and all(
+            row.get("_population_integrity", True)
+            for row in population
+        )
+    )
+    terminal_results = {"PASS", "FAIL", "UNANSWERABLE", "BLOCKED"}
+    complete = identities_valid and all(
+        row.get("state") == "terminal"
+        and row.get("evaluator_result") in terminal_results
+        for row in population
+    )
+    binding_rows = []
+    for binding in bindings:
+        rows = [
+            row for row in population
+            if (
+                row.get("case_id") == binding["case_id"]
+                and row.get("case_revision") == binding["case_revision"]
+            )
+        ]
+        terminal = sum(
+            row.get("state") == "terminal"
+            and row.get("evaluator_result") in terminal_results
+            for row in rows
+        )
+        passing = sum(
+            row.get("state") == "terminal"
+            and row.get("evaluator_result") == "PASS"
+            for row in rows
+        )
+        binding_rows.append({
+            "binding_id": binding["binding_id"],
+            "case_id": binding["case_id"],
+            "terminal_attempts": terminal,
+            "passing_attempts": passing,
+            "qualified": (
+                complete
+                and bool(rows)
+                and passing >= qualification["required_passes_per_case"]
+            ),
+        })
+    complete = complete and bool(bindings) and all(
+        any(
+            row.get("case_id") == binding["case_id"]
+            and row.get("case_revision") == binding["case_revision"]
+            for row in population
+        )
+        for binding in bindings
+    )
+    passing = complete and all(item["qualified"] for item in binding_rows)
+    declared_at = next(
+        (
+            row["_declared_at"]
+            for row in population
+            if isinstance(row.get("_declared_at"), str)
+        ),
+        None,
+    )
+    population_cost = next(
+        (
+            row["_population_cost"]
+            for row in population
+            if isinstance(row.get("_population_cost"), dict)
+        ),
+        None,
+    )
+    return {
+        "task_id": task["task_id"],
+        "title": task["title"],
+        "summary": task["summary"],
+        "result": (
+            "passing"
+            if passing
+            else "not_passing"
+            if complete
+            else "unavailable"
+        ),
+        "bindings": binding_rows,
+        "timing": {
+            "first_run_at": declared_at,
+            "first_observed_pass_at": None,
+            "first_qualified_pass_at": None,
+            "elapsed_seconds": None,
+        },
+        "effort": _distributed_task_effort(
+            len(population),
+            any(
+                (row.get("repetition") or 1) > 1
+                and row.get("evaluator_result") == "PASS"
+                for row in population
+            ),
+            population_cost,
+        ),
+    }
+
+
 def _task_scorecard(
     project: dict,
     lineage: dict,
     attempts: list[dict],
+    distributed_activity: list[dict] | None = None,
 ) -> list[dict]:
+    distributed_activity = distributed_activity or []
     selected_snapshots = set(lineage["snapshot_ids"])
     known_revisions = lineage.get("known_revisions") or [{
         "snapshot_id": lineage.get("snapshot_id"),
@@ -1529,6 +1746,15 @@ def _task_scorecard(
             if item["task_id"] == task_id
             and item["role"] in qualification["required_roles"]
         ]
+        if qualification["kind"] == "exact_experiment_population":
+            result.append(_exact_population_task_score(
+                task,
+                bindings,
+                project["case_bindings"],
+                selected_snapshots,
+                distributed_activity,
+            ))
+            continue
         current = _matching_task_attempts(
             task,
             bindings,
@@ -2110,9 +2336,26 @@ def _distributed_projection(project: dict) -> tuple[list[dict], list[dict]]:
                     set(),
                 ).add(record["payload"]["stage_kind"])
         for item in projection["items"]:
-            activity = [
+            treatment_integrity = {
+                row["treatment_id"]: row.get("result_integrity") is True
+                for row in item.get("treatments", [])
+            }
+            qualification_activity = [
                 {
                     **row,
+                    "campaign_id": source["campaign"]["campaign_id"],
+                    "experiment_id": item["experiment_id"],
+                    "experiment_fingerprint": item[
+                        "experiment_fingerprint"
+                    ],
+                    "_declared_at": experiment_times.get(
+                        item["experiment_id"]
+                    ),
+                    "_population_cost": item["cost"],
+                    "_population_integrity": treatment_integrity.get(
+                        row["treatment_id"],
+                        False,
+                    ),
                     "_expected_stage_kinds": sorted(
                         expected_stages.get(row["attempt_id"], set())
                     ),
@@ -2121,11 +2364,14 @@ def _distributed_projection(project: dict) -> tuple[list[dict], list[dict]]:
                     ),
                 }
                 for row in item["activity"]
+            ]
+            all_activity.extend(qualification_activity)
+            activity = [
+                row for row in qualification_activity
                 if (row["case_id"], row["case_revision"]) in bindings
             ]
             if not activity:
                 continue
-            all_activity.extend(activity)
             task_ids = sorted({
                 bindings[(row["case_id"], row["case_revision"])]["task_id"]
                 for row in activity
@@ -2423,6 +2669,12 @@ def _maintained_task_results(
             })
             continue
         rule = definition["qualification"]
+        if rule["kind"] != "all_bound_cases":
+            rows.append({
+                "task_id": maintained["task_id"],
+                "status": "unavailable",
+            })
+            continue
         required = [
             item for item in bindings
             if item["task_id"] == maintained["task_id"]
@@ -2844,7 +3096,12 @@ def project_projection(state_root: Path, project_id: str) -> dict:
         else ([], [])
     )
     tasks = (
-        _task_scorecard(project, lineage, attempts)
+        _task_scorecard(
+            project,
+            lineage,
+            attempts,
+            distributed_activity,
+        )
         if project["available"]
         else []
     )

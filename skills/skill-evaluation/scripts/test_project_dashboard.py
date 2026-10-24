@@ -186,6 +186,39 @@ class ProjectFixture(unittest.TestCase):
 
 
 class ProjectDeclarationTests(ProjectFixture):
+    def test_exact_experiment_population_qualification_is_canonical(self):
+        corpus = self.corpus("exact-population")
+        value = self.declaration(corpus)
+        value["tasks"][0]["qualification"] = {
+            "kind": "exact_experiment_population",
+            "required_roles": ["development"],
+            "experiment_id": "fixed-c01-c08",
+            "experiment_fingerprint": "a" * 64,
+            "treatment_id": "candidate",
+            "required_passes_per_case": 3,
+        }
+
+        canonical = canonical_project_declaration(value)
+
+        self.assertEqual(
+            canonical["tasks"][0]["qualification"],
+            value["tasks"][0]["qualification"],
+        )
+
+    def test_exact_experiment_population_rejects_implicit_identity(self):
+        corpus = self.corpus("exact-population-invalid")
+        value = self.declaration(corpus)
+        value["tasks"][0]["qualification"] = {
+            "kind": "exact_experiment_population",
+            "required_roles": ["development"],
+            "experiment_id": "fixed-c01-c08",
+            "treatment_id": "candidate",
+            "required_passes_per_case": 3,
+        }
+
+        with self.assertRaisesRegex(ValueError, "task qualification"):
+            canonical_project_declaration(value)
+
     def test_two_corpora_merge_only_by_explicit_project_id(self):
         first = self.corpus("attempt-r1")
         second = self.corpus("attempt-r2")
@@ -360,6 +393,275 @@ class ProjectDeclarationTests(ProjectFixture):
 
 
 class ProjectScorecardTests(ProjectFixture):
+    def test_exact_population_does_not_pool_later_rescue_attempts(self):
+        corpus = self.corpus("fixed-population")
+        declaration = self.declaration(corpus)
+        declaration["tasks"][0]["qualification"] = {
+            "kind": "exact_experiment_population",
+            "required_roles": ["development"],
+            "experiment_id": "fixed-c01-c08",
+            "experiment_fingerprint": "a" * 64,
+            "treatment_id": "candidate",
+            "required_passes_per_case": 3,
+        }
+        declaration = canonical_project_declaration(declaration)
+        binding = declaration["case_bindings"][0]
+
+        def activity(
+            attempt_id: str,
+            result: str,
+            *,
+            experiment_id: str = "fixed-c01-c08",
+            state: str = "terminal",
+            snapshot_id: str = "b" * 64,
+        ):
+            return {
+                "experiment_id": experiment_id,
+                "experiment_fingerprint": "a" * 64,
+                "attempt_id": attempt_id,
+                "case_id": binding["case_id"],
+                "case_revision": binding["case_revision"],
+                "snapshot_id": snapshot_id,
+                "treatment_id": "candidate",
+                "repetition": int(attempt_id.rsplit("-", 1)[-1]),
+                "state": state,
+                "evaluator_result": result,
+            }
+
+        fixed = [
+            activity("fixed-1", "PASS"),
+            activity("fixed-2", "FAIL"),
+            activity("fixed-3", "PASS"),
+        ]
+        rescue = activity(
+            "rescue-4",
+            "PASS",
+            experiment_id="later-rescue",
+        )
+
+        scorecard = _task_scorecard(
+            {
+                "tasks": declaration["tasks"],
+                "case_bindings": declaration["case_bindings"],
+            },
+            {
+                "snapshot_id": "revision-b",
+                "snapshot_ids": ["b" * 64],
+            },
+            [],
+            fixed + [rescue],
+        )
+
+        self.assertEqual(scorecard[0]["result"], "not_passing")
+        self.assertEqual(
+            scorecard[0]["bindings"][0]["terminal_attempts"],
+            3,
+        )
+        self.assertEqual(
+            scorecard[0]["bindings"][0]["passing_attempts"],
+            2,
+        )
+
+    def test_exact_population_fails_closed_until_every_attempt_is_terminal(self):
+        corpus = self.corpus("fixed-population-incomplete")
+        declaration = self.declaration(corpus)
+        declaration["tasks"][0]["qualification"] = {
+            "kind": "exact_experiment_population",
+            "required_roles": ["development"],
+            "experiment_id": "fixed-c01-c08",
+            "experiment_fingerprint": "a" * 64,
+            "treatment_id": "candidate",
+            "required_passes_per_case": 2,
+        }
+        declaration = canonical_project_declaration(declaration)
+        binding = declaration["case_bindings"][0]
+        activity = [
+            {
+                "experiment_id": "fixed-c01-c08",
+                "experiment_fingerprint": "a" * 64,
+                "attempt_id": f"fixed-{index}",
+                "case_id": binding["case_id"],
+                "case_revision": binding["case_revision"],
+                "snapshot_id": "b" * 64,
+                "treatment_id": "candidate",
+                "repetition": index,
+                "state": state,
+                "evaluator_result": result,
+            }
+            for index, state, result in (
+                (1, "terminal", "PASS"),
+                (2, "terminal", "PASS"),
+                (3, "cloud_completed_awaiting_result", None),
+            )
+        ]
+
+        scorecard = _task_scorecard(
+            {
+                "tasks": declaration["tasks"],
+                "case_bindings": declaration["case_bindings"],
+            },
+            {
+                "snapshot_id": "revision-b",
+                "snapshot_ids": ["b" * 64],
+            },
+            [],
+            activity,
+        )
+
+        self.assertEqual(scorecard[0]["result"], "unavailable")
+        self.assertFalse(scorecard[0]["bindings"][0]["qualified"])
+
+    def test_exact_population_rejects_duplicate_attempt_identity(self):
+        corpus = self.corpus("fixed-population-duplicate")
+        declaration = self.declaration(corpus)
+        declaration["tasks"][0]["qualification"] = {
+            "kind": "exact_experiment_population",
+            "required_roles": ["development"],
+            "experiment_id": "fixed-c01-c08",
+            "experiment_fingerprint": "a" * 64,
+            "treatment_id": "candidate",
+            "required_passes_per_case": 1,
+        }
+        declaration = canonical_project_declaration(declaration)
+        binding = declaration["case_bindings"][0]
+        row = {
+            "experiment_id": "fixed-c01-c08",
+            "experiment_fingerprint": "a" * 64,
+            "attempt_id": "fixed-1",
+            "case_id": binding["case_id"],
+            "case_revision": binding["case_revision"],
+            "snapshot_id": "b" * 64,
+            "treatment_id": "candidate",
+            "repetition": 1,
+            "state": "terminal",
+            "evaluator_result": "PASS",
+        }
+
+        scorecard = _task_scorecard(
+            {
+                "tasks": declaration["tasks"],
+                "case_bindings": declaration["case_bindings"],
+            },
+            {
+                "snapshot_id": "revision-b",
+                "snapshot_ids": ["b" * 64],
+            },
+            [],
+            [row, dict(row)],
+        )
+
+        self.assertEqual(scorecard[0]["result"], "unavailable")
+        self.assertFalse(scorecard[0]["bindings"][0]["qualified"])
+
+    def test_exact_population_rejects_attempt_outside_project_bindings(self):
+        corpus = self.corpus("fixed-population-unbound")
+        declaration = self.declaration(corpus)
+        declaration["tasks"][0]["qualification"] = {
+            "kind": "exact_experiment_population",
+            "required_roles": ["development"],
+            "experiment_id": "fixed-c01-c08",
+            "experiment_fingerprint": "a" * 64,
+            "treatment_id": "candidate",
+            "required_passes_per_case": 1,
+        }
+        declaration = canonical_project_declaration(declaration)
+        binding = declaration["case_bindings"][0]
+        activity = [
+            {
+                "experiment_id": "fixed-c01-c08",
+                "experiment_fingerprint": "a" * 64,
+                "attempt_id": attempt_id,
+                "case_id": case_id,
+                "case_revision": case_revision,
+                "snapshot_id": "b" * 64,
+                "treatment_id": "candidate",
+                "repetition": repetition,
+                "state": "terminal",
+                "evaluator_result": "PASS",
+            }
+            for attempt_id, case_id, case_revision, repetition in (
+                (
+                    "fixed-1",
+                    binding["case_id"],
+                    binding["case_revision"],
+                    1,
+                ),
+                ("fixed-extra", "undeclared-case", "c" * 64, 2),
+            )
+        ]
+
+        scorecard = _task_scorecard(
+            {
+                "tasks": declaration["tasks"],
+                "case_bindings": declaration["case_bindings"],
+            },
+            {
+                "snapshot_id": "revision-b",
+                "snapshot_ids": ["b" * 64],
+            },
+            [],
+            activity,
+        )
+
+        self.assertEqual(scorecard[0]["result"], "unavailable")
+
+    def test_exact_population_qualifies_only_the_selected_snapshot(self):
+        corpus = self.corpus("fixed-population-passing")
+        declaration = self.declaration(corpus)
+        declaration["tasks"][0]["qualification"] = {
+            "kind": "exact_experiment_population",
+            "required_roles": ["development"],
+            "experiment_id": "fixed-c01-c08",
+            "experiment_fingerprint": "a" * 64,
+            "treatment_id": "candidate",
+            "required_passes_per_case": 2,
+        }
+        declaration = canonical_project_declaration(declaration)
+        binding = declaration["case_bindings"][0]
+        activity = [
+            {
+                "experiment_id": "fixed-c01-c08",
+                "experiment_fingerprint": "a" * 64,
+                "attempt_id": f"fixed-{index}",
+                "case_id": binding["case_id"],
+                "case_revision": binding["case_revision"],
+                "snapshot_id": snapshot,
+                "treatment_id": "candidate",
+                "repetition": index,
+                "state": "terminal",
+                "evaluator_result": "PASS",
+            }
+            for index, snapshot in ((1, "b" * 64), (2, "b" * 64))
+        ]
+
+        passing = _task_scorecard(
+            {
+                "tasks": declaration["tasks"],
+                "case_bindings": declaration["case_bindings"],
+            },
+            {
+                "snapshot_id": "revision-b",
+                "snapshot_ids": ["b" * 64],
+            },
+            [],
+            activity,
+        )
+        unavailable = _task_scorecard(
+            {
+                "tasks": declaration["tasks"],
+                "case_bindings": declaration["case_bindings"],
+            },
+            {
+                "snapshot_id": "revision-c",
+                "snapshot_ids": ["c" * 64],
+            },
+            [],
+            activity,
+        )
+
+        self.assertEqual(passing[0]["result"], "passing")
+        self.assertEqual(unavailable[0]["result"], "unavailable")
+
     def test_exact_revision_scorecard_never_pools_passes(self):
         corpus = self.corpus("scorecard", ("case-one", "case-two"))
         declaration = canonical_project_declaration(self.declaration(corpus))
@@ -795,10 +1097,15 @@ class ProjectScorecardTests(ProjectFixture):
             }],
         }
         activity = [{
+            "campaign_id": "a" * 32,
+            "experiment_id": "experiment-1",
+            "experiment_fingerprint": "e" * 64,
             "attempt_id": "attempt-1",
             "case_id": binding["case_id"],
             "case_revision": binding["case_revision"],
             "snapshot_id": "s" * 64,
+            "treatment_id": "candidate",
+            "repetition": 1,
             "state": "terminal",
             "evaluator_result": "PASS",
         }]
@@ -870,10 +1177,15 @@ class ProjectScorecardTests(ProjectFixture):
             }],
         }
         activity = [{
+            "campaign_id": "a" * 32,
+            "experiment_id": "experiment-1",
+            "experiment_fingerprint": "e" * 64,
             "attempt_id": "attempt-1",
             "case_id": binding["case_id"],
             "case_revision": binding["case_revision"],
             "snapshot_id": "s" * 64,
+            "treatment_id": "candidate",
+            "repetition": 1,
             "state": "cloud_completed_awaiting_result",
             "evaluator_result": None,
         }]
@@ -913,6 +1225,167 @@ class ProjectScorecardTests(ProjectFixture):
         experiment = runs[0]["attempts"][0]["experiments"][0]
         self.assertEqual(experiment["step"], "checking")
         self.assertIsNone(experiment["outcome"])
+
+    def test_distributed_projection_supplies_exact_task_population(self):
+        corpus = self.corpus("distributed-qualification")
+        declaration = self.declaration(corpus)
+        declaration["tasks"][0]["qualification"] = {
+            "kind": "exact_experiment_population",
+            "required_roles": ["development"],
+            "experiment_id": "experiment-1",
+            "experiment_fingerprint": "e" * 64,
+            "treatment_id": "candidate",
+            "required_passes_per_case": 1,
+        }
+        declaration = canonical_project_declaration(declaration)
+        binding = declaration["case_bindings"][0]
+        project = {
+            "target_skills": ["example-skill"],
+            "case_bindings": declaration["case_bindings"],
+            "sources": [{
+                "available": True,
+                "corpus_root": corpus,
+                "campaign": {"campaign_id": "a" * 32},
+            }],
+        }
+        projection = {
+            "items": [{
+                "experiment_id": "experiment-1",
+                "experiment_fingerprint": "e" * 64,
+                "summary": "Use the fixed population.",
+                "snapshot_id": "s" * 64,
+                "route": "cloud",
+                "planned_attempts": 1,
+                "cost": {
+                    "credits": 1,
+                    "observed_credits": 1,
+                    "complete": True,
+                },
+                "treatments": [{
+                    "treatment_id": "candidate",
+                    "result_integrity": True,
+                }],
+                "activity": [{
+                    "attempt_id": "attempt-1",
+                    "case_id": binding["case_id"],
+                    "case_revision": binding["case_revision"],
+                    "snapshot_id": "s" * 64,
+                    "treatment_id": "candidate",
+                    "repetition": 1,
+                    "state": "terminal",
+                    "evaluator_result": "PASS",
+                }],
+            }],
+        }
+        declared = [{
+            "event_type": "experiment_declared",
+            "recorded_at": "2026-01-01T00:00:00+00:00",
+            "subject": {"experiment_id": "experiment-1"},
+        }]
+        with mock.patch(
+            "dashboard_projection.experiment_projection",
+            return_value=projection,
+        ), mock.patch(
+            "project_dashboard.experiment_activity_records",
+            return_value=(declared, [], []),
+        ):
+            _, activity = _distributed_projection(project)
+
+        scorecard = _task_scorecard(
+            {
+                "tasks": declaration["tasks"],
+                "case_bindings": declaration["case_bindings"],
+            },
+            {
+                "snapshot_id": "revision-s",
+                "snapshot_ids": ["s" * 64],
+            },
+            [],
+            activity,
+        )
+
+        self.assertEqual(scorecard[0]["result"], "passing")
+        self.assertEqual(scorecard[0]["effort"]["total_cost"]["credits"], 1)
+        self.assertEqual(
+            scorecard[0]["timing"]["first_run_at"],
+            "2026-01-01T00:00:00+00:00",
+        )
+
+    def test_distributed_projection_rejects_population_integrity_failure(self):
+        corpus = self.corpus("distributed-qualification-invalid")
+        declaration = self.declaration(corpus)
+        declaration["tasks"][0]["qualification"] = {
+            "kind": "exact_experiment_population",
+            "required_roles": ["development"],
+            "experiment_id": "experiment-1",
+            "experiment_fingerprint": "e" * 64,
+            "treatment_id": "candidate",
+            "required_passes_per_case": 1,
+        }
+        declaration = canonical_project_declaration(declaration)
+        binding = declaration["case_bindings"][0]
+        project = {
+            "target_skills": ["example-skill"],
+            "case_bindings": declaration["case_bindings"],
+            "sources": [{
+                "available": True,
+                "corpus_root": corpus,
+                "campaign": {"campaign_id": "a" * 32},
+            }],
+        }
+        projection = {
+            "items": [{
+                "experiment_id": "experiment-1",
+                "experiment_fingerprint": "e" * 64,
+                "summary": "Use the fixed population.",
+                "snapshot_id": "s" * 64,
+                "route": "cloud",
+                "planned_attempts": 1,
+                "cost": {"complete": False},
+                "treatments": [{
+                    "treatment_id": "candidate",
+                    "result_integrity": False,
+                }],
+                "activity": [{
+                    "attempt_id": "attempt-1",
+                    "case_id": binding["case_id"],
+                    "case_revision": binding["case_revision"],
+                    "snapshot_id": "s" * 64,
+                    "treatment_id": "candidate",
+                    "repetition": 1,
+                    "state": "terminal",
+                    "evaluator_result": "PASS",
+                }],
+            }],
+        }
+        declared = [{
+            "event_type": "experiment_declared",
+            "recorded_at": "2026-01-01T00:00:00+00:00",
+            "subject": {"experiment_id": "experiment-1"},
+        }]
+        with mock.patch(
+            "dashboard_projection.experiment_projection",
+            return_value=projection,
+        ), mock.patch(
+            "project_dashboard.experiment_activity_records",
+            return_value=(declared, [], []),
+        ):
+            _, activity = _distributed_projection(project)
+
+        scorecard = _task_scorecard(
+            {
+                "tasks": declaration["tasks"],
+                "case_bindings": declaration["case_bindings"],
+            },
+            {
+                "snapshot_id": "revision-s",
+                "snapshot_ids": ["s" * 64],
+            },
+            [],
+            activity,
+        )
+
+        self.assertEqual(scorecard[0]["result"], "unavailable")
 
     def test_delta_ablation_reports_exact_size_and_maintained_wins(self):
         corpus = self.corpus("delta-ablation")

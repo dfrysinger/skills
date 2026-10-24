@@ -59,6 +59,29 @@ Multiple corpora join only when they declare the same compatible project.
 }
 ```
 
+Use `kind: "exact_experiment_population"` when a task's qualification must be
+decided by one pre-registered finite distributed treatment population rather
+than cumulative matching evaluator history:
+
+```json
+{
+  "kind": "exact_experiment_population",
+  "required_roles": ["development"],
+  "experiment_id": "fixed-population-v1",
+  "experiment_fingerprint": "<experiment-plan-sha256>",
+  "treatment_id": "candidate",
+  "required_passes_per_case": 3
+}
+```
+
+The experiment declaration owns the exact attempt IDs, cases, revisions,
+treatments, repetitions, model, platform, and route. The task remains
+unavailable until every attempt in the named treatment has one valid immutable
+terminal result on the selected skill revision. Missing, duplicate,
+conflicting, mismatched, or nonterminal evidence fails closed. Results from
+another experiment, including later rescue attempts, never change this
+qualification. Use `all_bound_cases` for cumulative qualification.
+
 Publish an additive revision by setting `supersedes` to the exact fingerprint
 of the current declaration. Keep all existing task, binding, and holdout IDs.
 Registration archives each accepted declaration so older runs retain their

@@ -2559,6 +2559,59 @@ def _metric_compare(left: object, right: object, kind: str) -> int:
     return (left_scaled > right_scaled) - (left_scaled < right_scaled)
 
 
+def validate_experiment_result_identity(
+    declaration: dict,
+    result: dict,
+) -> dict:
+    declaration = validate_experiment_activity_event(declaration)
+    if declaration["event_type"] != "experiment_declared":
+        raise ValueError("result identity requires an experiment declaration")
+    payload = declaration["payload"]
+    expected = {
+        item["attempt_id"]: item
+        for item in payload["attempts"]
+    }
+    treatments_by_id = {
+        item["treatment_id"]: item
+        for item in payload["treatments"]
+    }
+    result = validate_experiment_activity_event(result)
+    if result["event_type"] != "distributed_result_recorded":
+        raise ValueError("selection source is not a terminal result")
+    subject = result["subject"]
+    if (
+        result["campaign_id"] != declaration["campaign_id"]
+        or subject["experiment_id"] != declaration["subject"]["experiment_id"]
+        or subject["experiment_fingerprint"]
+        != declaration["subject"]["experiment_fingerprint"]
+        or subject["attempt_id"] not in expected
+    ):
+        raise ValueError("selection source belongs to another experiment")
+    attempt = result["payload"]["attempt"]
+    planned = expected[subject["attempt_id"]]
+    if any(
+        attempt[field] != planned[field]
+        for field in ATTEMPT_IDENTITY_FIELDS
+    ):
+        raise ValueError("selection source attempt identity changed")
+    execution = result["payload"]["execution"]
+    treatment = treatments_by_id[planned["treatment_id"]]
+    if (
+        execution["candidate_model"] != planned["candidate_model"]
+        or execution["candidate_timeout_seconds"]
+        != payload["candidate_timeout_seconds"]
+        or execution["treatment_fingerprint"]
+        != treatment["content_fingerprint"]
+        or execution["target_skill_identities"]
+        != treatment["target_skill_identities"]
+        or execution["target_os"] != planned["target_os"]
+        or execution["architecture"] != planned["architecture"]
+        or execution["route"] != planned["route"]
+    ):
+        raise ValueError("selection source execution identity changed")
+    return result
+
+
 def compute_experiment_selection(
     declaration: dict,
     terminal_results: list[dict],
@@ -2578,40 +2631,8 @@ def compute_experiment_selection(
     }
     by_attempt = {}
     for result in terminal_results:
-        result = validate_experiment_activity_event(result)
-        if result["event_type"] != "distributed_result_recorded":
-            raise ValueError("selection source is not a terminal result")
+        result = validate_experiment_result_identity(declaration, result)
         subject = result["subject"]
-        if (
-            result["campaign_id"] != declaration["campaign_id"]
-            or subject["experiment_id"] != declaration["subject"]["experiment_id"]
-            or subject["experiment_fingerprint"]
-            != declaration["subject"]["experiment_fingerprint"]
-            or subject["attempt_id"] not in expected
-        ):
-            raise ValueError("selection source belongs to another experiment")
-        attempt = result["payload"]["attempt"]
-        planned = expected[subject["attempt_id"]]
-        if any(
-            attempt[field] != planned[field]
-            for field in ATTEMPT_IDENTITY_FIELDS
-        ):
-            raise ValueError("selection source attempt identity changed")
-        execution = result["payload"]["execution"]
-        treatment = treatments_by_id[planned["treatment_id"]]
-        if (
-            execution["candidate_model"] != planned["candidate_model"]
-            or execution["candidate_timeout_seconds"]
-            != payload["candidate_timeout_seconds"]
-            or execution["treatment_fingerprint"]
-            != treatment["content_fingerprint"]
-            or execution["target_skill_identities"]
-            != treatment["target_skill_identities"]
-            or execution["target_os"] != planned["target_os"]
-            or execution["architecture"] != planned["architecture"]
-            or execution["route"] != planned["route"]
-        ):
-            raise ValueError("selection source execution identity changed")
         if subject["attempt_id"] in by_attempt:
             raise ValueError("selection source attempt is duplicated")
         by_attempt[subject["attempt_id"]] = result
