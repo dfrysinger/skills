@@ -41,6 +41,13 @@ permissions, authentication, timeout handling or invocation-end measurements.
 | `reporting-timing.json` | Subsequent measurement aggregation and report rendering |
 | `suite-timing.json` | Observed suite elapsed including preparation, attempts, reporting and cleanup; sleep coverage is not established |
 
+Measurement filenames need unique stems across all workers and invocations.
+`collect()` uses `destination.stem` as `invocation_id`; `accounting()` rejects
+duplicate invocation identities even when their session UUIDs differ. Include
+the preallocated session UUID and an invocation ordinal or unique phase ID in
+each filename. Different parent directories do not distinguish identical stems.
+Resumed invocations sharing a session UUID still need distinct invocation IDs.
+
 Stages name preparation, candidate execution, deterministic grading,
 behavioral judging, optional quality review and cleanup when those stages run.
 Failed and interrupted stages are retained. The outer interval is elapsed
