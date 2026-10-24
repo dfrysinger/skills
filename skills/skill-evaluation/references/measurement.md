@@ -212,6 +212,26 @@ work, accepts a repair or grants admission. Coordinator projections are
 conditional observations, not authenticated arbitrary grades or billing.
 Candidate-reported product outcomes remain unresolved.
 
+Retain the complete stdout report once, with stderr and the auditor's actual
+exit code. Use a fresh directory to preserve earlier evidence:
+
+```sh
+mkdir audit-output && {
+  if python3 scripts/distributed_campaign.py audit-efficiency view.json \
+      > audit-output/report.json 2> audit-output/stderr.log; then
+    audit_exit=0
+  else
+    audit_exit=$?
+  fi
+  printf '%s\n' "$audit_exit" > audit-output/exit-code.txt
+}
+```
+
+Save these files before parsing the report. Read the saved auditor exit code;
+successful completion of the shell block is not a successful audit. Other
+receipts can retain the report's path and SHA-256 digest instead of embedding
+another complete copy. Keep failed reports and unknown measurements intact.
+
 For routine inspection of a saved report, show coverage counts instead of
 repeating every identity. If `jq` is available:
 
@@ -224,10 +244,9 @@ jq '
         then .value = {count: (.value | length)}
         else . end)
     else . end
-' report.json
+' audit-output/report.json
 ```
 
-Keep the full report and the auditor's process exit status as audit evidence.
 This display preserves metrics, triggers, readiness, policy and errors; it is
 not a replacement report or reconciliation input. The `jq` exit status reports
 only whether inspection succeeded. Read exact identities from the saved report
