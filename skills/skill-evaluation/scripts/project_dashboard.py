@@ -1667,10 +1667,147 @@ def _attempt_outcome_counts(outcome: str | None) -> dict:
     }
 
 
-def _run_projection(source: dict) -> list[dict]:
+def _experiment_cost(accounting: object) -> dict:
+    return evaluation_history.cost_summary([{
+        "accounting": accounting if isinstance(accounting, dict) else {},
+    }])
+
+
+def _experiment_targets(
+    project: dict,
+    task_by_case: dict[str, set[str]],
+    case_id: str,
+    fallback_task_ids: list[str],
+) -> dict:
+    return {
+        "skill_ids": project.get("target_skills", []),
+        "task_ids": sorted(task_by_case.get(case_id, set(fallback_task_ids))),
+    }
+
+
+def _completed_experiment(
+    project: dict,
+    task_by_case: dict[str, set[str]],
+    fallback_task_ids: list[str],
+    case_id: str,
+    attempt: dict,
+) -> dict:
+    correctness = attempt.get("correctness", attempt.get("result"))
+    complete = correctness in {"PASS", "FAIL", "UNANSWERABLE"}
+    timing = attempt.get("timing", {})
+    return {
+        "experiment_id": (
+            attempt.get("run_path")
+            or attempt.get("attempt_id")
+            or f"{case_id}:attempt-{attempt.get('attempt', 1)}"
+        ),
+        "case_id": case_id,
+        "attempt": attempt.get("attempt", attempt.get("repetition", 1)),
+        **_experiment_targets(
+            project,
+            task_by_case,
+            case_id,
+            fallback_task_ids,
+        ),
+        "step": "complete" if complete else "failed",
+        "outcome": (
+            "positive"
+            if correctness == "PASS"
+            else "negative"
+            if correctness in {"FAIL", "UNANSWERABLE"}
+            else "failed"
+        ),
+        "duration_seconds": (
+            attempt.get("elapsed_seconds")
+            if isinstance(attempt.get("elapsed_seconds"), (int, float))
+            else timing.get("elapsed_seconds")
+            if isinstance(timing, dict)
+            else None
+        ),
+        "cost": _experiment_cost(attempt.get("accounting")),
+    }
+
+
+def _local_attempt_index(
+    corpus_root: Path,
+) -> tuple[dict[str, list[tuple[Path, dict]]], dict[str, list[tuple[Path, dict]]]]:
+    by_suite: dict[str, list[tuple[Path, dict]]] = {}
+    by_run: dict[str, list[tuple[Path, dict]]] = {}
+    for path in sorted((corpus_root / "runs").glob("*/*/attempt.json")):
+        try:
+            attempt = regular_json(path, "project attempt")
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        owner = attempt.get("suite_owner")
+        if isinstance(owner, dict) and isinstance(owner.get("suite_path"), str):
+            by_suite.setdefault(owner["suite_path"], []).append((path, attempt))
+        project_start = attempt.get("project_start")
+        if (
+            isinstance(project_start, dict)
+            and isinstance(project_start.get("run_id"), str)
+        ):
+            by_run.setdefault(project_start["run_id"], []).append((path, attempt))
+    return by_suite, by_run
+
+
+def _active_local_experiments(
+    corpus_root: Path,
+    project: dict,
+    task_by_case: dict[str, set[str]],
+    start: dict,
+    terminal_paths: set[str],
+    candidates: list[tuple[Path, dict]],
+) -> list[dict]:
+    experiments = []
+    for path, attempt in candidates:
+        run_path = path.parent.relative_to(corpus_root).as_posix()
+        if run_path in terminal_paths:
+            continue
+        case_id = attempt.get("case_id")
+        if not isinstance(case_id, str):
+            continue
+        checking = (
+            (path.parent / "execution-result.json").is_file()
+            or (path.parent / "repository-result.json").is_file()
+            or (path.parent / "REPORT.md").is_file()
+            or any(path.parent.glob("judgment-*.json"))
+        )
+        experiments.append({
+            "experiment_id": run_path,
+            "case_id": case_id,
+            "attempt": (
+                attempt.get("suite_owner", {}).get("attempt", 1)
+                if isinstance(attempt.get("suite_owner"), dict)
+                else 1
+            ),
+            **_experiment_targets(
+                project,
+                task_by_case,
+                case_id,
+                start["task_ids"],
+            ),
+            "step": "checking" if checking else "running",
+            "outcome": None,
+            "duration_seconds": None,
+            "cost": _experiment_cost({}),
+        })
+    return experiments
+
+
+def _run_projection(
+    source: dict,
+    project: dict,
+    assigned_attempts: list[dict],
+) -> list[dict]:
     if not source["available"]:
         return []
     corpus_root = source["corpus_root"]
+    task_by_case: dict[str, set[str]] = {}
+    for binding in project["case_bindings"]:
+        task_by_case.setdefault(binding["case_id"], set()).add(
+            binding["task_id"]
+        )
+    attempts_by_suite, attempts_by_run = _local_attempt_index(corpus_root)
     runs = []
     for launcher_kind, root_name, start_name in (
         ("local_suite", "suite-runs", "suite-start.json"),
@@ -1746,6 +1883,50 @@ def _run_projection(source: dict) -> list[dict]:
                 "state": state,
                 "_task_fingerprints": {},
             }
+            suite_path = (
+                run_root.relative_to(corpus_root).as_posix()
+                if launcher_kind == "local_suite"
+                else None
+            )
+            matching_attempts = [
+                item["row"]
+                for item in assigned_attempts
+                if (
+                    item["row"].get("suite_path") == suite_path
+                    if suite_path is not None
+                    else item["row"].get("run_path")
+                    == run_root.relative_to(corpus_root).as_posix()
+                )
+            ]
+            terminal_paths = {
+                item["run_path"]
+                for item in matching_attempts
+                if isinstance(item.get("run_path"), str)
+            }
+            experiments = [
+                _completed_experiment(
+                    project,
+                    task_by_case,
+                    start["task_ids"],
+                    item["population"]["case_id"],
+                    item,
+                )
+                for item in matching_attempts
+            ]
+            if not terminal:
+                candidates = (
+                    attempts_by_suite.get(suite_path, [])
+                    if suite_path is not None
+                    else attempts_by_run.get(start["run_id"], [])
+                )
+                experiments.extend(_active_local_experiments(
+                    corpus_root,
+                    project,
+                    task_by_case,
+                    start,
+                    terminal_paths,
+                    candidates,
+                ))
             try:
                 run_declaration = archived_project_declaration(
                     corpus_root,
@@ -1760,29 +1941,41 @@ def _run_projection(source: dict) -> list[dict]:
                 row["_task_fingerprints"] = {}
             if launcher_kind == "local_suite" and result_path.is_file():
                 result_value = regular_json(result_path, "suite result")
-                attempts = [
+                result_attempts = [
                     attempt
+                    for case in result_value.get("cases", [])
+                    for attempt in case.get("attempts", [])
+                ]
+                experiments = [
+                    _completed_experiment(
+                        project,
+                        task_by_case,
+                        start["task_ids"],
+                        case["case_id"],
+                        attempt,
+                    )
                     for case in result_value.get("cases", [])
                     for attempt in case.get("attempts", [])
                 ]
                 row.update({
                     "completed_attempts": sum(
                         attempt.get("result") != "ERROR"
-                        for attempt in attempts
+                        for attempt in result_attempts
                     ),
                     "passing_attempts": sum(
                         attempt.get("result") == "PASS"
-                        for attempt in attempts
+                        for attempt in result_attempts
                     ),
                     "failing_attempts": sum(
                         attempt.get("result") not in {"PASS", "ERROR"}
-                        for attempt in attempts
+                        for attempt in result_attempts
                     ),
                     "unavailable_attempts": sum(
                         attempt.get("result") == "ERROR"
-                        for attempt in attempts
+                        for attempt in result_attempts
                     ),
                     "duration_seconds": result_value.get("duration_seconds"),
+                    "cost": result_value.get("accounting", {}).get("total"),
                 })
             elif launcher_kind == "local_case" and terminal:
                 row["completed_attempts"] = 1
@@ -1819,6 +2012,36 @@ def _run_projection(source: dict) -> list[dict]:
                             else "FAIL"
                         )
                 row.update(_attempt_outcome_counts(outcome))
+                if matching_attempts:
+                    row["duration_seconds"] = matching_attempts[0].get(
+                        "elapsed_seconds"
+                    )
+                    row["cost"] = _experiment_cost(
+                        matching_attempts[0].get("accounting")
+                    )
+                if not experiments:
+                    raw_attempt = regular_json(
+                        run_root / "attempt.json",
+                        "project attempt",
+                    )
+                    case_id = raw_attempt.get("case_id", run_root.name)
+                    experiments = [{
+                        "experiment_id": (
+                            run_root.relative_to(corpus_root).as_posix()
+                        ),
+                        "case_id": case_id,
+                        "attempt": 1,
+                        **_experiment_targets(
+                            project,
+                            task_by_case,
+                            case_id,
+                            start["task_ids"],
+                        ),
+                        "step": "failed",
+                        "outcome": "failed",
+                        "duration_seconds": None,
+                        "cost": _experiment_cost({}),
+                    }]
             if failure:
                 try:
                     failure_value = regular_json(
@@ -1833,6 +2056,15 @@ def _run_projection(source: dict) -> list[dict]:
                     row["failure_stage"] = failure_value.get("stage", "attempt")
                 except (OSError, ValueError, json.JSONDecodeError):
                     row["failure_stage"] = "unavailable"
+            row["attempts"] = [{
+                "attempt_id": f"{start['run_id']}:launch-1",
+                "attempt": 1,
+                "started_at": start["started_at"],
+                "state": state,
+                "duration_seconds": row.get("duration_seconds"),
+                "cost": row.get("cost"),
+                "experiments": experiments,
+            }]
             runs.append(row)
     return runs
 
@@ -1958,6 +2190,58 @@ def _distributed_projection(project: dict) -> tuple[list[dict], list[dict]]:
                 ),
                 "state": state,
                 "cost": item["cost"],
+                "attempts": [{
+                    "attempt_id": f"{item['experiment_id']}:launch-1",
+                    "attempt": 1,
+                    "started_at": experiment_times.get(item["experiment_id"]),
+                    "state": state,
+                    "duration_seconds": None,
+                    "cost": item["cost"],
+                    "experiments": [{
+                        "experiment_id": row["attempt_id"],
+                        "case_id": row["case_id"],
+                        "attempt": row.get("repetition", 1),
+                        "skill_ids": project.get("target_skills", []),
+                        "task_ids": sorted({
+                            bindings[
+                                (row["case_id"], row["case_revision"])
+                            ]["task_id"]
+                        }),
+                        "step": (
+                            "complete"
+                            if row["state"] == "terminal"
+                            and row["evaluator_result"]
+                            in {"PASS", "FAIL", "UNANSWERABLE"}
+                            else "failed"
+                            if row["state"] in {"terminal", "conflicted"}
+                            else "checking"
+                            if row["state"]
+                            == "cloud_completed_awaiting_result"
+                            else "running"
+                            if row["state"] in {
+                                "cloud_nonterminal",
+                                "distributed_pending",
+                            }
+                            else "setting_up"
+                        ),
+                        "outcome": (
+                            "positive"
+                            if row["evaluator_result"] == "PASS"
+                            else "negative"
+                            if row["evaluator_result"]
+                            in {"FAIL", "UNANSWERABLE"}
+                            else "failed"
+                            if row["state"] in {"terminal", "conflicted"}
+                            else None
+                        ),
+                        "duration_seconds": None,
+                        "cost": row.get("cost", {
+                            "credits": None,
+                            "observed_credits": None,
+                            "complete": False,
+                        }),
+                    } for row in activity],
+                }],
             })
     return runs, all_activity
 
@@ -2578,7 +2862,16 @@ def project_projection(state_root: Path, project_id: str) -> dict:
     local_runs = [
         row
         for source in project["sources"]
-        for row in _run_projection(source)
+        for row in _run_projection(
+            source,
+            project,
+            [
+                item
+                for item in attempts
+                if item["campaign_id"]
+                == source["campaign"]["campaign_id"]
+            ],
+        )
     ]
     for task in tasks:
         definition = next(

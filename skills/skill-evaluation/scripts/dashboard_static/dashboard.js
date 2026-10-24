@@ -892,15 +892,295 @@ function renderCampaign(data) {
     `;
 }
 
+const projectCostLabel = (cost) => {
+if (!cost) return "Unknown";
+const value = cost.complete ? cost.credits : cost.observed_credits;
+if (!Number.isFinite(value)) return "Unknown";
+return `${formatNumber(value, 2)} cr${cost.complete ? "" : " observed"}`;
+};
+
+const projectDurationLabel = (seconds) =>
+conciseDuration(seconds) || "Unknown";
+
+const projectStateClass = (state) => {
+if (["completed", "complete", "positive", "passed"].includes(state)) {
+  return "passed";
+}
+if (["active", "running", "checking", "setting_up"].includes(state)) {
+  return "running";
+}
+if (["failed", "infrastructure_failed", "liveness_lost", "liveness_unavailable", "conflicted"].includes(state)) {
+  return "failed";
+}
+return "waiting";
+};
+
+const projectRunExperiments = (run) =>
+(run.attempts || []).flatMap((item) => item.experiments || []);
+
+const projectRunLabel = (run, experiments = projectRunExperiments(run)) => {
+if (run.state === "completed") return "Complete";
+if (run.state === "active") return "Running";
+if (run.state === "planned") return "Setting up";
+if (run.state === "infrastructure_failed") return "Failed";
+if (run.state === "liveness_lost") return "Needs update";
+if (run.state === "liveness_unavailable") {
+  return experiments.some((item) => item.step === "checking")
+    ? "Checking"
+    : "Status unavailable";
+}
+if (run.state === "conflicted") return "Conflicted";
+return sentenceCase(run.state);
+};
+
+const projectAttemptView = (run, attempt) => {
+const experiments = attempt.experiments || [];
+const positive = experiments.filter((item) => item.outcome === "positive").length;
+const negative = experiments.filter((item) => item.outcome === "negative").length;
+const failed = experiments.filter((item) => item.outcome === "failed").length;
+const pending = experiments.filter((item) => item.outcome === null).length;
+if (["infrastructure_failed", "conflicted"].includes(attempt.state) || failed) {
+  return {
+    label: "Failed",
+    state: "failed",
+    launch: experiments.length
+      ? `${experiments.length} experiments launched; ${failed} did not complete`
+      : "No experiments launched",
+    result: experiments.length
+      ? `${positive} positive, ${negative} negative, ${failed} failed`
+      : "Setup failed before measured work started",
+  };
+}
+if (attempt.state === "liveness_lost") {
+  return {
+    label: "Needs update",
+    state: "waiting",
+    launch: experiments.length
+      ? `${experiments.length} experiments were observed`
+      : "Experiment state is unavailable",
+    result: "The latest liveness signal expired",
+  };
+}
+if (attempt.state === "liveness_unavailable") {
+  const checking = experiments.filter((item) => item.step === "checking").length;
+  return {
+    label: checking ? "Checking" : "Status unavailable",
+    state: checking ? "running" : "waiting",
+    launch: experiments.length
+      ? `${experiments.length} experiments launched`
+      : "Experiment state is unavailable",
+    result: checking
+      ? `${checking} waiting for results`
+      : "No current liveness signal is available",
+  };
+}
+if (pending || attempt.state === "active") {
+  return {
+    label: experiments.length ? "Running" : "Setting up",
+    state: "running",
+    launch: experiments.length
+      ? `${experiments.length} experiments launched`
+      : "No experiments launched yet",
+    result: pending
+      ? `${pending} still in progress`
+      : "Preparing the experiment plan",
+  };
+}
+const passed = experiments.length > 0 && negative === 0;
+return {
+  label: passed ? "Pass" : "Complete",
+  state: passed ? "passed" : "waiting",
+  launch: `${experiments.length} of ${experiments.length} experiments completed`,
+  result: `${positive} positive${negative ? `, ${negative} negative` : ""}`,
+};
+};
+
+const projectTargetPills = (skillIds, taskIds, taskMap) => `
+<span class="project-targets">
+  ${(skillIds || []).map((item) => `<span class="project-target">${escapeHtml(item)}</span>`).join("")}
+  ${(taskIds || []).map((item) => `<span class="project-target">${escapeHtml(taskMap.get(item)?.title || item)}</span>`).join("")}
+</span>`;
+
+function renderProjectExperiment(experiment, taskMap) {
+const outcome = experiment.outcome;
+const outcomeLabel = outcome ? sentenceCase(outcome) : "Pending";
+const title = taskMap.get(experiment.task_ids?.[0])?.title
+  || sentenceCase(experiment.case_id || experiment.experiment_id);
+return `
+  <div class="project-experiment-row">
+    <span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(experiment.experiment_id)}</small></span>
+    ${projectTargetPills(experiment.skill_ids, experiment.task_ids, taskMap)}
+    <span class="plain-status status-${escapeHtml(projectStateClass(experiment.step))}">${escapeHtml(sentenceCase(experiment.step))}</span>
+    <span class="plain-status status-${escapeHtml(projectStateClass(outcome))}">${escapeHtml(outcomeLabel)}</span>
+    <span>${escapeHtml(projectDurationLabel(experiment.duration_seconds))}</span>
+    <span>${escapeHtml(projectCostLabel(experiment.cost))}</span>
+  </div>`;
+}
+
+function renderProjectAttempt(run, attempt, taskMap) {
+const view = projectAttemptView(run, attempt);
+const experiments = attempt.experiments || [];
+return `
+  <details class="project-attempt">
+    <summary class="project-attempt-summary">
+      <span class="project-attempt-key">Attempt ${escapeHtml(attempt.attempt)}</span>
+      <span class="project-attempt-launch"><strong>${escapeHtml(view.launch)}</strong><small>${escapeHtml(view.result)}</small></span>
+      <span class="plain-status status-${escapeHtml(view.state)}">${escapeHtml(view.label)}</span>
+      <span>${escapeHtml(projectDurationLabel(attempt.duration_seconds))}</span>
+      <span>${escapeHtml(projectCostLabel(attempt.cost))}</span>
+    </summary>
+    <div class="project-experiment-list">
+      ${
+        experiments.length
+          ? `<div class="project-experiment-head"><span>Experiment</span><span>Targets</span><span>Step</span><span>Outcome</span><span>Time</span><span>Credits</span></div>${experiments.map((item) => renderProjectExperiment(item, taskMap)).join("")}`
+          : '<div class="project-experiment-empty">No experiments launched, so there are no experiment outcomes to inspect.</div>'
+      }
+    </div>
+  </details>`;
+}
+
+function renderProjectRuns(data, taskMap) {
+if (!data.runs.length) {
+  return `
+    <section class="simple-section">
+      <h2>Runs</h2>
+      <p class="quiet-message">No evaluation runs yet.</p>
+    </section>`;
+}
+return `
+  <section class="simple-section">
+    <div class="simple-section-heading">
+      <div><h2>Runs</h2><p>Each run has one goal. Open a run, then open its launch attempt to inspect every experiment.</p></div>
+      <span>${escapeHtml(plural(data.runs.length, "run"))}</span>
+    </div>
+    <div class="project-run-explainer">
+      <div><strong>Run</strong>One bounded evaluation goal.</div>
+      <div><strong>Run attempt</strong>One launch of the intended experiment plan.</div>
+      <div><strong>Experiment</strong>Positive or negative when complete. Failed only when execution did not complete.</div>
+    </div>
+    <div class="project-run-list">
+      ${data.runs.map((run, index) => {
+        const attempts = run.attempts || [];
+        const experiments = projectRunExperiments(run);
+        const positive = experiments.filter((item) => item.outcome === "positive").length;
+        const negative = experiments.filter((item) => item.outcome === "negative").length;
+        const failed = experiments.filter((item) => item.outcome === "failed").length;
+        const checking = experiments.some((item) => item.step === "checking");
+        const runFailed = failed > 0 || ["infrastructure_failed", "conflicted"].includes(run.state);
+        const outcome = run.state === "active"
+          ? `${experiments.filter((item) => item.outcome === null).length} experiments in progress`
+          : run.state === "completed"
+            ? `${positive} positive${negative ? `, ${negative} negative` : ""}${failed ? `, ${failed} failed` : ""}`
+            : failed
+              ? `${failed} experiments failed`
+              : run.state === "infrastructure_failed"
+                ? "Execution did not complete"
+                : run.state === "conflicted"
+                  ? "Conflicting evidence"
+                  : run.state === "liveness_lost"
+                    ? "The latest liveness signal expired"
+                    : run.state === "liveness_unavailable" && checking
+                      ? "Waiting for evaluator result"
+                      : "Current status unavailable";
+        return `
+          <details class="project-run"${index === 0 ? " open" : ""}>
+            <summary class="project-run-summary">
+              <span class="project-run-number">${escapeHtml(shortId(run.run_id))}</span>
+              <span class="project-run-goal"><strong>${escapeHtml(run.run_goal)}</strong><small>${escapeHtml(`${runFailed ? "Failed" : projectRunLabel(run, experiments)} · ${outcome}`)}</small></span>
+              ${projectTargetPills(data.project.target_skills, run.task_ids, taskMap)}
+              <span class="project-run-stats"><span><strong>${escapeHtml(attempts.length)}</strong> ${escapeHtml(attempts.length === 1 ? "attempt" : "attempts")}</span><span><strong>${escapeHtml(projectDurationLabel(run.duration_seconds))}</strong></span><span><strong>${escapeHtml(projectCostLabel(run.cost))}</strong></span></span>
+            </summary>
+            <div class="project-attempts">
+              <div class="project-attempt-head"><span>Attempt</span><span>Experiment launch</span><span>Result</span><span>Time</span><span>Credits</span></div>
+              ${attempts.map((attempt) => renderProjectAttempt(run, attempt, taskMap)).join("")}
+            </div>
+          </details>`;
+      }).join("")}
+    </div>
+  </section>`;
+}
+
+function renderProjectRunningNow(data, taskMap) {
+const activeRuns = data.runs.filter((run) =>
+  run.state === "active"
+  || projectRunExperiments(run).some((item) =>
+    ["setting_up", "running", "checking"].includes(item.step),
+  ),
+);
+if (!activeRuns.length) {
+  return `
+    <section class="simple-section">
+      <h2>Running now</h2>
+      <p class="quiet-message">Nothing is running right now.</p>
+    </section>`;
+}
+return `
+  <section class="simple-section">
+    <div class="simple-section-heading">
+      <div><h2>Running now</h2><p>Current experiment steps, without counting setup as measured work.</p></div>
+      <span>${escapeHtml(plural(activeRuns.length, "active run"))}</span>
+    </div>
+    <div class="project-live-list">
+      ${activeRuns.map((run) => {
+        const experiments = (run.attempts || []).flatMap((item) => item.experiments || []);
+        const current = experiments.filter((item) => !["complete", "failed"].includes(item.step));
+        return `
+          <article class="project-live-run">
+            <div>
+              <span class="plain-status status-running">${escapeHtml(experiments.length ? "Running" : "Setting up")}</span>
+              <h3>${escapeHtml(run.run_goal)}</h3>
+              ${projectTargetPills(data.project.target_skills, run.task_ids, taskMap)}
+            </div>
+            <div class="project-live-experiments">
+              ${
+                current.length
+                  ? current.map((item) => `<span><strong>${escapeHtml(taskMap.get(item.task_ids?.[0])?.title || sentenceCase(item.case_id))}</strong>${escapeHtml(sentenceCase(item.step))}</span>`).join("")
+                  : "<span><strong>Preparing the run</strong>Measured experiments have not started.</span>"
+              }
+            </div>
+          </article>`;
+      }).join("")}
+    </div>
+  </section>`;
+}
+
+function projectCostSummary(runs, holdouts) {
+const costs = [
+  ...runs.map((run) => run.cost),
+  ...holdouts.map((holdout) => holdout.accounting),
+].filter(Boolean);
+if (!costs.length) return null;
+const complete = costs.every((cost) => cost.complete && Number.isFinite(cost.credits));
+const values = costs
+  .map((cost) =>
+    cost.complete && Number.isFinite(cost.credits)
+      ? cost.credits
+      : cost.observed_credits,
+  )
+  .filter(Number.isFinite);
+if (!values.length) return null;
+return {
+  complete,
+  credits: complete ? values.reduce((sum, value) => sum + value, 0) : null,
+  observed_credits: complete ? null : values.reduce((sum, value) => sum + value, 0),
+};
+}
+
 function renderProject(data) {
-  const passing = data.tasks.filter((task) => task.result === "passing").length;
-  const regressed = data.tasks.filter((task) => task.result === "regressed").length;
-  const active = data.runs.filter((run) => run.state === "active").length;
-  const hasRuns = data.runs.length > 0;
-  const hasRevision = Boolean(data.selected_revision.snapshot_id);
-  const hasConflicts = Object.values(data.conflicts).some(
-    (items) => Array.isArray(items) ? items.length : Boolean(items),
-  );
+const passing = data.tasks.filter((task) => task.result === "passing").length;
+const regressed = data.tasks.filter((task) => task.result === "regressed").length;
+const active = data.runs.filter((run) => run.state === "active").length;
+const activeWorkers = data.runs
+  .filter((run) => run.state === "active")
+  .reduce((sum, run) => sum + (run.planned_workers || 0), 0);
+const hasRuns = data.runs.length > 0;
+const hasRevision = Boolean(data.selected_revision.snapshot_id);
+const taskMap = new Map(data.tasks.map((task) => [task.task_id, task]));
+const totalCost = projectCostSummary(data.runs, data.holdouts);
+const focusRun = data.runs.find((run) => run.state === "active") || data.runs[0];
+const hasConflicts = Object.values(data.conflicts).some(
+  (items) => Array.isArray(items) ? items.length : Boolean(items),
+);
   app.innerHTML = `
     <section class="page-heading simple-heading">
       <div>
@@ -908,15 +1188,23 @@ function renderProject(data) {
         <p>${escapeHtml(data.project.goal)}</p>
       </div>
     </section>
-    <section class="campaign-brief">
-      <div>
-        <span class="brief-label">${hasRevision ? "Current skill revision" : "Project status"}</span>
-        <h2>${escapeHtml(hasRevision ? shortId(data.selected_revision.snapshot_id) : "Ready for first evaluation")}</h2>
-        <p>${escapeHtml(hasRevision ? `Improving ${data.project.target_skills.join(", ")}. Results shown here use this exact revision.` : `Improving ${data.project.target_skills.join(", ")}. The exact revision appears when the first evaluation starts.`)}</p>
+    <section class="project-summary-grid">
+      <div class="project-summary-primary">
+        <span class="brief-label">Current focus</span>
+        <h2>${escapeHtml(focusRun?.run_goal || "Ready for first evaluation")}</h2>
+        <p>${escapeHtml(hasRevision ? `Improving ${data.project.target_skills.join(", ")} at exact revision ${shortId(data.selected_revision.snapshot_id)}.` : `${data.project.goal} The exact revision appears when the first evaluation starts.`)}</p>
       </div>
-      <div class="status-sentence">
+      <div>
         <strong>${escapeHtml(`${passing} of ${data.tasks.length} tasks passed`)}</strong>
-        <span>${escapeHtml(hasRuns ? `${active} active runs${regressed ? `, ${regressed} regressed` : ""}` : "No evaluation runs yet")}</span>
+        <span>${escapeHtml(regressed ? `${regressed} regressed` : "Current task result")}</span>
+      </div>
+      <div>
+        <strong>${escapeHtml(totalCost ? projectCostLabel(totalCost) : "Unknown")}</strong>
+        <span>Total recorded spend</span>
+      </div>
+      <div>
+        <strong>${escapeHtml(hasRuns ? `${activeWorkers} workers` : "None")}</strong>
+        <span>${escapeHtml(active ? `${plural(active, "run")} active` : "Nothing running")}</span>
       </div>
     </section>
     ${
@@ -924,6 +1212,7 @@ function renderProject(data) {
         ? '<section class="quiet-warning">Conflicting project or ablation evidence is visible and excluded from totals.</section>'
         : ""
     }
+    ${renderProjectRunningNow(data, taskMap)}
     <section class="simple-section">
       <div class="simple-section-heading">
         <div><h2>Tasks</h2><p>What must pass, what is happening now, and the effort spent to get there.</p></div>
@@ -931,8 +1220,7 @@ function renderProject(data) {
       <div class="task-list-simple">
         ${data.tasks
           .map((task) => {
-            const matchingRuns = taskRuns(task, data.runs);
-            const hasTaskRuns = matchingRuns.length > 0;
+            const hasTaskRuns = taskRuns(task, data.runs).length > 0;
             const resultState = task.result === "passing"
               ? "passed"
               : ["not_passing", "regressed"].includes(task.result)
@@ -941,14 +1229,10 @@ function renderProject(data) {
             const resultLabel = hasTaskRuns
               ? sentenceCase(task.result)
               : "Not started";
-            const phaseLabel = hasTaskRuns
-              ? sentenceCase(task.phase.phase || task.phase.status)
-              : null;
             return `
               <article>
                 <span class="task-statuses">
                   <span class="plain-status status-${escapeHtml(resultState)}">${escapeHtml(resultLabel)}</span>
-                  ${phaseLabel ? `<span class="activity-status status-${escapeHtml(task.phase.status === "conflicted" ? "conflicted" : task.phase.phase ? "active" : "waiting")}">${escapeHtml(phaseLabel)}</span>` : ""}
                 </span>
                 <div>
                   <h3>${escapeHtml(task.title)}</h3>
@@ -958,7 +1242,6 @@ function renderProject(data) {
                   ${renderTaskAblation(task.ablation)}
                 </div>
                 <span class="task-skill">${escapeHtml(hasTaskRuns ? `${task.bindings.filter((binding) => binding.qualified).length}/${task.bindings.length} passed` : "Not evaluated")}</span>
-                ${renderTaskRuns(task, matchingRuns)}
               </article>`;
           })
           .join("") || '<div class="panel-empty">Task totals are unavailable while project identity conflicts.</div>'}
@@ -967,7 +1250,7 @@ function renderProject(data) {
     ${
       data.holdouts.length
         ? `<section class="simple-section">
-            <div class="simple-section-heading"><div><h2>Generalization</h2><p>Authenticated aggregate holdout evidence only. Private cases and outputs never enter this page.</p></div></div>
+            <div class="simple-section-heading"><div><h2>Private final check</h2><p>Aggregate results only. Private cases and outputs never enter this page.</p></div></div>
             <div class="task-list-simple">
               ${data.holdouts.map((holdout) => `
                 <article>
@@ -980,6 +1263,7 @@ function renderProject(data) {
         : ""
     }
     ${renderWholeSkillAblation(data.whole_skill_ablation)}
+    ${renderProjectRuns(data, taskMap)}
     ${
       data.pre_project_history.length
         ? `<section class="simple-section"><div class="simple-section-heading"><div><h2>Pre-project history</h2><p>Readable legacy attempts excluded from all project totals.</p></div></div><div class="panel-empty">${escapeHtml(plural(data.pre_project_history.length, "legacy attempt"))}</div></section>`
