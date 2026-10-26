@@ -83,13 +83,18 @@ the test design, proof level, and any experimental-design challenge. Do not add
 infrastructure or external dependencies merely because the run is long or
 autonomous.
 
-Autonomy never grants permission to represent the user externally. Creating or
-commenting on issues, tagging people, contacting another team, requesting a
-platform change, or opening a legal, privacy, security, or compliance
-consultation requires explicit user approval for that external action. Prepare
-a draft instead. Broad instructions such as "keep going," "make it robust,"
-"work in parallel," or "do not be cost conscious" are not approval to publish
-or contact others.
+When a possible expansion appears, re-read the governing skill and plan. If
+their approved process permits it, follow that process and continue. If it does
+not, leave the expansion out, record it as an optional follow-up only when
+useful, and keep advancing in-scope work. Do not stop merely to ask permission
+for optional scope.
+
+External representation is outside an unattended run unless the user
+explicitly requested that exact action. Do not create or comment on issues, tag
+people, contact teams, request platform changes, or open legal, privacy,
+security, or compliance consultations. Draft an optional follow-up and
+continue. Ask the user only when the stated outcome truly cannot be completed
+without a user-only decision and no safe in-scope alternative remains.
 
 ## Steps
 

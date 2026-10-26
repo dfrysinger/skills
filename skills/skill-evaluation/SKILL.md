@@ -52,10 +52,11 @@ Instructions such as "make it robust," "make it generalizable," "keep going,"
 independently administered proof.
 
 Neither this process nor `constraint-challenge` authorizes representing the
-user externally. Creating or commenting on issues, tagging people, contacting
-teams, requesting platform changes, or opening legal, privacy, security, or
-compliance consultations requires explicit user approval for that action.
-Prepare a draft instead.
+user externally. Unless the user explicitly requested that exact action, do
+not create or comment on issues, tag people, contact teams, request platform
+changes, or open legal, privacy, security, or compliance consultations. Do not
+pause the evaluation to seek permission for optional outreach. Prepare a draft
+or brief follow-up note when useful, then continue the local evaluation.
 
 ## Local evaluation dashboard
 
