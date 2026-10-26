@@ -72,8 +72,9 @@ can restore the process without copying each skill's rules.
 > stopping to ask permission. For material added scope, use the governing
 > skill's `constraint-challenge` trigger as the internal gate. Only `CONTINUE`
 > for that exact addition permits it; otherwise omit it and continue the
-> narrower work. External publication and outreach require an
-> explicit user request for that exact action; otherwise draft and continue.
+> narrower work. Apply `development-loop`'s cross-project representation
+> boundary; without an existing user grant, draft external outreach and
+> continue.
 > If a reminder arrives while you are making a user-directed edit to the plan,
 > design doc, brief, or charter, finish the current coherent edit and persist it
 > to the authoritative file before reconciling against that file. Never replace

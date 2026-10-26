@@ -141,6 +141,18 @@ unresolved, return to design/challenge rather than inventing a guard.
 Preserve relevant user decisions verbatim with stable event identifiers;
 summaries cannot replace their authority.
 
+Repository-local branches, commits and pull requests follow the repository's
+instructions and the run's push policy. Representing the user in another
+project is a separate external action. Creating or commenting on cross-project
+issues, tagging people, contacting teams, requesting platform changes, or
+opening legal, privacy, security or compliance consultations requires an
+explicit standing or task-specific user grant covering that action.
+`constraint-challenge` can approve internal scope but cannot supply this grant.
+Without one, prepare a draft or optional follow-up and continue all in-scope
+work; do not stop merely to request permission for optional outreach. Hand off
+to the user only when the stated outcome truly requires the external action and
+no supported local alternative remains.
+
 Complete when the applicable reviewed contract and gate permit the exact next
 action. User-facing visual journeys also record whether walkthrough evidence
 is required; a fix may use paired screenshots instead.

@@ -61,12 +61,10 @@ Instructions such as "make it robust," "make it generalizable," "keep going,"
 "work in parallel," or "do not be cost conscious" do not request adversarial or
 independently administered proof.
 
-Neither this process nor `constraint-challenge` authorizes representing the
-user externally. Unless the user explicitly requested that exact action, do
-not create or comment on issues, tag people, contact teams, request platform
-changes, or open legal, privacy, security, or compliance consultations. Do not
-pause the evaluation to seek permission for optional outreach. Prepare a draft
-or brief follow-up note when useful, then continue the local evaluation.
+External actions follow `development-loop`'s cross-project representation
+boundary. Neither this process nor `constraint-challenge` grants that authority.
+Without an existing user grant, draft optional outreach and continue the local
+evaluation.
 
 ## Local evaluation dashboard
 

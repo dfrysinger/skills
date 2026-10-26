@@ -95,12 +95,10 @@ permits it. Any other decision leaves the addition out while the narrower work
 continues. Do not invent a separate unattended-run scope test; if the gate is
 too lax, improve `constraint-challenge`.
 
-External representation is outside an unattended run unless the user
-explicitly requested that exact action. Do not create or comment on issues, tag
-people, contact teams, request platform changes, or open legal, privacy,
-security, or compliance consultations. Draft an optional follow-up and
-continue. Ask the user only when the stated outcome truly cannot be completed
-without a user-only decision and no safe in-scope alternative remains.
+Apply `development-loop`'s cross-project representation boundary. When no
+existing user grant covers an external action, draft it as an optional
+follow-up and continue in-scope work. Do not turn the missing grant into an
+unattended-run stop unless the stated outcome has no supported local path.
 
 ## Steps
 
