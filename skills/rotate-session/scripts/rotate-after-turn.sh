@@ -197,6 +197,10 @@ seed_probe() {
       next if defined $event->{agentId};
       next unless ($event->{type} // "") eq "user.message";
       my $data = $event->{data};
+      next if $data && ref($data) eq "HASH"
+        && ($data->{source} // "") eq "memory"
+        && ($data->{content} // "") eq ""
+        && length($data->{transformedContent} // "");
       push @messages, $data && ref($data) eq "HASH"
         ? ($data->{content} // "")
         : "";

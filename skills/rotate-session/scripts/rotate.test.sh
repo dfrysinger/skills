@@ -62,7 +62,7 @@ EOF
 chmod +x "$ROOT/bin/ps"
 
 cat >"$ROOT/fake-copilot.mjs" <<'EOF'
-import { mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);
@@ -82,8 +82,26 @@ const sessionName = value("--name");
 if (!sessionId || !prompt || !sessionName) process.exit(2);
 const state = join(process.env.HOME, ".copilot", "session-state", sessionId);
 mkdirSync(state, { recursive: true });
+const events = join(state, "events.jsonl");
+const memoryKind = process.env.MOCK_NEW_SESSION_MEMORY_KIND;
 writeFileSync(
-  join(state, "events.jsonl"),
+  events,
+  memoryKind
+    ? `${JSON.stringify({
+        type: "user.message",
+        data: {
+          content: memoryKind === "content" ? "unexpected work" : "",
+          transformedContent: "<memories>synthetic context</memories>",
+          ...(memoryKind === "blank" ? {} : { source: "memory" }),
+        },
+      })}\n`
+    : "",
+);
+if (memoryKind === "delayed") {
+  await new Promise((resolve) => setTimeout(resolve, 500));
+}
+appendFileSync(
+  events,
   `${JSON.stringify({
     type: "user.message",
     data: { content: prompt, delivery: "idle", agentMode: value("--mode") ?? "interactive" },
@@ -127,6 +145,7 @@ start_rotation() {
   local historical_prefix="${10:-}"
   local startup_exit="${11:-}"
   local current_tail="${12:-}"
+  local memory_kind="${13:-}"
   local control_root="${marker_root:-$ROOT/home/.copilot/session-control}"
   local state="$ROOT/home/.copilot/session-state/$old"
   local input="$ROOT/$label-input.txt"
@@ -160,6 +179,7 @@ start_rotation() {
     ROTATE_LOG="$log" ROTATE_TMUX_BIN="$ROOT/bin/tmux" \
     MOCK_TMUX_CWD="$ROOT" MOCK_TMUX_RACE_EVENTS="$race_events" \
     MOCK_NEW_SESSION_EXTRA_MESSAGE="$extra_new_message" \
+    MOCK_NEW_SESSION_MEMORY_KIND="$memory_kind" \
     MOCK_STARTUP_EXIT="$startup_exit" \
     MOCK_TMUX_PID_FILE="$ROOT/$label-helper.pid" \
     MOCK_TMUX_CALLS="$ROOT/$label-tmux.calls" TMUX_PANE="%test" \
@@ -192,6 +212,28 @@ IFS=$'\t' read -r unicode_state unicode_log < <(
 printf '%s\n' '{"type":"assistant.turn_end","data":{}}' >>"$unicode_state/events.jsonl"
 wait_for_result "$unicode_log"
 grep -Fq 'seeded through tmux process replacement' "$unicode_log"
+
+for memory_kind in empty delayed content blank; do
+  IFS=$'\t' read -r memory_state memory_log < <(
+    start_rotation "old-memory-$memory_kind" "memory-$memory_kind" \
+      "continue retired session old-memory-$memory_kind" \
+      "" "" "" "" "" "" "" "" "" "$memory_kind"
+  )
+  printf '%s\n' '{"type":"assistant.turn_end","data":{}}' >>"$memory_state/events.jsonl"
+  wait_for_result "$memory_log"
+  case "$memory_kind" in
+    empty|delayed)
+      grep -Fq 'seeded through tmux process replacement' "$memory_log"
+      ;;
+    content|blank)
+      grep -Fq 'seed or boundary activity was not exact' "$memory_log"
+      memory_recovery="$(
+        sed -n 's/^recovery snapshot: \([^ ]*\).*/\1/p' "$memory_log" | tail -1
+      )"
+      [ -f "$memory_recovery" ]
+      ;;
+  esac
+done
 
 IFS=$'\t' read -r tail_state tail_log < <(
   start_rotation old-tail tail 'continue retired session old-tail' \
