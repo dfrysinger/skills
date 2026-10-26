@@ -69,10 +69,10 @@ can restore the process without copying each skill's rules.
 > long or autonomous. Route possible expansion through the governing skill and
 > plan. If their approved process does not permit it, leave it out, record an
 > optional follow-up only when useful, and continue in-scope work without
-> stopping to ask permission. The plan cannot make its own expansion necessary;
-> require the governing skill's independent necessity test for material added
-> scope, and remove unsupported additions rather than treating completed design
-> or proof as authority. External publication and outreach require an
+> stopping to ask permission. For material added scope, use the governing
+> skill's `constraint-challenge` trigger as the internal gate. Only `CONTINUE`
+> for that exact addition permits it; otherwise omit it and continue the
+> narrower work. External publication and outreach require an
 > explicit user request for that exact action; otherwise draft and continue.
 > If a reminder arrives while you are making a user-directed edit to the plan,
 > design doc, brief, or charter, finish the current coherent edit and persist it

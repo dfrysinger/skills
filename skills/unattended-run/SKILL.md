@@ -89,11 +89,11 @@ not, leave the expansion out, record it as an optional follow-up only when
 useful, and keep advancing in-scope work. Do not stop merely to ask permission
 for optional scope.
 
-The plan cannot make its own expansion necessary. For a material expansion,
-require the governing skill's independent necessity test or challenge gate;
-completed design and proof work are evidence of implementation, not authority
-for more scope. If the expansion lacks an independently supported failure or
-requirement, remove it from the path and continue the narrower work.
+For a material expansion, use the governing skill's `constraint-challenge`
+trigger as the internal scope gate. Only `CONTINUE` for that exact addition
+permits it. Any other decision leaves the addition out while the narrower work
+continues. Do not invent a separate unattended-run scope test; if the gate is
+too lax, improve `constraint-challenge`.
 
 External representation is outside an unattended run unless the user
 explicitly requested that exact action. Do not create or comment on issues, tag
