@@ -41,7 +41,7 @@ case "$command" in
         '{"type":"user.message","data":{"content":"boundary work","delivery":"idle"}}' \
         >>"$MOCK_TMUX_RACE_EVENTS"
     fi
-    /bin/bash "$last" &
+    PATH=/usr/bin:/bin /bin/bash "$last" &
     ;;
   *)
     exit 1
@@ -62,24 +62,46 @@ EOF
 chmod +x "$ROOT/bin/ps"
 
 cat >"$ROOT/fake-copilot.mjs" <<'EOF'
-import { mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);
+if (process.env.MOCK_STARTUP_EXIT) {
+  console.error("synthetic startup failure");
+  process.exit(Number(process.env.MOCK_STARTUP_EXIT));
+}
 const value = (name) => {
   const equals = args.find((arg) => arg.startsWith(`${name}=`));
   if (equals) return equals.slice(name.length + 1);
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : undefined;
 };
-const sessionId = value("--session-id");
+const sessionId = value("--new-session-id");
 const prompt = value("--interactive");
 const sessionName = value("--name");
 if (!sessionId || !prompt || !sessionName) process.exit(2);
 const state = join(process.env.HOME, ".copilot", "session-state", sessionId);
 mkdirSync(state, { recursive: true });
+const events = join(state, "events.jsonl");
+const memoryKind = process.env.MOCK_NEW_SESSION_MEMORY_KIND;
 writeFileSync(
-  join(state, "events.jsonl"),
+  events,
+  memoryKind
+    ? `${JSON.stringify({
+        type: "user.message",
+        data: {
+          content: memoryKind === "content" ? "unexpected work" : "",
+          transformedContent: "<memories>synthetic context</memories>",
+          ...(memoryKind === "blank" ? {} : { source: "memory" }),
+        },
+      })}\n`
+    : "",
+);
+if (memoryKind === "delayed") {
+  await new Promise((resolve) => setTimeout(resolve, 500));
+}
+appendFileSync(
+  events,
   `${JSON.stringify({
     type: "user.message",
     data: { content: prompt, delivery: "idle", agentMode: value("--mode") ?? "interactive" },
@@ -120,13 +142,19 @@ start_rotation() {
   local inbox_inflight="${7:-}"
   local marker_root="${8:-}"
   local agent_mode="${9:-}"
+  local historical_prefix="${10:-}"
+  local startup_exit="${11:-}"
+  local current_tail="${12:-}"
+  local memory_kind="${13:-}"
   local control_root="${marker_root:-$ROOT/home/.copilot/session-control}"
   local state="$ROOT/home/.copilot/session-state/$old"
   local input="$ROOT/$label-input.txt"
   local log="$ROOT/$label.log"
 
   mkdir -p "$state"
-  printf '%s\n' '{"type":"assistant.turn_start","data":{}}' >"$state/events.jsonl"
+  printf '%s' "$historical_prefix" >"$state/events.jsonl"
+  printf '%s\n' '{"type":"assistant.turn_start","data":{}}' >>"$state/events.jsonl"
+  printf '%s' "$current_tail" >>"$state/events.jsonl"
   if [ -n "$setup_user_message" ]; then
     printf '%s\n' \
       '{"type":"user.message","data":{"content":"setup work","delivery":"steering"}}' \
@@ -151,6 +179,8 @@ start_rotation() {
     ROTATE_LOG="$log" ROTATE_TMUX_BIN="$ROOT/bin/tmux" \
     MOCK_TMUX_CWD="$ROOT" MOCK_TMUX_RACE_EVENTS="$race_events" \
     MOCK_NEW_SESSION_EXTRA_MESSAGE="$extra_new_message" \
+    MOCK_NEW_SESSION_MEMORY_KIND="$memory_kind" \
+    MOCK_STARTUP_EXIT="$startup_exit" \
     MOCK_TMUX_PID_FILE="$ROOT/$label-helper.pid" \
     MOCK_TMUX_CALLS="$ROOT/$label-tmux.calls" TMUX_PANE="%test" \
     "$SCRIPT" "$old" "$input" --consume-prompt "${mode_args[@]}" >"$ROOT/$label.out"
@@ -160,6 +190,67 @@ start_rotation() {
 }
 
 bash -n "$SCRIPT" "$HELPER"
+
+large_tail="$(node -e '
+  console.log(JSON.stringify({
+    type: "assistant.message", agentId: "child",
+    data: { content: "x".repeat(131072) },
+  }));
+  process.stdout.write("{\"type\":\"assistant.message\",\"data\":{\"content\":\"partial");
+')"
+IFS=$'\t' read -r large_state large_log < <(
+  start_rotation old-large large 'continue retired session old-large' \
+    "" "" "" "" "" "" "" "" "$large_tail"
+)
+printf '%s\n' '"}}' '{"type":"assistant.turn_end","data":{}}' >>"$large_state/events.jsonl"
+wait_for_result "$large_log"
+grep -Fq 'seeded through tmux process replacement' "$large_log"
+
+IFS=$'\t' read -r unicode_state unicode_log < <(
+  start_rotation old-unicode unicode $'continue retired session old-unicode: caf\303\251'
+)
+printf '%s\n' '{"type":"assistant.turn_end","data":{}}' >>"$unicode_state/events.jsonl"
+wait_for_result "$unicode_log"
+grep -Fq 'seeded through tmux process replacement' "$unicode_log"
+
+for memory_kind in empty delayed content blank; do
+  IFS=$'\t' read -r memory_state memory_log < <(
+    start_rotation "old-memory-$memory_kind" "memory-$memory_kind" \
+      "continue retired session old-memory-$memory_kind" \
+      "" "" "" "" "" "" "" "" "" "$memory_kind"
+  )
+  printf '%s\n' '{"type":"assistant.turn_end","data":{}}' >>"$memory_state/events.jsonl"
+  wait_for_result "$memory_log"
+  case "$memory_kind" in
+    empty|delayed)
+      grep -Fq 'seeded through tmux process replacement' "$memory_log"
+      ;;
+    content|blank)
+      grep -Fq 'seed or boundary activity was not exact' "$memory_log"
+      memory_recovery="$(
+        sed -n 's/^recovery snapshot: \([^ ]*\).*/\1/p' "$memory_log" | tail -1
+      )"
+      [ -f "$memory_recovery" ]
+      ;;
+  esac
+done
+
+IFS=$'\t' read -r tail_state tail_log < <(
+  start_rotation old-tail tail 'continue retired session old-tail' \
+    "" "" "" "" "" "" $'{"type":not-json}\n'
+)
+printf '%s\n' '{"type":"assistant.turn_end","data":{}}' >>"$tail_state/events.jsonl"
+wait_for_result "$tail_log"
+grep -Fq 'seeded through tmux process replacement' "$tail_log"
+
+IFS=$'\t' read -r startup_state startup_log < <(
+  start_rotation old-startup startup 'continue retired session old-startup' \
+    "" "" "" "" "" "" "" 23
+)
+printf '%s\n' '{"type":"assistant.turn_end","data":{}}' >>"$startup_state/events.jsonl"
+wait_for_result "$startup_log"
+grep -Fq 'replacement launcher exited with status 23 before seed verification' "$startup_log"
+grep -Fq 'synthetic startup failure' "$startup_log"
 
 IFS=$'\t' read -r success_state success_log < <(
   start_rotation old-success success
@@ -177,7 +268,7 @@ grep -Fq 'continue retired session old-success' \
 ! find "$ROOT/tmp" -maxdepth 1 -name 'copilot-rotate-recovery-old-success.*' |
   grep -q .
 
-export MOCK_PS_COMMAND="$ROOT/bin/copilot --mode autopilot --remote --yolo --session-id old-autopilot-mode"
+export MOCK_PS_COMMAND="$ROOT/bin/copilot --mode autopilot --remote --yolo --new-session-id old-autopilot-mode"
 IFS=$'\t' read -r mode_state mode_log < <(
   start_rotation old-autopilot-mode autopilot-mode \
     'continue retired session old-autopilot-mode' "" "" "" "" "" autopilot
