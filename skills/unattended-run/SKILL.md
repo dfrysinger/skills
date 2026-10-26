@@ -89,6 +89,12 @@ not, leave the expansion out, record it as an optional follow-up only when
 useful, and keep advancing in-scope work. Do not stop merely to ask permission
 for optional scope.
 
+The plan cannot make its own expansion necessary. For a material expansion,
+require the governing skill's independent necessity test or challenge gate;
+completed design and proof work are evidence of implementation, not authority
+for more scope. If the expansion lacks an independently supported failure or
+requirement, remove it from the path and continue the narrower work.
+
 External representation is outside an unattended run unless the user
 explicitly requested that exact action. Do not create or comment on issues, tag
 people, contact teams, request platform changes, or open legal, privacy,

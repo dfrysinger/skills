@@ -45,6 +45,15 @@ behavioral evidence or only prevents the test operator from manipulating its
 own experiment. A routine fixture correction, extra case, judge repair, or
 predeclared repetition does not need this gate.
 
+Do not call an addition necessary merely because a plan, design, prior
+challenge, completed proof, or security label says it is. Necessity requires at
+least one independent basis: a direct user requirement, a reachable capability
+inside the declared candidate boundary, an observed failure, an external
+obligation, or a current compatibility promise. Name the concrete failure that
+occurs without the addition. If none exists, remove the addition and continue
+with the narrower evaluation. The evaluation work order cannot authorize its
+own expansion.
+
 Use stronger infrastructure only when an actual reachable threat, external
 obligation, publication claim, or explicit user instruction requires it.
 Instructions such as "make it robust," "make it generalizable," "keep going,"
