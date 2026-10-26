@@ -41,7 +41,7 @@ case "$command" in
         '{"type":"user.message","data":{"content":"boundary work","delivery":"idle"}}' \
         >>"$MOCK_TMUX_RACE_EVENTS"
     fi
-    /bin/bash "$last" &
+    PATH=/usr/bin:/bin /bin/bash "$last" &
     ;;
   *)
     exit 1
@@ -66,6 +66,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);
+if (process.env.MOCK_STARTUP_EXIT) {
+  console.error("synthetic startup failure");
+  process.exit(Number(process.env.MOCK_STARTUP_EXIT));
+}
 const value = (name) => {
   const equals = args.find((arg) => arg.startsWith(`${name}=`));
   if (equals) return equals.slice(name.length + 1);
@@ -120,13 +124,18 @@ start_rotation() {
   local inbox_inflight="${7:-}"
   local marker_root="${8:-}"
   local agent_mode="${9:-}"
+  local historical_prefix="${10:-}"
+  local startup_exit="${11:-}"
+  local current_tail="${12:-}"
   local control_root="${marker_root:-$ROOT/home/.copilot/session-control}"
   local state="$ROOT/home/.copilot/session-state/$old"
   local input="$ROOT/$label-input.txt"
   local log="$ROOT/$label.log"
 
   mkdir -p "$state"
-  printf '%s\n' '{"type":"assistant.turn_start","data":{}}' >"$state/events.jsonl"
+  printf '%s' "$historical_prefix" >"$state/events.jsonl"
+  printf '%s\n' '{"type":"assistant.turn_start","data":{}}' >>"$state/events.jsonl"
+  printf '%s' "$current_tail" >>"$state/events.jsonl"
   if [ -n "$setup_user_message" ]; then
     printf '%s\n' \
       '{"type":"user.message","data":{"content":"setup work","delivery":"steering"}}' \
@@ -151,6 +160,7 @@ start_rotation() {
     ROTATE_LOG="$log" ROTATE_TMUX_BIN="$ROOT/bin/tmux" \
     MOCK_TMUX_CWD="$ROOT" MOCK_TMUX_RACE_EVENTS="$race_events" \
     MOCK_NEW_SESSION_EXTRA_MESSAGE="$extra_new_message" \
+    MOCK_STARTUP_EXIT="$startup_exit" \
     MOCK_TMUX_PID_FILE="$ROOT/$label-helper.pid" \
     MOCK_TMUX_CALLS="$ROOT/$label-tmux.calls" TMUX_PANE="%test" \
     "$SCRIPT" "$old" "$input" --consume-prompt "${mode_args[@]}" >"$ROOT/$label.out"
@@ -160,6 +170,45 @@ start_rotation() {
 }
 
 bash -n "$SCRIPT" "$HELPER"
+
+large_tail="$(node -e '
+  console.log(JSON.stringify({
+    type: "assistant.message", agentId: "child",
+    data: { content: "x".repeat(131072) },
+  }));
+  process.stdout.write("{\"type\":\"assistant.message\",\"data\":{\"content\":\"partial");
+')"
+IFS=$'\t' read -r large_state large_log < <(
+  start_rotation old-large large 'continue retired session old-large' \
+    "" "" "" "" "" "" "" "" "$large_tail"
+)
+printf '%s\n' '"}}' '{"type":"assistant.turn_end","data":{}}' >>"$large_state/events.jsonl"
+wait_for_result "$large_log"
+grep -Fq 'seeded through tmux process replacement' "$large_log"
+
+IFS=$'\t' read -r unicode_state unicode_log < <(
+  start_rotation old-unicode unicode $'continue retired session old-unicode: caf\303\251'
+)
+printf '%s\n' '{"type":"assistant.turn_end","data":{}}' >>"$unicode_state/events.jsonl"
+wait_for_result "$unicode_log"
+grep -Fq 'seeded through tmux process replacement' "$unicode_log"
+
+IFS=$'\t' read -r tail_state tail_log < <(
+  start_rotation old-tail tail 'continue retired session old-tail' \
+    "" "" "" "" "" "" $'{"type":not-json}\n'
+)
+printf '%s\n' '{"type":"assistant.turn_end","data":{}}' >>"$tail_state/events.jsonl"
+wait_for_result "$tail_log"
+grep -Fq 'seeded through tmux process replacement' "$tail_log"
+
+IFS=$'\t' read -r startup_state startup_log < <(
+  start_rotation old-startup startup 'continue retired session old-startup' \
+    "" "" "" "" "" "" "" 23
+)
+printf '%s\n' '{"type":"assistant.turn_end","data":{}}' >>"$startup_state/events.jsonl"
+wait_for_result "$startup_log"
+grep -Fq 'replacement launcher exited with status 23 before seed verification' "$startup_log"
+grep -Fq 'synthetic startup failure' "$startup_log"
 
 IFS=$'\t' read -r success_state success_log < <(
   start_rotation old-success success

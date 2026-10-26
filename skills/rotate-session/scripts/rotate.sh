@@ -87,22 +87,44 @@ done
 }
 
 EVENT_OFFSET="$(
-  /usr/bin/perl -MJSON::PP -e '
+  /usr/bin/perl -MJSON::PP -MFcntl=SEEK_END,SEEK_SET -e '
     use strict;
     use warnings;
-    my ($path) = @ARGV;
-    open my $fh, "<", $path or exit 2;
+    open my $fh, "<", $ARGV[0] or exit 2;
     binmode $fh;
-    my $offset;
-    while (my $line = <$fh>) {
-      next unless substr($line, -1) eq "\n";
-      my $event = eval { decode_json($line) };
-      exit 3 unless $event && ref($event) eq "HASH";
-      next if defined $event->{agentId};
-      $offset = tell($fh) if ($event->{type} // "") eq "assistant.turn_start";
+    seek($fh, 0, SEEK_END) or exit 2;
+    my $position = tell($fh);
+    my $buffer = "";
+    my $first = 1;
+    while ($position > 0) {
+      my $size = $position < 65536 ? $position : 65536;
+      $position -= $size;
+      seek($fh, $position, SEEK_SET) or exit 2;
+      read($fh, my $chunk, $size) == $size or exit 2;
+      $buffer = $chunk . $buffer;
+      if ($first) {
+        my $last = rindex($buffer, "\n");
+        next if $last < 0;
+        substr($buffer, $last + 1) = "";
+        $first = 0;
+      }
+      while (length($buffer)) {
+        my $end = length($buffer);
+        my $previous = $end > 1 ? rindex($buffer, "\n", $end - 2) : -1;
+        last if $previous < 0 && $position > 0;
+        my $start = $previous + 1;
+        my $line = substr($buffer, $start, $end - $start - 1);
+        my $event = eval { decode_json($line) };
+        exit 3 unless $event && ref($event) eq "HASH";
+        substr($buffer, $start) = "";
+        next if defined $event->{agentId};
+        if (($event->{type} // "") eq "assistant.turn_start") {
+          print $position + $end;
+          exit 0;
+        }
+      }
     }
-    exit 4 unless defined $offset;
-    print $offset;
+    exit 4;
   ' "$STATE/$OLD/events.jsonl"
 )" || {
   echo "rotate.sh: could not find the current assistant turn boundary" >&2
@@ -216,14 +238,17 @@ printf '%s\n' \
 }
 
 LAUNCHER="$RECOVERY_FILE.launch.sh"
+LAUNCH_EXIT="$RECOVERY_FILE.launch-exit"
 {
   printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
+  printf 'export PATH=%q\n' "$PATH"
+  printf 'trap '\''status=$?; printf "%%s\\n" "$status" > %q'\'' EXIT\n' "$LAUNCH_EXIT"
   printf 'prompt=$(cat -- %q)\n' "$RECOVERY_FILE"
-  printf 'exec %q --session-id=%q --name=%q' "$COPILOT_BIN" "$NEW" "$PANE_NAME"
+  printf '%q --session-id=%q --name=%q' "$COPILOT_BIN" "$NEW" "$PANE_NAME"
   [ -z "$REMOTE_FLAG" ] || printf ' %q' "$REMOTE_FLAG"
   [ -z "$PERMISSION_FLAG" ] || printf ' %q' "$PERMISSION_FLAG"
   [ -z "$AGENT_MODE" ] || printf ' --mode %q' "$AGENT_MODE"
-  printf ' -C %q --interactive "$prompt"\n' "$PANE_CWD"
+  printf ' -C %q --interactive "$prompt" 2> >(tee -a %q >&2)\n' "$PANE_CWD" "$LOG"
 } >"$LAUNCHER" || {
   exec 3>&-
   rm -f -- "$RECOVERY_FILE" "$LAUNCHER"

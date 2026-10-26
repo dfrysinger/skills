@@ -182,12 +182,12 @@ seed_probe() {
     echo "wait"
     return
   }
-  /usr/bin/perl -MJSON::PP -e '
+  /usr/bin/perl -MJSON::PP -MEncode=decode,FB_CROAK -e '
     use strict;
     use warnings;
     my ($events, $prompt_path) = @ARGV;
     open my $prompt_fh, "<", $prompt_path or exit 2;
-    my $expected = do { local $/; <$prompt_fh> };
+    my $expected = decode("UTF-8", do { local $/; <$prompt_fh> }, FB_CROAK);
     open my $events_fh, "<", $events or exit 2;
     my @messages;
     while (my $line = <$events_fh>) {
@@ -223,7 +223,13 @@ for _ in $(seq 1 1200); do
       record_result "pane was replaced for $NEW but its seed or boundary activity was not exact; prompt preserved at $RECOVERY"
       exit 1
       ;;
-    wait) ;;
+    wait)
+      if [ -r "$RECOVERY.launch-exit" ]; then
+        launch_status="$(cat -- "$RECOVERY.launch-exit")"
+        record_result "replacement launcher exited with status $launch_status before seed verification; prompt preserved at $RECOVERY"
+        exit 1
+      fi
+      ;;
     *)
       record_result "replacement session verification failed; prompt preserved at $RECOVERY"
       exit 1
