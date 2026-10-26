@@ -179,14 +179,14 @@ while [ "$#" -gt 0 ]; do
     --mode=interactive|--mode=plan|--mode=autopilot|--autopilot)
       shift
       ;;
-    --session-id|--name|-C)
+    --session-id|--new-session-id|--name|-C)
       [ "$#" -ge 2 ] || {
         echo "rotate.sh: current Copilot launch has an incomplete $1 option" >&2
         exit 1
       }
       shift 2
       ;;
-    --session-id=*|--name=*)
+    --session-id=*|--new-session-id=*|--name=*)
       shift
       ;;
     *)
@@ -244,7 +244,7 @@ LAUNCH_EXIT="$RECOVERY_FILE.launch-exit"
   printf 'export PATH=%q\n' "$PATH"
   printf 'trap '\''status=$?; printf "%%s\\n" "$status" > %q'\'' EXIT\n' "$LAUNCH_EXIT"
   printf 'prompt=$(cat -- %q)\n' "$RECOVERY_FILE"
-  printf '%q --session-id=%q --name=%q' "$COPILOT_BIN" "$NEW" "$PANE_NAME"
+  printf '%q --new-session-id=%q --name=%q' "$COPILOT_BIN" "$NEW" "$PANE_NAME"
   [ -z "$REMOTE_FLAG" ] || printf ' %q' "$REMOTE_FLAG"
   [ -z "$PERMISSION_FLAG" ] || printf ' %q' "$PERMISSION_FLAG"
   [ -z "$AGENT_MODE" ] || printf ' --mode %q' "$AGENT_MODE"

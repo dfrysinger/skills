@@ -76,7 +76,7 @@ const value = (name) => {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : undefined;
 };
-const sessionId = value("--session-id");
+const sessionId = value("--new-session-id");
 const prompt = value("--interactive");
 const sessionName = value("--name");
 if (!sessionId || !prompt || !sessionName) process.exit(2);
@@ -226,7 +226,7 @@ grep -Fq 'continue retired session old-success' \
 ! find "$ROOT/tmp" -maxdepth 1 -name 'copilot-rotate-recovery-old-success.*' |
   grep -q .
 
-export MOCK_PS_COMMAND="$ROOT/bin/copilot --mode autopilot --remote --yolo --session-id old-autopilot-mode"
+export MOCK_PS_COMMAND="$ROOT/bin/copilot --mode autopilot --remote --yolo --new-session-id old-autopilot-mode"
 IFS=$'\t' read -r mode_state mode_log < <(
   start_rotation old-autopilot-mode autopilot-mode \
     'continue retired session old-autopilot-mode' "" "" "" "" "" autopilot
