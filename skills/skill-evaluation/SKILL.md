@@ -18,6 +18,45 @@ pooled count of passes from different experiments. Follow the
 [`cumulative skill hill climb`](references/cumulative-skill-hill-climb.md)
 for the complete process.
 
+## Keep evaluation proof proportional
+
+Default to the smallest evaluation that can answer the user's question.
+Ordinary skill tuning does not require a hostile-party or independently
+verifiable experiment.
+
+Candidate agents running in separate cloud VMs cannot inspect the coordinator's
+local files unless the prompt, tools, mounted workspace, or supplied evidence
+gives them access. Protect hidden criteria from those real exposure paths. Do
+not assume the candidate will attack the evaluator, rewrite local evidence, or
+collude with the test operator.
+
+For normal tuning, use frozen fixtures, development and held-out cases,
+first-result records, and ordinary file hashes or Git history. Record
+evaluator-controlled selection and other practical limits honestly. Those
+limits do not by themselves require independently administered storage,
+cryptographic commitments, random-selection services, external attestations,
+new platform capabilities, privacy or legal review, or cross-team approval.
+
+Invoke `constraint-challenge` before a material experimental-design change that
+adds or retains a new service, external authority, independent proof owner,
+capture population, selection or randomization mechanism, immutability system,
+or adversarial threat assumption. Ask whether the addition improves the
+behavioral evidence or only prevents the test operator from manipulating its
+own experiment. A routine fixture correction, extra case, judge repair, or
+predeclared repetition does not need this gate.
+
+Use stronger infrastructure only when an actual reachable threat, external
+obligation, publication claim, or explicit user instruction requires it.
+Instructions such as "make it robust," "make it generalizable," "keep going,"
+"work in parallel," or "do not be cost conscious" do not request adversarial or
+independently administered proof.
+
+Neither this process nor `constraint-challenge` authorizes representing the
+user externally. Creating or commenting on issues, tagging people, contacting
+teams, requesting platform changes, or opening legal, privacy, security, or
+compliance consultations requires explicit user approval for that action.
+Prepare a draft instead.
+
 ## Local evaluation dashboard
 
 Declare a project in each participating corpus with

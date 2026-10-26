@@ -75,6 +75,22 @@ unavailable, print the objective instead.
 - For a short, attended task that fits in one context window, skip this and just
   do the work.
 
+## Respect the governing scope
+
+Unattended execution does not expand the user's objective or replace the
+governing skill's methodology. For skill evaluation, `skill-evaluation` owns
+the test design, proof level, and any experimental-design challenge. Do not add
+infrastructure or external dependencies merely because the run is long or
+autonomous.
+
+Autonomy never grants permission to represent the user externally. Creating or
+commenting on issues, tagging people, contacting another team, requesting a
+platform change, or opening a legal, privacy, security, or compliance
+consultation requires explicit user approval for that external action. Prepare
+a draft instead. Broad instructions such as "keep going," "make it robust,"
+"work in parallel," or "do not be cost conscious" are not approval to publish
+or contact others.
+
 ## Steps
 
 ### 1. Draft the charter and the objective

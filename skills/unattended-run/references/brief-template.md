@@ -65,6 +65,10 @@ can restore the process without copying each skill's rules.
 
 > Keep building against the plan at `<PLAN_DOC>`[ through `<SCOPE>`] in your
 > `<WORKSPACE>`. Follow the required process skills below.
+> Do not expand the governing skill's methodology merely because this run is
+> long or autonomous. Autonomy does not authorize external publication or
+> outreach. Draft, but do not create or comment on issues, tag people, contact
+> teams, or open consultations without explicit user approval for that action.
 > If a reminder arrives while you are making a user-directed edit to the plan,
 > design doc, brief, or charter, finish the current coherent edit and persist it
 > to the authoritative file before reconciling against that file. Never replace
