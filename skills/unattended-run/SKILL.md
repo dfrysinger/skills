@@ -96,9 +96,15 @@ continues. Do not invent a separate unattended-run scope test; if the gate is
 too lax, improve `constraint-challenge`.
 
 Apply `development-loop`'s cross-project representation boundary. When no
-existing user grant covers an external action, draft it as an optional
-follow-up and continue in-scope work. Do not turn the missing grant into an
-unattended-run stop unless the stated outcome has no supported local path.
+existing user grant covers an external action, keep any useful outreach
+artifact local, mark it `DRAFT-NOT-PUBLISHED`, and continue in-scope work. Do
+not turn the missing grant into an unattended-run stop unless the stated
+outcome has no supported local path.
+
+Continuation means performing the concrete ready action in the current turn,
+not merely naming, summarizing, or promising it. When the ready action is a
+bounded artifact such as an inventory, mapping, draft, or command, produce the
+artifact with its required fields before reporting progress.
 
 ## Steps
 

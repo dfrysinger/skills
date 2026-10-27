@@ -36,6 +36,9 @@ evaluator-controlled selection and other practical limits honestly. Those
 limits do not by themselves require independently administered storage,
 cryptographic commitments, random-selection services, external attestations,
 new platform capabilities, privacy or legal review, or cross-team approval.
+Name the exact candidate identity in the evaluation plan and result. For a Git
+candidate, record the commit and the target-skill file hashes rather than
+describing the bytes only as current, exact, or unchanged.
 
 Invoke `constraint-challenge` before a material experimental-design change that
 adds or retains a new service, external authority, independent proof owner,
@@ -54,6 +57,12 @@ gate is too lax, improve `constraint-challenge` and rerun it instead of adding
 custom constraints here. Its decision approves internal design scope only; it
 cannot grant credentials, legal authority, or permission to represent the user
 externally.
+
+A material trigger is not serviced until the `constraint-challenge` skill call
+completes successfully. Do not imitate its verdict format or issue
+`CONTINUE`, `NARROW`, `REFRAME`, or `UNKNOWN` yourself. If the call is
+unavailable or incomplete, treat the disputed addition as `UNKNOWN`, omit it,
+and continue the simpler supported evaluation.
 
 Use stronger infrastructure only when an actual reachable threat, external
 obligation, publication claim, or explicit user instruction requires it.

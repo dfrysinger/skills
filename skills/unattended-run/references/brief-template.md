@@ -73,8 +73,10 @@ can restore the process without copying each skill's rules.
 > skill's `constraint-challenge` trigger as the internal gate. Only `CONTINUE`
 > for that exact addition permits it; otherwise omit it and continue the
 > narrower work. Apply `development-loop`'s cross-project representation
-> boundary; without an existing user grant, draft external outreach and
-> continue.
+> boundary; without an existing user grant, keep external outreach local,
+> mark it `DRAFT-NOT-PUBLISHED`, and continue. Continuation means completing
+> the concrete ready action, including every required field of a bounded
+> artifact, rather than only naming or promising it.
 > If a reminder arrives while you are making a user-directed edit to the plan,
 > design doc, brief, or charter, finish the current coherent edit and persist it
 > to the authoritative file before reconciling against that file. Never replace
