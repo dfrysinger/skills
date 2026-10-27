@@ -841,6 +841,27 @@ reason and any generalized skill defect stated separately. For a skill-change
 experiment, completion also requires the instruction-uptake rows and product-
 movement classification above.
 
+## 7. Report the capability delta
+
+End each skill-change evaluation with a report that says what changed, what the
+candidate can now do that the baseline could not, how much the shipped skill
+changed, and how strong the proof is. Use
+[`references/completion-report.md`](references/completion-report.md).
+
+Link each claimed capability to the prior user-visible failure, the general
+rule that changed, and the exact case or product check that proves the effect.
+Label it as proven, observed, or intended according to the completed gates.
+Report first-attempt and retry-dependent passes separately.
+
+Measure bytes and text lines with the same method on the exact baseline and
+candidate. Separate shipped skill instructions and references from evaluator
+code, cases, generated files, run artifacts, and project documentation. Size
+alone does not prove that a change is simpler or better; only an applicable
+ablation or maintained-task check can support that claim.
+
+Keep the report proportional, but never invent a baseline, capability, size,
+causal claim, or confidence level that the retained evidence does not support.
+
 ## Verification
 
 The evaluation is complete only when:
