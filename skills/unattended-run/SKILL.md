@@ -111,6 +111,13 @@ autonomous preparation, ask for the exact action, state that the run resumes
 automatically when it is observed, and name the result or state you will inspect
 next.
 
+An exclusive owner or dependency gate applies only to its overlapping lane.
+Avoid competing writes and continue disjoint ready work. If owner status is
+unknown, request it once through the recorded routable address. When no
+routable address is available, explicitly record the routing gap without
+guessing; merely saying that contact would happen if a route existed does not
+preserve the unresolved ownership state.
+
 Define remediation completion by the observable operational outcome, not by a
 permitted procedure having run. State the closure predicate before acting and
 verify it afterward. If the threshold or outcome remains unsatisfied, keep an
