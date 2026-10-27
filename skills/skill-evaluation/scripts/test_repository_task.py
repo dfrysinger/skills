@@ -573,6 +573,7 @@ class RepositoryTaskTests(unittest.TestCase):
         self.assertIn("--plugin-dir", skill)
         self.assertIn("--allow-tool=shell", skill)
         self.assertIn("--secret-env-vars=COPILOT_GITHUB_TOKEN", skill)
+        self.assertNotIn("--no-remote", skill)
         self.assertIn("--no-remote-export", skill)
         tools = next(item for item in baseline if item.startswith("--available-tools="))
         self.assertNotIn("session_store_sql", tools)

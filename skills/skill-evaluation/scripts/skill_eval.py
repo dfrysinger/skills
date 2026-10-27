@@ -1398,7 +1398,6 @@ def run_copilot(
         f"--allow-tool={available_tools}",
         "--no-custom-instructions",
         "--disable-builtin-mcps",
-        "--no-remote",
         "--no-color",
         "--output-format",
         "json",

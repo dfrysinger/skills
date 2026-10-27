@@ -50,6 +50,7 @@ class CopilotInvocationTests(unittest.TestCase):
             original_run = subprocess.run
 
             def run_with_open_parent_input(command, **kwargs):
+                self.assertNotIn("--no-remote", command)
                 kwargs.setdefault("stdin", read_fd)
                 return original_run(command, **kwargs)
 
