@@ -82,16 +82,15 @@ handoff, and material user direction.
 
 ## Current baton
 
-- Phase: focused corpus construction
-- Candidate: commit `0055f67` plus subsequent focused-case commits on this
-  branch
-- Critical path: build and freeze the three cases, then bind and run both
-  suites
+- Phase: focused candidate qualification
+- Candidate: commit `21ac06f` plus this baton-only update
+- Critical path: run one focused attempt on the refined candidate, then run the
+  unchanged 19-case regression suite
 - Open revisit condition: any proposed new service, external authority,
   population, selection mechanism, immutable store, or adversarial assumption
 - Active owners: coordinator only
-- Next action: create the three focused cases in a local corpus using the
-  existing prose-case format
+- Next action: archive the exact refined commit and run the three frozen
+  focused cases once
 
 ## Schedule registry
 

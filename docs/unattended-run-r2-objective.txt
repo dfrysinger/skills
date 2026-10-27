@@ -18,7 +18,10 @@ outreach. Do not push. Optional cross-project follow-up remains local and
 DRAFT-NOT-PUBLISHED while supported local work continues. Preserve genuine
 authentication and protected-input stops.
 
-Next action: create and freeze the three focused cases, then run both suites
-against one commit and evaluator-recorded skill hashes. Completion requires
-every item under docs/unattended-run-r2-design.md#definition-of-done, targeted
-repository checks, and a clean two-family implementation review.
+The three focused cases are frozen. Their first candidate showed three
+general omissions, now refined in the shared skills. Next action: archive the
+exact refined commit, run each focused case once, then run the unchanged
+19-case suite against that same commit and evaluator-recorded skill hashes.
+Completion requires every item under
+docs/unattended-run-r2-design.md#definition-of-done, targeted repository
+checks, and a clean two-family implementation review.
