@@ -31,6 +31,8 @@ method. `constraint-challenge` runs only when `development-loop` or
 - Constraint result:
   `docs/unattended-run-r2-constraint-challenge.json`
 - Design review: `docs/unattended-run-r2-design-review.json`
+- Final qualification:
+  `docs/unattended-run-r2-qualification.json`
 - Objective: `docs/unattended-run-r2-objective.txt`
 
 Current constraint gate: `CONTINUE`. The exact permitted scope is the existing
@@ -82,22 +84,28 @@ handoff, and material user direction.
 
 ## Current baton
 
-- Phase: focused candidate qualification
-- Candidate: commit `21ac06f` plus this baton-only update
-- Critical path: run one focused attempt on the refined candidate, then run the
-  unchanged 19-case regression suite
+- Phase: complete
+- Qualified behavior candidate: commit
+  `45fc95c50f6548d888a9944a8e499049d7729ce5`
+- Publication branch: `dfrysinger/skill-evaluation-proportionality`
+- Qualification: three focused cases passed on their first attempts; all 19
+  maintained cases passed within the declared two-attempt limit
+- Retry-dependent cases: `p05-proof-tradeoff` and
+  `p10-canonical-source-before-complete`
+- Repository checks: 480 passed, 56 skipped, and 527 subtests passed
+- Implementation review: both required model families completed with no
+  finding
 - Open revisit condition: any proposed new service, external authority,
   population, selection mechanism, immutable store, or adversarial assumption
-- Active owners: coordinator only
-- Next action: archive the exact refined commit and run the three frozen
-  focused cases once
+- Active owners: none
+- Next action: user-directed publication of the local branch
 
 ## Schedule registry
 
 | Kind | ID | Interval | Status |
 |---|---:|---|---|
-| charter_check | 5 | 4h | live |
-| progress | 6 | 1h | live |
+| charter_check | 5 | 4h | stopped |
+| progress | 6 | 1h | stopped |
 
 When the shared Definition of Done is verified, stop both schedules and every
 duplicate pointed at this charter, verify their absence, and update this table.

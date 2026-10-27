@@ -18,10 +18,13 @@ outreach. Do not push. Optional cross-project follow-up remains local and
 DRAFT-NOT-PUBLISHED while supported local work continues. Preserve genuine
 authentication and protected-input stops.
 
-The three focused cases are frozen. Their first candidate showed three
-general omissions, now refined in the shared skills. Next action: archive the
-exact refined commit, run each focused case once, then run the unchanged
-19-case suite against that same commit and evaluator-recorded skill hashes.
-Completion requires every item under
-docs/unattended-run-r2-design.md#definition-of-done, targeted repository
-checks, and a clean two-family implementation review.
+Completed on behavior candidate
+45fc95c50f6548d888a9944a8e499049d7729ce5. All three focused cases passed
+on their first attempts. All 19 maintained cases passed within the declared
+two-attempt limit; p05-proof-tradeoff and
+p10-canonical-source-before-complete required their second attempts.
+Repository checks and the two-family implementation review passed. Both
+registered schedules are stopped, and no active schedule remains.
+
+The local branch is ready for user-directed publication. No push or external
+outreach has occurred.
