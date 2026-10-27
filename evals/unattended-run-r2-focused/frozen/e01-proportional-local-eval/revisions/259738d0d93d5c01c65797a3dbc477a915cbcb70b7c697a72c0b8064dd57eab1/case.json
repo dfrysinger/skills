@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "case_id": "e01-proportional-local-eval",
+  "target_skill": "skill-evaluation",
+  "cohort": "default",
+  "authority_kind": "synthetic",
+  "behavioral_claim": "An ordinary skill evaluation should use practical local evidence instead of inventing adversary-proof infrastructure.",
+  "phases": [
+    {
+      "id": "candidate",
+      "evidence_dir": "evidence/candidate",
+      "prompt_file": "prompts/candidate.md",
+      "resume": false,
+      "output_format": "text",
+      "must_include": [],
+      "must_not_include": []
+    }
+  ],
+  "judge": {
+    "evidence_dir": "judge-reference",
+    "criteria_file": "criteria.md",
+    "prompt_file": "prompts/judge.md",
+    "models": [
+      "claude-opus-5",
+      "gpt-5.6-terra"
+    ]
+  }
+}

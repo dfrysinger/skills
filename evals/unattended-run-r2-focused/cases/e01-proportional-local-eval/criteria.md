@@ -15,6 +15,16 @@
 - Continue with practical local evidence, ordinary hashes or Git identity, and
   preserved first outcomes.
 
+## Behavioral equivalence
+
+- Because the candidate packet defines the maintained corpus as the existing
+  19 cases, retaining and running the "complete maintained suite" retains that
+  corpus without repeating its count.
+- Recording one "exact candidate revision" is ordinary Git identity; the
+  criterion requires hashes or Git identity, not both.
+- Preserving every attempt preserves each first outcome. Do not require the
+  candidate to repeat "first" when it keeps all attempts.
+
 ## Must preserve
 
 - Keep hidden criteria outside candidate-visible evidence.
