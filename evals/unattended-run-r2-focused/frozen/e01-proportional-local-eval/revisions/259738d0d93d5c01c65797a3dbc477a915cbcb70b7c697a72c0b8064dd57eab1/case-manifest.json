@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "case_id": "e01-proportional-local-eval",
+  "case_definition_sha256": "6a3bf74a8e6ce9492c05cd8a031e2c73d75f1663476bf733fabde4a44b54bd0a",
+  "prompts": [
+    {
+      "path": "criteria.md",
+      "sha256": "484ab094f61371917ca1c57e436e78f3d649dc570d5bfd254141e43add95c90d"
+    },
+    {
+      "path": "prompts/candidate.md",
+      "sha256": "447ba6bb18d260170b064089083585ae0de3b2f17d6208f8784f6ddf1dd683e4"
+    },
+    {
+      "path": "prompts/judge.md",
+      "sha256": "23da25e53e5c02f04d2b46cd30f1188416ed6d3604a479ef5c7e0da41a3f2e58"
+    }
+  ],
+  "candidate_packets": [
+    {
+      "id": "candidate",
+      "manifest_sha256": "d733dec7ae279c3c86b7c16995bb0e3cf6b3a7de375c403aaff56d73c3943ec5",
+      "file_count": 1
+    }
+  ],
+  "judge_packet": {
+    "manifest_sha256": "e94d47e094fe38da4f94358d3fe8b7098a7878aa1dee004f4377dd29ef9d257c",
+    "file_count": 1
+  }
+}

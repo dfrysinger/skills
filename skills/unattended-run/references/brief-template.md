@@ -65,6 +65,22 @@ can restore the process without copying each skill's rules.
 
 > Keep building against the plan at `<PLAN_DOC>`[ through `<SCOPE>`] in your
 > `<WORKSPACE>`. Follow the required process skills below.
+> Do not expand the governing skill's methodology merely because this run is
+> long or autonomous. Route possible expansion through the governing skill and
+> plan. If their approved process does not permit it, leave it out, record an
+> optional follow-up only when useful, and continue in-scope work without
+> stopping to ask permission. For material added scope, use the governing
+> skill's `constraint-challenge` trigger as the internal gate. Only `CONTINUE`
+> for that exact addition permits it; otherwise omit it and continue the
+> narrower work. Apply `development-loop`'s cross-project representation
+> boundary; without an existing user grant, keep external outreach local,
+> mark it `DRAFT-NOT-PUBLISHED`, and continue. Continuation means completing
+> the concrete ready action, including every required field of a bounded
+> artifact, rather than only naming or promising it.
+> A genuine human-only gate is conditional: name the exact action, automatic
+> resumption, and the next inspection. Remediation remains open until its
+> observable operational threshold is verified; if it is still violated,
+> preserve an unresolved incident and continue safe remediation or escalation.
 > If a reminder arrives while you are making a user-directed edit to the plan,
 > design doc, brief, or charter, finish the current coherent edit and persist it
 > to the authoritative file before reconciling against that file. Never replace

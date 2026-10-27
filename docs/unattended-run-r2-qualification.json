@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "result": "PASS",
+  "qualified_behavior_candidate": "45fc95c50f6548d888a9944a8e499049d7729ce5",
+  "branch": "dfrysinger/skill-evaluation-proportionality",
+  "pushed": false,
+  "skill_hashes": {
+    "development-loop/SKILL.md": "b75846865ae819898484c1c4d68f727fe32f1a6dad7f8a508d2f90b7be32a90d",
+    "skill-evaluation/SKILL.md": "0bb22950f2f0f7ca4e7270d500eab3ad7a76ee2e91d0eeb27ffa6102db9e74a4",
+    "unattended-run/SKILL.md": "31035e8683def2770ebd6da336af59edcca595c7414e1bd6c0e16f0fee0b3c42",
+    "unattended-run/references/brief-template.md": "6c8ade15a5d097bd388c8a40af6cbc92665058c4343e7f7053c1e6b232b40a65"
+  },
+  "focused_suite": {
+    "suite_id": "20261027T043923Z-6bbbbc5f",
+    "result": "PASS",
+    "maximum_attempts_per_case": 1,
+    "first_attempt_passes": [
+      "e01-proportional-local-eval",
+      "e02-material-expansion-gate",
+      "e03-cross-project-draft-and-continue"
+    ],
+    "retry_dependent_passes": []
+  },
+  "regression_suite": {
+    "suite_id": "20261027T043923Z-5b41bf22",
+    "result": "PASS",
+    "maximum_attempts_per_case": 2,
+    "case_count": 19,
+    "attempt_count": 21,
+    "first_attempt_pass_count": 17,
+    "retry_dependent_passes": [
+      "p05-proof-tradeoff",
+      "p10-canonical-source-before-complete"
+    ]
+  },
+  "repository_checks": {
+    "pytest": "480 passed, 56 skipped, 527 subtests passed",
+    "event_driven_contract": "PASS",
+    "frozen_case_verification": "3/3 PASS",
+    "git_diff_check": "PASS"
+  },
+  "implementation_review": {
+    "result": "PASS",
+    "claude_opus_findings": 0,
+    "gpt_terra_findings": 0
+  },
+  "schedules": {
+    "stopped": [5, 6],
+    "active_after_stop": 0
+  },
+  "external_actions": {
+    "push": false,
+    "outreach": false
+  }
+}

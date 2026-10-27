@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "cases": [
+    "e01-proportional-local-eval",
+    "e02-material-expansion-gate",
+    "e03-cross-project-draft-and-continue"
+  ]
+}

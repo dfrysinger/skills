@@ -111,15 +111,23 @@ independently observable claim gets one receipt; dependent checkpoints of the
 same journey stay together. Neither a partial result nor an easier fixture
 can silently replace this contract.
 
-For systemic/critical work, compare the exact next action with the recorded
-constraint gate: `CLEAR`, or `PARTIAL` explicitly permitting it. Persist the
-current record, proposed action, changed inputs, named trigger and
+For systemic/critical work, compare the exact next action with the current
+`constraint-challenge` decision. `CONTINUE` permits only the exact addition it
+cleared; a durable gate may record that as `CLEAR` or as `PARTIAL` explicitly
+permitting the action. `NARROW` or `REFRAME` changes the work order, and
+`UNKNOWN` blocks only the disputed addition while narrower work continues.
+Persist the current record, proposed action, changed inputs, named trigger and
 `REUSE`/`DELTA`/`FULL` decision before invoking `constraint-challenge`.
 Invoke it for material scope, architecture, trust, authority or policy changes,
 new subsystems, effective inherited limits, or repeated repairs that move the
 same failure between internal boundaries without product progress. Diagnose
 failures before challenging their proposed response. Elapsed time, a consumed
 action or new evidence alone is not a trigger.
+
+Use `constraint-challenge` as the shared internal scope gate. Caller skills
+define when their domain fires the gate, but do not copy its necessity rules.
+If the gate admits unsupported scope, improve `constraint-challenge` and rerun
+it rather than adding a caller-specific exception.
 
 A fired reframe/revisit condition stops the implicated implementation. Return
 to `design-doc` with the cause, protected invariant and simplest alternative.
@@ -132,6 +140,18 @@ from an owner's deliberate authorized action. If that distinction is
 unresolved, return to design/challenge rather than inventing a guard.
 Preserve relevant user decisions verbatim with stable event identifiers;
 summaries cannot replace their authority.
+
+Repository-local branches, commits and pull requests follow the repository's
+instructions and the run's push policy. Representing the user in another
+project is a separate external action. Creating or commenting on cross-project
+issues, tagging people, contacting teams, requesting platform changes, or
+opening legal, privacy, security or compliance consultations requires an
+explicit standing or task-specific user grant covering that action.
+`constraint-challenge` can approve internal scope but cannot supply this grant.
+Without one, prepare a draft or optional follow-up and continue all in-scope
+work; do not stop merely to request permission for optional outreach. Hand off
+to the user only when the stated outcome truly requires the external action and
+no supported local alternative remains.
 
 Complete when the applicable reviewed contract and gate permit the exact next
 action. User-facing visual journeys also record whether walkthrough evidence

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "case_id": "e03-cross-project-draft-and-continue",
+  "case_definition_sha256": "713a70c69d983bfafae611b71d227b0f2319762133f3b891679f1f5453784cad",
+  "prompts": [
+    {
+      "path": "criteria.md",
+      "sha256": "c7f9f5da3ee99aa565fa771583fd8533a170743699e2949df8aa3848ce0fd274"
+    },
+    {
+      "path": "prompts/candidate.md",
+      "sha256": "c850861f97fc1aea8c228b44ec65f2c586d309d50507af7c82a5c342b000af8d"
+    },
+    {
+      "path": "prompts/judge.md",
+      "sha256": "12eaccc8a564eafd59943fa7f3f52479dda9d49eaa8ec02d5cf1fe032a639d11"
+    }
+  ],
+  "candidate_packets": [
+    {
+      "id": "candidate",
+      "manifest_sha256": "452d359f5c4489533a8ee45c07fb3e5b7ff7cdedb90e61e8dc24f5236b3ba87c",
+      "file_count": 1
+    }
+  ],
+  "judge_packet": {
+    "manifest_sha256": "cd39bc8739b97367045f9653a487902c484427bc59447576db11e7af005cfdbc",
+    "file_count": 1
+  }
+}

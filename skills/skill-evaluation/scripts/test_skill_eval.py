@@ -50,6 +50,7 @@ class CopilotInvocationTests(unittest.TestCase):
             original_run = subprocess.run
 
             def run_with_open_parent_input(command, **kwargs):
+                self.assertNotIn("--no-remote", command)
                 kwargs.setdefault("stdin", read_fd)
                 return original_run(command, **kwargs)
 
@@ -858,6 +859,50 @@ class SkillEvalTests(unittest.TestCase):
             require_skill=None,
         )
         self.assertFalse(result["skill_loaded"])
+
+    def test_receipt_records_every_successfully_invoked_skill(self) -> None:
+        log = Path(self.temp.name) / "invoked-skills.jsonl"
+        events = []
+        for call_id, skill_name, success in (
+            ("target", "example-skill", True),
+            ("gate", "constraint-challenge", True),
+            ("failed", "unused-skill", False),
+        ):
+            events.extend([
+                {
+                    "type": "tool.execution_start",
+                    "data": {
+                        "toolCallId": call_id,
+                        "toolName": "skill",
+                        "arguments": {"skill": skill_name},
+                    },
+                },
+                {
+                    "type": "tool.execution_complete",
+                    "data": {"toolCallId": call_id, "success": success},
+                },
+            ])
+        events.extend([
+            {
+                "type": "assistant.message",
+                "data": {"content": "answer", "model": "fake-model"},
+            },
+            {"type": "result", "exitCode": 0},
+        ])
+        log.write_text("".join(json.dumps(event) + "\n" for event in events))
+
+        result = parse_run(
+            log,
+            skill="example-skill",
+            expected_model="fake-model",
+            cwd=Path(self.temp.name),
+            require_skill=True,
+        )
+
+        self.assertEqual(
+            result["invoked_skills"],
+            ["example-skill", "constraint-challenge"],
+        )
 
     def test_judge_cannot_invoke_target_skill(self) -> None:
         workdir = Path(self.temp.name) / "judge-workdir"

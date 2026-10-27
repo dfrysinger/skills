@@ -1053,6 +1053,8 @@ def parse_run(
     skill_loaded = False
     skill_attempted = False
     pending_skills: set[str] = set()
+    pending_skill_names: dict[str, str] = {}
+    invoked_skills: list[str] = []
     models: set[str] = set()
     viewed_paths: list[str] = []
     pending_views: dict[str, tuple[str, str, bool]] = {}
@@ -1079,6 +1081,13 @@ def parse_run(
                 if (
                     data.get("toolName") == "skill"
                     and isinstance(arguments, dict)
+                    and isinstance(arguments.get("skill"), str)
+                    and isinstance(data.get("toolCallId"), str)
+                ):
+                    pending_skill_names[data["toolCallId"]] = arguments["skill"]
+                if (
+                    data.get("toolName") == "skill"
+                    and isinstance(arguments, dict)
                     and arguments.get("skill") == skill
                 ):
                     skill_attempted = True
@@ -1092,6 +1101,13 @@ def parse_run(
                             pending_views[call_id] = view
             elif event_type == "tool.execution_complete":
                 call_id = data.get("toolCallId")
+                if (
+                    isinstance(call_id, str)
+                    and call_id in pending_skill_names
+                    and data.get("success") is True
+                    and pending_skill_names[call_id] not in invoked_skills
+                ):
+                    invoked_skills.append(pending_skill_names[call_id])
                 if isinstance(call_id, str) and call_id in pending_skills and data.get("success") is True:
                     skill_loaded = True
                 if (
@@ -1121,6 +1137,7 @@ def parse_run(
         "models": sorted(models),
         "result_exit_code": result_event["exitCode"],
         "viewed_paths": viewed_paths,
+        "invoked_skills": invoked_skills,
         "tool_calls": len(tool_calls),
         "usage": result_event.get("usage"),
         "input_tokens": None,
@@ -1398,7 +1415,6 @@ def run_copilot(
         f"--allow-tool={available_tools}",
         "--no-custom-instructions",
         "--disable-builtin-mcps",
-        "--no-remote",
         "--no-color",
         "--output-format",
         "json",
@@ -1978,6 +1994,7 @@ def _run_case(
             "home_mode": home_mode,
             "timeout_seconds": timeout_seconds,
             "skill_invoked": run_result["skill_loaded"],
+            "invoked_skills": run_result["invoked_skills"],
             "result_exit_code": run_result["result_exit_code"],
             "viewed_paths": run_result["viewed_paths"],
             "command": command_record(command, digest(prompt_path)),

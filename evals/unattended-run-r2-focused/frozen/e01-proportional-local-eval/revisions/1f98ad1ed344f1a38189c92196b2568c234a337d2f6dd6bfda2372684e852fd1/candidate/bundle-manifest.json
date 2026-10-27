@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "case_id": "e01-proportional-local-eval",
+  "packet": "candidate",
+  "allowlist_only": true,
+  "files": [
+    {
+      "path": "scenario.md",
+      "sha256": "1380a5bb1222d21cef82757a270c974053757ae90fb35d607759f5d436e2c04e",
+      "source": {
+        "path": "evidence/candidate/scenario.md",
+        "sha256": "1380a5bb1222d21cef82757a270c974053757ae90fb35d607759f5d436e2c04e",
+        "transform": "exact-copy"
+      }
+    }
+  ]
+}

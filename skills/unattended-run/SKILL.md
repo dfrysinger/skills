@@ -75,6 +75,55 @@ unavailable, print the objective instead.
 - For a short, attended task that fits in one context window, skip this and just
   do the work.
 
+## Respect the governing scope
+
+Unattended execution does not expand the user's objective or replace the
+governing skill's methodology. For skill evaluation, `skill-evaluation` owns
+the test design, proof level, and any experimental-design challenge. Do not add
+infrastructure or external dependencies merely because the run is long or
+autonomous.
+
+When a possible expansion appears, re-read the governing skill and plan. If
+their approved process permits it, follow that process and continue. If it does
+not, leave the expansion out, record it as an optional follow-up only when
+useful, and keep advancing in-scope work. Do not stop merely to ask permission
+for optional scope.
+
+For a material expansion, use the governing skill's `constraint-challenge`
+trigger as the internal scope gate. Only `CONTINUE` for that exact addition
+permits it. Any other decision leaves the addition out while the narrower work
+continues. Do not invent a separate unattended-run scope test; if the gate is
+too lax, improve `constraint-challenge`.
+
+Apply `development-loop`'s cross-project representation boundary. When no
+existing user grant covers an external action, keep any useful outreach
+artifact local, mark it `DRAFT-NOT-PUBLISHED`, and continue in-scope work. Do
+not turn the missing grant into an unattended-run stop unless the stated
+outcome has no supported local path.
+
+Continuation means performing the concrete ready action in the current turn,
+not merely naming, summarizing, or promising it. When the ready action is a
+bounded artifact such as an inventory, mapping, draft, or command, produce the
+artifact with its required fields before reporting progress.
+
+A genuine human-only gate is a conditional wait, not the end of the run. After
+autonomous preparation, ask for the exact action, state that the run resumes
+automatically when it is observed, and name the result or state you will inspect
+next.
+
+An exclusive owner or dependency gate applies only to its overlapping lane.
+Avoid competing writes and continue disjoint ready work. If owner status is
+unknown, request it once through the recorded routable address. When no
+routable address is available, explicitly record the routing gap without
+guessing; merely saying that contact would happen if a route existed does not
+preserve the unresolved ownership state.
+
+Define remediation completion by the observable operational outcome, not by a
+permitted procedure having run. State the closure predicate before acting and
+verify it afterward. If the threshold or outcome remains unsatisfied, keep an
+explicit unresolved incident open and continue safe remediation, escalation,
+or one concrete authority request.
+
 ## Steps
 
 ### 1. Draft the charter and the objective

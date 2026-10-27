@@ -18,6 +18,63 @@ pooled count of passes from different experiments. Follow the
 [`cumulative skill hill climb`](references/cumulative-skill-hill-climb.md)
 for the complete process.
 
+## Keep evaluation proof proportional
+
+Default to the smallest evaluation that can answer the user's question.
+Ordinary skill tuning does not require a hostile-party or independently
+verifiable experiment.
+
+Candidate agents running in separate cloud VMs cannot inspect the coordinator's
+local files unless the prompt, tools, mounted workspace, or supplied evidence
+gives them access. Protect hidden criteria from those real exposure paths. Do
+not assume the candidate will attack the evaluator, rewrite local evidence, or
+collude with the test operator.
+
+For normal tuning, use frozen fixtures, development and held-out cases,
+first-result records, and ordinary file hashes or Git history. Record
+evaluator-controlled selection and other practical limits honestly. Those
+limits do not by themselves require independently administered storage,
+cryptographic commitments, random-selection services, external attestations,
+new platform capabilities, privacy or legal review, or cross-team approval.
+Name the exact candidate identity in the evaluation plan and result. For a Git
+candidate, record the commit and the target-skill file hashes rather than
+describing the bytes only as current, exact, or unchanged.
+
+Invoke `constraint-challenge` before a material experimental-design change that
+adds or retains a new service, external authority, independent proof owner,
+capture population, selection or randomization mechanism, immutability system,
+or adversarial threat assumption. Ask whether the addition improves the
+behavioral evidence or only prevents the test operator from manipulating its
+own experiment. A routine fixture correction, extra case, judge repair, or
+predeclared repetition does not need this gate.
+
+Use `constraint-challenge` as the internal scope gate rather than adding a
+second skill-specific necessity test. Give it the exact user outcome,
+candidate boundary, proposed addition, claimed failure without it, and simplest
+known alternative. Only `CONTINUE` approves that exact expansion. `NARROW`,
+`REFRAME`, or `UNKNOWN` means continue without the disputed addition. If this
+gate is too lax, improve `constraint-challenge` and rerun it instead of adding
+custom constraints here. Its decision approves internal design scope only; it
+cannot grant credentials, legal authority, or permission to represent the user
+externally.
+
+A material trigger is not serviced until the `constraint-challenge` skill call
+completes successfully. Do not imitate its verdict format or issue
+`CONTINUE`, `NARROW`, `REFRAME`, or `UNKNOWN` yourself. If the call is
+unavailable or incomplete, treat the disputed addition as `UNKNOWN`, omit it,
+and continue the simpler supported evaluation.
+
+Use stronger infrastructure only when an actual reachable threat, external
+obligation, publication claim, or explicit user instruction requires it.
+Instructions such as "make it robust," "make it generalizable," "keep going,"
+"work in parallel," or "do not be cost conscious" do not request adversarial or
+independently administered proof.
+
+External actions follow `development-loop`'s cross-project representation
+boundary. Neither this process nor `constraint-challenge` grants that authority.
+Without an existing user grant, draft optional outreach and continue the local
+evaluation.
+
 ## Local evaluation dashboard
 
 Declare a project in each participating corpus with
@@ -783,6 +840,27 @@ Complete when the result is labeled `PASS`, `FAIL`, or `UNANSWERABLE`, with the
 reason and any generalized skill defect stated separately. For a skill-change
 experiment, completion also requires the instruction-uptake rows and product-
 movement classification above.
+
+## 7. Report the capability delta
+
+End each skill-change evaluation with a report that says what changed, what the
+candidate can now do that the baseline could not, how much the shipped skill
+changed, and how strong the proof is. Use
+[`references/completion-report.md`](references/completion-report.md).
+
+Link each claimed capability to the prior user-visible failure, the general
+rule that changed, and the exact case or product check that proves the effect.
+Label it as proven, observed, or intended according to the completed gates.
+Report first-attempt and retry-dependent passes separately.
+
+Measure bytes and text lines with the same method on the exact baseline and
+candidate. Separate shipped skill instructions and references from evaluator
+code, cases, generated files, run artifacts, and project documentation. Size
+alone does not prove that a change is simpler or better; only an applicable
+ablation or maintained-task check can support that claim.
+
+Keep the report proportional, but never invent a baseline, capability, size,
+causal claim, or confidence level that the retained evidence does not support.
 
 ## Verification
 

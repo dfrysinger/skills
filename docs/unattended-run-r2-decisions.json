@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "revision": "unattended-run-r2-decisions-v1",
+  "objective": "Improve unattended agent behavior without rebuilding a secured evaluation platform.",
+  "events": [
+    {
+      "event_id": "decision-original-goal",
+      "question": "What user-visible problem should this work solve?",
+      "recommended_answer": "Use real prior sessions to improve unattended-run so agents continue useful work and stop only at genuine user-only gates.",
+      "user_quote": "we are looking for situations where the agent stopped working or thought they were done or blocked but they werent. if they were genuinely blocked because i needed to auth for them or something those are fine",
+      "context": "Original request for the unattended-run evaluation corpus.",
+      "authority": "top-level user outcome",
+      "resolved": true
+    },
+    {
+      "event_id": "decision-practical-rigor",
+      "question": "How strong must the evaluation infrastructure be?",
+      "recommended_answer": "Use ordinary frozen cases and held-out examples; do not defend against the test operator or isolated candidate VM attacking local evidence.",
+      "user_quote": "this doesnt need to be super robust, the agents work in vms in teh cloud and wont be attacking this computer for clues, right?",
+      "context": "User correction after the campaign invented independent storage and commitment requirements.",
+      "authority": "top-level scope boundary",
+      "resolved": true
+    },
+    {
+      "event_id": "decision-shared-scope-gate",
+      "question": "What should approve a material experiment expansion?",
+      "recommended_answer": "Use constraint-challenge as the shared internal scope gate and fix that shared skill if it is too lax.",
+      "user_quote": "the constrint challenge is really good at pushing back on this so we should make sure we use that as the enforcement and if thats too lax we fix that, rather than building in custom constraints into the general skill, right?",
+      "context": "User selected one shared scope gate instead of caller-specific necessity rules.",
+      "authority": "top-level process decision",
+      "resolved": true
+    },
+    {
+      "event_id": "decision-no-permission-stop",
+      "question": "How should an unattended agent handle unapproved optional expansion?",
+      "recommended_answer": "Follow the governing process when it permits the work; otherwise omit the expansion and continue rather than stopping to ask.",
+      "user_quote": "lets not block the agent or intice them to ask for permissions because that stops an unattended run, shouldnt the unattended run say that the agent needs to refer back to the governing skill for instructions on how to expand scope within the approved process?",
+      "context": "User rejected permission-seeking as the default response to optional scope.",
+      "authority": "top-level unattended behavior decision",
+      "resolved": true
+    },
+    {
+      "event_id": "decision-cross-project-authority",
+      "question": "What authority is required for cross-project issues and outreach?",
+      "recommended_answer": "Development-loop owns the shared boundary; without an existing user grant, draft and continue.",
+      "user_quote": "I guess i mean the part about posint issues to other projects",
+      "context": "Clarification that the overreach concern was specifically external issue filing and team contact.",
+      "authority": "top-level external-action boundary",
+      "resolved": true
+    },
+    {
+      "event_id": "decision-resume-simplified",
+      "question": "Should the original improvement work resume after narrowing?",
+      "recommended_answer": "Yes, with a fresh charter, practical evaluation, and the updated shared skills.",
+      "user_quote": "great now redraft your charter and proceed with what you were working on, but simplified, and use /dfrysinger-skills:design-doc and /dfrysinger-skills:unattended-run and our updated /dfrysinger-skills:skill-evaluation to proceed with the original high level goal but more efficiently",
+      "context": "Current instruction.",
+      "authority": "top-level execution instruction",
+      "resolved": true
+    }
+  ],
+  "unresolved_event_ids": []
+}
