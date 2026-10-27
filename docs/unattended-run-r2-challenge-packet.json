@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "revision": "unattended-run-r2-challenge-packet-v1",
+  "decision_record": "docs/unattended-run-r2-decisions.json",
+  "user_outcome": "Improve unattended-run so agents keep working through recoverable uncertainty and stop only for genuine user-only gates.",
+  "supported_callers": [
+    "A long-running coding agent using unattended-run",
+    "A skill evaluator deciding how much evidence is necessary",
+    "A development agent considering cross-project outreach"
+  ],
+  "observable_success": [
+    "The existing 19 frozen premature-stop and genuine-gate cases pass on one exact candidate.",
+    "Focused new cases reject unnecessary secured evaluation infrastructure.",
+    "Focused new cases use constraint-challenge as the internal scope gate.",
+    "Focused new cases draft rather than publish cross-project outreach without an existing user grant.",
+    "The agent continues narrower in-scope work instead of stopping for optional permission."
+  ],
+  "existing_capabilities": [
+    "The unchanged 19-case local corpus at unattended-run-hill-climb/evals/unattended-run-stop-corpus.",
+    "The installed local skill-evaluation runner and two-family judges.",
+    "The existing constraint-challenge scope decision process.",
+    "The development-loop authority and delivery process.",
+    "The unattended-run continuity and schedule process."
+  ],
+  "observed_failures": [
+    "The prior campaign expanded ordinary skill tuning into independent storage, committed randomness, production carriers, and external authority requests.",
+    "The agent filed three cross-project issues without an existing user grant.",
+    "The old charter and schedules would have continued the over-scoped campaign."
+  ],
+  "boundaries": [
+    "No external issues, comments, tags, consultations, or platform requests.",
+    "No distributed evaluation campaign or new execution carrier.",
+    "No independently administered storage, cryptographic commitment, or selection service.",
+    "No prospective transcript capture system.",
+    "No claim that local evaluator-controlled evidence is adversary-proof."
+  ]
+}

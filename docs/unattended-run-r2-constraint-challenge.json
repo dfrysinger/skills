@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "revision": "unattended-run-r2-constraint-challenge-v1",
+  "challenger": "f2cba6a9-c322-4632-a691-5cf6be3f5e4c",
+  "evidence_packet": "docs/unattended-run-r2-challenge-packet.json",
+  "decision_record": "docs/unattended-run-r2-decisions.json",
+  "design": "docs/unattended-run-r2-design.md",
+  "pass_1": {
+    "decision": "NARROW",
+    "minimum_design": "Reuse the existing local 19-case corpus and installed evaluator, add only focused local held-out cases, and use constraint-challenge as the sole scope gate.",
+    "blocked_scope": [
+      "external outreach",
+      "distributed campaigns",
+      "new carriers",
+      "independent storage",
+      "cryptographic commitments",
+      "selection services",
+      "prospective transcript capture",
+      "adversary-proof evidence claims",
+      "optional permission stops"
+    ],
+    "gaps": [
+      "exact candidate identity and acceptance threshold",
+      "focused case inventory and pass rule",
+      "failure-to-test mapping",
+      "draft outreach storage and publication boundary"
+    ]
+  },
+  "pass_2": {
+    "initial_decision": "NARROW",
+    "required_changes": [
+      "name the exact three focused cases",
+      "require both judges to pass on the first attempt",
+      "bind one commit and evaluator-recorded skill hashes",
+      "map every observed failure to a check",
+      "keep draft outreach local and DRAFT-NOT-PUBLISHED"
+    ],
+    "resolution_decision": "CONTINUE",
+    "design_review_permitted": true,
+    "resolution": "All prior gaps are closed in the current design revision."
+  },
+  "permitted_scope": [
+    "shared skill wording",
+    "unchanged local 19-case corpus",
+    "three named focused local cases",
+    "local two-family judging",
+    "targeted checks",
+    "design and implementation review"
+  ],
+  "blocked_scope": [
+    "external publication or outreach",
+    "new evaluation infrastructure",
+    "distributed campaigns",
+    "carrier work",
+    "independent authority systems",
+    "prospective capture"
+  ]
+}

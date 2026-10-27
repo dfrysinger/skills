@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "revision": "unattended-run-r2-design-review-v1",
+  "subject": "docs/unattended-run-r2-design.md",
+  "constraint_record": "docs/unattended-run-r2-constraint-challenge.json",
+  "round_1": {
+    "claude_opus": {
+      "model": "claude-opus-5.5",
+      "complete": true,
+      "findings": [
+        "Declare the attempt and retry rule for the unchanged 19-case suite.",
+        "Exercise unattended-run continuation directly in the focused corpus."
+      ]
+    },
+    "gpt_terra": {
+      "model": "gpt-5.6-terra",
+      "complete": true,
+      "findings": [
+        "Exercise unattended-run continuation directly in the focused corpus."
+      ]
+    }
+  },
+  "resolution": {
+    "regression_suite": "Maximum two attempts per case, declared before dispatch, with first-attempt and retry-dependent passes reported separately.",
+    "focused_case": "e03 targets unattended-run, applies the development-loop authority boundary, preserves a local DRAFT-NOT-PUBLISHED follow-up, and completes one ready local action.",
+    "inventory_count": 3,
+    "added_infrastructure": false
+  },
+  "round_2": {
+    "claude_opus": {
+      "model": "claude-opus-5.5",
+      "complete": true,
+      "open_findings": []
+    },
+    "gpt_terra": {
+      "model": "gpt-5.6-terra",
+      "complete": true,
+      "open_findings": []
+    }
+  },
+  "decision": "PASS"
+}
