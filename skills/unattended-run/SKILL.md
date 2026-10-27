@@ -106,6 +106,17 @@ not merely naming, summarizing, or promising it. When the ready action is a
 bounded artifact such as an inventory, mapping, draft, or command, produce the
 artifact with its required fields before reporting progress.
 
+A genuine human-only gate is a conditional wait, not the end of the run. After
+autonomous preparation, ask for the exact action, state that the run resumes
+automatically when it is observed, and name the result or state you will inspect
+next.
+
+Define remediation completion by the observable operational outcome, not by a
+permitted procedure having run. State the closure predicate before acting and
+verify it afterward. If the threshold or outcome remains unsatisfied, keep an
+explicit unresolved incident open and continue safe remediation, escalation,
+or one concrete authority request.
+
 ## Steps
 
 ### 1. Draft the charter and the objective
