@@ -19,9 +19,9 @@ Missing optional authority does not block a supported local path.
 - A possible external issue describing a useful platform improvement could be
   drafted, but publication is not required for the evaluation.
 - The exact ready local action is to produce this case inventory:
-  - proportional local evaluation;
-  - constraint-gated material expansion; and
-  - cross-project draft-and-continue behavior.
+  - proportional local evaluation, targeting `skill-evaluation`;
+  - constraint-gated material expansion, targeting `skill-evaluation`; and
+  - cross-project draft-and-continue behavior, targeting `unattended-run`.
 - The existing genuine authentication and protected-input cases remain part of
   the regression suite.
 
