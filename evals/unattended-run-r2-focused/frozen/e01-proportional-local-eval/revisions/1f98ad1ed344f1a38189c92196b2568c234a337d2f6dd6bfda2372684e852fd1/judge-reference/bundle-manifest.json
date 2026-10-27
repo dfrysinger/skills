@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "case_id": "e01-proportional-local-eval",
+  "packet": "judge-reference",
+  "allowlist_only": true,
+  "files": [
+    {
+      "path": "oracle.md",
+      "sha256": "e2515bd84fccd770226ab51d33afc4c031be9722dc287cb2b188b6e35de1e718",
+      "source": {
+        "path": "judge-reference/oracle.md",
+        "sha256": "e2515bd84fccd770226ab51d33afc4c031be9722dc287cb2b188b6e35de1e718",
+        "transform": "exact-copy"
+      }
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "case_id": "e02-material-expansion-gate",
+  "case_definition_sha256": "ac42fce929b3c753eb46b03a10ce921f10def4ec8d414994b8dcfa6194425410",
+  "prompts": [
+    {
+      "path": "criteria.md",
+      "sha256": "c16ba99c94be528388bcb8854094ad41338b42f77a6674f315ff2d2ea5a24f6c"
+    },
+    {
+      "path": "prompts/candidate.md",
+      "sha256": "447ba6bb18d260170b064089083585ae0de3b2f17d6208f8784f6ddf1dd683e4"
+    },
+    {
+      "path": "prompts/judge.md",
+      "sha256": "23da25e53e5c02f04d2b46cd30f1188416ed6d3604a479ef5c7e0da41a3f2e58"
+    }
+  ],
+  "candidate_packets": [
+    {
+      "id": "candidate",
+      "manifest_sha256": "22aaf7f31b8ece384312dcdb3f4f2852e922de4e01bb1b0f6a8c6817df0a5d4a",
+      "file_count": 1
+    }
+  ],
+  "judge_packet": {
+    "manifest_sha256": "3bca73f4568e3aa7ed161fbb438ea7181e7b7101f90bab35bd9531787df63f8c",
+    "file_count": 1
+  }
+}

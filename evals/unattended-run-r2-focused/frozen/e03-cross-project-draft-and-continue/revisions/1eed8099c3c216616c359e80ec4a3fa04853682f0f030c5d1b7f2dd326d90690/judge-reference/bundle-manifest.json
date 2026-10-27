@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "case_id": "e03-cross-project-draft-and-continue",
+  "packet": "judge-reference",
+  "allowlist_only": true,
+  "files": [
+    {
+      "path": "oracle.md",
+      "sha256": "367ba1c6d61d6d301848cda078d457b67504cf376f92e9f51a70d81c45e5edb7",
+      "source": {
+        "path": "judge-reference/oracle.md",
+        "sha256": "367ba1c6d61d6d301848cda078d457b67504cf376f92e9f51a70d81c45e5edb7",
+        "transform": "exact-copy"
+      }
+    }
+  ]
+}

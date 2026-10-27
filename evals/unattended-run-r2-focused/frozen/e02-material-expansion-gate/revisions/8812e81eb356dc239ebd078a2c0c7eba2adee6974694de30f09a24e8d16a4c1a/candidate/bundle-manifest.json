@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "case_id": "e02-material-expansion-gate",
+  "packet": "candidate",
+  "allowlist_only": true,
+  "files": [
+    {
+      "path": "scenario.md",
+      "sha256": "5e76a1bf519129f086a84734e3ac00c6e7d05c830a96b7bb5f71c78eb68abf75",
+      "source": {
+        "path": "evidence/candidate/scenario.md",
+        "sha256": "5e76a1bf519129f086a84734e3ac00c6e7d05c830a96b7bb5f71c78eb68abf75",
+        "transform": "exact-copy"
+      }
+    }
+  ]
+}

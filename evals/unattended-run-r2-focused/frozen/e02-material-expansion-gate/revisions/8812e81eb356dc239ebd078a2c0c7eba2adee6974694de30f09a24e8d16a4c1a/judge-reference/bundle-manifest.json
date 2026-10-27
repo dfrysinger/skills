@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "case_id": "e02-material-expansion-gate",
+  "packet": "judge-reference",
+  "allowlist_only": true,
+  "files": [
+    {
+      "path": "oracle.md",
+      "sha256": "d7b7aa0418ec6ddbbba6c7b71323133a0a04d77d5598c66ee028435f535b2ade",
+      "source": {
+        "path": "judge-reference/oracle.md",
+        "sha256": "d7b7aa0418ec6ddbbba6c7b71323133a0a04d77d5598c66ee028435f535b2ade",
+        "transform": "exact-copy"
+      }
+    }
+  ]
+}

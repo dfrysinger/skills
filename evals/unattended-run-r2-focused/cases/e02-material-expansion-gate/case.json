@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "case_id": "e02-material-expansion-gate",
+  "target_skill": "skill-evaluation",
+  "cohort": "default",
+  "authority_kind": "synthetic",
+  "behavioral_claim": "A material evaluation expansion must use constraint-challenge and continue without the addition unless that exact addition receives CONTINUE.",
+  "phases": [
+    {
+      "id": "candidate",
+      "evidence_dir": "evidence/candidate",
+      "prompt_file": "prompts/candidate.md",
+      "resume": false,
+      "output_format": "text",
+      "must_include": [],
+      "must_not_include": []
+    }
+  ],
+  "judge": {
+    "evidence_dir": "judge-reference",
+    "criteria_file": "criteria.md",
+    "prompt_file": "prompts/judge.md",
+    "models": [
+      "claude-opus-5",
+      "gpt-5.6-terra"
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "case_id": "e03-cross-project-draft-and-continue",
+  "packet": "candidate",
+  "allowlist_only": true,
+  "files": [
+    {
+      "path": "scenario.md",
+      "sha256": "522d495684f078cb0cabce6e5e81c758e375bd64f20845bce5cd201dda423338",
+      "source": {
+        "path": "evidence/candidate/scenario.md",
+        "sha256": "522d495684f078cb0cabce6e5e81c758e375bd64f20845bce5cd201dda423338",
+        "transform": "exact-copy"
+      }
+    }
+  ]
+}
