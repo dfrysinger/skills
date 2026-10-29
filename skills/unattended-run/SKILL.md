@@ -74,6 +74,34 @@ unavailable, print the objective instead.
   run unattended.
 - For a short, attended task that fits in one context window, skip this and just
   do the work.
+- When `design-doc` has a durable decision record and work-order path but is
+  still drafting or reviewing the design, use the bounded design-incubation
+  mode below instead of the normal implementation charter.
+
+## Design-incubation mode
+
+Design incubation closes the continuity gap before an approved implementation
+work order exists. `design-doc` remains the governing skill and owns
+`design_status`, design approval, and whether a user-only decision is pending.
+`unattended-run` owns only native objective delivery and one 30-minute
+`design_progress` reminder.
+
+The design-only native objective is the primary continuation loop. The
+30-minute reminder is a liveness and recovery backstop for failed delivery,
+stalled continuation, stale state, or completed asynchronous owner output. Do
+not create the normal hourly progress and four-hour charter pair during this
+phase.
+
+Read and follow
+[`references/design-incubation.md`](references/design-incubation.md) whenever
+this mode applies. It contains the objective, reminder, status, suspension,
+reconciliation, and handoff contracts. Use the existing
+`enqueue-autopilot.sh` helper and `manage_schedule`; add no second transport or
+scheduler.
+
+**Complete when** the compatible design objective and reminder are confirmed
+or an explicit failure receipt and existing manual fallback are durable, and
+the design can continue without an unowned asynchronous wait.
 
 ## Respect the governing scope
 

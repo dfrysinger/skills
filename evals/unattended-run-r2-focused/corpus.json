@@ -3,6 +3,8 @@
   "cases": [
     "e01-proportional-local-eval",
     "e02-material-expansion-gate",
-    "e03-cross-project-draft-and-continue"
+    "e03-cross-project-draft-and-continue",
+    "e04-quebec-design-review-idle",
+    "e05-lima-design-review-idle"
   ]
 }

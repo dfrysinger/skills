@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "revision": "design-incubation-continuity-packet-v1",
+  "objective": "Keep a new systemic or critical design task moving through drafting and review until its work order is approved.",
+  "user_decisions": "docs/design-incubation-continuity-decisions.json",
+  "observed_failure": {
+    "source": "design-continuity-user-outcome",
+    "summary": "A session with no current autopilot objective and no progress reminder can become idle during design review and iteration."
+  },
+  "existing_capabilities": [
+    "design-doc owns scope, architecture, challenge, and design review until the work order is approved",
+    "unattended-run already owns native autopilot objective delivery through the session-control SDK",
+    "unattended-run already owns schedule creation, reconciliation, and shutdown",
+    "manage_schedule can create, list, and stop recurring prompts",
+    "the normal unattended-run lifecycle uses one hourly progress reminder and one four-hour charter check after a durable work order exists"
+  ],
+  "constraints": [
+    {
+      "constraint": "Do not start implementation before design-doc completes.",
+      "provenance": "design-doc ownership boundary",
+      "protects": "scope and architecture review"
+    },
+    {
+      "constraint": "Do not overwrite an unrelated active objective or duplicate a compatible reminder.",
+      "provenance": "existing objective replacement and schedule reconciliation rules",
+      "protects": "the current task and bounded schedule ownership"
+    },
+    {
+      "constraint": "Do not require a complete implementation charter before the design work order exists.",
+      "provenance": "the reported gap occurs before design approval",
+      "protects": "a lightweight design-phase start"
+    },
+    {
+      "constraint": "Do not launch duplicate challenge or review work when an owner is already active.",
+      "provenance": "development-loop ownership rules and immutable first outcomes",
+      "protects": "review integrity and cost"
+    }
+  ],
+  "success": [
+    "the agent receives a persistent design-phase objective at design kickoff",
+    "a short reminder advances the next ready design or review action",
+    "the reminder stops when design approval, abandonment, or handoff occurs",
+    "normal unattended-run state replaces the temporary state only when implementation is already authorized"
+  ],
+  "non_goals": [
+    "a new scheduler, service, extension, or objective transport",
+    "full unattended-run charter governance before a work order exists",
+    "implementation during the design-doc phase",
+    "automatic replacement of an unrelated active objective",
+    "repeated user prompts while a genuine user-only decision is pending"
+  ]
+}

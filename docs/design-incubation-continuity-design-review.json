@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "work_order_revision": "design-incubation-continuity-v3",
+  "result": "PASS",
+  "constraint_gate": {
+    "decision": "CONTINUE",
+    "status": "CLEAR",
+    "remaining_findings": 0
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "claude_opus": {
+        "complete": true,
+        "findings": 3
+      },
+      "gpt_terra": {
+        "complete": true,
+        "findings": 5
+      }
+    },
+    {
+      "round": 2,
+      "claude_opus": {
+        "complete": true,
+        "remaining_findings": 0
+      },
+      "gpt_terra": {
+        "complete": true,
+        "remaining_findings": 2
+      }
+    },
+    {
+      "round": 3,
+      "claude_opus": {
+        "complete": true,
+        "remaining_findings": 0
+      },
+      "gpt_terra": {
+        "complete": true,
+        "remaining_findings": 0
+      }
+    }
+  ],
+  "material_resolutions": [
+    "Quiet both objective and reminder during a genuine user-only wait.",
+    "Use a fresh design_cycle identifier and require native reactivation after resume.",
+    "Persist handoff_pending until replacement continuity is confirmed.",
+    "Return approved work to development-loop before choosing attended or unattended execution.",
+    "Persist terminal status before cleanup and isolate unrelated schedules.",
+    "Define recovery when implementation-objective delivery fails."
+  ],
+  "remaining_material_findings": []
+}

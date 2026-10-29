@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "revision": "design-incubation-continuity-challenge-v3",
+  "work_order": {
+    "path": "docs/design-incubation-continuity.md",
+    "revision": "design-incubation-continuity-v3"
+  },
+  "packet_revision": "design-incubation-continuity-packet-v1",
+  "decision_record_revision": "design-incubation-continuity-decisions-v1",
+  "challenger_id": "689373ae-5282-4dc1-88a7-3351d26e4295",
+  "pass_1": {
+    "decision": "UNKNOWN",
+    "minimum_design": "Use existing objective delivery and scheduling, add no service or full unattended charter, and establish only independently necessary continuity mechanisms.",
+    "highest_leverage_assumptions": [
+      "A persistent objective alone cannot prevent the observed idle state.",
+      "A reminder alone cannot carry sufficient durable task context.",
+      "The lifecycle needs coordination beyond a simple ordered handoff."
+    ],
+    "reverse_trace_gaps": [
+      "No separate failure was evidenced for objective-only versus reminder-only operation.",
+      "No conflicting writers justified locking or atomicity.",
+      "No external policy constrained deliberate owner grants."
+    ],
+    "blocked_scope": "Treating both the objective and reminder as mandatory without distinguishing their roles."
+  },
+  "pass_2": {
+    "decision": "NARROW",
+    "effect": "Permit design review after clarifying distinct mechanism roles, independent reconciliation, durable phase status, non-atomic handoff, and user-only waits.",
+    "kept": [
+      {
+        "item": "Design-only native objective as the primary continuation loop.",
+        "authority": "The user's exact request for a new autopilot goal plus the current native objective continuation contract.",
+        "failure_prevented": "The design session loses its persistent goal or remains idle at kickoff."
+      },
+      {
+        "item": "One 30-minute reminder as a liveness and recovery backstop.",
+        "authority": "The user's exact request for a 20-30 minute scheduled push; 30 minutes is the selected lower-cost default.",
+        "failure_prevented": "Failed objective delivery, stalled continuation, or stale state leaves the design idle indefinitely."
+      },
+      "No automatic replacement of unrelated objectives, schedules, or permissions."
+    ],
+    "removed": [
+      "Routine-progress framing for the reminder.",
+      "Neither-present-only reconciliation.",
+      "Atomic transaction implications.",
+      "Recurring reminder turns while only a user decision is pending."
+    ],
+    "unresolved": []
+  },
+  "owner_grants": {
+    "deliberate_owner_grants_allowed": true,
+    "external_policy": "No external policy constraint is evidenced.",
+    "control_scope": "Prevent automation from replacing unrelated state or escalating permissions; do not restrict explicit user redirects, cancellation, or grants."
+  },
+  "coordination": {
+    "effective_writers_per_state_surface": 1,
+    "conflicting_writer_pairs_evidenced": 0,
+    "locking_justified": false
+  },
+  "reconciliation": {
+    "decision": "CONTINUE",
+    "remaining_findings": []
+  },
+  "gate_status": "CLEAR",
+  "permitted_scope": "Implement the reviewed existing-capability lifecycle in work-order revision design-incubation-continuity-v3.",
+  "blocked_scope": "Any new scheduler, objective transport, shared-state service, locking mechanism, or authority expansion."
+}

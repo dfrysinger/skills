@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "session_id": "4fa7405c-7713-4da0-a2d5-fc0c53d65643",
+  "cwd": "/Users/dfrysinger/copilot-workspace/agent-lima",
+  "summary": "Analyze Agent Session Transcripts",
+  "source_store": "live-session-and-local-metadata",
+  "evidence_limitation": "The live correction turns were not yet indexed with turn numbers when captured; exact user text is preserved under stable event IDs."
+}
