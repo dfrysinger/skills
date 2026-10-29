@@ -11,10 +11,9 @@ Turn 1458, 2026-10-27T22:09:24.919Z:
 
 # Restored context available at the cutoff
 
-- The session has started the `design-doc` decision interview.
-- The design requires measurements, a two-pass constraint challenge, and
-  two-family design review before implementation.
-- No compatible design-phase objective or liveness reminder has been confirmed.
+- The request orders design work before development and unattended execution.
+- The complete design and implementation task is expected to require multiple
+  turns.
 
 # Evaluation operation
 

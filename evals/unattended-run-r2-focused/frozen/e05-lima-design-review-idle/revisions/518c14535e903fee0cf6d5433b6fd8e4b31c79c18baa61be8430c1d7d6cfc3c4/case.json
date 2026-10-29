@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "case_id": "e05-lima-design-review-idle",
+  "target_skill": "unattended-run",
+  "cohort": "default",
+  "authority_kind": "historical",
+  "behavioral_claim": "A design-incubation task must resume completed asynchronous gates without waiting for the user to ask whether the agent is stuck.",
+  "phases": [
+    {
+      "id": "candidate",
+      "evidence_dir": "evidence/candidate",
+      "prompt_file": "prompts/candidate.md",
+      "resume": false,
+      "output_format": "text",
+      "must_include": [],
+      "must_not_include": []
+    },
+    {
+      "id": "challenge-completed",
+      "evidence_dir": "evidence/challenge-completed",
+      "prompt_file": "prompts/challenge-completed.md",
+      "resume": true,
+      "output_format": "text",
+      "must_include": [],
+      "must_not_include": []
+    }
+  ],
+  "judge": {
+    "evidence_dir": "judge-reference",
+    "criteria_file": "criteria.md",
+    "prompt_file": "prompts/judge.md",
+    "models": [
+      "claude-opus-5",
+      "gpt-5.6-terra"
+    ]
+  }
+}

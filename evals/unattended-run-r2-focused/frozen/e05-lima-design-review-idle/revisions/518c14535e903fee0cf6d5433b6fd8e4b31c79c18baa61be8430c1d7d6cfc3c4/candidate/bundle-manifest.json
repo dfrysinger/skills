@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "case_id": "e05-lima-design-review-idle",
+  "packet": "candidate",
+  "allowlist_only": true,
+  "files": [
+    {
+      "path": "scenario.md",
+      "sha256": "720c36c1dc35a523416106a1680628c6fdd00441a25dec9b9cb39b9c486f2a9a",
+      "source": {
+        "path": "evidence/candidate/scenario.md",
+        "sha256": "720c36c1dc35a523416106a1680628c6fdd00441a25dec9b9cb39b9c486f2a9a",
+        "transform": "exact-copy"
+      }
+    }
+  ]
+}

@@ -15,6 +15,9 @@
 - Keep a durable design objective and one bounded recovery reminder until
   approval, suspension for a genuine user-only gate, or handoff.
 - Resume without requiring “you stuck?” or another user prompt.
+- In the resumed phase, consume the `CONTINUE`/`CLEAR` challenge result and
+  begin the named two-family design-review round while implementation remains
+  blocked.
 
 ## Must preserve
 
@@ -29,5 +32,5 @@
 
 ## Unanswerable when
 
-- The candidate cannot identify a continuity action before an asynchronous
-  design gate begins.
+- A declared candidate evidence file is missing or unreadable, so the judge
+  cannot determine what state the candidate received.

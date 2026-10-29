@@ -16,7 +16,7 @@ require() {
 	fi
 }
 
-require 'Arm continuity before asynchronous design work' "$design_doc"
+require 'Arm continuity for a long systemic or critical design' "$design_doc"
 require 'before launching the first' "$design_doc"
 require 'asynchronous owner' "$design_doc"
 require 'return the work order to' "$design_doc"
@@ -28,6 +28,7 @@ require 'design_progress' "$reference"
 require 'interval=30m' "$reference"
 require 'Design cycle:.*DESIGN_CYCLE' "$reference"
 require 'waiting_user' "$reference"
+require 'persisting its stopped status without repeating the question' "$reference"
 require 'increments and persists it before delivery' "$reference"
 require 'idle.*steering' "$reference"
 require 'activation' "$reference"
@@ -38,5 +39,7 @@ require 'four-hour charter reminders' "$reference"
 require 'before stopping the design reminder' "$reference"
 require 'leaving unrelated schedules untouched' "$reference"
 require 'implementation-objective delivery fails' "$reference"
+require 'implementation_objective_handoff' "$reference"
+require 'pending implementation-objective handoff' "$skill"
 
 printf 'design incubation contract ok\n'

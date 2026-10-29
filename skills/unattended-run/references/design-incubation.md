@@ -61,10 +61,12 @@ manage_schedule action=create interval=30m \
   is only its liveness and recovery backstop. Do not implement, duplicate an
   active owner, infer owner state from files, replace unrelated state, or
   repeat a pending user-only question. If status is waiting_user, remain
-  stopped. If status is handoff_pending, repair or complete the
-  development-loop handoff and keep this reminder until replacement
-  continuity is confirmed. If status is approved, abandoned, redirected, or
-  reframed, stop this recorded reminder and verify its absence."
+  stopped by stopping this recorded reminder, verifying its absence, and
+  persisting its stopped status without repeating the question. If status is
+  handoff_pending, repair or complete the development-loop handoff and keep
+  this reminder until replacement continuity is confirmed. If status is
+  approved, abandoned, redirected, or reframed, stop this recorded reminder
+  and verify its absence."
 ```
 
 Persist the returned ID and `live` status immediately. Reuse a matching
@@ -105,10 +107,13 @@ When an existing instruction authorizes implementation:
    continue without the normal unattended pair;
 5. for unattended work, create and confirm the normal hourly progress and
    four-hour charter reminders before stopping the design reminder;
-6. verify the normal pair for that implementation charter is live and the
+6. persist an `implementation_objective_handoff` record in the implementation
+   charter with `status: pending`, the objective file, target session, and the
+   unresolved receipt;
+7. verify the normal pair for that implementation charter is live and the
    design reminder is absent, leaving unrelated schedules untouched;
-7. persist `approved`; and
-8. deliver the implementation objective through the existing SDK helper as the
+8. persist `approved`; and
+9. deliver the implementation objective through the existing SDK helper as the
    final action of the turn.
 
 A reminder observing `handoff_pending` repairs or completes this sequence. It
@@ -117,5 +122,8 @@ unattended pair is confirmed.
 
 If implementation-objective delivery fails after the normal pair is live, keep
 that pair, leave the design reminder stopped, preserve the failed receipt, and
-print the existing manual fallback. The next normal tick verifies native
-objective state and retries only after the prior receipt is resolved.
+print the existing manual fallback. Keep
+`implementation_objective_handoff.status` pending until a normal reminder
+verifies native objective state. That reminder records the resolved receipt,
+prints the fallback when delivery remains unavailable, and retries only after
+the prior receipt is resolved.

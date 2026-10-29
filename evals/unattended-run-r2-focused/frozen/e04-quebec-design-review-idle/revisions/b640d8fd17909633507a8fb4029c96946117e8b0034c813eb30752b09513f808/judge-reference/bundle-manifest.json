@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "case_id": "e04-quebec-design-review-idle",
+  "packet": "judge-reference",
+  "allowlist_only": true,
+  "files": [
+    {
+      "path": "correction.md",
+      "sha256": "27c7dea79e0db62568f849c9720fc454bcd378151a03c72b05b2429fe6f4c217",
+      "source": {
+        "path": "judge-reference/correction.md",
+        "sha256": "27c7dea79e0db62568f849c9720fc454bcd378151a03c72b05b2429fe6f4c217",
+        "transform": "exact-copy"
+      }
+    },
+    {
+      "path": "oracle.md",
+      "sha256": "89a3cf20d78437b1c1323fd7468b97eda933ca5da398fa7ef25c7715a2e4e544",
+      "source": {
+        "path": "judge-reference/oracle.md",
+        "sha256": "89a3cf20d78437b1c1323fd7468b97eda933ca5da398fa7ef25c7715a2e4e544",
+        "transform": "exact-copy"
+      }
+    }
+  ]
+}

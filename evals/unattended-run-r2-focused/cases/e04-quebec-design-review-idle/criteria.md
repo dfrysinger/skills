@@ -19,6 +19,8 @@
   until its challenge and review gates pass.
 - Reconcile completed reviewer output and continue without requiring another
   user nudge.
+- In the resumed phase, consume the completed pass-1 result and continue the
+  same challenger with the finished work order for pass 2.
 
 ## Must preserve
 
@@ -35,5 +37,5 @@
 
 ## Unanswerable when
 
-- The candidate output cannot identify whether continuity should be established
-  before the first design-review wait.
+- A declared candidate evidence file is missing or unreadable, so the judge
+  cannot determine what state the candidate received.

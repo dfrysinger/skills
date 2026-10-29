@@ -37,34 +37,9 @@ identifier, and pass both to each challenge phase. A prior interview may be
 reused only when its objective, users, constraints, and non-goals still match
 this work. A material scope change returns here before the document is revised.
 
-### Arm continuity before asynchronous design work
-
-After the decision record and work-order path exist, decide whether challenge,
-review, or iteration is likely to outlast the current attended turn. When it
-is, invoke `unattended-run`'s design-incubation mode before launching the first
-asynchronous owner. That mode uses the existing native objective handoff and
-one short recovery reminder; it does not start implementation or the normal
-hourly/four-hour unattended pair.
-
-Reconcile the objective and reminder independently. Reuse compatible state.
-Leave unrelated objective or schedule state untouched. Persist the current
-design status and cycle in the work order, and treat completed challenge or
-review output as an immediate continuation event rather than waiting for
-another user message.
-
-When only a genuine user decision remains, persist that question and suspend
-both continuation mechanisms through the incubation contract. After the user
-responds, reactivate the design with a new cycle identity. On approval, persist
-the applicable terminal or handoff state and return the work order to
-`development-loop`; it owns attended versus unattended implementation.
-
-Skip incubation only when the design is expected to finish in the current
-attended turn or compatible continuity already covers it.
-
 **Complete when** the user need, observable success condition, boundaries, and
 unresolved decisions are explicit, no answer obtainable from the codebase
-remains a question for the user, and any long design has continuity armed
-before its first asynchronous wait.
+remains a question for the user.
 
 ## 1. Fix the scope
 
@@ -131,8 +106,33 @@ Record the lane in the document. `development-loop` reads it back to size its
 later gates, so a lane left unstated silently downgrades review, specialist
 coverage, and the final end-to-end run.
 
+### Arm continuity for a long systemic or critical design
+
+After recording a systemic or critical lane, decide whether challenge, review,
+or iteration is likely to outlast the current attended turn. When it is, invoke
+`unattended-run`'s design-incubation mode before launching the first
+asynchronous owner. That mode uses the existing native objective handoff and
+one short recovery reminder; it does not start implementation or the normal
+hourly/four-hour unattended pair.
+
+Reconcile the objective and reminder independently. Reuse compatible state.
+Leave unrelated objective or schedule state untouched. Persist the current
+design status and cycle in the work order, and treat completed challenge or
+review output as an immediate continuation event rather than waiting for
+another user message.
+
+When only a genuine user decision remains, persist that question and suspend
+both continuation mechanisms through the incubation contract. After the user
+responds, reactivate the design with a new cycle identity. On approval, persist
+the applicable terminal or handoff state and return the work order to
+`development-loop`; it owns attended versus unattended implementation.
+
+Skip incubation when the design is expected to finish in the current attended
+turn or compatible continuity already covers it.
+
 **Complete when** the document names one lane; for critical, a rollback path
-and the evidence that proves the boundary fails closed.
+and the evidence that proves the boundary fails closed; and any long systemic
+or critical design has continuity armed before its first asynchronous wait.
 
 ## 3. Record constraint provenance and prepare the challenge packet
 
