@@ -8,6 +8,11 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const requestCli = join(dirname(fileURLToPath(import.meta.url)), "request.mjs");
+const legacyRequestCli = join(
+  dirname(dirname(fileURLToPath(import.meta.url))),
+  "session-inbox",
+  "request.mjs",
+);
 
 async function waitForRequest(root) {
   const pending = join(root, "pending");
@@ -29,8 +34,8 @@ async function waitForRequest(root) {
   throw new Error("request was not written");
 }
 
-async function runRequest(root, args, extraEnv = {}) {
-  const child = spawn(process.execPath, [requestCli, ...args], {
+async function runRequest(root, args, extraEnv = {}, requestPath = requestCli) {
+  const child = spawn(process.execPath, [requestPath, ...args], {
     env: {
       ...process.env,
       COPILOT_SESSION_CONTROL_DIR: root,
@@ -69,6 +74,57 @@ async function diagnosticEntries(root) {
   }
   return entries;
 }
+
+test("legacy request entry point forwards to session-control", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-control-legacy-entry-"));
+  try {
+    const instancePath = join(root, "instances", "juliett-session.json");
+    await mkdir(dirname(instancePath), { recursive: true });
+    await writeFile(
+      instancePath,
+      `${JSON.stringify({
+        sessionId: "juliett-session",
+        sessionName: "juliett",
+        generation: "generation-1",
+        updatedAt: new Date().toISOString(),
+      })}\n`,
+    );
+    const promptFile = join(root, "prompt.txt");
+    await writeFile(promptFile, "check mailbox; skip if empty");
+    const run = await runRequest(
+      root,
+      [
+        "send",
+        "--target-name",
+        "juliett",
+        "--prompt-file",
+        promptFile,
+        "--mode",
+        "immediate",
+        "--dedupe-key",
+        "mailbox:compatibility-proof",
+        "--timeout",
+        "3",
+      ],
+      {},
+      legacyRequestCli,
+    );
+    const { name, request } = await waitForRequest(root);
+    assert.equal(request.kind, "send");
+    assert.equal(request.target.targetName, "juliett");
+    assert.equal(request.target.sessionId, "juliett-session");
+    assert.equal(request.prompt, "check mailbox; skip if empty");
+    assert.equal(request.dedupeKey, "mailbox:compatibility-proof");
+
+    const receiptPath = join(root, "completed", name);
+    await mkdir(dirname(receiptPath), { recursive: true });
+    await writeFile(receiptPath, `${JSON.stringify({ status: "completed" })}\n`);
+    const result = await run.exit;
+    assert.equal(result.code, 0, result.stderr);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("writes an immediate send request and accepts its receipt", async () => {
   const root = await mkdtemp(join(tmpdir(), "session-control-request-"));

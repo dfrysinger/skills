@@ -20,6 +20,7 @@ const compatibilityAndHistoricalFiles = new Set([
   "design/windows-cross-computer-mailbox-addressing.md",
   "design/windows-sdk-workflow-reliability.md",
   "extensions/session-control/discovery.test.mjs",
+  "extensions/session-control/request.test.mjs",
   "extensions/session-control/storage-root.mjs",
   "extensions/session-control/storage-root.test.mjs",
 ]);
