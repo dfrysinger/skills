@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "revision": "skill-evaluation-ui-one-time-migration-evidence-r1",
+  "objective": "Make Assistant's existing eight-task evaluation history usable in the shipped project dashboard without changing original evidence or weakening task qualification.",
+  "user_decision_record": "design/skill-evaluation-ui-one-time-migration-decisions.json",
+  "observed_existing_capabilities": [
+    "The project dashboard accepts explicit project, task, and case bindings and validates every bound task revision against a frozen corpus case.",
+    "Distributed experiment declarations bind a complete planned attempt population, treatment identities, skill snapshots, models, platforms, and routes.",
+    "Distributed result records preserve immutable attempt and execution identity and fail closed on missing, duplicate, extra, conflicting, or mismatched evidence.",
+    "Exact experiment population qualification can qualify a task from one complete fixed treatment population.",
+    "Assistant has supplied metadata for eight historical task packages, plans, and result sources, but the records do not currently use the dashboard's project declaration and frozen task binding."
+  ],
+  "observed_failures": [
+    "The existing project registration path requires a frozen task definition and cannot infer one from Assistant's package metadata.",
+    "The existing result projection path validates an already declared task revision; it does not translate an older source identifier into a project task revision.",
+    "Names and paths alone do not prove that a historical experiment tested the same task now declared by the project."
+  ],
+  "hard_boundaries": [
+    "The migration is one-time and bounded to Assistant's identified project history.",
+    "Original source files and outcomes remain unchanged.",
+    "Incomplete fields are allowed and remain visibly unavailable.",
+    "Migrated evidence may qualify only when it satisfies the existing task qualification contract.",
+    "The migration does not infer task roles, skill identity, project membership, or missing outcomes from filenames or directory names.",
+    "The user-facing vocabulary remains project, task, run, run attempt, and experiment.",
+    "Private task, grader, holdout, and answer-shaped evidence must not enter the dashboard projection."
+  ],
+  "known_source_owner": {
+    "assignment_id": "assistant-one-time-migration-source-r1",
+    "owner": "assistant@macbook-pro",
+    "status": "handoff_requested_after_continuity_is_armed",
+    "owed_evidence": "An explicit eight-task mapping, complete fixed experiment populations where known, safe source paths, target skill revision identity, and a statement of which fields are unknown."
+  }
+}

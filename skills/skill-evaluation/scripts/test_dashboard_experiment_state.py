@@ -22,6 +22,8 @@ from dashboard_cli import (
 from dashboard_projection import campaign_index_projection, campaign_projection
 from dashboard_state import (
     EXPERIMENT_EVENT_TYPES,
+    _result_metric_values,
+    _validate_selection_fields,
     capture_skill_snapshot,
     compute_experiment_selection,
     create_campaign,
@@ -355,6 +357,46 @@ class DashboardExperimentStateTests(unittest.TestCase):
             },
             "source_ids": [f"source-{attempt['attempt_id']}"],
         }
+
+    def test_pre_judge_terminal_failure_is_preserved_without_invented_verdicts(self):
+        base = {
+            "terminal_status": "FAIL",
+            "deterministic_target_pass": True,
+            "deterministic_regression_pass": True,
+            "product_pass": True,
+            "independent_behavioral_verdicts": [],
+        }
+        for field in (
+            "deterministic_target_pass",
+            "deterministic_regression_pass",
+            "product_pass",
+        ):
+            value = {**base, field: False}
+            self.assertEqual(_validate_selection_fields(value), value)
+
+        with self.assertRaisesRegex(ValueError, "behavioral verdicts"):
+            _validate_selection_fields({**base, "terminal_status": "PASS"})
+        with self.assertRaisesRegex(ValueError, "behavioral verdicts"):
+            _validate_selection_fields(base)
+        with self.assertRaisesRegex(ValueError, "behavioral verdicts"):
+            _validate_selection_fields({
+                **base,
+                "product_pass": False,
+                "independent_behavioral_verdicts": ["UNKNOWN"],
+            })
+
+        result = {
+            "payload": {
+                "selection_fields": {
+                    **base,
+                    "product_pass": False,
+                },
+            },
+        }
+        metrics = _result_metric_values([result], missing=0)
+        self.assertEqual(metrics["valid_terminal_repetition_count"], 1)
+        self.assertEqual(metrics["unanimous_behavioral_pass_count"], 0)
+        self.assertEqual(metrics["judge_disagreement_count"], 0)
 
     def publish_results(self, declaration: dict, *, tied: bool = False):
         self.plan_fingerprint = declaration["subject"]["experiment_fingerprint"]
