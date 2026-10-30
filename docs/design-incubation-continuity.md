@@ -182,7 +182,7 @@ remaining live.
 | Genuine user decision is required | Ask once with full context, set `design_status` to `waiting_user`, stop the reminder, let the current objective cycle finish, and re-arm both mechanisms only after a later user turn makes work ready |
 | Resumed design objective is deduplicated from a completed cycle | Increment and persist `design_cycle`, include it in the new objective text, and require a receipt proving idle or steering activation for that cycle |
 | Approval handoff partially fails | Keep the confirmed reminder set that still preserves continuity; repair the registry before stopping its predecessor |
-| Implementation objective handoff is interrupted after the normal pair is live | Keep the normal pair and leave the design reminder stopped. Persist `prepared` before submission. The next normal tick verifies native state and the request store by deduplication identity, submits a missing prepared request once, tracks an in-flight request as `submitted`, and retries only after a terminal failed receipt |
+| Implementation objective handoff is interrupted after the normal pair is live | Keep the normal pair and leave the design reminder stopped. Persist `prepared` before submission. The next normal tick verifies native state and the request store by deduplication identity, submits a missing prepared request once, and tracks an in-flight request as `submitted`. After a terminal failure it verifies native state once, then records `resolved` or one-time `fallback_required`; it never retries an ambiguous or otherwise terminal failure with the same identity |
 | Design is abandoned | Stop the temporary reminder and preserve the design and decision record as historical evidence |
 
 ## Invariants

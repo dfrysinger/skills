@@ -133,6 +133,11 @@ repairs the handoff from its durable state:
   objective state; and
 - record `resolved` with the terminal receipt when delivery is confirmed.
 
-After a terminal failed receipt, print the existing manual fallback and retry
-only as a new request after that receipt resolves. Never wait for a receipt
-that was not submitted.
+After a terminal failed receipt, verify native objective state once. If the
+objective is active, record `resolved`. Otherwise preserve the receipt, record
+`fallback_required`, and print the existing manual fallback once. Never
+automatically retry a terminal failure with the same deduplication identity;
+an `ambiguousSideEffect` receipt permanently blocks that identity. Never wait
+for a receipt that was not submitted. A later tick may record `resolved` after
+the native objective or documented manual fallback is observed, but it does not
+repeat the fallback.
