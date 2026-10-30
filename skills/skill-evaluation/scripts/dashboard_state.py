@@ -2164,8 +2164,19 @@ def _validate_selection_fields(value: object) -> dict:
     verdicts = fields.get("independent_behavioral_verdicts")
     if (
         not isinstance(verdicts, list)
-        or not verdicts
         or any(item not in {"PASS", "FAIL"} for item in verdicts)
+    ):
+        raise ValueError("independent behavioral verdicts are invalid")
+    if not verdicts and (
+        fields.get("terminal_status") != "FAIL"
+        or not any(
+            fields.get(field) is False
+            for field in (
+                "deterministic_target_pass",
+                "deterministic_regression_pass",
+                "product_pass",
+            )
+        )
     ):
         raise ValueError("independent behavioral verdicts are invalid")
     return fields
@@ -2521,7 +2532,11 @@ def _result_metric_values(results: list[dict], missing: int) -> dict:
     )
     product_count = sum(item["product_pass"] is True for item in fields)
     unanimous_count = sum(
-        all(verdict == "PASS" for verdict in item["independent_behavioral_verdicts"])
+        bool(item["independent_behavioral_verdicts"])
+        and all(
+            verdict == "PASS"
+            for verdict in item["independent_behavioral_verdicts"]
+        )
         for item in fields
     )
     disagreement_count = sum(

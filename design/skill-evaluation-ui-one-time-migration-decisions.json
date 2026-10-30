@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "revision": "skill-evaluation-ui-one-time-migration-decisions-r1",
+  "events": [
+    {
+      "event_id": "migration-one-time-001",
+      "question": "Should the dashboard support a permanent general importer or one bounded migration of Assistant's current data?",
+      "recommended_answer": "Use one bounded, non-destructive migration. Keep new work on the current project, task, run, run attempt, and experiment contract.",
+      "user_answer": "cant we just do a one time migration of their data? its ok if its incomplete",
+      "context": "The user rejected a permanent native-package ingestion subsystem after the exact-population dashboard was delivered.",
+      "authority": "top-level product direction",
+      "resolved": true
+    },
+    {
+      "event_id": "migration-qualification-002",
+      "question": "May migrated experiments qualify a task?",
+      "recommended_answer": "Yes. A migrated experiment may qualify when its recovered task identity, skill revision, result, and complete fixed population satisfy the same qualification rule as new evidence. Missing display-only fields do not block qualification.",
+      "user_answer": "why cant it qualify a task?",
+      "context": "The user challenged a proposed display-only restriction. The clarified rule was that sufficient migrated evidence can qualify and incomplete qualification-critical evidence remains unavailable.",
+      "authority": "top-level product direction",
+      "resolved": true
+    },
+    {
+      "event_id": "migration-vocabulary-003",
+      "question": "Which terms may the migration and dashboard expose?",
+      "recommended_answer": "Use project, task, run, run attempt, and experiment. Keep package fingerprints and source-format identifiers inside evidence and diagnostics.",
+      "user_answer": "I have no idea what this means, what does \"native\" mean here? and whats an execution revision? or a canonical case revision? didnt we standardize our terms?",
+      "context": "The user rejected internal package and revision terminology in the product explanation.",
+      "authority": "top-level UX and vocabulary direction",
+      "resolved": true
+    },
+    {
+      "event_id": "migration-execution-004",
+      "question": "Should implementation continue after design, and should Assistant participate in the migration?",
+      "recommended_answer": "Complete the reviewed design, then implement, migrate, validate, install, and hand the supported current format back to Assistant under unattended continuity.",
+      "user_answer": "great proceed with that, work withAssistant to get that working and migrated, use /dfrysinger-skills:unattended-run to stay on track until done",
+      "context": "The user explicitly authorized end-to-end implementation and coordination with Assistant.",
+      "authority": "top-level execution grant",
+      "resolved": true
+    }
+  ],
+  "unresolved_event_ids": []
+}
