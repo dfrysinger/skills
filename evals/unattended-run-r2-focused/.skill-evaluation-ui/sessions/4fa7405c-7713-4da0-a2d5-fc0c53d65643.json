@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "campaign_id": "6201be8fc6304a5fb0210010daf524aa",
+  "session_id": "4fa7405c-7713-4da0-a2d5-fc0c53d65643",
+  "writer_generation": "c1d239c54b5746ddb75d58a682f11642",
+  "registered_at": "2026-10-30T01:29:21.731646+00:00",
+  "heartbeat_at": "2026-10-30T01:29:21.731646+00:00",
+  "state": "active",
+  "case_id": null,
+  "case_revision": null,
+  "skill_identity": null,
+  "summary": null,
+  "last_event_id": null,
+  "opened_at": null
+}

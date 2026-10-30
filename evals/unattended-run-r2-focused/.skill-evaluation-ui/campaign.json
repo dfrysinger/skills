@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "campaign_id": "6201be8fc6304a5fb0210010daf524aa",
+  "corpus_root": "/Users/dfrysinger/copilot-workspace/agent-lima/skills-evaluation-proportionality/evals/unattended-run-r2-focused",
+  "corpus_device": 16777230,
+  "corpus_inode": 533803327,
+  "corpus_name": "unattended-run-r2-focused",
+  "target_skills": [
+    "skill-evaluation",
+    "unattended-run"
+  ]
+}

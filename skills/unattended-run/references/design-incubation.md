@@ -108,8 +108,9 @@ When an existing instruction authorizes implementation:
 5. for unattended work, create and confirm the normal hourly progress and
    four-hour charter reminders before stopping the design reminder;
 6. persist an `implementation_objective_handoff` record in the implementation
-   charter with `status: prepared`, the objective file, target session, the
-   SDK request's canonical deduplication identity, and `receipt: null`;
+   charter with a unique `handoff_id`, `status: prepared`, the objective file,
+   target session, the SDK request's canonical deduplication identity, and
+   `receipt: null`;
 7. verify the normal pair for that implementation charter is live and the
    design reminder is absent, leaving unrelated schedules untouched;
 8. persist `approved`; and
@@ -137,13 +138,18 @@ After a terminal failed receipt, verify the exact canonical objective and
 require native activation evidence of `idle` or `steering` before recording
 `resolved`. Objective presence without that activation proof is not resolved.
 Otherwise preserve the receipt, persist `fallback_pending` with the exact
-fallback text and its digest, and print that fallback as the final response.
+fallback text, its digest, and a unique `fallback_notice_id` derived from the
+handoff ID and terminal receipt digest. Include that notice ID in the printed
+fallback and record the pending event or turn identity, then print the fallback
+as the final response.
 
 On a later tick, reconcile `fallback_pending` against the session transcript.
-When the exact fallback text is present in a delivered assistant turn, record
-`fallback_delivered` and do not repeat it. When delivery is absent or cannot be
-proved, print the same fallback again and leave `fallback_pending`; this favors
-an occasional duplicate over losing the only recovery instruction. Never
+Record `fallback_delivered` only when a delivered assistant turn after the
+pending event contains the same `fallback_notice_id` and exact fallback digest.
+An earlier identical fallback cannot satisfy the current handoff. When delivery
+is absent or cannot be proved, print the same identified fallback again and
+leave `fallback_pending`; this favors an occasional duplicate over losing the
+only recovery instruction. Never
 automatically retry a terminal failure with the same deduplication identity;
 an `ambiguousSideEffect` receipt permanently blocks that identity. Never wait
 for a receipt that was not submitted.
