@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "case_id": "e04-quebec-design-review-idle",
+  "case_definition_sha256": "04aea8a1d9dfd7e0c60877fa499f1c6c4d9ff414b1371d111d941c0d9f0176ec",
+  "prompts": [
+    {
+      "path": "criteria.md",
+      "sha256": "7a6d9a4e92d8bd5767b11f0f0de3e1cc97175211005be73e4c8b979b1e616d63"
+    },
+    {
+      "path": "prompts/candidate.md",
+      "sha256": "2d30c6897ddd2498f8f379c1cb9c74a68231720a16c0306c303cad037687e864"
+    },
+    {
+      "path": "prompts/judge.md",
+      "sha256": "12eaccc8a564eafd59943fa7f3f52479dda9d49eaa8ec02d5cf1fe032a639d11"
+    },
+    {
+      "path": "prompts/pass1-completed.md",
+      "sha256": "749ee900f843c9e8759412f72e7004386b4341bb65cb89abc35c4eea931bb2c5"
+    }
+  ],
+  "candidate_packets": [
+    {
+      "id": "candidate",
+      "manifest_sha256": "413857dfa2a8f56c52d81ffe62a1113743c2c287ce767671521181813166fac7",
+      "file_count": 1
+    },
+    {
+      "id": "pass1-completed",
+      "manifest_sha256": "d51c94dc3889619a26db20870883670d35af237d7ed5155e1fd8d73e2d8a329e",
+      "file_count": 1
+    }
+  ],
+  "judge_packet": {
+    "manifest_sha256": "7fffb3eb1de14665bff63db6a16b4a04f4a65cfcd9c75735e6f07a0d61df3a5b",
+    "file_count": 2
+  }
+}

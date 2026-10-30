@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "artifacts": [
+    {
+      "id": "lima-design-continuity-request",
+      "session_id": "4fa7405c-7713-4da0-a2d5-fc0c53d65643",
+      "kind": "live-session-event",
+      "source_event": "design-continuity-user-outcome",
+      "candidate_visible": true
+    },
+    {
+      "id": "lima-design-continuity-corrections",
+      "session_id": "4fa7405c-7713-4da0-a2d5-fc0c53d65643",
+      "kind": "live-session-events",
+      "source_events": [
+        "lima-stall-user-20261028T184844-0600",
+        "lima-stall-confirmation-20261028T184921-0600",
+        "lima-stall-duration-confirmation"
+      ],
+      "judge_only": true,
+      "limitation": "Turn indexes unavailable during live capture."
+    },
+    {
+      "id": "lima-challenge-completed-state",
+      "session_id": "4fa7405c-7713-4da0-a2d5-fc0c53d65643",
+      "kind": "same-session-owner-result",
+      "source_event": "challenge-v2-reconciliation",
+      "candidate_visible_phase": "challenge-completed"
+    }
+  ]
+}

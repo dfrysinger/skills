@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "candidate_commit": "352d4baa398406717ba51c90786a9d948c0a4f4d",
+  "plugin_snapshot": "/Users/dfrysinger/.copilot/session-state/4fa7405c-7713-4da0-a2d5-fc0c53d65643/files/design-continuity-plugin-352d4ba",
+  "suite_run": "evals/unattended-run-r2-focused/suite-runs/20261030T013327Z-cbac4b4d",
+  "candidate_model": "gpt-5.6-sol",
+  "candidate_effort": "high",
+  "max_attempts": 1,
+  "duration_seconds": 632.076,
+  "exact_total_credits": 99.52254500000001,
+  "cases": [
+    {
+      "case_id": "e04-quebec-design-review-idle",
+      "candidate_revision": "a839ee97086db8363bbbe7d9ad3cc09515ae66f6927acd924c51eb6ed10e5d64",
+      "candidate_packets": {
+        "candidate": "413857dfa2a8f56c52d81ffe62a1113743c2c287ce767671521181813166fac7",
+        "pass1-completed": "d51c94dc3889619a26db20870883670d35af237d7ed5155e1fd8d73e2d8a329e"
+      },
+      "candidate_attempts": 1,
+      "original_result": "UNANSWERABLE",
+      "original_judgments": {
+        "claude-opus-5": "UNANSWERABLE",
+        "gpt-5.6-terra": "PASS"
+      },
+      "grading_repair": {
+        "classification": "grading_packet_defect",
+        "corrected_revision": "2de137805f14dc67fbff63ebf45147361f6c70b15050bddf4587d07abcd345bd",
+        "candidate_packets_byte_identical": true,
+        "repair": "Added judge-only byte-identical copies of the candidate scenario and resumed owner result plus cutoff provenance.",
+        "candidate_rerun": false
+      },
+      "corrected_judgments": {
+        "claude-opus-5": "PASS",
+        "gpt-5.6-terra": "PASS"
+      },
+      "qualified_result": "PASS"
+    },
+    {
+      "case_id": "e05-lima-design-review-idle",
+      "candidate_revision": "7a98ab8ee0525ec6156e31b86917c9b8d59b990b0f6585b7a193ebf69a122de1",
+      "candidate_attempts": 1,
+      "original_result": "PASS",
+      "original_judgments": {
+        "claude-opus-5": "PASS",
+        "gpt-5.6-terra": "PASS"
+      },
+      "candidate_rerun": false,
+      "qualified_result": "PASS"
+    }
+  ],
+  "qualification": {
+    "result": "PASS",
+    "candidate_attempts_per_case": 1,
+    "retry_dependent_cases": [],
+    "downstream_judge_repairs": [
+      "e04-quebec-design-review-idle"
+    ]
+  }
+}

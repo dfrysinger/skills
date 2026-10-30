@@ -74,6 +74,34 @@ unavailable, print the objective instead.
   run unattended.
 - For a short, attended task that fits in one context window, skip this and just
   do the work.
+- When `design-doc` has a durable decision record and work-order path but is
+  still drafting or reviewing the design, use the bounded design-incubation
+  mode below instead of the normal implementation charter.
+
+## Design-incubation mode
+
+Design incubation closes the continuity gap before an approved implementation
+work order exists. `design-doc` remains the governing skill and owns
+`design_status`, design approval, and whether a user-only decision is pending.
+`unattended-run` owns only native objective delivery and one 30-minute
+`design_progress` reminder.
+
+The design-only native objective is the primary continuation loop. The
+30-minute reminder is a liveness and recovery backstop for failed delivery,
+stalled continuation, stale state, or completed asynchronous owner output. Do
+not create the normal hourly progress and four-hour charter pair during this
+phase.
+
+Read and follow
+[`references/design-incubation.md`](references/design-incubation.md) whenever
+this mode applies. It contains the objective, reminder, status, suspension,
+reconciliation, and handoff contracts. Use the existing
+`enqueue-autopilot.sh` helper and `manage_schedule`; add no second transport or
+scheduler.
+
+**Complete when** the compatible design objective and reminder are confirmed
+or an explicit failure receipt and existing manual fallback are durable, and
+the design can continue without an unowned asynchronous wait.
 
 ## Respect the governing scope
 
@@ -382,7 +410,22 @@ manage_schedule action=create interval=4h \
   critical-path audit against the plan: verify workspace, objective, phase,
   candidate/proof identity, owner routes or explicit blockers, constraint
   gate, and ALL independent ready scopes. Repair stale, missing, duplicated,
-  or inconsistent state without disturbing live proof. Time alone never
+  or inconsistent state without disturbing live proof. If the charter records
+  an unresolved implementation-objective handoff, repair it from its durable
+  state. For `prepared`, verify native objective state and inspect the SDK
+  request store by its recorded deduplication identity; record a matching
+  request as `submitted`, or submit once when no request or active objective
+  exists. For `submitted`, wait for the receipt to become terminal. Record
+  `resolved` only after the exact objective has native `idle` or `steering`
+  activation evidence. After a terminal failed receipt without that proof,
+  persist `fallback_pending` with the exact fallback, digest, a unique notice
+  ID derived from the handoff and terminal receipt, and the pending event
+  identity; include the notice ID and print it as the final response. On a
+  later tick, record `fallback_delivered` only after a delivered assistant turn
+  after that event contains the same notice ID and hashing its exact fallback
+  text matches the persisted digest; otherwise repeat it and keep
+  `fallback_pending`. Never automatically retry
+  the same deduplication identity, including an `ambiguousSideEffect` receipt. Time alone never
   triggers a full re-brief or constraint challenge. When the shared
   Definition of Done is verified,
   stop BOTH registered schedules and every duplicate pointed at this
@@ -399,6 +442,22 @@ manage_schedule action=create interval=1h \
   the four-hour charter check owns that audit. If genuinely stuck on a
   concrete new blocker, use one bounded rubber-duck pass to find a
   distinguishing next action; do not repeat unchanged brainstorms.
+  If an unresolved implementation-objective handoff is already recorded,
+  repair it from its durable state. For `prepared`, verify native objective
+  state and inspect the SDK request store by its recorded deduplication
+  identity; record a matching request as `submitted`, or submit once when no
+  request or active objective exists. For `submitted`, wait for the receipt to
+  become terminal. Record `resolved` only after the exact objective has native
+  `idle` or `steering` activation evidence. After a terminal failed receipt
+  without that proof, persist `fallback_pending` with the exact fallback,
+  digest, a unique notice ID derived from the handoff and terminal receipt, and
+  the pending event identity; include the notice ID and print it as the final
+  response. On a later tick, record `fallback_delivered` only after a delivered
+  assistant turn after that event contains the same notice ID and hashing its
+  exact fallback text matches the persisted digest; otherwise repeat it and
+  keep `fallback_pending`. Never automatically retry the same deduplication
+  identity, including an
+  `ambiguousSideEffect` receipt.
   Preserve live-proof ownership, immutable first outcomes, and normal
   proof and promotion gates. When the shared Definition of Done is
   verified, stop BOTH registered schedules and verify absence."

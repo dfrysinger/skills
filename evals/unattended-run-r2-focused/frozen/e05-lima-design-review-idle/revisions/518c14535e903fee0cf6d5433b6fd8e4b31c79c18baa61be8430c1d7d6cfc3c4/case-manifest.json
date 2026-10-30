@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "case_id": "e05-lima-design-review-idle",
+  "case_definition_sha256": "2ad281db0d1254965c05a3972e410ab5bd97df99e55c8f06630a00d669f7cd74",
+  "prompts": [
+    {
+      "path": "criteria.md",
+      "sha256": "5be125932683e6ce9382cf6e1edaf1fe6d4c6e5551eb1d6f694c595263f168b7"
+    },
+    {
+      "path": "prompts/candidate.md",
+      "sha256": "4f9f124b22dad034a0560b05adf0f12f45d8220e3b354ceef23a37c6435a02b0"
+    },
+    {
+      "path": "prompts/challenge-completed.md",
+      "sha256": "45464eea3d526563969b4adb36f7bcc3e5a5a3de550409280331b2c7da8e89ad"
+    },
+    {
+      "path": "prompts/judge.md",
+      "sha256": "12eaccc8a564eafd59943fa7f3f52479dda9d49eaa8ec02d5cf1fe032a639d11"
+    }
+  ],
+  "candidate_packets": [
+    {
+      "id": "candidate",
+      "manifest_sha256": "36ee22c5baa722cb447e93ffc754f8a0f0af42e391bb0552b36c02ec7caca0b2",
+      "file_count": 1
+    },
+    {
+      "id": "challenge-completed",
+      "manifest_sha256": "82606b130e32f88dad0a4e683b92ea5f3813cf3d5f91bc819d2cddac86f194ea",
+      "file_count": 1
+    }
+  ],
+  "judge_packet": {
+    "manifest_sha256": "90ef060ae3427dd3c13a85b14be4c3ba7e85b00584204fe95b25c510392033df",
+    "file_count": 2
+  }
+}

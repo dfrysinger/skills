@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "case_id": "e05-lima-design-review-idle",
+  "packet": "judge-reference",
+  "allowlist_only": true,
+  "files": [
+    {
+      "path": "correction.md",
+      "sha256": "06d70091b013c1b2b81fff114e6ccc73718c58f2a00ac25dd5598cc11b4fd2ef",
+      "source": {
+        "path": "judge-reference/correction.md",
+        "sha256": "06d70091b013c1b2b81fff114e6ccc73718c58f2a00ac25dd5598cc11b4fd2ef",
+        "transform": "exact-copy"
+      }
+    },
+    {
+      "path": "oracle.md",
+      "sha256": "230a6cf8c2bc6e997a5e8a0d676287d28be0635ed1e28ed21ccb382eaee1f7b9",
+      "source": {
+        "path": "judge-reference/oracle.md",
+        "sha256": "230a6cf8c2bc6e997a5e8a0d676287d28be0635ed1e28ed21ccb382eaee1f7b9",
+        "transform": "exact-copy"
+      }
+    }
+  ]
+}

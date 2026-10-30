@@ -52,6 +52,7 @@ For cross-computer messaging setup, see the
 | Prove a user-visible change works in the real product | [`visual-proof`](./skills/visual-proof/SKILL.md) |
 | Add a video walkthrough of new UX to a pull request | [`walkthrough-video`](./skills/walkthrough-video/SKILL.md) |
 | Run a long task without losing the plan | [`unattended-run`](./skills/unattended-run/SKILL.md) |
+| Search historical and running agent transcripts | [`session-transcript-census`](./skills/session-transcript-census/SKILL.md) |
 | Pass work to another named agent | [`handoff`](./skills/handoff/SKILL.md) + [`mailbox`](./skills/mailbox/SKILL.md) |
 | Turn a reusable procedure into a skill | [`skill-create`](./skills/skill-create/SKILL.md) |
 | Regression-test an agent skill against frozen cases | [`skill-evaluation`](./skills/skill-evaluation/SKILL.md) |

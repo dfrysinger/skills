@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "case_id": "e04-quebec-design-review-idle",
+  "case_definition_sha256": "831b0e164a673631af79ea9b028f0e2409fef200e6ba08766893c8733d56c46e",
+  "prompts": [
+    {
+      "path": "criteria.md",
+      "sha256": "af898ac4c36d382e99922c1e3233b7e012277a7821d861c6bc40df96ad8a31cb"
+    },
+    {
+      "path": "prompts/candidate.md",
+      "sha256": "2d30c6897ddd2498f8f379c1cb9c74a68231720a16c0306c303cad037687e864"
+    },
+    {
+      "path": "prompts/judge.md",
+      "sha256": "12eaccc8a564eafd59943fa7f3f52479dda9d49eaa8ec02d5cf1fe032a639d11"
+    }
+  ],
+  "candidate_packets": [
+    {
+      "id": "candidate",
+      "manifest_sha256": "46957c2135a1a6cf2027d7ece77d7d001aeada7048cc837f45f127c34d3a84e6",
+      "file_count": 1
+    }
+  ],
+  "judge_packet": {
+    "manifest_sha256": "7fffb3eb1de14665bff63db6a16b4a04f4a65cfcd9c75735e6f07a0d61df3a5b",
+    "file_count": 2
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "artifacts": [
+    {
+      "id": "quebec-turns-1458-1470",
+      "session_id": "7085553f-3278-4b0c-8f7b-e6cb6991f7b9",
+      "kind": "local-session-turns",
+      "source_turns": [1458, 1464, 1465, 1469, 1470],
+      "candidate_visible": [1458],
+      "judge_only": [1464, 1465, 1469, 1470]
+    },
+    {
+      "id": "quebec-checkpoint-74",
+      "session_id": "7085553f-3278-4b0c-8f7b-e6cb6991f7b9",
+      "kind": "checkpoint",
+      "source_checkpoint": 74,
+      "candidate_visible": false,
+      "judge_only": true
+    },
+    {
+      "id": "quebec-pass1-completed-state",
+      "session_id": "7085553f-3278-4b0c-8f7b-e6cb6991f7b9",
+      "kind": "restored-owner-result",
+      "source_turn": 1464,
+      "candidate_visible_phase": "pass1-completed",
+      "limitation": "The later assistant admission proves the owner result existed before the user's correction; the correction text is not candidate-visible."
+    }
+  ]
+}

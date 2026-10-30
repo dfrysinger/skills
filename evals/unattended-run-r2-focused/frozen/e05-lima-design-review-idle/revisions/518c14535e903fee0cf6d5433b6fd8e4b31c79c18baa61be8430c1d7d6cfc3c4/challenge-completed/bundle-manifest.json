@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "case_id": "e05-lima-design-review-idle",
+  "packet": "challenge-completed",
+  "allowlist_only": true,
+  "files": [
+    {
+      "path": "result.json",
+      "sha256": "0499b13c197e47cd2e5c50e0bdea55a3961828ca45012cd027665831f68bb93d",
+      "source": {
+        "path": "evidence/challenge-completed/result.json",
+        "sha256": "0499b13c197e47cd2e5c50e0bdea55a3961828ca45012cd027665831f68bb93d",
+        "transform": "exact-copy"
+      }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "revision": "design-incubation-continuity-decisions-v1",
+  "events": [
+    {
+      "event_id": "design-continuity-user-outcome",
+      "question": "How should a new design task keep moving before normal unattended execution begins?",
+      "recommended_answer": "Set a temporary design-only autopilot objective and a 30-minute progress reminder when the session has no compatible objective or reminder, then replace them with normal unattended-run state after the design is approved.",
+      "user_quote": "nice! next I have this issue where an agent (like Quebec right now) that doesnt have a current autopilot objective and doesnt have an hourly reminder set yet and I give them a new task and they go work on the design doc and while the design doc is being reviewed and iterated on they loose track of time and their goals and just sit forever, so I thinkn we need to set a new autopilot goal when the design doc is kicked off, and maybe a 20-30 min scheuled push to keep going until the poiont that the design doc is approved and then the unattended run can take over",
+      "context": "The user described a current design and review loop that became idle before an unattended-run objective or reminder existed.",
+      "authority": "top-level user outcome and process direction",
+      "resolved": true
+    }
+  ],
+  "unresolved_event_ids": []
+}

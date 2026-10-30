@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "case_id": "e04-quebec-design-review-idle",
+  "packet": "judge-reference",
+  "allowlist_only": true,
+  "files": [
+    {
+      "path": "candidate-scenario.md",
+      "sha256": "f374c326be14fb6e1426f683a5710ef3e1f60509788a0b7bb83123163dcf32b2",
+      "source": {
+        "path": "judge-reference/candidate-scenario.md",
+        "sha256": "f374c326be14fb6e1426f683a5710ef3e1f60509788a0b7bb83123163dcf32b2",
+        "transform": "exact-copy"
+      }
+    },
+    {
+      "path": "correction.md",
+      "sha256": "27c7dea79e0db62568f849c9720fc454bcd378151a03c72b05b2429fe6f4c217",
+      "source": {
+        "path": "judge-reference/correction.md",
+        "sha256": "27c7dea79e0db62568f849c9720fc454bcd378151a03c72b05b2429fe6f4c217",
+        "transform": "exact-copy"
+      }
+    },
+    {
+      "path": "oracle.md",
+      "sha256": "89a3cf20d78437b1c1323fd7468b97eda933ca5da398fa7ef25c7715a2e4e544",
+      "source": {
+        "path": "judge-reference/oracle.md",
+        "sha256": "89a3cf20d78437b1c1323fd7468b97eda933ca5da398fa7ef25c7715a2e4e544",
+        "transform": "exact-copy"
+      }
+    },
+    {
+      "path": "pass1-result.md",
+      "sha256": "2461ed3206caa5b5aaff9d862b48b577246d340c0ad4262584f5f18c5b281852",
+      "source": {
+        "path": "judge-reference/pass1-result.md",
+        "sha256": "2461ed3206caa5b5aaff9d862b48b577246d340c0ad4262584f5f18c5b281852",
+        "transform": "exact-copy"
+      }
+    },
+    {
+      "path": "provenance.md",
+      "sha256": "fd85bbadd6fe380425e3785ec58efd3ebfcef04cc1e2a088fea99883667d2112",
+      "source": {
+        "path": "judge-reference/provenance.md",
+        "sha256": "fd85bbadd6fe380425e3785ec58efd3ebfcef04cc1e2a088fea99883667d2112",
+        "transform": "exact-copy"
+      }
+    }
+  ]
+}

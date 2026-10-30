@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "case_id": "e04-quebec-design-review-idle",
+  "packet": "pass1-completed",
+  "allowlist_only": true,
+  "files": [
+    {
+      "path": "result.md",
+      "sha256": "2461ed3206caa5b5aaff9d862b48b577246d340c0ad4262584f5f18c5b281852",
+      "source": {
+        "path": "evidence/pass1-completed/result.md",
+        "sha256": "2461ed3206caa5b5aaff9d862b48b577246d340c0ad4262584f5f18c5b281852",
+        "transform": "exact-copy"
+      }
+    }
+  ]
+}
