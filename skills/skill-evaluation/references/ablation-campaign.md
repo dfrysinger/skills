@@ -80,10 +80,9 @@ before editing:
 - **reference coupling**: the grader requires an implementation shape that the
   claim did not require.
 
-When the failure proves exactly one compact general rule is missing and no
-competing remedy remains, add that rule and rerun the failed subset, then the
-complete corpus. When multiple credible rules, rewordings, or structures could
-close the failure, follow
+Compare a supported compact add-back with the unchanged lean arm on the failed
+subset, then check the complete corpus. When the question requires choosing
+among competing rules, rewordings or structures, follow
 [`parallel-treatment-search.md`](parallel-treatment-search.md): keep the lean
 arm as a control and compare the alternatives in a frozen matrix.
 
@@ -106,9 +105,9 @@ is evidence that the rule can work, not that behavior is deterministic.
 
 If the same failure repeats under the bounded retry policy, treat it as a
 missing or ineffective rule and generate source-backed correction hypotheses.
-Apply one serially only when the evidence requires that correction and no
-competitor remains; otherwise compare the hypotheses through parallel treatment
-search. If different cases miss different already-explicit rules without a
+Test a supported correction against the unchanged lean arm, or compare
+competing hypotheses through a declared parallel treatment search when needed.
+If different cases miss different already-explicit rules without a
 stable pattern, do not respond by restating the whole skill.
 
 Complete when each failure is labeled rule gap or variance from retained
