@@ -416,10 +416,13 @@ manage_schedule action=create interval=4h \
   request store by its recorded deduplication identity; record a matching
   request as `submitted`, or submit once when no request or active objective
   exists. For `submitted`, wait for the receipt to become terminal. Record
-  `resolved` after verified delivery. After a terminal failed receipt, verify
-  native state once; otherwise record `fallback_required` and print the
-  existing fallback once. Never automatically retry the same deduplication
-  identity, including an `ambiguousSideEffect` receipt. Time alone never
+  `resolved` only after the exact objective has native `idle` or `steering`
+  activation evidence. After a terminal failed receipt without that proof,
+  persist `fallback_pending` with the exact fallback and digest, then print it
+  as the final response. On a later tick, record `fallback_delivered` only
+  after the session transcript contains that exact delivered assistant text;
+  otherwise repeat it and keep `fallback_pending`. Never automatically retry
+  the same deduplication identity, including an `ambiguousSideEffect` receipt. Time alone never
   triggers a full re-brief or constraint challenge. When the shared
   Definition of Done is verified,
   stop BOTH registered schedules and every duplicate pointed at this
@@ -441,10 +444,13 @@ manage_schedule action=create interval=1h \
   state and inspect the SDK request store by its recorded deduplication
   identity; record a matching request as `submitted`, or submit once when no
   request or active objective exists. For `submitted`, wait for the receipt to
-  become terminal. Record `resolved` after verified delivery. After a terminal
-  failed receipt, verify native state once; otherwise record
-  `fallback_required` and print the existing fallback once. Never
-  automatically retry the same deduplication identity, including an
+  become terminal. Record `resolved` only after the exact objective has native
+  `idle` or `steering` activation evidence. After a terminal failed receipt
+  without that proof, persist `fallback_pending` with the exact fallback and
+  digest, then print it as the final response. On a later tick, record
+  `fallback_delivered` only after the session transcript contains that exact
+  delivered assistant text; otherwise repeat it and keep `fallback_pending`.
+  Never automatically retry the same deduplication identity, including an
   `ambiguousSideEffect` receipt.
   Preserve live-proof ownership, immutable first outcomes, and normal
   proof and promotion gates. When the shared Definition of Done is

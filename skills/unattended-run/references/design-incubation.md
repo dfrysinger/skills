@@ -133,11 +133,17 @@ repairs the handoff from its durable state:
   objective state; and
 - record `resolved` with the terminal receipt when delivery is confirmed.
 
-After a terminal failed receipt, verify native objective state once. If the
-objective is active, record `resolved`. Otherwise preserve the receipt, record
-`fallback_required`, and print the existing manual fallback once. Never
+After a terminal failed receipt, verify the exact canonical objective and
+require native activation evidence of `idle` or `steering` before recording
+`resolved`. Objective presence without that activation proof is not resolved.
+Otherwise preserve the receipt, persist `fallback_pending` with the exact
+fallback text and its digest, and print that fallback as the final response.
+
+On a later tick, reconcile `fallback_pending` against the session transcript.
+When the exact fallback text is present in a delivered assistant turn, record
+`fallback_delivered` and do not repeat it. When delivery is absent or cannot be
+proved, print the same fallback again and leave `fallback_pending`; this favors
+an occasional duplicate over losing the only recovery instruction. Never
 automatically retry a terminal failure with the same deduplication identity;
 an `ambiguousSideEffect` receipt permanently blocks that identity. Never wait
-for a receipt that was not submitted. A later tick may record `resolved` after
-the native objective or documented manual fallback is observed, but it does not
-repeat the fallback.
+for a receipt that was not submitted.
