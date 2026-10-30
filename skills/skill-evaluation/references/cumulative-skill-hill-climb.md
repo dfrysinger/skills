@@ -94,14 +94,15 @@ Complete when the draft's published ancestor, latest integrated parent,
 prior-win set, case identity, comparator, and first observable failure are
 recorded.
 
-## 2. Search broadly at the current failure frontier
+## 2. Improve the current failure frontier
 
-Generate distinct, falsifiable ideas for the earliest wrong decision using
-[`parallel treatment search`](parallel-treatment-search.md). A field of around
-20 independent ideas is a useful *parallelism target* when the evidence supports
-it, not a quota: do not pad it with synonymous wording or weak guesses. Build
-as many credible arms as capacity allows concurrently, with each arm changing
-one general mechanism relative to the **same accumulating draft**. Predeclare
+Start with the smallest comparison that can test a general correction to the
+earliest wrong decision: one proposed revision and the unchanged accumulating
+draft. When the question requires choosing among competing mechanisms, use
+[`parallel treatment search`](parallel-treatment-search.md). Size that field
+to the question, not an arm-count target. Run ready independent arms
+concurrently, with each changing one general mechanism relative to the
+**same accumulating draft**. Predeclare
 controls, repetitions, selection, and unchanged task/model/tool/judge inputs.
 The published revision remains an additional reference when attribution to the
 last release matters. Keep every first outcome; judge native product behavior

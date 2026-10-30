@@ -24,6 +24,15 @@ Default to the smallest evaluation that can answer the user's question.
 Ordinary skill tuning does not require a hostile-party or independently
 verifiable experiment.
 
+For a focused improvement, reuse an existing valid case and compare one
+proposed revision with the unchanged skill under the same model, tools, limits
+and checks. Decide any repetitions before running them and retain every first
+outcome. Use the existing report for the question, changed bytes, results and
+available time and cost; do not create a second ledger or a campaign merely
+because other plausible improvements exist. Run independent comparisons
+concurrently when useful. A focused result guides iteration, not a broader
+qualification claim; preserve maintained regression and release gates.
+
 Candidate agents running in separate cloud VMs cannot inspect the coordinator's
 local files unless the prompt, tools, mounted workspace, or supplied evidence
 gives them access. Protect hidden criteria from those real exposure paths. Do
@@ -77,10 +86,12 @@ evaluation.
 
 ## Local evaluation dashboard
 
-Declare a project in each participating corpus with
+For dashboard-tracked work, declare a project in each participating corpus with
 `evaluation-project.json`. The declaration uses one stable project ID, lists
 each task, and binds every frozen case to one task and exact case revision.
 Multiple corpora join only when they declare the same compatible project.
+Keep updating an existing registered project. A focused comparison can use its
+normal evaluator report without creating a dashboard or a new project.
 
 ```json
 {
@@ -552,16 +563,29 @@ lessons through the cumulative hill climb before new searches. Branch every new
 task and experiment from the latest integrated draft. Older, neutral, and lean skills are comparison controls,
 not independent starting points for a new task.
 
-When a valid evaluator exists and more than one credible mechanism could
-improve stochastic skill behavior, follow
-[`references/parallel-treatment-search.md`](references/parallel-treatment-search.md).
-Build a frozen population of source-backed, single-mechanism treatments with
-controls and pre-registered repetitions before editing a preferred candidate.
+Use
+[`references/parallel-treatment-search.md`](references/parallel-treatment-search.md)
+when the question requires choosing among competing mechanisms. Size the field
+to that question rather than an arm-count target. Freeze its controls,
+treatments, repetitions and selection rule before execution. Several plausible
+ideas do not by themselves require a field before a focused comparison.
 
-Use the local suite runner for ordinary corpora. When the corpus contains full
-repositories, native builds, product exercises, multiple treatments, or enough
-observations that one host would become the bottleneck, follow
+Before a coding comparison, establish that the existing execution route can
+perform the required edits and tests under its normal permission controls.
+Reuse that proof while the relevant runner and approval settings are unchanged.
+Authentication and CLI exit zero do not prove this. A noninteractive process
+without a supported approval channel cannot assume requested operations will
+be approved. A demonstrated missing approval path for required, permitted
+operations is an execution blocker, not evidence against the skill. Requests
+for forbidden or unnecessary operations remain behavioral evidence. Preserve
+original outcomes. Do not broaden permissions or repeat an unchanged denied
+invocation; identify the supported route before another paid attempt.
+
+Use the existing supported runner for ordinary corpora. When actual capacity
+or a required platform makes local execution unsuitable, follow
 [`references/large-actions-campaign.md`](references/large-actions-campaign.md).
+Repository size, several treatments or a native build alone does not require
+a distributed campaign.
 Choose execution, experiment recording, and candidate proposal tools separately.
 Adopt or extend one only when a bounded comparison with the current method shows
 a concrete benefit in results, feedback time, total cost, or coordination work.
@@ -810,14 +834,13 @@ Classify a failure before editing:
 
 Repair packet, harness, and grading defects outside the target skill, preserving
 original outcomes and identifying corrected evaluations separately. If the
-evidence establishes exactly one independently required skill correction and no
-competing treatment remains, repair it with general language, rerun the
-unchanged case, and retain the prior run. When multiple credible mechanisms
-remain, freeze them as treatment arms before editing a preferred candidate.
+evidence supports a general skill correction, compare it with the unchanged
+skill on the same case and retain the prior run. Do not present a focused
+improvement as proof that no other correction could work.
 
-When the evaluator is valid but the corrective mechanism is uncertain, default
-to parallel treatment search rather than serial revision. Search multiple
-independent skills and proven practices by generalized behavior class, not by
+When choosing among competing mechanisms is needed, use parallel treatment
+search. Search multiple independent skills and proven practices by generalized
+behavior class, not by
 case vocabulary. Use those sources to generate falsifiable treatment
 hypotheses, preserve source and license provenance, and extract only the
 smallest reusable tactic. The parallel-treatment procedure owns controls,
@@ -832,9 +855,9 @@ assuming incremental editing is safest. Follow
 [`references/ablation-campaign.md`](references/ablation-campaign.md): start the
 lean arm from the smallest load-bearing rules, run one discriminating case,
 then add back a rule only when a repeated corpus regression proves it is
-missing. When more than one credible add-back could close the regression, use
-parallel treatment search with the lean arm as a control. Existing prose earns
-retention through behavior, not age.
+missing. Compare a focused add-back with the unchanged lean arm, or use parallel
+treatment search when the question requires selecting among alternatives.
+Existing prose earns retention through behavior, not age.
 
 Complete when the result is labeled `PASS`, `FAIL`, or `UNANSWERABLE`, with the
 reason and any generalized skill defect stated separately. For a skill-change
