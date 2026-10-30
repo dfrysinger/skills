@@ -2,10 +2,13 @@
 
 ## Authority mapping
 
-- Original request: `evidence/candidate/scenario.md`.
+- Original request: `judge-reference/candidate-scenario.md`, a byte-identical
+  judge copy of `evidence/candidate/scenario.md`.
 - Exact later corrections: `judge-reference/correction.md`.
 - Expected behavior: `judge-reference/oracle.md`.
-- Source and cutoff ledger: `capture/trace-ledger.md`.
+- Resumed owner result: `judge-reference/pass1-result.md`, a byte-identical
+  judge copy of `evidence/pass1-completed/result.md`.
+- Source and cutoff ledger: `judge-reference/provenance.md`.
 
 ## Must exhibit
 
@@ -39,5 +42,6 @@
 
 ## Unanswerable when
 
-- A declared candidate evidence file is missing or unreadable, so the judge
-  cannot determine what state the candidate received.
+- A declared candidate output or receipt, or one of the judge-reference files
+  named above, is missing or unreadable, so the judge cannot determine what
+  state the candidate received or how it responded.
