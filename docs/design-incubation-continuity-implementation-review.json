@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "reviewed_candidate_commit": "352d4baa398406717ba51c90786a9d948c0a4f4d",
+  "target_skill_sha256": {
+    "skills/design-doc/SKILL.md": "5d4a07d9fbeb4daabca0d0e04a5b816361737620acb03934974a59d118df2c1c",
+    "skills/unattended-run/SKILL.md": "baf983e08df07890b49d435787d65950236e1d248b6c585b7180f22e3fb0aeea",
+    "skills/session-transcript-census/SKILL.md": "3254acdad17ebf0589babd739ab6bcdbb13b61b5bb0405225593c3a54221c11f"
+  },
+  "review_families": {
+    "claude": "claude-opus-5.5",
+    "gpt": "gpt-6.1-terra"
+  },
+  "slices": [
+    {
+      "id": "lifecycle-runtime",
+      "rounds": 7,
+      "final_claude_findings": 0,
+      "final_gpt_findings": 0,
+      "resolved": [
+        "Arm incubation only after systemic or critical classification.",
+        "Make waiting_user reminder cleanup self-healing.",
+        "Give failed implementation-objective delivery an explicit recovery owner.",
+        "Separate prepared, submitted, resolved, and fallback delivery states.",
+        "Do not retry an ambiguous terminal receipt with the same deduplication identity.",
+        "Require exact idle or steering activation before resolving delivery.",
+        "Bind fallback transcript proof to the current handoff, receipt, notice, event order, and delivered text digest."
+      ]
+    },
+    {
+      "id": "historical-evaluation-cases",
+      "rounds": 3,
+      "final_claude_findings": 0,
+      "final_gpt_findings": 0,
+      "resolved": [
+        "Remove post-correction evidence from Quebec candidate context.",
+        "Expose completed owner results in resumed phases.",
+        "Reserve UNANSWERABLE for genuinely unavailable evidence.",
+        "Remove imperative continuation cues and grade only behavior observable in the prose evaluator."
+      ]
+    }
+  ],
+  "remaining_material_findings": []
+}
