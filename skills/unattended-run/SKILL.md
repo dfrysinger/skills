@@ -422,8 +422,9 @@ manage_schedule action=create interval=4h \
   ID derived from the handoff and terminal receipt, and the pending event
   identity; include the notice ID and print it as the final response. On a
   later tick, record `fallback_delivered` only after a delivered assistant turn
-  after that event contains the same notice ID and fallback digest; otherwise
-  repeat it and keep `fallback_pending`. Never automatically retry
+  after that event contains the same notice ID and hashing its exact fallback
+  text matches the persisted digest; otherwise repeat it and keep
+  `fallback_pending`. Never automatically retry
   the same deduplication identity, including an `ambiguousSideEffect` receipt. Time alone never
   triggers a full re-brief or constraint challenge. When the shared
   Definition of Done is verified,
@@ -452,9 +453,10 @@ manage_schedule action=create interval=1h \
   digest, a unique notice ID derived from the handoff and terminal receipt, and
   the pending event identity; include the notice ID and print it as the final
   response. On a later tick, record `fallback_delivered` only after a delivered
-  assistant turn after that event contains the same notice ID and fallback
-  digest; otherwise repeat it and keep `fallback_pending`. Never automatically
-  retry the same deduplication identity, including an
+  assistant turn after that event contains the same notice ID and hashing its
+  exact fallback text matches the persisted digest; otherwise repeat it and
+  keep `fallback_pending`. Never automatically retry the same deduplication
+  identity, including an
   `ambiguousSideEffect` receipt.
   Preserve live-proof ownership, immutable first outcomes, and normal
   proof and promotion gates. When the shared Definition of Done is

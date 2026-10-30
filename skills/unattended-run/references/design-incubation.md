@@ -138,18 +138,19 @@ After a terminal failed receipt, verify the exact canonical objective and
 require native activation evidence of `idle` or `steering` before recording
 `resolved`. Objective presence without that activation proof is not resolved.
 Otherwise preserve the receipt, persist `fallback_pending` with the exact
-fallback text, its digest, and a unique `fallback_notice_id` derived from the
-handoff ID and terminal receipt digest. Include that notice ID in the printed
-fallback and record the pending event or turn identity, then print the fallback
-as the final response.
+fallback text, a unique `fallback_notice_id` derived from the handoff ID and
+terminal receipt digest, and the digest of the complete fallback text after
+that notice ID is included. Record the pending event or turn identity, then
+print that exact fallback as the final response.
 
 On a later tick, reconcile `fallback_pending` against the session transcript.
 Record `fallback_delivered` only when a delivered assistant turn after the
-pending event contains the same `fallback_notice_id` and exact fallback digest.
-An earlier identical fallback cannot satisfy the current handoff. When delivery
-is absent or cannot be proved, print the same identified fallback again and
-leave `fallback_pending`; this favors an occasional duplicate over losing the
-only recovery instruction. Never
+pending event contains the same `fallback_notice_id` and hashing that delivered
+fallback text produces the persisted digest. An earlier identical fallback
+cannot satisfy the current handoff. When delivery is absent or cannot be
+proved, print the same identified fallback again and leave `fallback_pending`;
+this favors an occasional duplicate over losing the only recovery instruction.
+Never
 automatically retry a terminal failure with the same deduplication identity;
 an `ambiguousSideEffect` receipt permanently blocks that identity. Never wait
 for a receipt that was not submitted.
