@@ -4,7 +4,7 @@
   "target_skill": "unattended-run",
   "cohort": "default",
   "authority_kind": "historical",
-  "behavioral_claim": "A long design-doc phase requested as the start of an unattended implementation must establish design-phase continuity before waiting on challenge or review work.",
+  "behavioral_claim": "A long design-doc phase must establish bounded continuity and, when a completed owner result is delivered to a resumed turn, reconcile it and select the immediate ready action without a user progress nudge.",
   "phases": [
     {
       "id": "candidate",

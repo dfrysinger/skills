@@ -17,10 +17,12 @@
   design approval.
 - Preserve `design-doc` as the governing skill and prohibit implementation
   until its challenge and review gates pass.
-- Reconcile completed reviewer output and continue without requiring another
-  user nudge.
-- In the resumed phase, consume the completed pass-1 result and continue the
-  same challenger with the finished work order for pass 2.
+- Treat the neutral owner event as sufficient reason to inspect and reconcile
+  the completed result without requiring another user nudge.
+- In the resumed phase, consume the completed pass-1 result and name continuing
+  the same challenger with the finished work order for pass 2 as the immediate
+  ready action. The prose evaluator cannot launch the challenger, so it grades
+  action selection rather than process creation.
 
 ## Must preserve
 

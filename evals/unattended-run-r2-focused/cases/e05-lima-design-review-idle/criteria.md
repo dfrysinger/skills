@@ -14,10 +14,13 @@
 - Treat completed challenge or review work as an immediate continuation event.
 - Keep a durable design objective and one bounded recovery reminder until
   approval, suspension for a genuine user-only gate, or handoff.
-- Resume without requiring “you stuck?” or another user prompt.
-- In the resumed phase, consume the `CONTINUE`/`CLEAR` challenge result and
-  begin the named two-family design-review round while implementation remains
-  blocked.
+- Treat the neutral owner event as sufficient reason to inspect and reconcile
+  the completed gate, without requiring “you stuck?” or another progress
+  prompt.
+- In the resumed phase, consume the `CONTINUE`/`CLEAR` challenge result, name
+  dual-review round 2 as the immediate ready action, and state that
+  implementation remains blocked. The prose evaluator cannot launch the
+  reviewer, so it grades action selection rather than process creation.
 
 ## Must preserve
 

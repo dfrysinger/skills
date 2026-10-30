@@ -411,9 +411,13 @@ manage_schedule action=create interval=4h \
   candidate/proof identity, owner routes or explicit blockers, constraint
   gate, and ALL independent ready scopes. Repair stale, missing, duplicated,
   or inconsistent state without disturbing live proof. If the charter records
-  a pending implementation-objective handoff, inspect its existing receipt,
-  verify native objective state, record the resolved receipt, and print the
-  existing fallback or retry only after the prior receipt resolves. Time alone never
+  an unresolved implementation-objective handoff, repair it from its durable
+  state. For `prepared`, verify native objective state and inspect the SDK
+  request store by its recorded deduplication identity; record a matching
+  request as `submitted`, or submit once when no request or active objective
+  exists. For `submitted`, wait for the receipt to become terminal. Record
+  `resolved` after verified delivery; print the existing fallback or retry
+  only after a terminal failed receipt. Time alone never
   triggers a full re-brief or constraint challenge. When the shared
   Definition of Done is verified,
   stop BOTH registered schedules and every duplicate pointed at this
@@ -430,10 +434,13 @@ manage_schedule action=create interval=1h \
   the four-hour charter check owns that audit. If genuinely stuck on a
   concrete new blocker, use one bounded rubber-duck pass to find a
   distinguishing next action; do not repeat unchanged brainstorms.
-  If a pending implementation-objective handoff is already recorded, inspect
-  its existing receipt, verify native objective state, record the resolved
-  receipt, and print the existing fallback or retry only after the prior
-  receipt resolves.
+  If an unresolved implementation-objective handoff is already recorded,
+  repair it from its durable state. For `prepared`, verify native objective
+  state and inspect the SDK request store by its recorded deduplication
+  identity; record a matching request as `submitted`, or submit once when no
+  request or active objective exists. For `submitted`, wait for the receipt to
+  become terminal. Record `resolved` after verified delivery; print the
+  existing fallback or retry only after a terminal failed receipt.
   Preserve live-proof ownership, immutable first outcomes, and normal
   proof and promotion gates. When the shared Definition of Done is
   verified, stop BOTH registered schedules and verify absence."

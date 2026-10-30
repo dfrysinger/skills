@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "case_id": "e04-quebec-design-review-idle",
+  "packet": "candidate",
+  "allowlist_only": true,
+  "files": [
+    {
+      "path": "scenario.md",
+      "sha256": "f374c326be14fb6e1426f683a5710ef3e1f60509788a0b7bb83123163dcf32b2",
+      "source": {
+        "path": "evidence/candidate/scenario.md",
+        "sha256": "f374c326be14fb6e1426f683a5710ef3e1f60509788a0b7bb83123163dcf32b2",
+        "transform": "exact-copy"
+      }
+    }
+  ]
+}

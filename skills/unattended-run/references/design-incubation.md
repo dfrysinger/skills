@@ -108,8 +108,8 @@ When an existing instruction authorizes implementation:
 5. for unattended work, create and confirm the normal hourly progress and
    four-hour charter reminders before stopping the design reminder;
 6. persist an `implementation_objective_handoff` record in the implementation
-   charter with `status: pending`, the objective file, target session, and the
-   unresolved receipt;
+   charter with `status: prepared`, the objective file, target session, the
+   SDK request's canonical deduplication identity, and `receipt: null`;
 7. verify the normal pair for that implementation charter is live and the
    design reminder is absent, leaving unrelated schedules untouched;
 8. persist `approved`; and
@@ -120,10 +120,19 @@ A reminder observing `handoff_pending` repairs or completes this sequence. It
 stops only after `development-loop` selects attended execution or the normal
 unattended pair is confirmed.
 
-If implementation-objective delivery fails after the normal pair is live, keep
-that pair, leave the design reminder stopped, preserve the failed receipt, and
-print the existing manual fallback. Keep
-`implementation_objective_handoff.status` pending until a normal reminder
-verifies native objective state. That reminder records the resolved receipt,
-prints the fallback when delivery remains unavailable, and retries only after
-the prior receipt is resolved.
+If implementation-objective delivery is interrupted after the normal pair is
+live, keep that pair and leave the design reminder stopped. A normal reminder
+repairs the handoff from its durable state:
+
+- for `prepared`, first verify native objective state and inspect the SDK
+  request store using the recorded deduplication identity. Record a matching
+  in-flight request as `submitted`; when no matching request or active
+  objective exists, submit it once. The SDK deduplication identity makes a
+  concurrent original submission converge on the same request;
+- for `submitted`, wait for its receipt to become terminal, then verify native
+  objective state; and
+- record `resolved` with the terminal receipt when delivery is confirmed.
+
+After a terminal failed receipt, print the existing manual fallback and retry
+only as a new request after that receipt resolves. Never wait for a receipt
+that was not submitted.

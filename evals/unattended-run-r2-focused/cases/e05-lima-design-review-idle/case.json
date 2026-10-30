@@ -4,7 +4,7 @@
   "target_skill": "unattended-run",
   "cohort": "default",
   "authority_kind": "historical",
-  "behavioral_claim": "A design-incubation task must resume completed asynchronous gates without waiting for the user to ask whether the agent is stuck.",
+  "behavioral_claim": "When a completed asynchronous gate is delivered to a resumed design-incubation turn, the agent must reconcile it and select the immediate ready action without waiting for a user progress prompt.",
   "phases": [
     {
       "id": "candidate",
