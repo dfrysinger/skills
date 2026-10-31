@@ -22,6 +22,7 @@ existing skill to their proper homes instead.
 ## Prerequisites
 
 - `writing-great-skills` and `dual-review` are available.
+- `prompt-engineering` is available for model-facing instruction design.
 - The target skill directory or repository is writable.
 - Python 3 is available for the bundled validator.
 
@@ -42,11 +43,13 @@ them during step 1.
    **Complete when:** one destination is selected, no existing skill has a
    stronger claim, and private context is excluded from anything public.
 
-2. **Shape the skill with the rubric.**
-   Invoke `writing-great-skills` and read its glossary before drafting. Decide
-   the invocation mode, name, leading word, trigger branches, information
-   hierarchy, completion criteria, and any deterministic helper or disclosed
-   reference the skill needs.
+2. **Shape the skill with the rubrics.**
+   Invoke `writing-great-skills` and read its glossary before drafting. Invoke
+   `prompt-engineering` to define the behavior contract and plain-baseline
+   design; the runnable artifact does not exist yet, so defer its diagnosis and
+   measurement steps. Decide the invocation mode, name, leading word, trigger
+   branches, information hierarchy, completion criteria, and any deterministic
+   helper or disclosed reference the skill needs.
 
    **Complete when:** the authoring brief states each decision and every branch
    has an observable completion criterion.
@@ -60,8 +63,14 @@ them during step 1.
    files at the skill root. Follow the target host's frontmatter and
    installation conventions.
 
+   If an observed model failure or an explicit behavioral claim warrants
+   execution, now apply `prompt-engineering` from diagnosis through measurement
+   against the drafted artifact. Otherwise retain its evaluation plan as
+   `UNTESTED`; `skill-evaluation` remains proportional rather than mandatory.
+
    **Complete when:** every line changes invocation or execution, every
-   required file exists, and no meaning is duplicated.
+   required file exists, no meaning is duplicated, and any claimed prompting
+   improvement has the evidence required by `prompt-engineering`.
 
 4. **Run mechanical validation.**
    Run:
