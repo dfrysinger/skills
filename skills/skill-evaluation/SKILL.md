@@ -18,20 +18,69 @@ pooled count of passes from different experiments. Follow the
 [`cumulative skill hill climb`](references/cumulative-skill-hill-climb.md)
 for the complete process.
 
+## Decide what the evaluation will establish
+
+Evaluation measures behavior. Validation uses those measurements to decide
+whether a frozen candidate meets a rule chosen before execution. They use the
+same evaluator; validation is a purpose, not another runner or dashboard step.
+Neither a task pass nor a completed run alone proves improvement, reliability,
+or transfer.
+
+Before a behavioral run or a planned batch, record the following in the
+existing plan or evaluator report. Reuse an applicable record for unchanged
+attempts; do not create a separate ledger or record every preparation command
+as an experiment.
+
+| Decision | Record before execution |
+| --- | --- |
+| Question | The uncertainty this evaluation will resolve and whether it is setup diagnosis, exploratory search, or final confirmation. |
+| Candidate and comparison | Exact skill and case identities, the unchanged control when comparing changes, and the model, tools, environment, limits, and judging contract held fixed. |
+| Cases | Development cases used to choose changes, maintained regression cases, and reserved cases used to check transfer. |
+| Attempts | Planned repetitions or bounded retries, first-outcome retention, and handling of incomplete execution. |
+| Decision rule | What results mean keep, reject, or inconclusive, including the qualification threshold when applicable. |
+| Stop rule | The batch boundary, any applicable time or cost ceiling, and the observation that ends or changes the search. Unknown cost remains unknown. |
+| Allowed claim | Case pass, improvement over the unchanged skill, no-skill advantage, transfer, or release qualification. |
+
+Use the smallest useful sequence:
+
+1. Establish that the execution route and checks can exercise the requested
+   behavior. Setup evidence does not count as a skill improvement.
+2. Explore with one proposed change and an unchanged control. Use a larger
+   treatment field only when the question requires choosing among mechanisms.
+3. Choose a candidate from development evidence and freeze its exact bytes.
+4. Confirm that candidate under the predeclared rule, protecting maintained
+   behavior and using reserved cases for any transfer claim.
+5. Release only the supported claim, or report the unresolved result and the
+   evidence needed to revisit it.
+
+For an unchanged skill evaluation, no search or winner selection is needed.
+For focused tuning, a development result may guide the next change without
+claiming release qualification. Reuse applicable completed evidence rather than
+rerunning every stage. A failure that produces no new behavioral information
+requires diagnosis before another unchanged wave, not more variants or a larger
+evaluation system.
+
+For final confirmation and transfer, follow
+[`release qualification and generalization`](references/release-qualification-and-generalization.md),
+including its feedback-exposure rules. Use the
+[`completion report`](references/completion-report.md) to distinguish
+first-attempt and retry-assisted results, incomplete evidence, and the limits
+of a small fixed pass rule.
+
+Complete when the plan identifies the next decision and stopping point, and
+the report ties the actual decision to fixed inputs, retained outcomes, and
+the supported claim.
+
 ## Keep evaluation proof proportional
 
 Default to the smallest evaluation that can answer the user's question.
 Ordinary skill tuning does not require a hostile-party or independently
 verifiable experiment.
 
-For a focused improvement, reuse an existing valid case and compare one
-proposed revision with the unchanged skill under the same model, tools, limits
-and checks. Decide any repetitions before running them and retain every first
-outcome. Use the existing report for the question, changed bytes, results and
-available time and cost; do not create a second ledger or a campaign merely
-because other plausible improvements exist. Run independent comparisons
-concurrently when useful. A focused result guides iteration, not a broader
-qualification claim; preserve maintained regression and release gates.
+For a focused improvement, reuse an existing valid case and the decision record
+above. Other plausible improvements do not require a campaign. Run independent
+comparisons concurrently when useful; preserve maintained regression and
+release gates.
 
 Candidate agents running in separate cloud VMs cannot inspect the coordinator's
 local files unless the prompt, tools, mounted workspace, or supplied evidence

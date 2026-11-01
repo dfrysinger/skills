@@ -139,6 +139,12 @@ task authority, an invalid evaluator, or a runtime/time constraint before
 creating more variants. A qualified reference implementation proves the test
 can run, not that the model and skill can solve it.
 
+Apply the decision and stop rules recorded before the batch. Another batch
+needs a specific new hypothesis or a distinguishing measurement, not merely
+unused capacity or a desire to turn the last result green. Preserve an
+inconclusive comparison as inconclusive; do not raise the retry limit or lower
+the success threshold to select a winner.
+
 Complete when the draft has a replicated complete task PASS or the blocker is
 classified with an explicit revisit condition. An isolated one-off PASS is a
 lead, not yet a publishable gain.
@@ -146,8 +152,14 @@ lead, not yet a publishable gain.
 ## 4. Minimize the new increment
 
 Once the combined draft preserves the declared prior-win set and passes its
-target under the predeclared rule, start a fresh **delta ablation** at the
-published skill plus any previously retained increments, not at no skill. Add
+target under the predeclared rule, assess whether the new instructions need
+**delta ablation**. Use it for substantial additions, competing instructions,
+suspected unnecessary work, or an explicit minimization claim. A small focused
+change may proceed through its maintained and release gates without another
+search; report its size without claiming minimality.
+
+When delta ablation is warranted, start at the published skill plus any
+previously retained increments, not at no skill. Add
 only the new general sentences or mechanisms needed to reproduce the gain. Test single
 additions first; test combinations when their behavior interacts. Remove
 instructions whose absence does not reduce target success or weaken an earlier
@@ -168,8 +180,10 @@ candidate**; minimize the repair again. Do not silently move an old case's
 fixture or switch models to turn a red cell green. Mark cells with unusable or
 missing evidence unknown, not pass.
 
-Complete when the smallest supported increment preserves the measured
-previous wins and newly conquered task under one exact shared identity.
+Complete when the resulting candidate preserves the measured previous wins
+and newly conquered task under one exact shared identity. After ablation,
+identify the smallest supported increment; without it, preservation does
+not establish that every retained instruction is necessary.
 
 ## 5. Rebuild the whole skill only when warranted
 
