@@ -139,6 +139,12 @@ autonomous preparation, ask for the exact action, state that the run resumes
 automatically when it is observed, and name the result or state you will inspect
 next.
 
+After replacing an unsupported permission interaction with a supported route,
+reassess the resulting state. Continue when permitted; if the route exposes a
+genuine user-controlled permission or login action, present that exact action
+once and preserve conditional resumption. Failed setup alone is not proof
+that user approval is needed or that remediation is complete.
+
 An exclusive owner or dependency gate applies only to its overlapping lane.
 Avoid competing writes and continue disjoint ready work. If owner status is
 unknown, request it once through the recorded routable address. When no
@@ -174,13 +180,49 @@ Read the linked plan and charter on resumption. Keep detailed state, source
 and runtime identities, receipts, schedules, exact owner quotes and historical
 decisions in their authoritative plan, baton or ledger, not in the objective.
 
-Update the objective when owner direction or a material change to scope,
-boundaries, workspace or the resumable next action makes it inaccurate.
-First reconcile the plan and charter, then rewrite the objective in place
-and refresh the active native objective through the SDK handoff. Replace
-superseded clauses instead of prepending amendments or retaining old
-objectives underneath. Routine progress belongs in the baton and does not
+At each user message, assess whether it changes the outcome, scope, priority,
+acceptance, authority, workspace or next action before advancing affected work.
+Preserve consequential direction verbatim with its event identity and enough
+surrounding context to identify referenced choices in the existing decision
+record. A question, acknowledgement or tactical suggestion
+does not automatically change the grant; answer side questions and continue
+the standing task. Resolve ambiguous direction at the smallest affected
+boundary while advancing independent work.
+
+When direction changes the contract, reconcile the plan and charter first.
+Replace superseded clauses in ALL active instruction surfaces, not just the
+objective. Move historical instructions and evidence to linked non-operative
+records; preserve unresolved requirements, owner boundaries and valid grants.
+Record the superseded instructions and preserved-evidence location in the
+current baton. If only a proposal is possible, state the replacement and
+archival actions still needed without claiming unavailable historical bytes
+or completed migration.
+Then rewrite an inaccurate objective in place and refresh it through the
+existing SDK handoff. Routine progress belongs in the baton and does not
 require re-sending an unchanged objective.
+
+After interruption or resumption, reconcile the latest applicable user
+direction, current plan/charter and native objective before affected execution.
+Finish an incomplete update through the existing handoff confirmation/fallback
+path; a file write or an older receipt does not prove current activation.
+Reconcile this run's reminder pointers without changing unrelated objectives
+or schedules. Preserve failed request identities and their no-retry boundaries.
+
+A correction about disproportionate work, or repeated internal repairs without
+product progress, requires an actual recovery: identify the first divergence,
+replace the implicated operating instructions and name the next concrete
+delivery milestone. Use `development-loop` to select remaining checks and
+evidence reuse. Keep real defects and required acceptance open; a promise to
+refocus or a new priority paragraph above old instructions is not recovery.
+
+**Complete when** the current baton explicitly identifies the active
+plan/charter/objective surfaces replaced, their linked historical evidence
+or unresolved evidence location, preserved requirements, and objective
+activation or unresolved delivery/fallback. Execute the next supported action
+or preserve its exact exclusive gate, including any genuinely required user
+action. In a proposal-only environment, emit those same fields as pending
+replacement/archival actions and unavailable facts; freestanding alternative
+artifact bodies without their migration and handoff boundary are incomplete.
 
 Before each handoff, check that there is one current instruction per decision,
 every pointer resolves, and no historical override chain or transcript dump

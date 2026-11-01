@@ -9,11 +9,44 @@ Ship one coherent change using the lightest process that proves its actual
 behavior and realistic blast radius. Start small; enlarge the process only
 when observed evidence requires it.
 
-**Phase gate:** externally observable runtime claims must pass on the actual
-candidate before implementation review, broad CI, full lint or PR work.
+**Phase gate:** externally observable runtime claims owned by the current stage
+must pass on the actual candidate before that stage's implementation review,
+broad CI, full lint or PR work.
 Targeted diagnostics needed to make the candidate runnable may precede proof.
-Landing, release readiness and completion require the complete final
-acceptance set to pass against one frozen candidate.
+Each stage's landing or readiness requires its complete acceptance set against
+one frozen candidate. Final release/run completion still requires every
+applicable acceptance obligation, including packaged and installed behavior;
+source-PR readiness does not close those later obligations.
+
+**Verification selection:** distinguish diagnosis, changed-behavior proof,
+source review readiness, broad repository/CI checks and packaged or installed
+release acceptance. The owning contract determines each stage's required
+checks; the eventual release outcome does not move every later-stage gate
+before the source PR. Preserve mandated source checks and live proof for
+changed runtime claims. Packaging diagnostics may precede landing when a
+named source requirement or observed package-only failure needs them.
+
+At repeated repair without product progress or a user proportionality
+correction, identify the first divergence and replace the implicated check
+plan before another expensive operation. Name the product requirement,
+owning check, accepted evidence and next delivery milestone. Keep real defects
+open; narrowing the process does not silently narrow acceptance.
+
+Select repeats through the existing change-to-claim impact map and checked
+reuse contract. Record the changed relevant input or distinct declared
+question before repeating an expensive check. Non-consumed evidence prose or
+receipt timestamps alone do not invalidate product observations. Instruction
+text and product copy consumed by a claim are relevant inputs. Changed fixtures
+and harnesses
+do require reached proof when they affect its behavior; a complete candidate
+fingerprint changing is not itself a reason to execute every claim again.
+
+When test infrastructure fails, use retained output and the cheapest
+representative canary to distinguish a product defect from a harness problem.
+Keep unsupported claims unproven. Repair infrastructure only where an
+in-scope requirement needs it; collector preferences and decorative evidence
+formats are not independent delivery outcomes. Preserve original receipts
+and use the existing validator rather than inventing a replacement ledger.
 
 Before a consequential decision, name the positive evidence establishing its
 prerequisite for the current source. An empty observation, no work in flight,
@@ -241,11 +274,14 @@ consumer seam loads and the candidate is ready for real proof.
 
 ## 5. Prove behavior on the exact candidate
 
-For runtime work, create stable `live-proof-<claim-id>` todos and
+For runtime work, derive the claims owned by the current stage from the reviewed
+acceptance contract. Keep later-stage obligations pending in the plan; register
+their proof when that stage begins, not as pre-PR gates.
+Create stable `live-proof-<claim-id>` todos and
 `live_proof_receipts` rows immediately, initially `INCONCLUSIVE`. Use structured
 JSON receipts if session SQL is unavailable. After resumption, rederive claims
-from acceptance and reconcile them one-to-one with todos, rows and receipt
-paths. A partial or empty ledger is not completion.
+from current-stage acceptance and reconcile them one-to-one with todos, rows
+and receipt paths. A partial or empty ledger is not completion.
 
 Read [live-proof-receipt](references/live-proof-receipt.md) when registering,
 fingerprinting, validating or reusing a claim. Use its existing validator,
@@ -284,7 +320,7 @@ After candidate movement, write a change-to-claim impact map before choosing
 replays: each changed executable path, configuration, dependency, generated
 asset or fixture must name reached claims and why others are unaffected.
 Mark reached rows `STALE` and preserve old receipts under their execution
-identity. Reopen aggregate readiness until final acceptance passes.
+identity. Reopen aggregate readiness until current-stage acceptance passes.
 
 Reuse results only when separate checked correspondence proves all relevant
 contents, modes, types, directory membership, configuration, dependencies,
@@ -302,10 +338,11 @@ on accepted `PASS`. `FAIL`, `BLOCKED`, `STALE` and `INCONCLUSIVE` remain closed
 gates. On failure, record the first divergent checkpoint, diagnose and fix it,
 then rerun the reached claim. Partial success cannot narrow acceptance.
 
-Complete when every changed externally observable claim has current accepted
-proof and no unexplained error, manual workaround or unverified criterion.
+Complete when every current-stage externally observable claim has current
+accepted proof and no unexplained error, manual workaround or unverified
+current-stage criterion. Later-stage acceptance stays pending, not waived.
 
-## 6. Review and final acceptance
+## 6. Review and stage acceptance
 
 Revalidate affected claim receipts before review. Once they pass, run remaining
 deterministic checks proportionate to the lane and invoke `dual-review` with
@@ -330,9 +367,9 @@ exact worktree/base/head; store its run under project/session, not `/tmp`.
 Review fixes get an impact map and reached diagnostics/proof before further
 review. Even a behavior-preserving executable edit within a exercised scope
 needs replay. Reuse unaffected evidence only through validated applicability.
-Final acceptance reconciles the entire required claim set against one exact
-frozen reviewed candidate. Every claim must have accepted direct proof or
-checked reuse and the aggregate must pass.
+Stage acceptance reconciles its entire required claim set against one exact
+frozen reviewed candidate. Every current-stage claim must have accepted direct
+proof or checked reuse and the aggregate must pass.
 
 For broad CI failures, run the smallest equivalent canary on the frozen
 candidate. Compare with the exact base or main when repository health is
@@ -347,14 +384,15 @@ when required. Rehearse, record, fully decode/inspect, host and bind the movie
 to the demonstrated candidate before PR work. Runtime movement makes it stale.
 Visual fixes may retain their required paired screenshots.
 
-Complete when final acceptance, proportionate deterministic checks and review
+Complete when current-stage acceptance, proportionate deterministic checks and review
 have no verified in-scope must-fix remaining.
 
 ## 7. Land and preserve continuity
 
-Before landing, release-readiness or completion, revalidate the complete final
-receipt set on the exact target. All proof rows must be accepted PASS and their
-todos closed; checks/review must pass, the diff stay scoped, required visual
+Before a stage's landing or readiness, revalidate its complete receipt set on
+the exact target. Final release/run completion requires the full acceptance
+set, including all later-stage obligations. All applicable proof rows must be
+accepted PASS and their todos closed; checks/review must pass, the diff stay scoped, required visual
 evidence be attached and temporary artifacts be cleaned up. Use repository
 commit/merge/release policy and verify produced/published/installed bytes when
 the deliverable crosses those boundaries.
