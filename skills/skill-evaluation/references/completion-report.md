@@ -10,6 +10,9 @@ intended change, not as a released capability.
 
 - Result and exact baseline and candidate identities.
 - Qualified claim and important claims that were not tested.
+- The question, planned decision and stop rules, actual decision, and any
+  departure from the plan. Separate exploratory evidence from final
+  confirmation; link the existing plan rather than creating another ledger.
 
 ### What changed
 
@@ -53,6 +56,12 @@ ablation or maintained-task evidence.
 
 - Focused results and first-attempt status.
 - Maintained regression results and retry-dependent passes.
+- First-attempt pass counts alongside requested, valid completed, and judged
+  first attempts. Distinguish valid failures, incomplete executions, and
+  missing judgments. Report success within the retry limit separately;
+  neither measure may hide original failed attempts.
+- Development, regression, and reserved transfer coverage, including any
+  reserved results used as feedback for later changes or selection.
 - Deterministic checks and review gates.
 - Preserved genuine stops, abstentions, or other protected behavior.
 - Material duration or cost data already captured by the evaluator.
@@ -61,6 +70,9 @@ ablation or maintained-task evidence.
 
 Name stochastic outcomes, untested callers, missing accounting, and claims that
 still need a separate generalization, transfer, or ablation gate.
+Distinguish meeting a small fixed qualification threshold from estimating
+reliability. Do not infer broad superiority from a candidate-only pass or an
+incomplete control population.
 
 ## Proportional form
 

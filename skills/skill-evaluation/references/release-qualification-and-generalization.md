@@ -32,6 +32,12 @@ well.
 Complete when the reportable claim, cases, controls, repetitions, success rule,
 and allowed scope are fixed before candidate execution.
 
+Freeze the selected candidate and confirmation inputs before observing their
+reportable results. Keep the success rule fixed. A candidate edit
+or selection driven by those results returns that evidence to development;
+identify a new confirmation rather than continuing until the old set passes.
+This does not require a new service or an independently administered dataset.
+
 ## 2. Freeze the released artifact and controls
 
 Evaluate the complete distributable artifact:
@@ -70,6 +76,11 @@ attempt receipt names the exact artifact identity.
 
 Keep the source task as regression evidence. It cannot become held-out again
 after influencing skill wording, treatment selection, or removal decisions.
+
+Hidden criteria and aggregate-only results protect content, not independence
+from tuning. Aggregate feedback can still influence the next candidate.
+Record that use in the existing plan/report, reserve unused transfer cases
+when available, and narrow the claim when fresh confirmation is unavailable.
 
 Add frozen tasks that exercise the generalized behavior through different
 surface details. Include, where applicable:

@@ -18,6 +18,62 @@ pooled count of passes from different experiments. Follow the
 [`cumulative skill hill climb`](references/cumulative-skill-hill-climb.md)
 for the complete process.
 
+## Decide what the evaluation will establish
+
+Evaluation measures behavior. Validation uses those measurements to decide
+whether a frozen candidate meets a rule chosen before execution. They use the
+same evaluator; validation is a purpose, not another runner or dashboard step.
+Neither a task pass nor a completed run alone proves improvement, reliability,
+or transfer.
+
+Before a behavioral run or a planned batch, record the following in the
+existing plan or evaluator report. Reuse an applicable record for unchanged
+attempts; do not create a separate ledger or record every preparation command
+as an experiment.
+
+| Decision | Record before execution |
+| --- | --- |
+| Question | The uncertainty this evaluation will resolve and whether it is setup diagnosis, exploratory search, or final confirmation. |
+| Candidate and comparison | Exact skill and case identities, the unchanged control when comparing changes, and the model, tools, environment, limits, and judging contract held fixed. |
+| Cases | Development cases used to choose changes, maintained regression cases, and reserved cases used to check transfer. |
+| Attempts | Planned repetitions or bounded retries, first-outcome retention, and handling of incomplete execution. |
+| Decision rule | What results mean keep, reject, or inconclusive, including the qualification threshold when applicable. |
+| Stop rule | The batch boundary, any applicable time or cost ceiling, and the observation that ends or changes the search. Unknown cost remains unknown. |
+| Allowed claim | Case pass, improvement over the unchanged skill, no-skill advantage, transfer, or release qualification. |
+
+Use the smallest useful sequence:
+
+1. Establish that the execution route and checks can exercise the requested
+   behavior. Setup evidence does not count as a skill improvement.
+2. Explore with one proposed change and an unchanged control. Use a larger
+   treatment field only when the question requires choosing among mechanisms.
+3. Choose a candidate from development evidence and freeze its exact bytes.
+4. Confirm that candidate under the predeclared rule, protecting maintained
+   behavior and using reserved cases for any transfer claim.
+5. Release only the supported claim, or report the unresolved result and the
+   evidence needed to revisit it.
+
+For an unchanged skill evaluation, no search or winner selection is needed.
+For focused tuning, a development result may guide the next change without
+claiming release qualification. Reuse applicable completed evidence rather than
+rerunning every stage. A failure that produces no new behavioral information
+requires diagnosis before another unchanged wave, not more variants or a larger
+evaluation system.
+
+Final confirmation does not continue the search. If its feedback changes the
+candidate, selection, or success rule, preserve that result as development
+evidence and identify the next confirmation separately. Do not edit a candidate
+while measuring it, change a threshold after seeing results, or pool results
+from different versions.
+
+Hidden grading criteria do not make a repeatedly used development task a
+holdout. Reserved task results, including aggregate scores, become development
+feedback once they influence a change or selection. Do not reuse that evidence
+as independent confirmation; reserve unused cases or narrow the transfer claim.
+Report first-attempt success separately from success within bounded retries.
+A small fixed pass rule is an acceptance decision, not a high-confidence
+estimate of reliability across unseen tasks.
+
 ## Keep evaluation proof proportional
 
 Default to the smallest evaluation that can answer the user's question.
