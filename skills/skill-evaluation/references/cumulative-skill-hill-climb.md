@@ -180,10 +180,10 @@ candidate**; minimize the repair again. Do not silently move an old case's
 fixture or switch models to turn a red cell green. Mark cells with unusable or
 missing evidence unknown, not pass.
 
-Complete when the smallest supported increment preserves the measured
-previous wins and newly conquered task under one exact shared identity.
-When ablation was not needed, completion establishes preservation on that
-identity, not that every retained instruction is necessary.
+Complete when the resulting candidate preserves the measured previous wins
+and newly conquered task under one exact shared identity. After ablation,
+identify the smallest supported increment; without it, preservation does
+not establish that every retained instruction is necessary.
 
 ## 5. Rebuild the whole skill only when warranted
 

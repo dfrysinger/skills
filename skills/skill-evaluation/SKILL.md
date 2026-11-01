@@ -60,19 +60,16 @@ rerunning every stage. A failure that produces no new behavioral information
 requires diagnosis before another unchanged wave, not more variants or a larger
 evaluation system.
 
-Final confirmation does not continue the search. If its feedback changes the
-candidate, selection, or success rule, preserve that result as development
-evidence and identify the next confirmation separately. Do not edit a candidate
-while measuring it, change a threshold after seeing results, or pool results
-from different versions.
+For final confirmation and transfer, follow
+[`release qualification and generalization`](references/release-qualification-and-generalization.md),
+including its feedback-exposure rules. Use the
+[`completion report`](references/completion-report.md) to distinguish
+first-attempt and retry-assisted results, incomplete evidence, and the limits
+of a small fixed pass rule.
 
-Hidden grading criteria do not make a repeatedly used development task a
-holdout. Reserved task results, including aggregate scores, become development
-feedback once they influence a change or selection. Do not reuse that evidence
-as independent confirmation; reserve unused cases or narrow the transfer claim.
-Report first-attempt success separately from success within bounded retries.
-A small fixed pass rule is an acceptance decision, not a high-confidence
-estimate of reliability across unseen tasks.
+Complete when the plan identifies the next decision and stopping point, and
+the report ties the actual decision to fixed inputs, retained outcomes, and
+the supported claim.
 
 ## Keep evaluation proof proportional
 
@@ -80,14 +77,10 @@ Default to the smallest evaluation that can answer the user's question.
 Ordinary skill tuning does not require a hostile-party or independently
 verifiable experiment.
 
-For a focused improvement, reuse an existing valid case and compare one
-proposed revision with the unchanged skill under the same model, tools, limits
-and checks. Decide any repetitions before running them and retain every first
-outcome. Use the existing report for the question, changed bytes, results and
-available time and cost; do not create a second ledger or a campaign merely
-because other plausible improvements exist. Run independent comparisons
-concurrently when useful. A focused result guides iteration, not a broader
-qualification claim; preserve maintained regression and release gates.
+For a focused improvement, reuse an existing valid case and the decision record
+above. Other plausible improvements do not require a campaign. Run independent
+comparisons concurrently when useful; preserve maintained regression and
+release gates.
 
 Candidate agents running in separate cloud VMs cannot inspect the coordinator's
 local files unless the prompt, tools, mounted workspace, or supplied evidence

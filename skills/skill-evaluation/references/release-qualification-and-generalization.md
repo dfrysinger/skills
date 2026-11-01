@@ -29,14 +29,14 @@ advantage, improvement over the prior skill does not prove advantage over no
 skill, and deterministic script tests do not prove that agents use the script
 well.
 
-Complete when the reportable claim, cases, controls, repetitions, success rule,
-and allowed scope are fixed before candidate execution.
-
 Freeze the selected candidate and confirmation inputs before observing their
-reportable results. Keep the success rule fixed. A candidate edit
-or selection driven by those results returns that evidence to development;
+reportable results. Keep the success rule fixed. Feedback-driven changes to
+the candidate, selection, or success rule return that evidence to development;
 identify a new confirmation rather than continuing until the old set passes.
 This does not require a new service or an independently administered dataset.
+
+Complete when the reportable claim, cases, controls, repetitions, success rule,
+and allowed scope are fixed before candidate execution.
 
 ## 2. Freeze the released artifact and controls
 

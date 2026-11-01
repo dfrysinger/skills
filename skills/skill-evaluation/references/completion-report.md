@@ -54,12 +54,11 @@ ablation or maintained-task evidence.
 
 ### Proof and reliability
 
-- Focused results and first-attempt status.
-- Maintained regression results and retry-dependent passes.
-- First-attempt pass counts alongside requested, valid completed, and judged
-  first attempts. Distinguish valid failures, incomplete executions, and
-  missing judgments. Report success within the retry limit separately;
-  neither measure may hide original failed attempts.
+- Focused and maintained regression results: first-attempt pass counts
+  alongside requested, valid completed, and judged first attempts. Distinguish
+  valid failures, incomplete executions, and missing judgments. Report success
+  within the retry limit separately; neither measure may hide original failed
+  attempts.
 - Development, regression, and reserved transfer coverage, including any
   reserved results used as feedback for later changes or selection.
 - Deterministic checks and review gates.
