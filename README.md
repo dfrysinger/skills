@@ -87,6 +87,9 @@ improvements, and carrying supported gains into one shared revision.
 The plugin includes the evaluator scripts, experiment procedures, and an
 Actions workflow template. It does not include a task corpus, hidden answers,
 model access, or hosted runners. You supply the tasks and acceptance criteria.
+Run behavioral evaluations and experiments on GitHub Actions VMs by default;
+prepare cases and inspect results locally. Local model runs and native Copilot
+cloud-agent tasks are explicit alternatives, not automatic fallbacks.
 Candidate and judge model calls consume your model allowance; native builds
 and Actions runs can add runner and storage costs.
 
@@ -108,11 +111,8 @@ tasks, use the [repository-task guide](./skills/skill-evaluation/references/repo
 to supply an editable checkout, executable target checks, and regression checks.
 Do not put the expected fix into the candidate's prompt or the skill.
 
-For direct script use, you need Python 3, Git, and an authenticated Copilot CLI.
-The local evaluator runs candidates and judges through Copilot CLI even if
-another agent host helps prepare the experiment. Repository tasks also require
-Docker, successful `validate-case` admission, and `COPILOT_GITHUB_TOKEN`.
-Point `PLUGIN_DIR` at a complete installed plugin or a clone of this repository:
+For local case preparation, you need Python 3 and Git. Point `PLUGIN_DIR` at
+a complete installed plugin or a clone of this repository:
 
 ```sh
 PLUGIN_DIR=/path/to/skills
@@ -126,21 +126,19 @@ python3 "$EVAL" add-case "$CORPUS" first-task \
 
 Fill the generated case definition, candidate prompt, candidate-visible
 evidence, hidden criteria, and judge reference files. The scaffold is not a
-ready-to-run task. Then freeze and run it:
+ready-to-run task. Then freeze and verify it locally:
 
 ```sh
 python3 "$EVAL" freeze "$CORPUS" --case first-task
 python3 "$EVAL" verify "$CORPUS" --case first-task
-python3 "$EVAL" run "$CORPUS" --case first-task \
-  --plugin-dir "$PLUGIN_DIR"
-python3 "$EVAL" history "$CORPUS" --format markdown
 ```
 
-When `COPILOT_GITHUB_TOKEN` is available, add `--home-mode isolated` to workflow
-runs to avoid sharing your authentication home. See the
-[case contract](./skills/skill-evaluation/references/case-contract.md) for
-evidence boundaries and the [skill protocol](./skills/skill-evaluation/SKILL.md)
-for repository-task admission and treatment comparisons.
+Run the frozen case through the existing private Actions evaluation workflow.
+The [Actions execution guide](./skills/skill-evaluation/references/large-actions-campaign.md)
+explains how to reuse a task runtime, supply workflow inputs, dispatch, and
+retrieve results. The [direct evaluator commands](./skills/skill-evaluation/references/direct-evaluator-commands.md)
+are for that runtime or a user-selected local run; they execute where invoked
+and do not provision a VM.
 
 ### How evaluation works
 
@@ -185,17 +183,12 @@ remove instructions and retest the exact shortened combination. Qualify
 release candidates against maintained tasks and held-out transfer evidence;
 report the minimum among tested variants, not a universal optimum.
 
-Run the maintained local corpus with bounded parallelism:
-
-```sh
-python3 "$EVAL" run-suite "$CORPUS" \
-  --plugin-dir "$PLUGIN_DIR" --workers 2
-```
+Run the maintained corpus through the same Actions workflow with the planned
+attempt set and bounded parallelism.
 
 ### Scale execution and measure cost
 
-Start locally. For full repositories, native builds, or large experiment
-matrices, use the [large Actions campaign guide](./skills/skill-evaluation/references/large-actions-campaign.md)
+Use the [Actions execution guide](./skills/skill-evaluation/references/large-actions-campaign.md)
 and [distributed tooling guide](./skills/skill-evaluation/references/distributed-campaign-tooling.md).
 These require a configured private evaluation repository, packaged task
 runtime, dependencies, model token, and suitable runners. The workflow is a

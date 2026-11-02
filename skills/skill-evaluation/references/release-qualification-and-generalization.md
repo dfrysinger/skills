@@ -113,9 +113,10 @@ Use the cheapest valid sequence:
 5. run the exact arms and preserve every original outcome.
 
 The canary and setup pair validate execution; they do not count toward the
-reported advantage. Choose local execution for an ordinary bounded corpus.
-Use the large Actions campaign only when repositories, native builds,
-treatments, or repetitions make one host the measured bottleneck.
+reported advantage. For the Actions default, use the
+[Actions execution procedure](large-actions-campaign.md) for the frozen attempt
+set, including a bounded corpus. Execution alternatives follow the skill's
+[execution default](../SKILL.md#execution-default-github-actions-vms).
 
 Measure pass distribution, pass-at-first-attempt, earliest failure frontier,
 instruction uptake, wall time, AI credits, and judge agreement. A cheaper skill
