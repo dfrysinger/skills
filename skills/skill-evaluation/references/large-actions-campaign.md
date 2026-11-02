@@ -1,15 +1,51 @@
-# Large private-Actions evaluation campaign
+# Run evaluations on GitHub Actions
 
-Use this procedure when a corpus is too large, slow, native, or product-heavy
-for one local host. GitHub Actions provides elastic execution; the evaluator
-still owns case integrity, first-outcome preservation, artifact verification,
-and final reconciliation.
+Use this procedure for a single evaluation, a small comparison, or a larger
+experiment. GitHub Actions hosts the evaluator in VMs; it does not replace the
+evaluator with a native Copilot cloud-agent task.
 
 For an implementation of this contract, see
 [`distributed-campaign-tooling.md`](distributed-campaign-tooling.md). The
 included scripts and workflow template are product-neutral. Keep each corpus,
 hidden evaluator payload, release asset, and result in a private carrier
 repository.
+
+## Start with the existing workflow
+
+1. Locate the corpus's private evaluation repository, Actions workflow,
+   packaged task runtime, and saved dispatch inputs. Reuse them rather than
+   creating a new runner. The reusable template is
+   `templates/distributed-campaign.yml`; its required inputs define the setup
+   needed when no applicable workflow exists.
+2. Freeze the cases, skill snapshots, model settings, checks, limits, and
+   attempt set. Reuse matching packages and route proof. A small comparison
+   needs only its planned control and candidate attempts, not a large search.
+3. Confirm the selected platform and task runtime support the required tools
+   and checks. Read the tooling guide's
+   [candidate-isolation limits](distributed-campaign-tooling.md#candidate-isolation)
+   before selecting split payloads. Missing setup or unsupported routing is a
+   concrete Actions prerequisite, not a reason to switch to local or CCA runs.
+4. Dispatch the workflow from its pinned source using the complete saved input
+   file. Keep credentials in repository secrets, not workflow inputs:
+
+   ```sh
+   gh workflow run distributed-campaign.yml \
+     --repo OWNER/PRIVATE_CARRIER --ref FROZEN_REF \
+     --json < dispatch-inputs.json
+   ```
+
+   Use the configured workflow's actual filename. Set `max_parallel` for the
+   planned attempts and available capacity; the template default is not an
+   experiment budget. `attempt_id` selects one planned attempt for a pilot.
+   Record the exact returned run identity; if none is returned, resolve the
+   dispatch by its source and inputs before observing or recovering it.
+5. Observe that exact run with `gh run view RUN_ID --repo OWNER/PRIVATE_CARRIER`.
+   Download its named retained artifact, verify its checksum, and read the
+   embedded results. Workflow success alone is not a behavioral pass.
+
+The sections below define packaging, stage recovery, and result interpretation.
+Apply them to the frozen attempt set; they do not require extra treatments,
+repetitions, or model pilots when unchanged route proof already applies.
 
 ## 1. Freeze the execution universe
 
@@ -87,8 +123,8 @@ tiny artifacts when they exercise the same boundary. Do not use a long native
 build or multi-gigabyte artifact as the first smoke test for receipt parsing,
 stage routing, permissions, or recovery.
 
-After the evaluator-only canary passes, run a representative campaign pilot
-through each distinct route:
+For a new or changed route, run a representative campaign pilot through each
+route the experiment actually uses:
 
 - macOS native;
 - Linux native or container;
@@ -116,7 +152,7 @@ attempts that require external dependency archives.
 Complete when every route produces a checksum-verified retained receipt and its
 result semantics are understood.
 
-## 4. Dispatch unfinished work massively in parallel
+## 4. Dispatch the planned unfinished attempts
 
 Create a completion manifest from already valid observations. The planner
 subtracts those exact attempt IDs from the expected matrix and refuses:
