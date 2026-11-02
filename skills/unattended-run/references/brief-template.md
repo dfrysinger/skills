@@ -85,6 +85,10 @@ can restore the process without copying each skill's rules.
 > design doc, brief, or charter, finish the current coherent edit and persist it
 > to the authoritative file before reconciling against that file. Never replace
 > an in-flight revision with the older persisted version.
+> Apply `unattended-run`'s objective-maintenance contract to each user message
+> and on resumption: reconcile consequential direction across current plan,
+> charter and objective before affected execution, replacing superseded
+> instructions while preserving evidence separately.
 > If stuck, give a rubber-duck agent one concrete blocker and ask for a
 > distinguishing check or alternative; do not repeat the same brainstorm
 > each hour without new evidence. Record actual stalls with the goal, expected
