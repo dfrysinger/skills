@@ -1618,8 +1618,10 @@ def run_judges(
             prompt = (
                 f"{prompt_body}\n{repository_contract}\nCase revision: {case_revision}\n"
                 "Candidate outputs and receipts are in this working directory. "
-                "Hidden evidence is under judge-reference/. Use only relative paths "
-                "inside this working directory; do not inspect its parent or any absolute path.\n"
+                f"Evidence root: {workdir}\n"
+                "Hidden evidence is under judge-reference/. Read only inside this root, "
+                "using absolute paths rooted here when required by the file tool. "
+                "Do not inspect parent directories or paths outside this root.\n"
                 "Candidate artifacts:\n" + "\n".join(
                     f"- {path.relative_to(run_root).as_posix()}" for path in candidate_artifacts
                 ) + "\n"
