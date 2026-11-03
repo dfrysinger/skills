@@ -787,7 +787,9 @@ export function createMailbox(options = {}) {
   async function importRemote(address) {
     const parsed = requireWatchAddress(address);
     if (!parsed.machine) return 0;
-    const envelopes = await pendingEnvelopes(parsed.address);
+    const envelopes = await pendingEnvelopes(parsed.address, {
+      requireStableAttachments: true,
+    });
     let imported = 0;
     for (const { envelope, path } of envelopes) {
       const markerPath = importedMarkerPath(parsed.address, envelope.id);
@@ -1308,18 +1310,29 @@ export function createMailbox(options = {}) {
       `${mailboxPathKey(mailboxAddress)}.lock`,
     );
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    const claimId = randomBytes(12).toString("hex");
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         const handle = await open(path, "wx", 0o600);
         await handle.writeFile(
           `${JSON.stringify({
             pid: process.pid,
+            claimId,
             address: mailboxAddress,
             startedAt: new Date().toISOString(),
           })}\n`,
         );
         await handle.close();
-        return async () => rm(path, { force: true });
+        return async () => {
+          try {
+            const owner = JSON.parse(await readFile(path, "utf8"));
+            if (owner?.pid === process.pid && owner?.claimId === claimId) {
+              await rm(path, { force: true });
+            }
+          } catch (error) {
+            if (error?.code !== "ENOENT") throw error;
+          }
+        };
       } catch (error) {
         if (error?.code !== "EEXIST") throw error;
         let owner;
@@ -1328,8 +1341,7 @@ export function createMailbox(options = {}) {
         } catch {
           owner = undefined;
         }
-        const age = Date.now() - Date.parse(owner?.startedAt);
-        if (Number.isFinite(age) && age <= 60_000 && owner?.pid) {
+        if (owner?.pid) {
           try {
             process.kill(owner.pid, 0);
             return undefined;

@@ -567,6 +567,39 @@ function startWatcher(root, env, extra = {}) {
   return { controller, watching };
 }
 
+test("watcher aborts sibling routes when one route fails", async () => {
+  let siblingAborted = false;
+  const mailbox = {
+    watchAddresses(address) {
+      return [address, `${address}@surface-pro`];
+    },
+    async watch(address, { signal }) {
+      if (address.endsWith("@surface-pro")) {
+        throw new Error("synthetic route failure");
+      }
+      await new Promise((resolve) => {
+        signal.addEventListener(
+          "abort",
+          () => {
+            siblingAborted = true;
+            resolve();
+          },
+          { once: true },
+        );
+      });
+    },
+  };
+  await assert.rejects(
+    runClaudeWatcher({
+      env: watcherEnv("synthetic-pipe", newToken()),
+      createMailbox: () => mailbox,
+      isAlive: () => true,
+    }),
+    /synthetic route failure/,
+  );
+  assert.equal(siblingAborted, true);
+});
+
 async function readLockOwner(root) {
   const text = await readIfExists(join(root, "state", "watchers", ...`${WATCH_KEY}.lock`.split("/")));
   try {

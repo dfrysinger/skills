@@ -1148,6 +1148,7 @@ console.log('{"status":"completed","result":{"messageAccepted":true,"delivery":"
       stateRoot,
       requestCli: mockRequest,
     });
+
     await mailbox.send({
       recipient: "hotel",
       sender: "whisky",
@@ -1182,6 +1183,73 @@ console.log('{"status":"completed","result":{"messageAccepted":true,"delivery":"
     } else {
       process.env.MOCK_MAILBOX_REQUEST_CALLS = previousCallLog;
     }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("notification claims preserve live and successor owners", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-claim-ownership-"));
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const stateRoot = join(root, "state");
+    const releasePath = join(root, "release");
+    const mockRequest = join(root, "blocking-request.mjs");
+    await writeFile(
+      mockRequest,
+      `import { existsSync } from "node:fs";
+while (!existsSync(${JSON.stringify(releasePath)})) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+}
+console.log('{"status":"completed","result":{"delivery":"idle"}}');
+`,
+    );
+    const mailbox = createMailbox({
+      mailboxRoot,
+      stateRoot,
+      requestCli: mockRequest,
+      terminalPokeCli: null,
+    });
+    await mailbox.send({
+      recipient: "hotel",
+      sender: "whisky",
+      summary: "claim ownership",
+      message: "one owner at a time",
+      wake: false,
+    });
+
+    const claimPath = join(stateRoot, "notifying", "hotel.lock");
+    await mkdir(dirname(claimPath), { recursive: true });
+    const liveOwner = {
+      pid: process.pid,
+      claimId: "live-owner",
+      address: "hotel",
+      startedAt: new Date(Date.now() - 120_000).toISOString(),
+    };
+    await writeFile(claimPath, `${JSON.stringify(liveOwner)}\n`);
+    assert.equal((await mailbox.poke("hotel")).status, "in-progress");
+    assert.deepEqual(JSON.parse(await readFile(claimPath, "utf8")), liveOwner);
+
+    await rm(claimPath);
+    const first = mailbox.poke("hotel");
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      try {
+        await stat(claimPath);
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    const successor = {
+      pid: process.pid,
+      claimId: "successor-owner",
+      address: "hotel",
+      startedAt: new Date().toISOString(),
+    };
+    await writeFile(claimPath, `${JSON.stringify(successor)}\n`);
+    await writeFile(releasePath, "release");
+    assert.equal((await first).status, "delivered");
+    assert.deepEqual(JSON.parse(await readFile(claimPath, "utf8")), successor);
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

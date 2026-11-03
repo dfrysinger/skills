@@ -338,7 +338,11 @@ On macOS, use the provider's local Unix-socket transport when supported. On
 native Windows, use an authenticated loopback listener. The launcher passes
 only the token hash to app-server with `--ws-token-sha256` and passes the raw
 token to the TUI and watcher through private child environments. The token is
-never written to disk or placed on a command line.
+never written to disk or placed on a command line. Codex requires the TUI to
+read the token from an environment variable, so subprocesses intentionally
+launched by that TUI inherit it unless Codex clears the variable. This is part
+of the documented same-user-process limitation, not a same-user isolation
+claim.
 
 Agent Stack, as the sole TUI launch owner, starts the TUI with the
 version-matched equivalent of:
@@ -613,7 +617,15 @@ that provider-platform pair.
 - Claude and Codex tokens authenticate provider protocols but do not isolate
   one process from another process running as the same operating-system user.
   The design does not claim that boundary. It keeps secrets out of durable and
-  user-visible surfaces and limits token lifetime to the owning launch.
+  user-visible surfaces and limits token lifetime to the owning launch. The
+  Codex TUI's descendants can inherit its launch-scoped token because the
+  supported `--remote-auth-token-env` interface reads from the TUI environment.
+- Windows starts a no-secret PowerShell bootstrap, assigns that bootstrap to
+  the launch Job Object, and only then sends child launch data and environment
+  additions over a current-user named pipe. The authority-bearing app-server,
+  watcher, and TUI therefore start as descendants already contained by the
+  Job Object. The bounded parent-death proof covers both bootstraps and provider
+  children.
 - A watcher and, for Codex, app-server per live provider session use more
   processes than a machine-wide broker. They reuse the launcher's lifetime and
   existing watcher locks, and avoid a registry, durable secret, or shared

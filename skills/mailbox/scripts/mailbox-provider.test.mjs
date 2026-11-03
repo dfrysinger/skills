@@ -597,10 +597,13 @@ test("legacy Copilot CLI resolution works without MAILBOX_SELF_ADDRESS", async (
     const checked = await runCli(root, ["check"], { COPILOT_AGENT_NAME: "alpha" });
     assert.equal(checked.code, 0, checked.stderr);
     assert.match(checked.stdout, /bare-copilot summary/);
+    assert.match(checked.stdout, /mailbox=copilot:alpha\s+from=copilot:whisky/);
     assert.doesNotMatch(checked.stdout, /claude-only|codex-only/);
     const read = await runCli(root, ["read", BARE_ID], { COPILOT_AGENT_NAME: "alpha" });
     assert.equal(read.code, 0, read.stderr);
     assert.match(read.stdout, /bare-copilot message/);
+    assert.match(read.stdout, /FROM: copilot:whisky/);
+    assert.match(read.stdout, /TO:\s+copilot:alpha/);
   });
 });
 
@@ -1094,8 +1097,14 @@ test("provider-qualified remote mail publishes and imports exactly once beside b
       terminalPokeCli: null,
     });
     for (const address of recipients) {
-      assert.equal(await recipient.importRemote(address), 1, `first import ${address}`);
-      assert.equal(await recipient.importRemote(address), 0, `second import ${address}`);
+      const first = await recipient.importRemote(address);
+      if (address.startsWith("claude:")) {
+        assert.equal(first, 0, `attachment must stabilize before import ${address}`);
+        assert.equal(await recipient.importRemote(address), 1, `stable import ${address}`);
+      } else {
+        assert.equal(first, 1, `first import ${address}`);
+      }
+      assert.equal(await recipient.importRemote(address), 0, `repeat import ${address}`);
     }
 
     const localFiles = await listFiles(join(root, "recipient-mailbox"));

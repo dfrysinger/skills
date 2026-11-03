@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import {
+  canonicalizeMailboxAddress,
   createConfiguredMailbox,
   parseMailboxAddress,
   POKE_NO_ACTIVE_COPILOT,
@@ -55,9 +56,15 @@ async function requiredOwnName(explicitName) {
   return name;
 }
 
+function displayAddress(value) {
+  const address =
+    typeof value === "string" ? value : (value.address ?? value.name);
+  return canonicalizeMailboxAddress(address).address;
+}
+
 function printEnvelope(envelope, attachmentDirectory) {
-  console.log(`FROM: ${envelope.from.name}`);
-  console.log(`TO:   ${envelope.to.name}`);
+  console.log(`FROM: ${displayAddress(envelope.from)}`);
+  console.log(`TO:   ${displayAddress(envelope.to)}`);
   console.log(`SENT: ${envelope.sent_at}`);
   console.log(`ID:   ${envelope.id}`);
   console.log(`SUMMARY: ${envelope.summary}`);
@@ -140,15 +147,17 @@ try {
       const name = await requiredOwnName(options.name);
       const envelopes = await mailbox.checkLocal(name);
       if (envelopes.length === 0) {
-        console.log(`no pending mail for ${mailbox.localAddresses(name).join(" or ")}`);
+        console.log(
+          `no pending mail for ${mailbox.localAddresses(name).map(displayAddress).join(" or ")}`,
+        );
         break;
       }
       console.log(
-        `${mailbox.localAddresses(name).join(" + ")} have ${envelopes.length} pending envelope(s):`,
+        `${mailbox.localAddresses(name).map(displayAddress).join(" + ")} have ${envelopes.length} pending envelope(s):`,
       );
       for (const { envelope, path, mailboxAddress } of envelopes) {
         console.log(
-          `  [${envelope.id}]  mailbox=${mailboxAddress}  from=${envelope.from.name}  sent=${envelope.sent_at}`,
+          `  [${envelope.id}]  mailbox=${displayAddress(mailboxAddress)}  from=${displayAddress(envelope.from)}  sent=${envelope.sent_at}`,
         );
         console.log(`     summary: ${envelope.summary}`);
         if (envelope.attachments.length > 0) {
