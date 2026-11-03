@@ -52,11 +52,20 @@ export async function runClaudeWatcher({
   }, livenessMs);
 
   try {
-    await mailbox.watch(config.address, {
-      generation,
-      intervalMs,
-      signal: controller.signal,
-    });
+    const watches = mailbox.watchAddresses(config.address).map((address) =>
+      mailbox.watch(address, {
+        generation,
+        intervalMs,
+        signal: controller.signal,
+      }),
+    );
+    try {
+      await Promise.all(watches);
+    } catch (error) {
+      controller.abort();
+      await Promise.allSettled(watches);
+      throw error;
+    }
   } finally {
     clearInterval(livenessTimer);
     signal?.removeEventListener("abort", abort);

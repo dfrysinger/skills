@@ -229,10 +229,13 @@ test("adapter binding, token hygiene, and dead launcher gates avoid transport us
 test("watcher aborts when the launcher exits without storing token state", async () => {
   const capability = token();
   let alive = true;
-  let watchedAddress;
+  const watchedAddresses = [];
   const mailbox = {
+    watchAddresses(address) {
+      return [address, `${address}@surface-pro`];
+    },
     async watch(address, { signal }) {
-      watchedAddress = address;
+      watchedAddresses.push(address);
       await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
     },
   };
@@ -253,9 +256,51 @@ test("watcher aborts when the launcher exits without storing token state", async
       livenessMs: 5,
     });
     assert.equal(outcome.started, true);
-    assert.equal(watchedAddress, "codex:alpha");
+    assert.deepEqual(watchedAddresses.sort(), [
+      "codex:alpha",
+      "codex:alpha@surface-pro",
+    ]);
     assert.ok(!JSON.stringify(outcome).includes(capability));
   } finally {
     clearTimeout(timer);
   }
+});
+
+test("watcher aborts sibling routes when one route fails", async () => {
+  let siblingAborted = false;
+  const mailbox = {
+    watchAddresses(address) {
+      return [address, `${address}@surface-pro`];
+    },
+    async watch(address, { signal }) {
+      if (address.endsWith("@surface-pro")) {
+        throw new Error("synthetic route failure");
+      }
+      await new Promise((resolve) => {
+        signal.addEventListener(
+          "abort",
+          () => {
+            siblingAborted = true;
+            resolve();
+          },
+          { once: true },
+        );
+      });
+    },
+  };
+  await assert.rejects(
+    runCodexWatcher({
+      env: {
+        [CODEX_ENV.selfAddress]: "codex:alpha",
+        [CODEX_ENV.endpoint]: "ws://127.0.0.1:8123",
+        [CODEX_ENV.token]: token(),
+        [CODEX_ENV.workspace]: workspace,
+        [CODEX_ENV.launcherPid]: String(process.pid),
+      },
+      createMailbox: () => mailbox,
+      isAlive: () => true,
+    }),
+    /synthetic route failure/,
+  );
+  assert.equal(siblingAborted, true);
 });
