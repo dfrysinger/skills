@@ -365,9 +365,19 @@ itself. It then:
 - returns `ambiguous` when the connection fails after a request might have
   been accepted.
 
-If the TUI starts a turn between the idle read and `turn/start`, the watcher
-must use the provider's explicit conflict response. It may re-read and steer
-only the exact new active turn; an unclassified response is ambiguous.
+The installed app-server may merge concurrent `turn/start` requests into one
+active turn and return that same turn ID to both callers. The bounded native
+probe proved that two distinct inputs are retained exactly once in the
+authoritative turn history and reach the model exactly once. A successful
+`turn/start` response is therefore `submitted` whether it created a new turn
+or joined a concurrently created turn. It is not `verified`; the durable
+envelope remains pending until mailbox acknowledgement.
+
+If active-turn steering loses its `expectedTurnId` race, the explicit
+wrong-turn refusal proves that request was not accepted. The watcher may
+re-read once and steer only the exact newly active turn. Any response that
+does not prove either successful submission or explicit pre-acceptance refusal
+is `ambiguous`.
 
 The app-server response and subsequent state notification update the existing
 notification markers. The TUI and mailbox watcher cannot operate on different
@@ -386,9 +396,9 @@ platform probe settles these facts:
   changing generation.
 - Codex: the installed version's exact remote resume invocation; exactly one
   loaded cwd-matching thread; token handling without command-line exposure;
-  `turn/start` behavior during a concurrent TUI turn; exact
-  `expectedTurnId` steering; and app-server/watcher cleanup after launcher
-  death.
+  merged concurrent `turn/start` input retention; exact `expectedTurnId`
+  steering and wrong-turn refusal; and app-server/watcher cleanup after
+  launcher death.
 
 If a probe cannot preserve exact identity, authenticated local control, or
 truthful outcomes, that provider-platform pair remains disabled and the
@@ -450,8 +460,10 @@ or Agent Stack relaunch guidance. The process is not touched.
   separate.
 - **Ambiguous send:** the attempt is marked ambiguous and the same attempt
   identity is never replayed automatically.
-- **Codex active-turn race:** steering requires the exact current turn identity;
-  a changed turn rejects the request.
+- **Codex active-turn race:** a successful concurrent start is `submitted`
+  because the installed server retains each distinct input exactly once in the
+  shared turn. Steering still requires the exact current turn identity; a
+  changed turn rejects the request before acceptance.
 - **Launcher death:** `codex-native-contract` must prove that its app-server
   and watcher children exit or are terminated by the launcher's cleanup path.
   Provider durable conversation state remains provider-owned; a normal Agent
@@ -574,7 +586,7 @@ returns Claude/Codex to manual mailbox pickup.
 | `legacy-copilot-compat` | AC-1, AC-11 | Read and send against an existing bare Copilot fixture without `MAILBOX_SELF_ADDRESS`. | Same mailbox files and session-inbox target as before. | Migration breaks current callers. |
 | `wakeup-state-machine` | AC-3, AC-4, AC-5 | Fake each adapter outcome and generation race around a pending envelope, then run another watch tick. | Existing notified marker remains compatible; unverified payload distinguishes submitted/held/refused/ambiguous and suppresses replay; deferred writes no marker and may retry; envelope stays pending. | Persistence and live delivery claims are coupled incorrectly or prompts can repeat. |
 | `claude-native-contract` | AC-3 through AC-8 | Launch a temporary supported Claude session with the Agent Stack hook; probe socket reply semantics, idle and active sends, inbound hold/refuse, hook re-fire, socket change, parent death, and waiter acquisition after auth rejection, missing endpoint, and refused connection while preserving the watcher on transient busy. | Exact submitted/verified/held/refused/ambiguous outcome marker plus transcript marker; one acting watcher; no secret in captured files or process args. | Claude delivery or watcher lifecycle is not authenticated, immediate, truthful, single-owner, or secret-safe. |
-| `codex-native-contract` | AC-3 through AC-8 | Launch a temporary app-server, child watcher, and attached TUI; probe `resume --last --remote`, idle start, concurrent TUI start, exact-turn steer, wrong-turn race, parent death, and app-server exit. | Matching thread/turn notifications and transcript marker; no orphaned watcher or server. | Control can reach the wrong thread, race user input, or claim an unproved side effect. |
+| `codex-native-contract` | AC-3 through AC-8 | Launch a temporary app-server, child watcher, and attached TUI; probe `resume --last --remote`, idle start, two-client concurrent start with distinct markers, exact-turn steer, wrong-turn race, parent death, and app-server exit. | Both concurrent inputs occur exactly once in one authoritative turn; successful start is reported only as submitted; exact/wrong-turn behavior is truthful; no orphaned watcher or server. | Control can reach the wrong thread, lose or duplicate racing input, or claim an unproved side effect. |
 | `cross-provider-live-windows` | AC-3, AC-6, AC-11 | Send Copilot to Claude and Codex, then reply to provider-qualified Copilot in isolated Windows workspaces. | All envelopes read and acknowledged by exact targets without terminal input. | The composed Windows journey fails despite adapter tests. |
 | `cross-provider-live-macos` | AC-3, AC-6, AC-11 | Repeat the provider journey on macOS before removing that provider's tmux fallback. | Exact native targets acknowledge and no tmux input occurs. | Native macOS control is not ready to replace the old path. |
 | `secret-hygiene` | AC-7 | Scan deterministic fixtures, logs, markers, durable state, command lines, and test captures using unique canary secrets. | Canary absent everywhere outside child process environments and provider memory. | A provider credential escaped its allowed boundary. |
