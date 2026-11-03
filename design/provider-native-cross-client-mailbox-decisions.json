@@ -1,0 +1,59 @@
+{
+  "revision": "provider-native-cross-client-mailbox-decisions-v2",
+  "events": [
+    {
+      "event_id": "mailbox-address-shape-20261103",
+      "question": "Should Windows cross-client mailbox addresses use provider-qualified local identities such as codex:alpha, while reserving @machine for remote transport?",
+      "recommended_answer": "Yes. Use provider:name locally and provider:name@machine only when remote transport is required. Preserve existing bare Copilot names for compatibility.",
+      "user_answer": "well I think we need a system for differentiating the clients but when they are on the same machine I wouldnt add the @surface-pro. Doesnt that system currently go through onedrive to send? and dont we already have a local delivery process for copoliot? I guess I'm saying that using the : is probably fine and good for identifying which client, but the @ I assume currently means send it through one drive which is unnecessary when local",
+      "context": "The user wants cross-client mailbox delivery based on the existing macOS implementation and distinguishes provider identity from machine routing.",
+      "authority": "top-level product decision",
+      "resolved": true
+    },
+    {
+      "event_id": "mailbox-immediate-wakeup-20261103",
+      "question": "Must cross-client mailbox delivery wake a live Claude or Codex session immediately, rather than waiting for the next user turn or resume?",
+      "recommended_answer": "Yes. Match the Copilot behavior and require a fail-closed provider control path; do not substitute a notification or unsafe unverified keystrokes.",
+      "user_answer": "yes we need immediate wakeup, and doesnt the current copilot solution for copilot do that? oh but does it use the sdk? is it not generalizable to the other clients?",
+      "context": "Copilot uses its session SDK for immediate delivery. Claude and Codex require their own provider-native control paths.",
+      "authority": "top-level product decision",
+      "resolved": true
+    },
+    {
+      "event_id": "mailbox-cross-platform-provider-control-20261103",
+      "question": "Should provider-native Claude and Codex control be cross-platform and replace macOS tmux input injection when proven?",
+      "recommended_answer": "Yes. Use authenticated provider-native session control on Windows and macOS.",
+      "user_answer": "great yes do some research on claude code, there is almost certainly a mechanism for it, and if you can make this cross platform so we use this for macos instead of tmux that would be excellent",
+      "context": "Claude documents per-session sockets or named pipes. Codex documents remote TUI attachment to app-server.",
+      "authority": "top-level product decision",
+      "resolved": true
+    },
+    {
+      "event_id": "mailbox-native-control-unavailable-20261103",
+      "question": "When a provider version or launch mode cannot support verified native immediate wakeup, should delivery remain queued and report deferred instead of using terminal injection?",
+      "recommended_answer": "Yes. Preserve the durable envelope, fail closed, recommend the minimum supported provider upgrade or managed launch mode, and never use tmux or simulated keystrokes as an implicit fallback.",
+      "user_answer": "yes agreed, agent should recommend upgrading",
+      "context": "Claude requires cross-session messaging support and Codex requires a managed app-server shared by its TUI and control client.",
+      "authority": "top-level product decision",
+      "resolved": true
+    },
+    {
+      "event_id": "mailbox-autopilot-upgrade-idle-boundary-20261103",
+      "question": "May autopilot upgrade a provider while provider sessions are running, or must every affected session be stopped first?",
+      "recommended_answer": "Allow the upgrade when every affected session is provably idle; block and defer while any affected session has an active turn or unsubmitted input.",
+      "user_answer": "the sessions could be running but just need to be idle",
+      "context": "Replacing an installed executable does not update an already-running process.",
+      "authority": "top-level product decision",
+      "resolved": true
+    },
+    {
+      "event_id": "mailbox-autopilot-restart-ownership-20261103",
+      "question": "After upgrading a provider, may autopilot restart and resume an idle session so the running process gains the required native messaging capability?",
+      "recommended_answer": "Yes, but only after proving the session is idle, owned by Agent Stack, has exact workspace and conversation identity, and can be resumed and reconnected deterministically. Never restart an unowned provider session.",
+      "user_answer": "yes using agent stack, if its not an agent stack agent session then no",
+      "context": "Automatic restart is needed for an idle running process to load an upgraded provider binary.",
+      "authority": "top-level product decision",
+      "resolved": true
+    }
+  ]
+}

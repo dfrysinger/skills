@@ -1,0 +1,9 @@
+Implement the approved critical work order at C:\Users\dfrysinger\code\skills-provider-mailbox\design\provider-native-cross-client-mailbox.md through "Definition of Done: Provider-Native Cross-Client Mailbox".
+
+Use the implementation charter at C:\Users\dfrysinger\code\skills-provider-mailbox\design\provider-native-cross-client-mailbox-autopilot.md. Work only in C:\Users\dfrysinger\code\skills-provider-mailbox on branch feature/provider-native-mailbox and C:\Users\dfrysinger\code\agent-stack-provider-mailbox on the same branch name. Do not overwrite the dirty shared Skills checkout. Push reviewed commits to the owned branches; do not merge main.
+
+Preserve the current CONTINUE constraint gate and critical boundaries. Start with deterministic identity, path, marker, watcher, and remote-transport guards plus bounded Claude and Codex native mechanism probes. Do not write either provider adapter until its probe passes. Stop and reframe that adapter if exact identity, authenticated local control, or truthful outcome reporting cannot be proved.
+
+Do not add automatic upgrade/restart, a registry, heartbeat, durable token, new lock, takeover file, sender-side provider control, broker, resident supervisor, terminal injection, or protected login automation.
+
+Finish implementation, exact-candidate live proof, dual implementation review, targeted and repository checks, cleanup, commits, and branch pushes. The run is complete only when the charter's full proof obligations and the work order's Definition of Done are verified, or a remaining platform-specific obligation is recorded honestly as blocked with the safe implemented slice complete.

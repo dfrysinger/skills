@@ -1,0 +1,9 @@
+Continue the design work order at C:\Users\dfrysinger\code\skills-provider-mailbox\design\provider-native-cross-client-mailbox.md in C:\Users\dfrysinger\code\skills-provider-mailbox. Read C:\Users\dfrysinger\code\skills-provider-mailbox\design\provider-native-cross-client-mailbox-decisions.json and preserve its exact user authority.
+
+Design cycle: 1.
+
+Outcome: finish design-doc through the current two-pass constraint challenge and two-family design review, then hand the approved work order to development-loop for the already-authorized implementation. Do not implement the proposed system during this design cycle.
+
+Advance every ready design or review action. Consume completed owner results through their explicit result channel. Do not duplicate an active owner or replace unrelated objective or schedule state.
+
+This cycle is complete when the design is approved, abandoned, redirected, reframed, or its durable status becomes waiting_user because no independent action remains. The approved design must satisfy the heading "Definition of Done: Provider-Native Cross-Client Mailbox".
