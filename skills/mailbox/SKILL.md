@@ -229,6 +229,12 @@ still override the persisted machine and remote root for an explicit process.
   execution, so success is reported as `submitted`. Missing integration or an
   unmanaged provider session remains queued with managed-relaunch or upgrade
   guidance.
+- **Codex remote permissions are set by `turn/start`.** Codex rejects
+  permission-override flags on a remote TUI resume. When Agent Stack
+  `ALLOW_ALL` is true, the native watcher starts an idle mailbox turn with
+  approval policy `never` and sandbox policy `dangerFullAccess`; Codex applies
+  that policy to the turn and subsequent turns. Steering an already active
+  turn keeps that turn's existing permission policy.
 - **Mailbox writeable by anyone with shell access.** Treat envelope contents as not-secret. Don't put credentials in messages or attachments.
 - **No reply-thread bookkeeping.** If A sends to B and B wants to reply, B sends back to A's name. There's no thread-id linkage in v1.
 - **Acked mail is moved, not deleted.** `delivered/` accumulates; periodically prune.

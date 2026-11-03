@@ -81,16 +81,19 @@ test("environment validation and generation never echo the token", () => {
     CODEX_APP_SERVER_TOKEN: capability,
     CODEX_WORKSPACE: workspace,
     CODEX_LAUNCHER_PID: "4242",
+    CODEX_ALLOW_ALL: "true",
   };
   const config = readCodexEnvironment(env);
   assert.equal(config.address, "codex:alpha");
   assert.equal(config.launcherPid, 4242);
+  assert.equal(config.allowAll, true);
   assert.match(codexGeneration(config), /^[0-9a-f]{64}$/);
   for (const invalid of [
     { ...env, MAILBOX_SELF_ADDRESS: "alpha" },
     { ...env, CODEX_APP_SERVER_ENDPOINT: "ws://example.test:8123" },
     { ...env, CODEX_WORKSPACE: "relative" },
     { ...env, CODEX_LAUNCHER_PID: "0" },
+    { ...env, CODEX_ALLOW_ALL: "sometimes" },
     { ...env, CODEX_APP_SERVER_TOKEN: undefined },
   ]) {
     assert.throws(
@@ -115,6 +118,20 @@ test("merged turn/start success is submitted, never verified", async () => {
   assert.equal(transport.calls[3].params.threadId, "thread-1");
   assert.equal(transport.calls[3].params.input[0].text, wake.prompt);
   assert.equal(transport.closed, true);
+});
+
+test("allow-all policy is applied by the authority that starts an idle turn", async () => {
+  const transport = fakeTransport([
+    { method: "thread/loaded/list", response: loaded(["thread-1"]) },
+    { method: "thread/read", response: thread({ type: "idle" }) },
+    { method: "turn/start", response: started() },
+  ]);
+  const outcome = await adapter(transport, { allowAll: true }).wake(wake);
+  assert.equal(outcome.outcome, "submitted");
+  assert.equal(transport.calls[3].params.approvalPolicy, "never");
+  assert.deepEqual(transport.calls[3].params.sandboxPolicy, {
+    type: "dangerFullAccess",
+  });
 });
 
 test("exact thread selection refuses zero, multiple, paginated, and cwd-mismatched threads", async () => {
