@@ -369,6 +369,15 @@ itself. It then:
 - returns `ambiguous` when the connection fails after a request might have
   been accepted.
 
+Codex rejects permission-override flags on a remote TUI resume. Agent Stack
+therefore passes the configured `ALLOW_ALL` intent to the watcher as
+`CODEX_ALLOW_ALL`. For an idle thread, the watcher is the authority issuing
+`turn/start`; when allow-all is enabled it includes
+`approvalPolicy: "never"` and `sandboxPolicy: { type: "dangerFullAccess" }`.
+Those settings apply to that turn and subsequent turns. An active-thread
+`turn/steer` keeps the policy already owned by that turn rather than claiming
+to change it.
+
 The installed app-server may merge concurrent `turn/start` requests into one
 active turn and return that same turn ID to both callers. The bounded native
 probe proved that two distinct inputs are retained exactly once in the

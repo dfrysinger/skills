@@ -18,6 +18,7 @@ export const CODEX_ENV = Object.freeze({
   token: "CODEX_APP_SERVER_TOKEN",
   workspace: "CODEX_WORKSPACE",
   launcherPid: "CODEX_LAUNCHER_PID",
+  allowAll: "CODEX_ALLOW_ALL",
 });
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
@@ -140,6 +141,13 @@ export function readCodexEnvironment(env = process.env) {
   if (/[\r\n]/.test(env[CODEX_ENV.token])) {
     throw new CodexEnvironmentError(`${CODEX_ENV.token} contains invalid characters`);
   }
+  if (
+    env[CODEX_ENV.allowAll] !== undefined &&
+    env[CODEX_ENV.allowAll] !== "true" &&
+    env[CODEX_ENV.allowAll] !== "false"
+  ) {
+    throw new CodexEnvironmentError(`${CODEX_ENV.allowAll} must be true or false`);
+  }
   return {
     address: parsedAddress.address,
     name: parsedAddress.name,
@@ -147,6 +155,7 @@ export function readCodexEnvironment(env = process.env) {
     token: env[CODEX_ENV.token],
     workspace: normalizeWorkspace(env[CODEX_ENV.workspace]),
     launcherPid,
+    allowAll: env[CODEX_ENV.allowAll] === "true",
   };
 }
 
@@ -241,13 +250,24 @@ async function readExactThread(session, workspace) {
   return { kind: "active", threadId, turnId: activeTurns[0].id };
 }
 
-async function submitForState(session, state, prompt, { retry = false } = {}) {
+async function submitForState(
+  session,
+  state,
+  prompt,
+  { retry = false, allowAll = false } = {},
+) {
   const method = state.kind === "idle" ? "turn/start" : "turn/steer";
   const params =
     state.kind === "idle"
       ? {
           threadId: state.threadId,
           input: [{ type: "text", text: prompt }],
+          ...(allowAll
+            ? {
+                approvalPolicy: "never",
+                sandboxPolicy: { type: "dangerFullAccess" },
+              }
+            : {}),
         }
       : {
           threadId: state.threadId,
@@ -280,7 +300,7 @@ async function submitForState(session, state, prompt, { retry = false } = {}) {
     if (reread.kind !== "idle" && reread.kind !== "active") {
       return result("deferred", reread.detail);
     }
-    return submitForState(session, reread, prompt, { retry: true });
+    return submitForState(session, reread, prompt, { retry: true, allowAll });
   }
   return result("deferred", `codex ${method} refused before wakeup submission`);
 }
@@ -291,6 +311,7 @@ export function createCodexWakeupAdapter({
   token,
   workspace,
   launcherPid,
+  allowAll = false,
   transport = nativeCodexTransport,
   isAlive = isProcessAlive,
 }) {
@@ -335,7 +356,7 @@ export function createCodexWakeupAdapter({
           return result("deferred", state.detail);
         }
         state.workspace = expectedWorkspace;
-        return await submitForState(session, state, request.prompt);
+        return await submitForState(session, state, request.prompt, { allowAll });
       } finally {
         session.close?.();
       }
