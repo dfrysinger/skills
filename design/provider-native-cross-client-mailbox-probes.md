@@ -45,7 +45,7 @@ The adapter must not claim those outcomes.
 
 ## Codex CLI 0.166.0 on native Windows
 
-**Gate: OPEN pending direct arbitration probe**
+**Gate: ADMITTED**
 
 The installed CLI proved the following app-server contract:
 
@@ -77,9 +77,25 @@ The second probe closed the lifecycle gate:
 
 The second probe kept a real native TUI attached to the exact synthetic thread,
 but an unsupported positional prompt on a second `codex resume` did not create
-a turn. That result does not falsify app-server arbitration; it leaves the
-proxy unexercised. The remaining probe therefore targets the protocol boundary
-directly: two separately authenticated clients race `turn/start` on the same
-loaded thread, followed by exact-turn and wrong-turn steering checks. Codex
-adapter implementation remains blocked until that direct arbitration probe
-passes.
+a turn. A direct protocol race then showed that two separately authenticated
+clients can both receive successful `turn/start` responses containing the same
+active turn ID. The server does not return the conflict assumed by the reviewed
+work order. Exact-turn steering still succeeds and wrong-turn steering is
+refused.
+
+The final probe inspected authoritative `thread/items/list` history for two
+distinct marker inputs. Both `turn/start` responses returned the same turn ID;
+each marker appeared exactly once as a `userMessage` in that turn, and the
+completed turn's `agentMessage` acknowledged each marker exactly once. The
+responses were not duplicate views of one input: both inputs were attached to
+the shared turn.
+
+The corrected contract is admitted:
+
+- a successful idle `turn/start` is `submitted` whether it creates a turn or
+  joins a concurrently created turn;
+- it is never `verified`;
+- exact active-turn steering remains required;
+- a wrong-turn error proves pre-acceptance refusal and permits one exact
+  re-read/re-steer;
+- unclassified post-request failures are `ambiguous`.

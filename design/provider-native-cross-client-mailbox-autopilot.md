@@ -68,7 +68,7 @@ open_reframe_condition: none
 design_status: implementation_active
 last_constraint_review: provider-native-cross-client-mailbox-v5-focused-CONTINUE
 last_design_review: dual-review-round-3-passed
-next_action: integrate the admitted Claude adapter and finish the Codex lifecycle probe
+next_action: integrate the admitted Claude and Codex adapters
 implementation_objective_handoff:
   handoff_id: provider-native-mailbox-implementation-cycle-1
   status: resolved
@@ -146,7 +146,7 @@ phase boundary, failure, ownership handoff, and material user direction:
 | --- | --- | --- | --- | --- | --- | --- |
 | `mailbox-guards-v1` | `2c7fd513-9f4f-409c-beda-2b0a0870f31f` | Complete; integrated as `2a4debe` | none | Frozen worktree `C:\Users\dfrysinger\code\skills-provider-mailbox-guards` | 30-case red baseline | Closed. |
 | `claude-adapter-implementation-v1` | `d676e2d4-50b8-4f01-ad89-e9095e5177ec` | Implement admitted native Windows Claude hook and watcher | New scripts and focused tests only | `C:\Users\dfrysinger\code\skills-provider-mailbox-claude-adapter`, branch `feature/provider-native-mailbox-claude-adapter` | Commit SHA, deterministic tests, secret-hygiene and lifecycle assumptions | Coordinator consumes explicit handoff before inspecting or integrating the worktree. |
-| `codex-native-probe-v3` | `be728075-4340-4e55-9be5-a61fb3e5e2eb` | Direct app-server arbitration race after Job Object cleanup passed | Temporary files outside git only | Background agent | Concurrent start response shapes, exact-thread consistency, exact/wrong-turn steering, cleanup | Codex adapter remains blocked until consumed. |
+| `codex-adapter-implementation-v1` | `be728075-4340-4e55-9be5-a61fb3e5e2eb` | Implement admitted authenticated app-server watcher | New scripts and focused tests only | `C:\Users\dfrysinger\code\skills-provider-mailbox-codex-adapter`, branch `feature/provider-native-mailbox-codex-adapter` | Commit SHA, protocol tests, secret-hygiene and lifecycle assumptions | Coordinator consumes explicit handoff before inspecting or integrating the worktree. |
 
 The coordinator owns design, integration, Agent Stack launch changes, and later
 cross-repository candidate proof. No file-writing scopes overlap.

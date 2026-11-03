@@ -90,6 +90,71 @@ identity, and no-injection boundaries apply to the owner-approved path itself.
 Any future restart control limits autopilot from expanding its grant to an
 unowned session.
 
+## Codex merged-start reframe and focused reconciliation
+
+**Initial decision: `REFRAME`.** The reviewed work order assumed the app-server
+would reject one of two concurrent `turn/start` requests. The installed Codex
+0.166.0 server instead returned the same successful active turn to both
+callers. That load-bearing race premise failed, so adapter implementation
+remained blocked while the design was corrected.
+
+**Corrected-action decision: `CONTINUE`.** The exact pending action is now:
+for one Agent Stack-owned Codex launch, the child watcher validates exactly one
+cwd-matching loaded thread, submits only the fixed mailbox prompt, reports a
+successful idle `turn/start` as `submitted` even when it joins a concurrently
+created turn, and uses `turn/steer` only with the exact active turn ID.
+
+### User outcome and authority
+
+The user requires immediate cross-client messaging for Agent Stack sessions,
+said `"the sessions could be running but just need to be idle"`, and limited
+the managed path with `"yes using agent stack, if its not an agent stack agent
+session then no"`. The existing decision record also preserves the explicit
+no-terminal-injection choice. The observable result is one durable envelope
+and one exact native provider submission to the intended Codex thread, with no
+claim stronger than the provider evidence.
+
+### Keep
+
+- **Per-launch app-server and child watcher.** Independent authority: immediate
+  wakeup of the exact managed Codex session. Without it, durable `codex queue`
+  does not wake the loaded TUI.
+- **Exactly one cwd-matching loaded thread.** Independent authority: provider
+  and workspace identity must not cross. Without it, the prompt can reach the
+  wrong conversation.
+- **Successful merged start reported as `submitted`.** Two conflicting writers
+  are evidenced: the attached TUI and the mailbox watcher. The bounded probe
+  showed two distinct concurrent inputs retained exactly once in one
+  authoritative turn and acknowledged exactly once by the model.
+- **Exact `expectedTurnId` steering and wrong-turn refusal.** This prevents an
+  active-turn race from steering a different turn.
+- **Job Object kill-on-close and in-memory token boundary.** These govern the
+  owner-approved native path itself: launcher death must not leave controlled
+  children running, and an untrusted mailbox sender must not gain the provider
+  capability token.
+
+### Remove
+
+- The requirement for one `turn/start` caller to receive an explicit conflict.
+- The conflict/re-read/steer transition after a successful concurrent start.
+- Any claim that a successful start is `verified`; acknowledgement remains the
+  only durable completion signal.
+
+### Unresolved
+
+None for the corrected Windows adapter action. macOS native Codex enablement
+still requires its own platform proof and does not block Windows.
+
+Deliberate owner grants are allowed. No external policy in the evidence
+forbids authenticated local app-server control. The retained controls constrain
+the selected owner-approved path and prevent authority expansion by untrusted
+mailbox content; they are not categorical restrictions on the owner's ability
+to launch Codex directly.
+
+**Smallest next step:** implement the corrected child watcher and Job
+Object-owned launch, then run `codex-native-contract` with the two-marker
+merged-start fixture.
+
 ### Shared-state counts
 
 - A session endpoint record has one writer: the owning launcher or Claude hook.
