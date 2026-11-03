@@ -615,6 +615,11 @@ test("MAILBOX_SELF_ADDRESS selects exact provider mailboxes for check, read, and
     assert.match(checked.stdout, /claude-only summary/);
     assert.doesNotMatch(checked.stdout, /bare-copilot|codex-only/);
 
+    const explicit = await runCli(root, ["check", "--name", "claude:alpha"], trap);
+    assert.equal(explicit.code, 0, explicit.stderr);
+    assert.match(explicit.stdout, /claude-only summary/);
+    assert.doesNotMatch(explicit.stdout, /bare-copilot|codex-only/);
+
     const codex = await runCli(root, ["check"], {
       ...trap,
       MAILBOX_SELF_ADDRESS: "codex:alpha",
