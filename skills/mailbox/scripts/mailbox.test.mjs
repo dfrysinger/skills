@@ -353,26 +353,37 @@ test("persistent configuration survives a process without mailbox environment", 
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-config-"));
   const configPath = join(root, "mailbox-config.json");
   const remoteMailboxRoot = join(root, "remote");
-  await writeFile(
-    configPath,
-    `${JSON.stringify({
-      schemaVersion: 1,
-      machineName: "macbook-pro",
-      remoteMailboxRoot,
-    })}\n`,
-  );
+  const previousMachine = process.env.COPILOT_AGENT_MACHINE;
+  const previousRemote = process.env.MAILBOX_REMOTE_ROOT;
+  try {
+    delete process.env.COPILOT_AGENT_MACHINE;
+    delete process.env.MAILBOX_REMOTE_ROOT;
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        machineName: "macbook-pro",
+        remoteMailboxRoot,
+      })}\n`,
+    );
 
-  const mailbox = createConfiguredMailbox({
-    configPath,
-    mailboxRoot: join(root, "local"),
-    stateRoot: join(root, "state"),
-  });
-  assert.deepEqual(mailbox.watchAddresses("oscar"), [
-    "oscar",
-    "oscar@macbook-pro",
-  ]);
-  assert.equal(mailbox.remoteMailboxRoot, remoteMailboxRoot);
-  await rm(root, { recursive: true, force: true });
+    const mailbox = createConfiguredMailbox({
+      configPath,
+      mailboxRoot: join(root, "local"),
+      stateRoot: join(root, "state"),
+    });
+    assert.deepEqual(mailbox.watchAddresses("oscar"), [
+      "oscar",
+      "oscar@macbook-pro",
+    ]);
+    assert.equal(mailbox.remoteMailboxRoot, remoteMailboxRoot);
+  } finally {
+    if (previousMachine === undefined) delete process.env.COPILOT_AGENT_MACHINE;
+    else process.env.COPILOT_AGENT_MACHINE = previousMachine;
+    if (previousRemote === undefined) delete process.env.MAILBOX_REMOTE_ROOT;
+    else process.env.MAILBOX_REMOTE_ROOT = previousRemote;
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("mailbox environment overrides persistent routing configuration", async () => {
@@ -457,7 +468,11 @@ test("an explicit missing configuration path fails closed", () => {
 test("remote transport is path-disjoint from mutable mailbox roots", async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-config-overlap-"));
   const configPath = join(root, "mailbox-config.json");
+  const previousMachine = process.env.COPILOT_AGENT_MACHINE;
+  const previousRemote = process.env.MAILBOX_REMOTE_ROOT;
   try {
+    delete process.env.COPILOT_AGENT_MACHINE;
+    delete process.env.MAILBOX_REMOTE_ROOT;
     for (const [mailboxRoot, stateRoot, remoteMailboxRoot] of [
       [join(root, "same"), join(root, "state"), join(root, "same")],
       [join(root, "local"), join(root, "state"), join(root, "local", "remote")],
@@ -477,6 +492,10 @@ test("remote transport is path-disjoint from mutable mailbox roots", async () =>
       );
     }
   } finally {
+    if (previousMachine === undefined) delete process.env.COPILOT_AGENT_MACHINE;
+    else process.env.COPILOT_AGENT_MACHINE = previousMachine;
+    if (previousRemote === undefined) delete process.env.MAILBOX_REMOTE_ROOT;
+    else process.env.MAILBOX_REMOTE_ROOT = previousRemote;
     await rm(root, { recursive: true, force: true });
   }
 });

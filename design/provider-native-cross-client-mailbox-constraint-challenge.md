@@ -29,7 +29,7 @@ resolved unavailable-control decision.
 
 1. Parse provider-qualified identity while preserving bare Copilot aliases and
    the existing remote transport.
-2. Keep Copilot session-inbox unchanged.
+2. Keep Copilot session-control unchanged.
 3. Use Claude's authenticated native session socket or named pipe.
 4. Start Codex app-server as a child of each managed launch and attach the TUI
    and mailbox control client to that same server.
@@ -297,7 +297,7 @@ lifecycle.**
 - The durable envelope is written before wakeup, and wakeup never
   acknowledges it. Authority: the existing architecture. Without it, a lost
   wakeup loses mail.
-- Session-inbox stays unchanged for Copilot.
+- Session-control stays unchanged for Copilot.
 - The Claude own-child watcher, under addition 2.
 - The Codex app-server per launch, with the TUI attached through `--remote`.
   Authority: event 2 requires immediate wakeup, and the docs say `codex queue`

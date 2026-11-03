@@ -429,7 +429,7 @@ test("every provider-qualified state path uses the shared path key", async () =>
     }
     assert.ok(!during.some((path) => /^(watchers|notifying)\/alpha\.lock$/.test(path)));
     assert.ok(!after.some((path) => path.startsWith("notified/alpha/")));
-    assert.deepEqual(await requestMock.calls(), [], "Claude never reaches session-inbox");
+    assert.deepEqual(await requestMock.calls(), [], "Claude never reaches session-control");
     assert.equal((await mailbox.check("alpha")).length, 1);
     assert.equal((await mailbox.check("alpha"))[0].envelope.id, bare.envelope.id);
 
@@ -486,7 +486,7 @@ test("legacy bare Copilot keeps its original mailbox and state paths", async () 
   });
 });
 
-test("explicit copilot: address wakes through session-inbox with legacy state paths", async () => {
+test("explicit copilot: address wakes through session-control with legacy state paths", async () => {
   await sandbox("copilot-explicit", async (root) => {
     const requestMock = await writeRequestMock(root);
     const mailbox = providerMailbox(root, {}, { requestCli: requestMock.script });
@@ -527,7 +527,7 @@ function cliEnvironment(root, extra) {
     MAILBOX_LOCAL_ROOT: join(root, "mailbox"),
     MAILBOX_STATE_ROOT: join(root, "state"),
     MAILBOX_CONFIG_PATH: join(root, "mailbox-config.json"),
-    COPILOT_SESSION_INBOX_DIR: join(root, "session-inbox"),
+    COPILOT_SESSION_CONTROL_DIR: join(root, "session-control"),
     ...extra,
   };
 }

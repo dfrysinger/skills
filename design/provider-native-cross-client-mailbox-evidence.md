@@ -42,7 +42,7 @@ All six events are resolved.
 - Mutable envelopes, acknowledgements, locks, claims, notification state, and
   diagnostics remain machine-local.
 - The envelope is the durable source of truth. A wakeup is a separate attempt.
-- Copilot immediate delivery uses the existing session-inbox extension and
+- Copilot immediate delivery uses the existing session-control extension and
   accepts only a receipt whose delivery is `idle` or `steering`.
 - The current macOS path may fall back to guarded tmux input. The new user
   decision rejects that fallback for provider-native cross-client delivery.
@@ -52,7 +52,7 @@ Sources:
 - [`windows-cross-computer-mailbox-addressing.md`](windows-cross-computer-mailbox-addressing.md)
 - `skills/mailbox/scripts/mailbox-core.mjs`
 - `skills/mailbox/scripts/mailbox-poke.sh`
-- `extensions/session-inbox/request.mjs`
+- `extensions/session-control/request.mjs`
 
 ## Existing Agent Stack behavior
 
@@ -76,7 +76,7 @@ Source:
 
 ### Copilot CLI
 
-The existing session-inbox extension joins the exact live Copilot session and
+The existing session-control extension joins the exact live Copilot session and
 uses the SDK to send an immediate prompt. It already has target freshness,
 generation, deduplication, receipt, and ambiguous-side-effect handling.
 

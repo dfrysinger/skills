@@ -171,7 +171,7 @@ system:
 
 - `mailbox-core.mjs` remains the only owner of address parsing, envelope
   persistence, remote publication/import, read, and acknowledgement.
-- session-inbox remains the Copilot live-control adapter.
+- session-control remains the Copilot live-control adapter.
 - the mailbox state root remains the owner of watcher locks, notification
   attempts, existing `.notified` and `.unverified` markers, and diagnostics.
 - Agent Stack remains the owner of provider process launch, isolated
@@ -254,7 +254,7 @@ silently becoming mail from Copilot Alpha.
 
 ## Session-bound watchers
 
-Copilot continues to use session-inbox's existing instance and notification
+Copilot continues to use session-control's existing instance and notification
 state.
 
 Claude and Codex each run one mailbox watcher as a child of the exact owning
@@ -281,7 +281,7 @@ converting `submitted` into `verified`.
 
 ### Copilot
 
-The mailbox dispatcher calls the existing session-inbox request client with
+The mailbox dispatcher calls the existing session-control request client with
 the fixed prompt, envelope-specific deduplication key, and timeout. Only its
 existing `idle` or `steering` receipt is `verified`.
 
@@ -492,7 +492,7 @@ or Agent Stack relaunch guidance. The process is not touched.
    `MAILBOX_SELF_ADDRESS` while retaining bare Copilot reads and sends.
 3. Add versioned outcome payloads to the existing notification markers and
    provider adapter interfaces.
-4. Reuse session-inbox for Copilot with no behavior change.
+4. Reuse session-control for Copilot with no behavior change.
 5. Add the Claude hook watcher and prove its native submission or receipt path,
    including hook re-fire behavior.
 6. Add managed Codex app-server launch and prove exact thread control.
@@ -510,7 +510,7 @@ normalization reads it in place.
 ## Rollback
 
 - Disable provider-native wakeup per provider and leave envelopes queued.
-- Restore bare Copilot-only dispatch through session-inbox.
+- Restore bare Copilot-only dispatch through session-control.
 - Stop and remove only Agent Stack-owned Claude/Codex watcher children and
   Codex app-server children.
 - Launch Codex with its prior embedded mode and Claude with its prior direct
@@ -596,7 +596,7 @@ returns Claude/Codex to manual mailbox pickup.
 | --- | --- | --- | --- | --- |
 | `address-schema` | AC-1, AC-2 | Table-test valid and invalid bare, provider, and machine forms; round-trip canonical envelope fields; set each provider self address and run check, acknowledge, send, and reply resolution. | Exact canonical structures; Claude/Codex never touch bare Copilot paths; invalid non-Copilot self identity refuses. | Provider or machine identity can collide, route incorrectly, or consume another provider's mail. |
 | `provider-remote-transport` | AC-2 | Publish `claude:alpha@surface-pro` and `codex:alpha@surface-pro` through a temporary immutable remote root while bare Copilot `alpha` exists; import each twice and acknowledge locally. | Each imports exactly once into its provider-qualified local mailbox; bare Copilot is untouched; remote bytes are unchanged; no mutable marker enters remote storage. | Provider identity is lost or the existing immutable transport contract regresses. |
-| `legacy-copilot-compat` | AC-1, AC-11 | Read and send against an existing bare Copilot fixture without `MAILBOX_SELF_ADDRESS`. | Same mailbox files and session-inbox target as before. | Migration breaks current callers. |
+| `legacy-copilot-compat` | AC-1, AC-11 | Read and send against an existing bare Copilot fixture without `MAILBOX_SELF_ADDRESS`. | Same mailbox files and session-control target as before. | Migration breaks current callers. |
 | `wakeup-state-machine` | AC-3, AC-4, AC-5 | Fake each adapter outcome and generation race around a pending envelope, then run another watch tick. | Existing notified marker remains compatible; unverified payload distinguishes submitted/held/refused/ambiguous and suppresses replay; deferred writes no marker and may retry; envelope stays pending. | Persistence and live delivery claims are coupled incorrectly or prompts can repeat. |
 | `claude-native-contract` | AC-3 through AC-8 | Launch a temporary supported Claude session with the Agent Stack hook; probe socket reply semantics, idle and active sends, inbound hold/refuse, hook re-fire, socket change, parent death, and waiter acquisition after auth rejection, missing endpoint, and refused connection while preserving the watcher on transient busy. | Exact submitted/verified/held/refused/ambiguous outcome marker plus transcript marker; one acting watcher; no secret in captured files or process args. | Claude delivery or watcher lifecycle is not authenticated, immediate, truthful, single-owner, or secret-safe. |
 | `codex-native-contract` | AC-3 through AC-8 | Launch a temporary app-server, child watcher, and attached TUI; probe `resume --last --remote`, idle start, two-client concurrent start with distinct markers, exact-turn steer, wrong-turn race, parent death, and app-server exit. | Both concurrent inputs occur exactly once in one authoritative turn; successful start is reported only as submitted; exact/wrong-turn behavior is truthful; no orphaned watcher or server. | Control can reach the wrong thread, lose or duplicate racing input, or claim an unproved side effect. |
@@ -646,7 +646,7 @@ that provider-platform pair.
 ## Definition of Done: Provider-Native Cross-Client Mailbox
 
 The change is done when canonical provider-qualified mail works end to end on
-supported Windows and macOS Agent Stack sessions; Copilot uses session-inbox,
+supported Windows and macOS Agent Stack sessions; Copilot uses session-control,
 Claude uses its authenticated own-session socket, and Codex uses the same
 managed app-server as its TUI; unsupported or uncertain delivery remains
 pending with truthful upgrade or relaunch guidance and never changes a provider
