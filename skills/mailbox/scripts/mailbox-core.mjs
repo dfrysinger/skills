@@ -70,25 +70,95 @@ function validateName(name, label = "mailbox name") {
   return name;
 }
 
-export function parseMailboxAddress(address) {
+const MAILBOX_PROVIDERS = new Set(["copilot", "claude", "codex"]);
+
+export function canonicalizeMailboxAddress(address) {
   if (typeof address !== "string") {
     throw new Error("mailbox address must be a string");
   }
-  const separator = address.indexOf("@");
-  if (separator === -1) {
-    const name = validateName(address, "mailbox address");
-    return { address: name, name };
-  }
+  const at = address.indexOf("@");
   if (
-    separator === 0 ||
-    separator === address.length - 1 ||
-    separator !== address.lastIndexOf("@")
+    at === 0 ||
+    at === address.length - 1 ||
+    at !== address.lastIndexOf("@")
   ) {
-    throw new Error("mailbox address must be NAME or NAME@MACHINE");
+    if (at !== -1) {
+      throw new Error(
+        "mailbox address must be [PROVIDER:]NAME or [PROVIDER:]NAME@MACHINE",
+      );
+    }
   }
-  const name = validateName(address.slice(0, separator), "mailbox agent");
-  const machine = validateName(address.slice(separator + 1), "mailbox machine");
-  return { address: `${name}@${machine}`, name, machine };
+  const local = at === -1 ? address : address.slice(0, at);
+  const machine =
+    at === -1
+      ? undefined
+      : validateName(address.slice(at + 1), "mailbox machine");
+  const colon = local.indexOf(":");
+  if (colon !== local.lastIndexOf(":")) {
+    throw new Error(
+      "mailbox address must be [PROVIDER:]NAME or [PROVIDER:]NAME@MACHINE",
+    );
+  }
+  const provider =
+    colon === -1 ? "copilot" : local.slice(0, colon);
+  if (!MAILBOX_PROVIDERS.has(provider)) {
+    throw new Error(`unsupported mailbox provider: ${provider || "(empty)"}`);
+  }
+  const name = validateName(
+    colon === -1 ? local : local.slice(colon + 1),
+    "mailbox agent",
+  );
+  const canonical = `${provider}:${name}${machine ? `@${machine}` : ""}`;
+  return {
+    address: canonical,
+    provider,
+    name,
+    ...(machine ? { machine } : {}),
+  };
+}
+
+export function parseMailboxAddress(address) {
+  const canonical = canonicalizeMailboxAddress(address);
+  if (!address.includes(":")) {
+    return {
+      address: `${canonical.name}${canonical.machine ? `@${canonical.machine}` : ""}`,
+      name: canonical.name,
+      ...(canonical.machine ? { machine: canonical.machine } : {}),
+    };
+  }
+  return canonical;
+}
+
+export function mailboxPathKey(address) {
+  const parsed = canonicalizeMailboxAddress(address);
+  const leaf = `${parsed.name}${parsed.machine ? `@${parsed.machine}` : ""}`;
+  return parsed.provider === "copilot"
+    ? leaf
+    : join("_providers", parsed.provider, leaf);
+}
+
+function localMailboxAddress(address) {
+  const parsed = canonicalizeMailboxAddress(address);
+  return parsed.provider === "copilot"
+    ? parsed.name
+    : `${parsed.provider}:${parsed.name}`;
+}
+
+function envelopeRecipient(address) {
+  const parsed = canonicalizeMailboxAddress(address);
+  if (parsed.provider === "copilot" && !address.includes(":")) {
+    return { name: parsed.machine ? `${parsed.name}@${parsed.machine}` : parsed.name };
+  }
+  return parsed;
+}
+
+function senderIdentity(sender) {
+  if (sender === "unknown") return { name: sender };
+  const parsed = canonicalizeMailboxAddress(sender);
+  if (parsed.provider === "copilot" && !sender.includes(":")) {
+    return { name: parsed.name };
+  }
+  return parsed;
 }
 
 export function configuredMachineName(explicitMachine) {
@@ -334,6 +404,29 @@ export async function resolveOwnName(explicitName) {
   }
 }
 
+export async function resolveOwnAddress(explicitAddress) {
+  const configured = explicitAddress ?? process.env.MAILBOX_SELF_ADDRESS;
+  if (configured !== undefined) {
+    try {
+      const parsed = canonicalizeMailboxAddress(configured);
+      if (parsed.machine) {
+        throw new Error("must not include a machine qualifier");
+      }
+      return parsed.provider === "copilot"
+        ? parsed.name
+        : parsed.address;
+    } catch (error) {
+      throw new Error(`MAILBOX_SELF_ADDRESS is invalid: ${error.message}`);
+    }
+  }
+  if (process.env.CLAUDE_CODE_MESSAGING_SOCKET) {
+    throw new Error(
+      "MAILBOX_SELF_ADDRESS is required for an Agent Stack Claude session",
+    );
+  }
+  return resolveOwnName();
+}
+
 export function createMailbox(options = {}) {
   const mailboxRoot = options.mailboxRoot ?? defaultMailboxRoot();
   const remoteMailboxRoot =
@@ -363,6 +456,7 @@ export function createMailbox(options = {}) {
     pid: process.pid,
   });
   const attachmentObservations = new Map();
+  const wakeupAdapters = options.wakeupAdapters ?? {};
 
   function mailboxRootFor(address) {
     const parsed = parseMailboxAddress(address);
@@ -378,21 +472,26 @@ export function createMailbox(options = {}) {
   function mailboxDirectory(address, state) {
     return join(
       mailboxRootFor(address),
-      parseMailboxAddress(address).address,
+      mailboxPathKey(address),
       state,
     );
   }
 
-  function localAddresses(name) {
-    return [validateName(name, "agent name")];
+  function localAddresses(address) {
+    return [localMailboxAddress(address)];
   }
 
-  function watchAddresses(name) {
-    const agentName = validateName(name, "agent name");
+  function watchAddresses(address) {
+    const parsed = canonicalizeMailboxAddress(address);
+    if (parsed.machine) {
+      throw new Error("watch address must not already include a machine");
+    }
+    const local =
+      parsed.provider === "copilot" ? parsed.name : parsed.address;
     return [
-      agentName,
+      local,
       ...(machineName && remoteMailboxRoot
-        ? [`${agentName}@${machineName}`]
+        ? [`${local}@${machineName}`]
         : []),
     ];
   }
@@ -468,7 +567,9 @@ export function createMailbox(options = {}) {
         const envelope = JSON.parse(await readFile(path, "utf8"));
         if (
           envelope.id !== filename.slice(0, -5) ||
-          envelope.to?.name !== mailboxAddress
+          localMailboxAddress(
+            envelope.to?.address ?? envelope.to?.name,
+          ) !== localMailboxAddress(mailboxAddress)
         ) {
           diagnostics.log("envelope.invalid", {
             mailbox: mailboxAddress,
@@ -524,7 +625,7 @@ export function createMailbox(options = {}) {
       stateRoot,
       "remote-outbox",
       kind,
-      parseMailboxAddress(address).address,
+      mailboxPathKey(address),
     );
   }
 
@@ -532,7 +633,7 @@ export function createMailbox(options = {}) {
     return join(
       stateRoot,
       "remote-imported",
-      parseMailboxAddress(address).address,
+      mailboxPathKey(address),
       `${id}.imported`,
     );
   }
@@ -609,31 +710,50 @@ export function createMailbox(options = {}) {
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
-    for (const entry of addresses.filter((candidate) => candidate.isDirectory())) {
-      const address = parseMailboxAddress(entry.name);
-      if (!address.machine) continue;
-      let names = [];
+    async function stagedEnvelopes(directory) {
+      const result = [];
+      let entries = [];
       try {
-        names = await readdir(join(envelopeRoot, entry.name));
+        entries = await readdir(directory, { withFileTypes: true });
       } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
+        if (error?.code === "ENOENT") return result;
+        throw error;
       }
-      for (const name of names.filter((candidate) => candidate.endsWith(".json"))) {
-        const id = name.slice(0, -5);
+      for (const entry of entries) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) result.push(...(await stagedEnvelopes(path)));
+        else if (entry.name.endsWith(".json")) result.push(path);
+      }
+      return result;
+    }
+    for (const source of await stagedEnvelopes(envelopeRoot)) {
+      const name = basename(source);
+      const id = name.slice(0, -5);
+      let address;
+      try {
+        const envelope = JSON.parse(await readFile(source, "utf8"));
+        address = envelope.to?.address ?? envelope.to?.name;
+        if (!canonicalizeMailboxAddress(address).machine) continue;
+      } catch (error) {
+        diagnostics.log("remote.envelope_publish_failed", {
+          envelopeId: id,
+          error: errorDetails(error),
+        });
+        continue;
+      }
         try {
-          await publishStagedRemoteEnvelope(entry.name, id);
+          await publishStagedRemoteEnvelope(address, id);
           diagnostics.log("remote.envelope_published", {
-            mailbox: entry.name,
+            mailbox: address,
             envelopeId: id,
           });
         } catch (error) {
           diagnostics.log("remote.envelope_publish_failed", {
-            mailbox: entry.name,
+            mailbox: address,
             envelopeId: id,
             error: errorDetails(error),
           });
         }
-      }
     }
 
     const receiptRoot = join(stateRoot, "remote-outbox", "receipts");
@@ -643,50 +763,40 @@ export function createMailbox(options = {}) {
       if (error?.code !== "ENOENT") throw error;
       addresses = [];
     }
-    for (const entry of addresses.filter((candidate) => candidate.isDirectory())) {
-      let names = [];
-      try {
-        names = await readdir(join(receiptRoot, entry.name));
-      } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
-      }
-      for (const name of names.filter((candidate) => candidate.endsWith(".json"))) {
-        const source = join(receiptRoot, entry.name, name);
+    for (const source of await stagedEnvelopes(receiptRoot)) {
+        const name = basename(source);
+        const relativePath = relative(receiptRoot, source);
         try {
           await copyImmutable(
             source,
-            join(remoteMailboxRoot, "receipts", entry.name, name),
+            join(remoteMailboxRoot, "receipts", relativePath),
           );
           await rm(source, { force: true });
           diagnostics.log("remote.receipt_published", {
-            mailbox: entry.name,
             envelopeId: name.slice(0, -5),
           });
         } catch (error) {
           diagnostics.log("remote.receipt_publish_failed", {
-            mailbox: entry.name,
             envelopeId: name.slice(0, -5),
             error: errorDetails(error),
           });
         }
-      }
     }
   }
 
   async function importRemote(address) {
     const parsed = requireWatchAddress(address);
     if (!parsed.machine) return 0;
-    const envelopes = await pendingEnvelopes(parsed.address, {
-      requireStableAttachments: true,
-    });
+    const envelopes = await pendingEnvelopes(parsed.address);
     let imported = 0;
     for (const { envelope, path } of envelopes) {
       const markerPath = importedMarkerPath(parsed.address, envelope.id);
       if (await pathExists(markerPath)) continue;
-      const localPending = mailboxDirectory(parsed.name, "pending");
+      const localAddress = localMailboxAddress(parsed.address);
+      const localPending = mailboxDirectory(localAddress, "pending");
       const localEnvelopePath = join(localPending, `${envelope.id}.json`);
       const localDeliveredPath = join(
-        mailboxDirectory(parsed.name, "delivered"),
+        mailboxDirectory(localAddress, "delivered"),
         `${envelope.id}.json`,
       );
       if (
@@ -704,7 +814,7 @@ export function createMailbox(options = {}) {
           localEnvelopePath,
           `${JSON.stringify({
             ...envelope,
-            to: { name: parsed.name },
+            to: envelopeRecipient(localAddress),
             transport: {
               kind: "remote",
               address: parsed.address,
@@ -715,7 +825,7 @@ export function createMailbox(options = {}) {
       await atomicWrite(markerPath, `${new Date().toISOString()}\n`);
       diagnostics.log("remote.envelope_imported", {
         mailbox: parsed.address,
-        localMailbox: parsed.name,
+        localMailbox: localAddress,
         envelopeId: envelope.id,
       });
       imported += 1;
@@ -733,7 +843,8 @@ export function createMailbox(options = {}) {
     wait = false,
   }) {
     const target = parseMailboxAddress(recipient);
-    validateName(sender, "sender");
+    const canonicalTarget = canonicalizeMailboxAddress(recipient);
+    const from = senderIdentity(sender);
     if (!summary) throw new Error("summary is required");
     if (!message) throw new Error("message is required");
 
@@ -774,8 +885,8 @@ export function createMailbox(options = {}) {
       }
       envelope = {
         id,
-        from: { name: sender },
-        to: { name: target.address },
+        from,
+        to: envelopeRecipient(recipient),
         summary,
         message,
         attachments: attachmentNames,
@@ -832,7 +943,7 @@ export function createMailbox(options = {}) {
             await importRemote(target.address);
             await importRemote(target.address);
           }
-          wakeup = await poke(target.name, {
+          wakeup = await poke(localMailboxAddress(canonicalTarget.address), {
             targetName: target.name,
             wait,
           });
@@ -862,7 +973,11 @@ export function createMailbox(options = {}) {
     validateName(id, "envelope id");
     const path = join(mailboxDirectory(mailboxAddress, "pending"), `${id}.json`);
     const envelope = JSON.parse(await readFile(path, "utf8"));
-    if (envelope.id !== id || envelope.to?.name !== mailboxAddress) {
+    if (
+      envelope.id !== id ||
+      localMailboxAddress(envelope.to?.address ?? envelope.to?.name) !==
+        localMailboxAddress(mailboxAddress)
+    ) {
       throw new Error("envelope identity does not match the requested mailbox");
     }
     return {
@@ -976,11 +1091,11 @@ export function createMailbox(options = {}) {
   }
 
   async function readLocal(name, id) {
-    return findLocalEnvelope(validateName(name, "agent name"), id);
+    return findLocalEnvelope(localMailboxAddress(name), id);
   }
 
   async function acknowledgeLocal(name, id) {
-    const match = await findLocalEnvelope(validateName(name, "agent name"), id);
+    const match = await findLocalEnvelope(localMailboxAddress(name), id);
     return acknowledge(match.mailboxAddress, id);
   }
 
@@ -994,6 +1109,7 @@ export function createMailbox(options = {}) {
     }
     const result = [];
     for (const entry of mailboxes.filter((candidate) => candidate.isDirectory())) {
+      if (entry.name === "_providers") continue;
       let name;
       try {
         name = parseMailboxAddress(entry.name).address;
@@ -1003,6 +1119,32 @@ export function createMailbox(options = {}) {
       const pending = await countJson(mailboxDirectory(name, "pending"));
       const delivered = await countJson(mailboxDirectory(name, "delivered"));
       result.push({ name, pending, delivered });
+    }
+    const providerRoot = join(mailboxRoot, "_providers");
+    let providers = [];
+    try {
+      providers = await readdir(providerRoot, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    for (const provider of providers.filter((entry) => entry.isDirectory())) {
+      if (!MAILBOX_PROVIDERS.has(provider.name) || provider.name === "copilot") {
+        continue;
+      }
+      let names = [];
+      try {
+        names = await readdir(join(providerRoot, provider.name), {
+          withFileTypes: true,
+        });
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      for (const entry of names.filter((candidate) => candidate.isDirectory())) {
+        const name = `${provider.name}:${entry.name}`;
+        const pending = await countJson(mailboxDirectory(name, "pending"));
+        const delivered = await countJson(mailboxDirectory(name, "delivered"));
+        result.push({ name, pending, delivered });
+      }
     }
     return result.sort((left, right) => left.name.localeCompare(right.name));
   }
@@ -1017,7 +1159,7 @@ export function createMailbox(options = {}) {
   }
 
   async function resumeHint(name) {
-    const envelopes = await checkLocal(validateName(name, "agent name"));
+    const envelopes = await checkLocal(localMailboxAddress(name));
     if (envelopes.length === 0) return "";
     return `You have ${envelopes.length} unread mailbox envelope(s) for ${name}. Run the mailbox check command before continuing other work.`;
   }
@@ -1026,7 +1168,7 @@ export function createMailbox(options = {}) {
     const parsed = parseMailboxAddress(address);
     return parsed.machine
       ? undefined
-      : join(stateRoot, "watermarks", `${parsed.address}.txt`);
+      : join(stateRoot, "watermarks", `${mailboxPathKey(address)}.txt`);
   }
 
   async function readLegacyWatermarks(address) {
@@ -1045,7 +1187,7 @@ export function createMailbox(options = {}) {
   }
 
   function notificationDirectory(address) {
-    return join(stateRoot, "notified", parseMailboxAddress(address).address);
+    return join(stateRoot, "notified", mailboxPathKey(address));
   }
 
   function notificationAttemptPath(address, envelopeId) {
@@ -1070,10 +1212,22 @@ export function createMailbox(options = {}) {
     return attemptId;
   }
 
-  async function markUnverified(address, envelopeId, attemptId) {
+  async function markUnverified(
+    address,
+    envelopeId,
+    attemptId,
+    outcome = "ambiguous",
+    detail,
+  ) {
     await atomicWrite(
       unverifiedNotificationPath(address, envelopeId),
-      `${attemptId}\n`,
+      `${JSON.stringify({
+        version: 1,
+        attemptId,
+        outcome,
+        ...(detail ? { detail } : {}),
+        updatedAt: new Date().toISOString(),
+      }, null, 2)}\n`,
     );
   }
 
@@ -1110,7 +1264,24 @@ export function createMailbox(options = {}) {
         await rm(join(directory, name), { force: true });
       }
     }
-    return { notified, unverified };
+    const outcomes = new Map();
+    for (const envelopeId of unverified) {
+      try {
+        const value = JSON.parse(
+          await readFile(
+            unverifiedNotificationPath(address, envelopeId),
+            "utf8",
+          ),
+        );
+        if (value?.outcome) outcomes.set(envelopeId, value);
+      } catch {
+        outcomes.set(envelopeId, {
+          outcome: "ambiguous",
+          detail: "prior mailbox wakeup had an ambiguous side effect",
+        });
+      }
+    }
+    return { notified, unverified, outcomes };
   }
 
   async function markNotified(address, ids) {
@@ -1131,7 +1302,11 @@ export function createMailbox(options = {}) {
 
   async function acquireNotificationClaim(address) {
     const mailboxAddress = parseMailboxAddress(address).address;
-    const path = join(stateRoot, "notifying", `${mailboxAddress}.lock`);
+    const path = join(
+      stateRoot,
+      "notifying",
+      `${mailboxPathKey(mailboxAddress)}.lock`,
+    );
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
@@ -1177,6 +1352,7 @@ export function createMailbox(options = {}) {
       targetName,
       wait = false,
       requireStableAttachments = false,
+      ownershipGuard,
     } = {},
   ) {
     validateName(targetName, "target name");
@@ -1197,16 +1373,21 @@ export function createMailbox(options = {}) {
         notification.unverified.has(envelope.id),
       );
       if (ambiguous) {
+        const recorded = notification.outcomes.get(ambiguous.envelope.id);
         return {
           status: "unverified",
+          outcome: recorded?.outcome ?? "ambiguous",
           envelopeId: ambiguous.envelope.id,
-          detail: "prior mailbox wakeup had an ambiguous side effect",
+          detail:
+            recorded?.detail ??
+            "prior mailbox wakeup had an ambiguous side effect",
         };
       }
 
       return { status: "already-poked", envelopeId: envelopes.at(-1).envelope.id };
     }
     const newest = unnotified.at(-1).envelope;
+    const parsedMailbox = canonicalizeMailboxAddress(mailboxAddress);
 
     const temporaryDirectory = join(stateRoot, "tmp");
     await mkdir(temporaryDirectory, { recursive: true, mode: 0o700 });
@@ -1220,6 +1401,88 @@ export function createMailbox(options = {}) {
       mode: 0o600,
     });
     try {
+      if (parsedMailbox.provider !== "copilot") {
+        const adapter = wakeupAdapters[parsedMailbox.provider];
+        if (!adapter) {
+          return {
+            status: "deferred",
+            outcome: "deferred",
+            envelopeId: newest.id,
+            detail: `no ${parsedMailbox.provider} wakeup adapter is active`,
+          };
+        }
+        const attemptId = await notificationAttemptId(mailboxAddress, newest.id);
+        const result = await adapter.wake({
+          address: localMailboxAddress(parsedMailbox.address),
+          provider: parsedMailbox.provider,
+          name: parsedMailbox.name,
+          envelopeId: newest.id,
+          attemptId,
+          prompt: `check mailbox; skip if empty ${marker}`,
+        });
+        const outcome = result?.outcome;
+        if (![
+          "verified",
+          "submitted",
+          "held",
+          "refused",
+          "deferred",
+          "ambiguous",
+        ].includes(outcome)) {
+          throw new Error(
+            `${parsedMailbox.provider} wakeup adapter returned an invalid outcome`,
+          );
+        }
+        if (outcome === "verified") {
+          if (ownershipGuard && !(await ownershipGuard())) {
+            return {
+              status: "deferred",
+              outcome: "deferred",
+              envelopeId: newest.id,
+              detail: "watcher generation no longer owns the mailbox lock",
+              releaseWatcher: true,
+            };
+          }
+          await markNotified(mailboxAddress, [...readyIds]);
+          return {
+            status: "delivered",
+            outcome,
+            envelopeId: newest.id,
+            ...(result.detail ? { detail: result.detail } : {}),
+          };
+        }
+        if (ownershipGuard && !(await ownershipGuard())) {
+          return {
+            status: "deferred",
+            outcome: "deferred",
+            envelopeId: newest.id,
+            detail: "watcher generation no longer owns the mailbox lock",
+            releaseWatcher: true,
+          };
+        }
+        if (outcome !== "deferred") {
+          await markNotified(
+            mailboxAddress,
+            envelopes
+              .filter(({ envelope }) => envelope.id !== newest.id)
+              .map(({ envelope }) => envelope.id),
+          );
+          await markUnverified(
+            mailboxAddress,
+            newest.id,
+            attemptId,
+            outcome,
+            result.detail,
+          );
+        }
+        return {
+          status: outcome === "ambiguous" ? "unverified" : outcome,
+          outcome,
+          envelopeId: newest.id,
+          ...(result.detail ? { detail: result.detail } : {}),
+          ...(result.releaseWatcher ? { releaseWatcher: true } : {}),
+        };
+      }
       const attemptId = await notificationAttemptId(mailboxAddress, newest.id);
       const result = await runNode(
         requestCli,
@@ -1305,7 +1568,13 @@ export function createMailbox(options = {}) {
         /"ambiguousSideEffect":true/.test(`${result.stdout}\n${result.stderr}`) ||
         /"delivery":"unconfirmed"/.test(`${result.stdout}\n${result.stderr}`);
       if (explicitAmbiguity) {
-        await markUnverified(mailboxAddress, newest.id, attemptId);
+        await markUnverified(
+          mailboxAddress,
+          newest.id,
+          attemptId,
+          "ambiguous",
+          (result.stderr || result.stdout).trim(),
+        );
       }
       const targetUnavailable =
         result.code === 64 &&
@@ -1320,6 +1589,7 @@ export function createMailbox(options = {}) {
       });
       return {
         status: targetUnavailable ? "no-active-copilot" : "unverified",
+        outcome: targetUnavailable ? "deferred" : "ambiguous",
         envelopeId: newest.id,
         detail: (result.stderr || result.stdout).trim(),
       };
@@ -1334,6 +1604,7 @@ export function createMailbox(options = {}) {
       targetName = parseMailboxAddress(address).name,
       wait = false,
       requireStableAttachments = false,
+      ownershipGuard,
     } = {},
   ) {
     const mailboxAddress = requireLocalAddress(address).address;
@@ -1348,34 +1619,66 @@ export function createMailbox(options = {}) {
         targetName,
         wait,
         requireStableAttachments,
+        ownershipGuard,
       });
     } finally {
       await release();
     }
   }
 
-  async function acquireWatcher(address) {
+  async function acquireWatcher(address, generation, signal) {
     const mailboxAddress = parseMailboxAddress(address).address;
-    const path = join(stateRoot, "watchers", `${mailboxAddress}.lock`);
+    const path = join(
+      stateRoot,
+      "watchers",
+      `${mailboxPathKey(mailboxAddress)}.lock`,
+    );
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (;;) {
       try {
         const handle = await open(path, "wx", 0o600);
+        const owner = {
+          pid: process.pid,
+          address: mailboxAddress,
+          ...(generation ? { generation } : {}),
+          startedAt: new Date().toISOString(),
+        };
         await handle.writeFile(
-          `${JSON.stringify({
-            pid: process.pid,
-            address: mailboxAddress,
-            startedAt: new Date().toISOString(),
-          })}\n`,
+          `${JSON.stringify(owner)}\n`,
         );
         await handle.close();
+        const owns = async () => {
+          try {
+            const current = JSON.parse(await readFile(path, "utf8"));
+            return (
+              current.pid === owner.pid &&
+              current.generation === owner.generation
+            );
+          } catch {
+            return false;
+          }
+        };
         const removeLockOnExit = () => {
-          rmSync(path, { force: true });
+          try {
+            const current = JSON.parse(readFileSync(path, "utf8"));
+            if (
+              current.pid === owner.pid &&
+              current.generation === owner.generation
+            ) {
+              rmSync(path, { force: true });
+            }
+          } catch {}
         };
         process.once("exit", removeLockOnExit);
-        return async () => {
-          process.removeListener("exit", removeLockOnExit);
-          await rm(path, { force: true });
+        return {
+          acting: true,
+          owns,
+          release: async () => {
+            process.removeListener("exit", removeLockOnExit);
+            if (await pathExists(path) && (await owns())) {
+              await rm(path, { force: true });
+            }
+          },
         };
       } catch (error) {
         if (error?.code !== "EEXIST") throw error;
@@ -1388,6 +1691,16 @@ export function createMailbox(options = {}) {
         if (owner?.pid) {
           try {
             process.kill(owner.pid, 0);
+            if (generation && owner.generation === generation) {
+              return { acting: false, release: async () => {}, owns: async () => false };
+            }
+            if (generation) {
+              if (signal?.aborted) {
+                return { acting: false, release: async () => {}, owns: async () => false };
+              }
+              await sleep(100);
+              continue;
+            }
             throw new Error(
               `mailbox watcher for ${mailboxAddress} is already running as pid ${owner.pid}`,
             );
@@ -1403,7 +1716,6 @@ export function createMailbox(options = {}) {
         await rm(path, { force: true });
       }
     }
-    throw new Error(`could not acquire mailbox watcher for ${mailboxAddress}`);
   }
 
   async function watch(
@@ -1413,6 +1725,7 @@ export function createMailbox(options = {}) {
       intervalMs = 2_000,
       once = false,
       signal,
+      generation,
     } = {},
   ) {
     const parsedAddress = requireWatchAddress(address);
@@ -1421,7 +1734,8 @@ export function createMailbox(options = {}) {
     if (!Number.isFinite(intervalMs) || intervalMs < 100) {
       throw new Error("watch interval must be at least 100 ms");
     }
-    const release = await acquireWatcher(mailboxAddress);
+    const lock = await acquireWatcher(mailboxAddress, generation, signal);
+    if (!lock.acting) return;
     diagnostics.log("watcher.started", {
       mailbox: mailboxAddress,
       targetName,
@@ -1431,20 +1745,24 @@ export function createMailbox(options = {}) {
       do {
         try {
           await flushRemoteOutbox();
+          let result;
           if (parsedAddress.machine) {
             const imported = await importRemote(mailboxAddress);
             if (imported > 0) {
-              await poke(parsedAddress.name, {
+              result = await poke(localMailboxAddress(mailboxAddress), {
                 targetName,
                 requireStableAttachments: true,
+                ownershipGuard: lock.owns,
               });
             }
           } else {
-            await poke(mailboxAddress, {
+            result = await poke(mailboxAddress, {
               targetName,
               requireStableAttachments: true,
+              ownershipGuard: lock.owns,
             });
           }
+          if (result?.releaseWatcher) break;
         } catch (error) {
           diagnostics.log("watcher.poll_failed", {
             mailbox: mailboxAddress,
@@ -1466,7 +1784,7 @@ export function createMailbox(options = {}) {
         });
       } while (!signal?.aborted);
     } finally {
-      await release();
+      await lock.release();
       diagnostics.log("watcher.stopped", {
         mailbox: mailboxAddress,
         targetName,
