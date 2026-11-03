@@ -107,8 +107,12 @@ Do NOT use mailbox for:
   as a slash command** — slash dispatch races cold-start skill
   loading and fails as "unknown command" before the snapshot is ready.
   **Recipient agent: when you receive the message "check mailbox; skip if
-  empty" (or are otherwise invoked as the mailbox skill with no args), run
-  `~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/mailbox/scripts/mailbox-check.sh`.
+  empty" (or are otherwise invoked as the mailbox skill with no args), run the
+  portable CLI from `MAILBOX_SCRIPTS_DIR`: on Windows,
+  `node "$env:MAILBOX_SCRIPTS_DIR\mailbox.mjs" check`; on POSIX,
+  `node "$MAILBOX_SCRIPTS_DIR/mailbox.mjs" check`. If that environment variable
+  is unavailable, resolve `scripts/mailbox.mjs` beside this skill and run its
+  `check` command.
   If it reports `no pending mail`, say nothing and continue with whatever you
   were doing — no visible turn output needed. If there IS mail, surface and act
   on it per the receive workflow.**
@@ -156,16 +160,16 @@ and `ack` commands never operate directly on the shared transport.
 
 Three ways the receiver finds out:
 
-1. **Wakeup prompt arrives as a user message.** When you see "check mailbox; skip if empty", or are otherwise invoked as the `mailbox` skill with no args, run `~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/mailbox/scripts/mailbox-check.sh`. If it reports `no pending mail`, the wakeup was a stale race (mail was acked in the meantime) — say nothing and continue. If mail IS present, surface it.
+1. **Wakeup prompt arrives as a user message.** When you see "check mailbox; skip if empty", or are otherwise invoked as the `mailbox` skill with no args, run `node "$env:MAILBOX_SCRIPTS_DIR\mailbox.mjs" check` on Windows or `node "$MAILBOX_SCRIPTS_DIR/mailbox.mjs" check` on POSIX. If it reports `no pending mail`, the wakeup was a stale race (mail was acked in the meantime) — say nothing and continue. If mail IS present, surface it.
 2. **Resume-hook prepended to the session prompt.** When this happens you'll see "You have N unread mailbox envelope(s) ..." as part of your initial context. Run `mailbox-check.sh`.
 3. **User says "check mail" / "any mailbox?"** Same response: run `mailbox-check.sh`.
 
 Workflow once you know there's mail:
 
-1. `~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/mailbox/scripts/mailbox-check.sh` — list pending envelopes for this session. Outside tmux, use `node .../mailbox.mjs check --name <[provider:]name>` or set `MAILBOX_SELF_ADDRESS`.
-2. `mailbox-read.sh <id>` — full message + attachment paths.
+1. `node "$env:MAILBOX_SCRIPTS_DIR\mailbox.mjs" check` on Windows, or the equivalent POSIX path — list pending envelopes for this session. Outside Agent Stack, use `node .../mailbox.mjs check --name <[provider:]name>` or set `MAILBOX_SELF_ADDRESS`.
+2. Use the same portable CLI's `read <id>` command for the full message and attachment paths.
 3. Surface summary + sender to the user concisely. Decide whether to act.
-4. After acting (or skipping), `mailbox-ack.sh <id>` moves it to `delivered/`.
+4. After acting (or skipping), use its `ack <id>` command to move the envelope to `delivered/`.
 
 ## Agent Stack integration
 
