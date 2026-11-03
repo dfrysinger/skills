@@ -6,6 +6,7 @@ import {
   POKE_NO_ACTIVE_COPILOT,
   POKE_REMOTE_PENDING,
   POKE_UNVERIFIED,
+  resolveOwnAddress,
   resolveOwnName,
   writeMailboxConfiguration,
 } from "./mailbox-core.mjs";
@@ -46,7 +47,9 @@ function parseOptions(args, booleanFlags = new Set()) {
 }
 
 async function requiredOwnName(explicitName) {
-  const name = await resolveOwnName(explicitName);
+  const name = explicitName
+    ? await resolveOwnName(explicitName)
+    : await resolveOwnAddress();
   if (!name) {
     throw new Error(
       "agent name is required; pass --name, set COPILOT_AGENT_NAME, or run inside tmux",
@@ -98,10 +101,12 @@ try {
         new Set(["no-wakeup", "wait"]),
       );
       if (positional.length !== 1) usage("send requires one recipient");
-      const sender = (await resolveOwnName(options.from)) ?? "unknown";
+      const resolvedSender = options.from
+        ? await resolveOwnAddress(options.from)
+        : (await resolveOwnAddress()) ?? "unknown";
       const result = await mailbox.send({
         recipient: positional[0],
-        sender,
+        sender: resolvedSender,
         summary: options.summary,
         message: options.message,
         files: options.file ?? [],

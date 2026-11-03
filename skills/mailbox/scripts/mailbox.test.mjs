@@ -139,13 +139,21 @@ test("wakeup failures never remove a published envelope", async () => {
   }
 });
 
-test("definitive steering rejection may use guarded terminal fallback", async () => {
+test(
+  "definitive steering rejection may use guarded terminal fallback",
+  { skip: process.platform === "win32" },
+  async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-terminal-fallback-"));
   try {
     const mailboxRoot = join(root, "mailbox");
     const stateRoot = join(root, "state");
     const mockRequest = join(root, "mock-request.mjs");
-    const mockTerminalPoke = join(root, "mock-terminal-poke.sh");
+    const mockTerminalPoke = join(
+      root,
+      process.platform === "win32"
+        ? "mock-terminal-poke.cmd"
+        : "mock-terminal-poke.sh",
+    );
     await writeFile(
       mockRequest,
       `console.log(JSON.stringify({
@@ -162,7 +170,11 @@ process.exit(1);
     );
     await writeFile(
       mockTerminalPoke,
-      `#!/usr/bin/env bash
+      process.platform === "win32"
+        ? `@echo off
+echo poked: %1 (submission observed)
+`
+        : `#!/usr/bin/env bash
 printf 'poked: %s (submission observed)\\n' "$1"
 `,
       { mode: 0o700 },
@@ -172,7 +184,8 @@ printf 'poked: %s (submission observed)\\n' "$1"
       stateRoot,
       requestCli: mockRequest,
       terminalPokeCli: mockTerminalPoke,
-    });
+      },
+    );
     const sent = await mailbox.send({
       recipient: "hotel",
       sender: "whisky",
@@ -910,13 +923,15 @@ test("recipient-local watcher terminates an ambiguous wakeup without duplicate r
     );
     const attemptId = (await readFile(attemptPath, "utf8")).trim();
     assert.equal(request.dedupeKey.endsWith(`:${attemptId}`), true);
-    assert.equal(
-      (await readFile(
+    const unverified = JSON.parse(
+      await readFile(
         join(stateRoot, "notified", "hotel", `${sent.envelope.id}.unverified`),
         "utf8",
-      )).trim(),
-      attemptId,
+      ),
     );
+    assert.equal(unverified.version, 1);
+    assert.equal(unverified.attemptId, attemptId);
+    assert.equal(unverified.outcome, "ambiguous");
     assert.equal((await mailbox.poke("hotel")).status, "unverified");
     assert.deepEqual(
       (await readdir(join(inboxRoot, "pending"))).filter((entry) =>
