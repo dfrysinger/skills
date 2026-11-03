@@ -1,0 +1,85 @@
+# Provider-Native Cross-Client Mailbox Probe Record
+
+This record preserves the pre-adapter mechanism gates required by
+`provider-native-cross-client-mailbox.md`. No credential values, provider
+tokens, or protected account data are recorded here.
+
+## Claude Code 2.1.302 on native Windows
+
+**Gate: ADMITTED**
+
+The installed native Windows CLI was exercised first through its documented
+non-interactive stream protocol and then through a real interactive TUI under
+ConPTY. ConPTY input was used only to drive the bounded probe; mailbox delivery
+used the authenticated Claude messaging pipe.
+
+Observed contract:
+
+- A `SessionStart` hook receives
+  `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN`,
+  `CLAUDE_CODE_SESSION_ID`, and `CLAUDE_PID`.
+- `CLAUDE_PID`, not the hook process parent, identifies the long-lived Claude
+  process.
+- The native Windows endpoint is a named pipe.
+- A watcher authenticates by writing one JSON line:
+  `{"type":"auth","token":"..."}`.
+- After waiting about 250 ms to detect an authentication close, it writes:
+  `{"type":"user","message":{"role":"user","content":"<fixed prompt>"}}`.
+- The pipe sends no acknowledgement bytes. A clean message write is therefore
+  `submitted`, never `verified`.
+- A close after the authentication line is `deferred` and releases the watcher
+  lock. `ENOENT` before a write is also `deferred` and releases the lock.
+- An error after message bytes may have been written is `ambiguous`.
+- Idle delivery started and completed a model turn.
+- Delivery during an active multi-tool turn arrived between tool calls.
+- Startup, `/clear`, `/compact`, and in-process `/resume` re-fired
+  `SessionStart`. The process ID and socket hash remained stable in the
+  exercised in-process cases; matching generations must reuse the existing
+  watcher.
+- Watchers exited after `/exit` by polling `CLAUDE_PID`.
+- The token was absent from process arguments and from the bounded probe's
+  files, logs, transcripts, and command output.
+
+The pipe cannot distinguish Claude's accept, hold, refuse, or ignore policies.
+The adapter must not claim those outcomes.
+
+## Codex CLI 0.166.0 on native Windows
+
+**Gate: OPEN pending direct arbitration probe**
+
+The installed CLI proved the following app-server contract:
+
+- `app-server --listen ws://127.0.0.1:<port> --ws-auth capability-token
+  --ws-token-sha256 <hash>` accepts an authenticated loopback WebSocket.
+- The raw launch-scoped token can remain in private child environments and
+  outside arguments and durable files.
+- The real remote TUI invocation is the installed-version equivalent of
+  `resume --last --cd <workspace> --remote <endpoint>
+  --remote-auth-token-env <environment-name>`.
+- `thread/loaded/list` and `thread/read` can prove exactly one loaded thread
+  with the expected workspace.
+- `turn/start` works while idle.
+- `turn/steer` works with the exact active `expectedTurnId`.
+- A nonmatching turn ID is refused.
+
+The first probe also found two unresolved gates:
+
+- app-server and watcher children survived launcher death;
+- the concurrent TUI-start race was not observed under a true console-backed
+  launch.
+
+The second probe closed the lifecycle gate:
+
+- app-server, watcher, primary TUI, and race-TUI children were assigned to one
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` Job Object;
+- killing the launcher terminated every owned child;
+- raw-token scans of process arguments and temporary files remained clean.
+
+The second probe kept a real native TUI attached to the exact synthetic thread,
+but an unsupported positional prompt on a second `codex resume` did not create
+a turn. That result does not falsify app-server arbitration; it leaves the
+proxy unexercised. The remaining probe therefore targets the protocol boundary
+directly: two separately authenticated clients race `turn/start` on the same
+loaded thread, followed by exact-turn and wrong-turn steering checks. Codex
+adapter implementation remains blocked until that direct arbitration probe
+passes.
