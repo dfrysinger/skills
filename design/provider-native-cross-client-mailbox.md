@@ -12,18 +12,18 @@
 `provider-native-cross-client-mailbox-design-v7-loopback-review`
 **Current design review:** passed for
 `provider-native-cross-client-mailbox-design-v7-loopback-review`
-**Design status:** Approved; implementation handoff pending.
+**Design status:** Approved; implementation active under development-loop.
 
 ```yaml
 design_incubation:
-  status: handoff_pending
+  status: approved
   cycle: 1
   objective_file: /Users/dfrysinger/.copilot/session-state/e926f7bf-0a7e-471d-95a4-e8098c75bdfb/files/mailbox-codex-design-objective.txt
   reminder:
     kind: design_progress
     id: 3
     interval: 30m
-    status: live
+    status: stopped
 ```
 
 ## Objective
