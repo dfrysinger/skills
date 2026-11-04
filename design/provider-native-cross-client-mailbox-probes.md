@@ -102,7 +102,7 @@ The corrected contract is admitted:
 
 ## Claude Code 2.1.222 on macOS
 
-**Gate: BLOCKED — UPGRADE REQUIRED**
+**Gate: SUPERSEDED BY THE 2.1.318 PROOF BELOW**
 
 The installed arm64 macOS client was checked against the reviewed native
 messaging requirement before any launcher change:
@@ -117,6 +117,37 @@ The macOS Claude adapter remains disabled and the guarded tmux compatibility
 path remains in place. The next supported probe requires an attended upgrade
 to Claude Code 2.1.224 or later. No provider token was read, printed, written,
 or placed in process arguments.
+
+## Claude Code 2.1.318 on macOS
+
+**Gate: PASS**
+
+After an attended upgrade, the installed arm64 macOS client exposed
+`CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN`, and
+`CLAUDE_PID` to a SessionStart-hook child. The reviewed watcher and adapter
+then passed the real provider journey:
+
+- a private authenticated socket write started an idle Claude turn;
+- a second native message arrived while Claude owned a foreground tool call
+  and was processed after that tool checkpoint;
+- both turns resolved the exact `claude:<name>` mailbox rather than a bare
+  Copilot mailbox;
+- the receiver read and acknowledged the durable envelopes;
+- an Agent Stack-launched candidate sent a fixture-free reply back to the
+  requesting Copilot session;
+- stopping the owning Claude tmux session stopped the detached watcher;
+- the token appeared in neither process arguments nor captured terminal,
+  mailbox, test, or diagnostic output.
+
+The first live run correctly exposed a stale installed Claude plugin: native
+delivery started the turn, but the old mailbox CLI ignored
+`MAILBOX_SELF_ADDRESS` and reported the provider mailbox empty. Loading the
+exact provider-mailbox candidate fixed that consumer mismatch. The final
+acceptance used the reviewed Skills candidate and the macOS Agent Stack
+candidate together.
+
+This admits native macOS Claude delivery through the session-bound
+SessionStart hook. It does not admit Codex changes.
 
 ## Codex CLI 0.142.2 on macOS
 
