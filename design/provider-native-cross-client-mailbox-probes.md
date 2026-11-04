@@ -99,3 +99,212 @@ The corrected contract is admitted:
 - a wrong-turn error proves pre-acceptance refusal and permits one exact
   re-read/re-steer;
 - unclassified post-request failures are `ambiguous`.
+
+## Claude Code 2.1.222 on macOS
+
+**Gate: SUPERSEDED BY THE 2.1.318 PROOF BELOW**
+
+The installed arm64 macOS client was checked against the reviewed native
+messaging requirement before any launcher change:
+
+- installed version: `2.1.222`;
+- documented macOS minimum: `2.1.224`;
+- the installed binary contains `CLAUDE_PID`, but does not contain
+  `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN`.
+
+This version cannot establish the authenticated own-session socket contract.
+The macOS Claude adapter remains disabled and the guarded tmux compatibility
+path remains in place. The next supported probe requires an attended upgrade
+to Claude Code 2.1.224 or later. No provider token was read, printed, written,
+or placed in process arguments.
+
+## Claude Code 2.1.318 on macOS
+
+**Gate: PASS**
+
+After an attended upgrade, the installed arm64 macOS client exposed
+`CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN`, and
+`CLAUDE_PID` to a SessionStart-hook child. The reviewed watcher and adapter
+then passed the real provider journey:
+
+- a private authenticated socket write started an idle Claude turn;
+- a second native message arrived while Claude owned a foreground tool call
+  and was processed after that tool checkpoint;
+- both turns resolved the exact `claude:<name>` mailbox rather than a bare
+  Copilot mailbox;
+- the receiver read and acknowledged the durable envelopes;
+- an Agent Stack-launched candidate sent a fixture-free reply back to the
+  requesting Copilot session;
+- stopping the owning Claude tmux session stopped the detached watcher;
+- the token appeared in neither process arguments nor captured terminal,
+  mailbox, test, or diagnostic output.
+
+The first live run correctly exposed a stale installed Claude plugin: native
+delivery started the turn, but the old mailbox CLI ignored
+`MAILBOX_SELF_ADDRESS` and reported the provider mailbox empty. Loading the
+exact provider-mailbox candidate fixed that consumer mismatch. The final
+acceptance used the reviewed Skills candidate and the macOS Agent Stack
+candidate together.
+
+The committed-candidate acceptance on 2026-11-04 used Skills commit
+`6b90342b816a47352505787894b5485aa361ffb3` and Agent Stack commit
+`410367ac252a7222b76fdff31c29aad88ae63b4a`:
+
+- an envelope written without sender-side wakeup started an idle native turn;
+- the receiver replied `CLAUDE_FINAL_IDLE_PASS` and acknowledged the envelope;
+- a second envelope arrived while Claude owned a 30-second Bash tool call;
+- the receiver handled it after the tool checkpoint, replied
+  `CLAUDE_FINAL_ACTIVE_PASS`, and acknowledged the envelope;
+- closing the owning `claude-mailbox-final` tmux session stopped watcher process
+  `85700`;
+- the final Skills suite passed 54 tests, including notification-claim
+  arbitration and terminal-interruption state handling;
+- both feature branches matched their remote commit identities before the live
+  proof.
+
+This admits native macOS Claude delivery through the session-bound
+SessionStart hook. It does not admit Codex changes.
+
+## Codex CLI 0.142.2 on macOS
+
+**Gate: BLOCKED — CLIENT UPGRADE REQUIRED**
+
+The installed arm64 macOS client passed the transport portion of the bounded
+probe:
+
+- `codex app-server` supports `unix://PATH`;
+- `codex resume` supports `--remote unix://PATH` and
+  `--remote-auth-token-env`;
+- the generated installed-version schema contains the required thread and turn
+  methods;
+- the app-server created its Unix socket as `srw-------`, owned by the current
+  user;
+- the Unix socket accepted an HTTP WebSocket upgrade, establishing that the
+  existing WebSocket RPC protocol can be carried over the private local socket.
+
+The user completed a fresh protected device login for this exact CLI, and
+`codex login status` confirmed ChatGPT authentication. Authenticated requests
+then reached the service but every model advertised by the 0.142.2 app-server
+catalog was rejected as unsupported for the ChatGPT account. The available
+package version is 0.166.0.
+
+No macOS Codex adapter or Agent Stack launch change is admitted from this
+partial result. The guarded tmux compatibility path remains in place. After
+an explicitly authorized Codex upgrade, rerun exact loaded-thread identity,
+idle start, active-turn steering, launcher-child cleanup, fixture-free mailbox
+reply and acknowledgement, and token-secrecy checks. No token value appeared
+in arguments, files, logs, diagnostics, or user-visible output during this
+probe.
+
+## Codex CLI 0.166.0 on macOS
+
+**Gate: PASS - AUTHENTICATED LOOPBACK NATIVE MAILBOX**
+
+The upgraded arm64 macOS client retained ChatGPT authentication and completed a
+real `gpt-6.1-sol` request. Its app-server also created an explicit Unix socket
+as `srw-------`, owned by the current user, and accepted an authenticated
+WebSocket client when started with:
+
+```text
+codex app-server --listen unix://PATH --ws-auth capability-token \
+  --ws-token-sha256 HASH
+```
+
+The matching remote TUI cannot use that authenticated Unix endpoint. Codex
+0.166.0 rejects this launch before it connects:
+
+```text
+ERROR: `--remote-auth-token-env` requires a `wss://` or loopback `ws://` remote.
+```
+
+This is the first divergent checkpoint from the reviewed macOS design. The
+design requires Agent Stack to give the same raw token to the TUI and watcher
+through private child environments while the app-server receives only the
+token hash. The installed TUI accepts that token form for loopback WebSocket
+endpoints, but not for `unix://PATH`.
+
+No macOS Codex adapter or Agent Stack launch change is admitted. Loaded-thread
+identity, idle start, active steering, mailbox reply and acknowledgement, and
+launcher-child cleanup remain unproven because they depend on the rejected
+launch contract. The guarded terminal compatibility path remains in place.
+Further work needs an explicit design decision between a private Unix socket
+without Codex bearer authentication and an authenticated loopback WebSocket
+listener. No raw token appeared in command arguments, files, logs,
+diagnostics, or user-visible output during this probe.
+
+The reviewed authenticated loopback replacement then passed these macOS
+mechanism checks through the real remote TUI:
+
+- app-server bound an ephemeral `127.0.0.1` port chosen with port zero;
+- the launcher derived exactly one listener owned by the exact app-server
+  child PID before starting either client;
+- missing and wrong bearer tokens were refused;
+- stopping the child released the port, and a replacement process could bind
+  that same port for the controlled child-exit/rebind case;
+- the TUI resumed one exact cwd-matching loaded thread;
+- idle `turn/start` completed a real `gpt-6.1-sol` turn;
+- two concurrent `turn/start` calls returned one turn ID while retaining both
+  distinct inputs and replies exactly once;
+- wrong `expectedTurnId` steering was refused;
+- closing the owning tmux session stopped the TUI and app-server, closed the
+  listener, and left the raw token absent from arguments and proof files.
+
+The probe also disproved one load-bearing adapter assumption. On this installed
+runtime, `thread/read(includeTurns=false)` reports only
+`{"type":"active","activeFlags":[]}` for an active thread.
+`thread/turns/list`, `thread/items/list`, and
+`thread/read(includeTurns=true)` return runtime "not supported yet" errors.
+Notifications are scoped to the client that owns the turn, so a separate
+session-bound watcher does not receive another client's active turn ID. A
+production watcher therefore cannot satisfy the reviewed exact
+`expectedTurnId` steering path.
+
+The same installed runtime supports `thread/queue/add`. During a real
+12-second active tool call, a second authenticated client added a distinct
+queued prompt with a `clientUserMessageId`. App-server returned a queued
+submission ID, automatically ran the queued prompt after the active turn, and
+persisted the queued user marker and its assistant reply exactly once. This
+also held when the thread became idle before queue acceptance: a second queued
+prompt was accepted on the idle loaded thread, started automatically, and
+persisted exactly once. Two simultaneous `thread/queue/add` calls from
+separately authenticated clients returned distinct submission IDs and
+persisted both distinct user markers and replies exactly once.
+
+The runtime also supports `thread/settings/update`. For the exact loaded
+thread, an accepted update set `approvalPolicy: "never"` and
+`sandboxPolicy: { "type": "dangerFullAccess" }` for subsequent turns. A queued
+turn then wrote a synthetic marker outside the workspace without an approval
+prompt and completed its exact reply. This closes the macOS `ALLOW_ALL`
+policy race without relying on concurrent `turn/start`.
+
+These observations admit a macOS queue-based proposal only after its work
+order and design review are updated. They do not replace the separately
+admitted Windows start/steer contract.
+
+The reviewed implementation then exposed and closed two composition gaps:
+
+- a fresh remote TUI defaults to an ephemeral thread; idle queueing may be
+  accepted, but active `thread/queue/add` is rejected with `-32600`. A focused
+  native proof showed `-c ephemeral=false` creates a durable fresh TUI thread
+  and accepts active queueing without a synthetic bootstrap turn;
+- macOS can report one workspace as both `/tmp/...` and `/private/tmp/...`.
+  Canonical filesystem identity plus exclusion of ephemeral macOS threads
+  selects the durable TUI thread without recency or activity heuristics.
+
+The final dirty candidate passed real TUI acceptance:
+
+- active/concurrent envelopes
+  `20261104T230348050Z-26663-51c12c71b668` and
+  `20261104T230348103Z-26664-320bd7007000` were accepted by
+  `thread/queue/add`, read, replied to with `CODEX_ACTIVE_CONCURRENT_V19`, and
+  acknowledged;
+- idle envelope `20261104T230607774Z-35721-f3ec8305c4a9` was accepted, read,
+  replied to with `CODEX_IDLE_REPLY_V19`, and acknowledged;
+- closing the owning tmux session stopped launcher, app-server, watcher, TUI,
+  and monitor PIDs `26213,26241,26304,26365,26374` and closed
+  `127.0.0.1:52374`;
+- exact diff and proof-artifact scans found no raw capability token.
+
+This evidence admits the reviewed macOS queue implementation after
+two-family implementation review, committed-candidate identity, and remote
+branch verification complete.

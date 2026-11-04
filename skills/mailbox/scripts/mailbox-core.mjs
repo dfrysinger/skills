@@ -41,6 +41,7 @@ const RETRYABLE_FILE_ERRORS = new Set(["EACCES", "EBUSY", "EPERM"]);
 export const POKE_UNVERIFIED = 3;
 export const POKE_NO_ACTIVE_COPILOT = 4;
 export const POKE_REMOTE_PENDING = 5;
+export const POKE_FALLBACK_DEFERRED = 6;
 
 const MAILBOX_CONFIG_SCHEMA_VERSION = 1;
 const MAILBOX_CONFIG_KEYS = new Set([
@@ -946,7 +947,10 @@ export function createMailbox(options = {}) {
             await importRemote(target.address);
           }
           wakeup = await poke(localMailboxAddress(canonicalTarget.address), {
-            targetName: target.name,
+            targetName:
+              target.provider === "copilot"
+                ? target.name
+                : `${target.provider}-${target.name}`,
             wait,
           });
         } catch (error) {
@@ -1275,7 +1279,22 @@ export function createMailbox(options = {}) {
             "utf8",
           ),
         );
-        if (value?.outcome) outcomes.set(envelopeId, value);
+        if (value?.outcome === "attempting") {
+          await markUnverified(
+            address,
+            envelopeId,
+            value.attemptId,
+            "ambiguous",
+            "prior mailbox wakeup was interrupted during provider submission",
+          );
+          outcomes.set(envelopeId, {
+            ...value,
+            outcome: "ambiguous",
+            detail: "prior mailbox wakeup was interrupted during provider submission",
+          });
+        } else if (value?.outcome) {
+          outcomes.set(envelopeId, value);
+        }
       } catch {
         outcomes.set(envelopeId, {
           outcome: "ambiguous",
@@ -1416,6 +1435,87 @@ export function createMailbox(options = {}) {
       if (parsedMailbox.provider !== "copilot") {
         const adapter = wakeupAdapters[parsedMailbox.provider];
         if (!adapter) {
+          if (terminalPokeCli) {
+            const attemptId = await notificationAttemptId(
+              mailboxAddress,
+              newest.id,
+            );
+            try {
+              const fallback = await execFileAsync(
+                terminalPokeCli,
+                [
+                  mailboxAddress,
+                  "--terminal-only",
+                  "--tmux-session",
+                  targetName,
+                  ...(wait ? ["--wait"] : []),
+                ],
+                {
+                  env: {
+                    ...process.env,
+                    MAILBOX_LOCAL_ROOT: mailboxRoot,
+                    MAILBOX_STATE_ROOT: stateRoot,
+                    MAILBOX_TERMINAL_RECEIPT: "1",
+                  },
+                  timeout: wait ? 50_000 : 20_000,
+                },
+              );
+              if (fallback.stdout.includes("submission observed")) {
+                await markNotified(mailboxAddress, [...readyIds]);
+                diagnostics.log("wakeup.accepted", {
+                  mailbox: mailboxAddress,
+                  targetName,
+                  envelopeId: newest.id,
+                  delivery: "terminal-fallback",
+                });
+                return {
+                  status: "delivered",
+                  outcome: "verified",
+                  envelopeId: newest.id,
+                  delivery: "terminal-fallback",
+                };
+              }
+            } catch (error) {
+              const detail = [error?.stderr, error?.stdout]
+                .filter(Boolean)
+                .join("\n")
+                .trim();
+              diagnostics.log("wakeup.terminal_fallback_failed", {
+                mailbox: mailboxAddress,
+                targetName,
+                envelopeId: newest.id,
+                error: errorDetails(error),
+              });
+              const definitelyNoSideEffect = detail.includes(
+                "disappeared before the poke could be entered",
+              );
+              if (
+                !definitelyNoSideEffect &&
+                (detail.includes("MAILBOX_TERMINAL_PHASE=SUBMITTING") ||
+                  detail.includes("sent the poke"))
+              ) {
+                await markUnverified(
+                  mailboxAddress,
+                  newest.id,
+                  attemptId,
+                  "ambiguous",
+                  detail,
+                );
+                return {
+                  status: "unverified",
+                  outcome: "ambiguous",
+                  envelopeId: newest.id,
+                  detail,
+                };
+              }
+            }
+            return {
+              status: "fallback-deferred",
+              outcome: "deferred",
+              envelopeId: newest.id,
+              detail: `guarded terminal fallback for ${parsedMailbox.provider} did not submit`,
+            };
+          }
           return {
             status: "deferred",
             outcome: "deferred",
@@ -1424,14 +1524,86 @@ export function createMailbox(options = {}) {
           };
         }
         const attemptId = await notificationAttemptId(mailboxAddress, newest.id);
-        const result = await adapter.wake({
+        const wakeRequest = {
           address: localMailboxAddress(parsedMailbox.address),
           provider: parsedMailbox.provider,
           name: parsedMailbox.name,
           envelopeId: newest.id,
           attemptId,
           prompt: `check mailbox; skip if empty ${marker}`,
-        });
+        };
+        let prepared;
+        if (typeof adapter.prepare === "function") {
+          try {
+            prepared = await adapter.prepare(wakeRequest);
+          } catch (error) {
+            const detail = `unexpected ${parsedMailbox.provider} wakeup preparation error: ${
+              error?.code ?? error?.name ?? "UNKNOWN"
+            }`;
+            diagnostics.log("wakeup.adapter_prepare_failed", {
+              mailbox: mailboxAddress,
+              targetName,
+              envelopeId: newest.id,
+              error: errorDetails(error),
+            });
+            return {
+              status: "deferred",
+              outcome: "deferred",
+              envelopeId: newest.id,
+              detail,
+            };
+          }
+          if (prepared?.outcome === "deferred") {
+            diagnostics.log("wakeup.deferred", {
+              mailbox: mailboxAddress,
+              targetName,
+              envelopeId: newest.id,
+              phase: "prepare",
+              detail: prepared.detail,
+            });
+            return {
+              status: "deferred",
+              outcome: "deferred",
+              envelopeId: newest.id,
+              ...(prepared.detail ? { detail: prepared.detail } : {}),
+              ...(prepared.releaseWatcher ? { releaseWatcher: true } : {}),
+            };
+          }
+        }
+        await markUnverified(
+          mailboxAddress,
+          newest.id,
+          attemptId,
+          "attempting",
+          `${parsedMailbox.provider} wakeup submission is in progress`,
+        );
+        let result;
+        try {
+          result = await adapter.wake(wakeRequest, prepared);
+        } catch (error) {
+          const detail = `unexpected ${parsedMailbox.provider} wakeup error: ${
+            error?.code ?? error?.name ?? "UNKNOWN"
+          }`;
+          await markUnverified(
+            mailboxAddress,
+            newest.id,
+            attemptId,
+            "ambiguous",
+            detail,
+          );
+          diagnostics.log("wakeup.adapter_failed", {
+            mailbox: mailboxAddress,
+            targetName,
+            envelopeId: newest.id,
+            error: errorDetails(error),
+          });
+          return {
+            status: "unverified",
+            outcome: "ambiguous",
+            envelopeId: newest.id,
+            detail,
+          };
+        }
         const outcome = result?.outcome;
         if (![
           "verified",
@@ -1462,6 +1634,18 @@ export function createMailbox(options = {}) {
             envelopeId: newest.id,
             ...(result.detail ? { detail: result.detail } : {}),
           };
+        }
+        if (outcome === "deferred") {
+          diagnostics.log("wakeup.deferred", {
+            mailbox: mailboxAddress,
+            targetName,
+            envelopeId: newest.id,
+            phase: "submit",
+            detail: result.detail,
+          });
+          await rm(unverifiedNotificationPath(mailboxAddress, newest.id), {
+            force: true,
+          });
         }
         if (ownershipGuard && !(await ownershipGuard())) {
           return {

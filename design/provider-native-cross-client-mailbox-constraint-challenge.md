@@ -3,7 +3,7 @@
 ## Status
 
 **Evidence packet:** `provider-native-cross-client-mailbox-evidence-v1`
-**Decision record:** `provider-native-cross-client-mailbox-decisions-v2`
+**Decision record:** `provider-native-cross-client-mailbox-decisions-v3`
 **Pass 1 challenger:** fresh Claude Opus 5.5 context
 **Pass 1 status:** complete
 **Pass 2 challenger:** fresh Claude Opus 5.5 context, using this file as the
@@ -467,3 +467,251 @@ Claude/Codex explicit-poke fallback. Those phrases were removed.
 findings and v5 delta. Codex adapter code remains blocked until the native
 Windows remote-resume probe passes. Provider enablement remains blocked until
 that provider-platform pair's native contract probe passes.
+
+## macOS Codex authenticated-transport reframe
+
+**Decision: `REFRAME`.** Codex 0.166.0 rejects
+`--remote-auth-token-env` for a `unix://PATH` remote. The reviewed macOS action
+requires the TUI and watcher to authenticate to one launcher-owned Unix
+app-server with the same in-memory token. That action cannot launch, so macOS
+Codex implementation and the dependent identity, delivery, steering, and
+cleanup proofs remain blocked.
+
+### User outcome and authority
+
+The retained outcome is immediate native wakeup of the exact Agent Stack-owned
+Codex thread, with durable mail left pending when exact local control cannot be
+proved. The user authorized the Codex upgrade and proof. That authorization
+does not select a different local transport or weaken the authenticated-control
+boundary after the reviewed Unix contract fails.
+
+### Keep
+
+- One app-server and one mailbox watcher owned by each Agent Stack launch.
+- Exactly one loaded thread whose working directory matches the launch.
+- No token in arguments, files, logs, mailbox data, or diagnostics.
+- No terminal input injection.
+- Fail-closed pending mail when endpoint, thread, or turn identity is not exact.
+
+The app-server remains the shared state owner for two evidenced writers, the
+TUI and watcher. No additional coordination lock is justified.
+
+### Remove
+
+- The assumption that `--remote-auth-token-env` works with `unix://PATH` on
+  macOS Codex 0.166.0.
+- Any implementation or proof claim that depends on that rejected launch.
+
+### Unresolved
+
+The deciding fact is which corrected owner-approved boundary should replace
+the failed contract:
+
+1. a private Unix socket with operating-system file permissions and no Codex
+   bearer token; or
+2. an authenticated loopback WebSocket, which the installed TUI explicitly
+   permits with `--remote-auth-token-env`.
+
+The second option reuses the already proved Windows topology and preserves the
+provider bearer-token check. The first option keeps the smaller macOS-local
+transport but changes what authenticates the client. No external policy in the
+evidence forbids either deliberate owner grant. Both govern owner-approved
+local control; the token and exact-thread checks prevent untrusted mailbox
+content from expanding that grant.
+
+**Smallest next step:** write one corrected bounded macOS Codex action that
+selects a transport and names its trust boundary, then reconcile and probe that
+exact action before writing adapter or launcher code.
+
+## Authenticated-loopback reconciliation for macOS Codex
+
+**Decision: `CONTINUE`.** The corrected action uses one authenticated
+`127.0.0.1` WebSocket app-server per Agent Stack-owned Codex launch on both
+macOS and Windows. The launcher gives app-server only the token hash and gives
+the raw token to the TUI and watcher through private child environments.
+
+The user's cross-client, cross-platform outcome remains unchanged. This
+topology reuses the admitted Windows contract and the installed macOS TUI's
+supported authentication form. It adds no broker, registry, durable token,
+new lock, or terminal input path.
+
+### Keep
+
+- One launcher-owned app-server, watcher, and TUI per Codex session.
+- Bearer-token authentication, exact loaded-thread and working-directory
+  checks, exact active-turn steering, and fail-closed pending mail.
+- Existing app-server arbitration for the two evidenced thread writers, the
+  TUI and watcher.
+
+### Remove
+
+- The macOS Unix transport choice.
+- Any platform-specific Codex authentication downgrade.
+
+### Unresolved
+
+The corrected macOS mechanism still needs a bounded live proof for loopback
+binding, missing and wrong token refusal, exact TUI resume, idle start, active
+steering, concurrent start retention, launcher-child cleanup, endpoint
+closure, and token secrecy. These are proof gates, not new architecture.
+
+Deliberate owner grants are allowed. No external policy in the evidence
+forbids an authenticated local listener. The bearer token governs the
+owner-approved control path and prevents other local clients without the token
+from exercising Codex control. Exact thread checks prevent mailbox content
+from redirecting that authority.
+
+**Smallest next step:** run the corrected macOS native contract probe. Write no
+adapter or launcher code until every listed mechanism gate passes.
+
+## Fresh two-pass macOS loopback challenge
+
+**Evidence packet:** `provider-native-cross-client-mailbox-evidence-v1`
+**Decision record:** `provider-native-cross-client-mailbox-decisions-v3`
+**Challenger:** fresh read-only context
+`98df4602-ac7d-4a1d-8312-5bde65090aa4`
+**Pass 2 subject:** `provider-native-cross-client-mailbox-design-v7-loopback-review`
+**Decision: `CONTINUE`, narrowly gated**
+
+Pass 1 received the evidence and decision records without the proposal. It
+independently derived the minimum macOS Codex design:
+
+- one authenticated loopback app-server shared by the Agent Stack-owned TUI
+  and watcher;
+- one launch-scoped raw token in private child environments, with only its hash
+  passed to app-server;
+- exact loaded-thread, workspace, and active-turn checks;
+- launcher-owned cleanup; and
+- truthful `submitted`, `deferred`, and `ambiguous` outcomes while the envelope
+  remains pending until acknowledgement.
+
+Pass 2 found that the revised proposal matches that minimum and closes the
+foreign-listener risk. App-server binds port zero, and the launcher must prove
+exactly one `127.0.0.1` listener belongs to the live app-server child before it
+gives either client the endpoint or raw token.
+
+Keep the per-launch app-server, TUI, and watcher; token/hash separation; exact
+listener, thread, workspace, and turn checks; truthful pending outcomes; and
+the ban on terminal injection. Remove the Unix-authentication assumption and
+block all adapter or launcher code until the native-contract probe passes.
+
+The remaining unknowns are probe facts: whether the installed macOS app-server
+supports an authoritative port-zero ownership chain, the exact remote resume
+form, missing and wrong token refusal, thread identity, idle and active
+delivery, concurrent-start retention, cleanup, endpoint closure, and secret
+hygiene.
+
+Agent Stack owns launch, lifecycle, and workspace authority. App-server owns
+thread and turn arbitration. The bearer token grants local client authority
+but does not claim same-user process isolation. Operating-system listener
+ownership prevents endpoint substitution before token disclosure. Mailbox
+content cannot alter identity, permissions, or control policy.
+
+**Smallest next step:** run one bounded macOS native-contract probe against the
+exact port-zero, child-owned authenticated-loopback design. Write no adapter or
+launcher code until every gate passes.
+
+## Active-delivery reframe after the macOS native probe
+
+**Evidence packet:** `provider-native-cross-client-mailbox-evidence-v1` plus
+the Codex 0.166.0 macOS observations in
+`provider-native-cross-client-mailbox-probes.md`
+**Decision record:** `provider-native-cross-client-mailbox-decisions-v3`
+**Challenger:** fresh two-pass context
+`f1345e07-c4f1-42ff-94ca-339f2b0becff`
+**Pass 1 decision:** `REFRAME`
+**Pass 2 subject:** `provider-native-cross-client-mailbox-design-v8-queue-review`
+**Pass 2 decision:** `NARROW`, applied
+
+The user's retained outcome is a reliable cross-client, cross-platform mailbox
+that submits work to the exact live session immediately when the provider can
+accept it and otherwise leaves durable mail pending. The direct authority is:
+`"our goal is a reliable cross client cross platform messaging system, lets
+not give up"`, together with the recorded immediate-wakeup and fail-closed
+decisions.
+
+Pass 1 received only the decision record, evidence packet, and probe record.
+It did not read the proposal. It found that exact active-turn steering is a
+failed mechanism, not a user requirement:
+
+- `thread/read(includeTurns=false)` reports active state without a turn ID;
+- the installed runtime rejects advertised turn and item pagination plus
+  full-history reads as not supported;
+- notifications are scoped to the client that owns the turn, so the mailbox
+  watcher cannot observe the TUI's active turn ID; and
+- guessing or persisting a turn ID would violate the exact-session boundary.
+
+The minimum design keeps the authenticated per-launch loopback app-server,
+exact loaded-thread and workspace checks, and truthful
+submitted/deferred/ambiguous outcomes. Windows preserves its separately
+admitted `turn/start` and exact `turn/steer` contract. macOS uses
+`thread/queue/add` with the mailbox attempt ID as `clientUserMessageId`
+whether idle or active. Codex owns queue serialization and starts the accepted
+prompt immediately or after the active turn. No registry, notification bridge,
+turn-ID store, new lock, or wrong-turn retry is needed on macOS.
+
+The only pass-1 unknown was the active-to-idle acceptance race. A follow-up
+probe settled it: after the active turn and an earlier queue item completed,
+`thread/queue/add` accepted another item on the idle loaded thread, returned a
+queued submission ID, automatically started it, and persisted one user marker
+and one assistant reply. Two concurrent queue calls also returned distinct
+submission IDs and retained both inputs and replies exactly once.
+
+A second review finding exposed the owner-policy boundary. The installed macOS
+runtime accepts `thread/settings/update` for the exact loaded thread and
+defines its approval and sandbox fields for subsequent turns. An accepted
+`approvalPolicy: "never"` plus `dangerFullAccess` update governed a queued
+turn that wrote outside the workspace without prompting. The watcher therefore
+settles this prerequisite before it records or submits an allow-all wakeup.
+
+### Keep
+
+- Authenticated loopback transport with exact child listener ownership.
+- Exact loaded-thread and workspace identity.
+- The admitted Windows start/steer contract.
+- macOS `thread/queue/add` for idle and active threads, with the durable mailbox
+  attempt ID as provider input identity.
+- macOS `thread/settings/update` before allow-all queue submission.
+- The existing `.unverified` marker, with an atomically durable `attempting`
+  transition before the wake request so process death cannot replay it.
+
+### Remove
+
+- The exact `expectedTurnId` steering requirement on macOS.
+- Watcher access to another client's notifications.
+- macOS wrong-turn reread and retry.
+- Any new turn registry, shared lock, or notification-forwarding component.
+
+### Unresolved
+
+- Exact committed-candidate mailbox reply and acknowledgement remain
+  implementation-stage live proof, not design evidence.
+
+Deliberate owner grants are allowed. No external policy limiting the local
+capability grant is evidenced. The retained authentication, fixed-prompt, and
+exact-thread controls prevent an untrusted sender from expanding beyond the
+owner-approved mailbox operation; they do not restrict an owner's deliberate
+choice of Codex permission policy.
+
+Two writers remain evidenced for the Codex thread: the TUI and mailbox
+watcher. Codex app-server already owns their ordering through the admitted
+Windows turn operations and its macOS queue. Agent Stack adds no concurrency
+mechanism.
+
+Pass 2 first narrowed the idle-start/active-queue proposal. After design review
+found that it changed Windows behavior and left an allow-all merge race, the
+same challenger reconciled the evidence-backed delta and returned
+`CONTINUE`:
+
+- Windows preserves its admitted start/steer behavior.
+- macOS uses one queue operation for idle and active delivery.
+- macOS applies the owner's allow-all policy through
+  `thread/settings/update` before the wake attempt.
+- The existing marker becomes atomically `attempting` before wake submission;
+  interruption promotes it to ambiguous instead of replaying.
+- Marker outcomes come from direct responses, not cross-client notifications.
+
+**Current gate: `CONTINUE` for the reviewed v8 implementation.** Two-family
+design review closed every material macOS delta finding. The separately
+admitted Windows start/steer path remains unchanged; its mixed-policy
+concurrent-start concern is a non-blocking pre-existing follow-up.

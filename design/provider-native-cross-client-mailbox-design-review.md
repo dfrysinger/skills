@@ -96,3 +96,103 @@ identity, authenticated token handling, turn races, and child cleanup.
 No automatic upgrade or restart, endpoint registry, heartbeat, durable token,
 new lock, takeover file, sender-side provider control, broker, resident
 supervisor, or terminal injection is admitted.
+
+## macOS authenticated-loopback delta review
+
+**Gate:** Passed
+**Subject:** `provider-native-cross-client-mailbox-design-v7-loopback-review`
+**Decision record:** `provider-native-cross-client-mailbox-decisions-v3`
+**Constraint gate:** fresh two-pass `CONTINUE`, narrowly gated
+**Reviewer families:** Claude Opus 5.5 and GPT-6.1 Terra
+**Final material findings:** 0
+**Non-blocking follow-ups:** 1
+
+Both reviewers applied the design architecture and scope lens. Round 1 found
+that the macOS transport change still carried the previous approval metadata.
+Claude also found that a loopback client could send its raw bearer token to a
+foreign listener unless the launcher proved the listener belonged to its own
+app-server child.
+
+The revised work order now:
+
+- identifies decisions-v3 and the v7 loopback proposal;
+- blocks implementation until this review passes;
+- makes app-server bind loopback port zero;
+- requires one exact child-owned listener before either client receives the
+  endpoint or raw token; and
+- covers bind failure, pre-bound ports, missing or wrong tokens, child exit,
+  endpoint closure, exact thread identity, idle start, active steering,
+  concurrent starts, cleanup, and secret hygiene in the native contract.
+
+A fresh challenger derived the minimum design from the evidence and decisions
+before reading the proposal, then returned `CONTINUE` after reading v7.
+
+Round 2 closed the metadata finding. Claude also closed listener ownership.
+Terra kept one high/possible residual: app-server can exit after the ownership
+checkpoint and another local user can rebind the same ephemeral port before a
+client connects. A finding-scoped verifier confirmed the mechanism but
+classified it as a non-blocking follow-up. It requires a different local OS
+user, app-server death during the initial handoff window, and a winning rebind
+of the random port. The design now states that residual window and adds a
+controlled child-exit/rebind case to the native contract.
+
+Implementation remains blocked until the macOS native contract proves the
+exact port-zero ownership chain and every other listed mechanism gate. No
+adapter or launcher behavior is admitted from design review alone.
+
+## macOS queued-active-delivery delta review
+
+**Gate:** Passed
+**Subject:** `provider-native-cross-client-mailbox-design-v8-queue-review`
+**Constraint gate:** fresh two-pass `REFRAME`, then `NARROW`, then focused
+`CONTINUE` after the evidence-backed review delta
+**Reviewer families:** Claude Opus 5.5 and GPT-6.1 Terra
+**Final material findings:** 0
+**Non-blocking follow-ups:** 1
+
+The installed macOS runtime disproved a load-bearing v7 assumption. A separate
+watcher can read that the loaded thread is active, but cannot obtain another
+client's exact active turn ID: full-history and pagination methods return "not
+supported yet", and turn notifications are client-scoped. The same runtime
+proved a smaller supported path:
+
+- `thread/queue/add` accepts and runs the fixed prompt while idle or active;
+- two concurrent queue calls return distinct submission IDs and retain both
+  prompts and replies exactly once;
+- `thread/settings/update` applies the configured approval and sandbox policy
+  to subsequent queued turns; and
+- an accepted allow-all update let a synthetic queued turn write outside its
+  workspace without prompting.
+
+The fresh challenger first returned `REFRAME`, then narrowed the initial
+idle-start/active-queue proposal. Round 1 review found four material contract
+defects:
+
+1. the cross-platform wording silently replaced Windows' admitted
+   start/exact-steer contract without Windows queue evidence;
+2. an idle-to-active merge could lose the configured `ALLOW_ALL` policy;
+3. process death after provider acceptance but before marker persistence could
+   replay one attempt; and
+4. structured status and the end-to-end journey still contained stale
+   approval and verified-delivery claims.
+
+The revised work order now:
+
+- preserves the admitted Windows start/steer path;
+- uses queue/add for both idle and active macOS delivery;
+- requires an accepted thread-settings update before a macOS allow-all queue;
+- atomically writes `attempting` in the existing `.unverified` marker before
+  wake submission and promotes interruption to `ambiguous`;
+- updates marker state from direct provider responses, not cross-client
+  notifications;
+- reports Codex acceptance as `submitted`; and
+- records design-incubation cycle 2 consistently.
+
+Round 2 closed all findings against the macOS delta. Terra retained one
+possible Windows mixed-policy concurrent-start race. The same behavior existed
+in the admitted Windows contract before v8, and v8 now leaves that path
+unchanged. It is a real platform follow-up, not a defect introduced or worsened
+by this macOS reframe, so it does not block this design.
+
+Both reviewers completed within budget, applied the design scope lens, and
+reported no unresolved material defect in the reviewed v8 delta.

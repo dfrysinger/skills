@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { resolve } from "node:path";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { inspect } from "node:util";
 
@@ -15,7 +17,12 @@ import {
 import { runCodexWatcher } from "./codex-mailbox-watcher.mjs";
 
 const token = () => `synthetic-${randomBytes(18).toString("hex")}`;
-const workspace = resolve("codex-adapter-workspace");
+const workspaceRoot = await mkdtemp(join(tmpdir(), "codex-adapter-tests-"));
+const workspace = join(workspaceRoot, "workspace");
+const otherWorkspace = join(workspaceRoot, "other-workspace");
+await mkdir(workspace);
+await mkdir(otherWorkspace);
+test.after(async () => rm(workspaceRoot, { recursive: true, force: true }));
 const wake = {
   address: "codex:alpha",
   provider: "codex",
@@ -27,10 +34,12 @@ const wake = {
 
 const ok = (result) => ({ result });
 const loaded = (ids, nextCursor = null) => ok({ data: ids, nextCursor });
-const thread = (status, cwd = workspace) => ok({ thread: { cwd, status } });
+const thread = (status, cwd = workspace, ephemeral = false) =>
+  ok({ thread: { cwd, status, ephemeral } });
 const turns = (data) => ok({ data, nextCursor: null });
 const started = () => ok({ turn: { id: "turn-1" } });
 const steered = (turnId) => ok({ turnId });
+const queued = (id) => ok({ queuedSubmission: { id } });
 const wrongTurn = () => ({ error: { code: -32600, message: "invalid request" } });
 
 function fakeTransport(steps) {
@@ -52,6 +61,14 @@ function fakeTransport(steps) {
         assert.equal(method, step.method);
         if (step.throw) throw step.throw;
         return step.response;
+      },
+      async notify(method, params) {
+        assert.equal(method, "initialized");
+        assert.deepEqual(params, {});
+        if (steps[0]?.method === "initialized") {
+          const step = steps.shift();
+          if (step.throw) throw step.throw;
+        }
       },
       close() {
         closed = true;
@@ -115,6 +132,9 @@ test("merged turn/start success is submitted, never verified", async () => {
     detail: "codex turn/start accepted; a concurrent start may merge into the same active turn",
   });
   assert.equal(transport.calls[0].method, "initialize");
+  assert.deepEqual(transport.calls[0].params.capabilities, {
+    experimentalApi: true,
+  });
   assert.equal(transport.calls[3].params.threadId, "thread-1");
   assert.equal(transport.calls[3].params.input[0].text, wake.prompt);
   assert.equal(transport.closed, true);
@@ -134,14 +154,120 @@ test("allow-all policy is applied by the authority that starts an idle turn", as
   });
 });
 
+test("macOS prepares allow-all policy before queueing with the durable attempt ID", async () => {
+  const transport = fakeTransport([
+    { method: "initialize", response: ok({ platformOs: "macos" }) },
+    { method: "thread/loaded/list", response: loaded(["thread-1"]) },
+    { method: "thread/read", response: thread({ type: "idle" }) },
+    { method: "thread/settings/update", response: ok({}) },
+    { method: "initialize", response: ok({ platformOs: "macos" }) },
+    { method: "thread/loaded/list", response: loaded(["thread-1"]) },
+    { method: "thread/read", response: thread({ type: "active" }) },
+    { method: "thread/queue/add", response: queued("submission-1") },
+  ]);
+  const instance = adapter(transport, { allowAll: true });
+  const prepared = await instance.prepare(wake);
+  const outcome = await instance.wake(wake, prepared);
+
+  assert.deepEqual(prepared, {
+    platformOs: "macos",
+    threadId: "thread-1",
+    allowAllApplied: true,
+  });
+  assert.deepEqual(outcome, {
+    outcome: "submitted",
+    detail: "codex thread/queue/add accepted the mailbox prompt",
+  });
+  const settings = transport.calls.find(
+    (call) => call.method === "thread/settings/update",
+  );
+  assert.deepEqual(settings.params, {
+    threadId: "thread-1",
+    approvalPolicy: "never",
+    sandboxPolicy: { type: "dangerFullAccess" },
+  });
+  const queue = transport.calls.find((call) => call.method === "thread/queue/add");
+  assert.equal(queue.params.clientUserMessageId, wake.attemptId);
+  assert.equal(queue.params.input[0].text, wake.prompt);
+  assert.equal(
+    transport.calls.some((call) => call.method === "thread/turns/list"),
+    false,
+  );
+});
+
+test("macOS queues while idle or active without requiring an active turn ID", async () => {
+  for (const status of ["idle", "active"]) {
+    const transport = fakeTransport([
+      { method: "initialize", response: ok({ platformOs: "macos" }) },
+      { method: "thread/loaded/list", response: loaded(["thread-1"]) },
+      { method: "thread/read", response: thread({ type: status }) },
+      { method: "thread/queue/add", response: queued(`submission-${status}`) },
+    ]);
+    const outcome = await adapter(transport).wake(wake);
+    assert.equal(outcome.outcome, "submitted");
+    assert.deepEqual(
+      transport.calls.map((call) => call.method),
+      ["initialize", "thread/loaded/list", "thread/read", "thread/queue/add"],
+    );
+  }
+});
+
+test("macOS queue transport loss is ambiguous and a stale preparation is deferred", async () => {
+  const lost = fakeTransport([
+    { method: "initialize", response: ok({ platformOs: "macos" }) },
+    { method: "thread/loaded/list", response: loaded(["thread-1"]) },
+    { method: "thread/read", response: thread({ type: "idle" }) },
+    {
+      method: "thread/queue/add",
+      throw: new CodexTransportError("request", "ECONNRESET"),
+    },
+  ]);
+  const ambiguous = await adapter(lost).wake(wake);
+  assert.equal(ambiguous.outcome, "ambiguous");
+
+  const stale = fakeTransport([
+    { method: "initialize", response: ok({ platformOs: "macos" }) },
+    { method: "thread/loaded/list", response: loaded(["replacement-thread"]) },
+    { method: "thread/read", response: thread({ type: "idle" }) },
+  ]);
+  const deferred = await adapter(stale).wake(wake, {
+    platformOs: "macos",
+    threadId: "original-thread",
+    allowAllApplied: false,
+  });
+  assert.equal(deferred.outcome, "deferred");
+  assert.match(deferred.detail, /exact current cwd-matching thread|preparation is stale/);
+  assert.equal(
+    stale.calls.some((call) => call.method === "thread/queue/add"),
+    false,
+  );
+
+  const refused = fakeTransport([
+    { method: "initialize", response: ok({ platformOs: "macos" }) },
+    { method: "thread/loaded/list", response: loaded(["thread-1"]) },
+    { method: "thread/read", response: thread({ type: "idle" }) },
+    {
+      method: "thread/queue/add",
+      response: { error: { code: -32600, message: "invalid request" } },
+    },
+  ]);
+  const rejected = await adapter(refused).wake(wake);
+  assert.equal(rejected.outcome, "deferred");
+  assert.match(rejected.detail, /refused before wakeup submission/);
+});
+
 test("exact thread selection refuses zero, multiple, paginated, and cwd-mismatched threads", async () => {
   const cases = [
     [{ method: "thread/loaded/list", response: loaded([]) }],
-    [{ method: "thread/loaded/list", response: loaded(["one", "two"]) }],
+    [
+      { method: "thread/loaded/list", response: loaded(["one", "two"]) },
+      { method: "thread/read", response: thread({ type: "idle" }) },
+      { method: "thread/read", response: thread({ type: "idle" }) },
+    ],
     [{ method: "thread/loaded/list", response: loaded(["one"], "more") }],
     [
       { method: "thread/loaded/list", response: loaded(["one"]) },
-      { method: "thread/read", response: thread({ type: "idle" }, resolve("other-workspace")) },
+      { method: "thread/read", response: thread({ type: "idle" }, otherWorkspace) },
     ],
     [
       { method: "thread/loaded/list", response: loaded(["one"]) },
@@ -154,6 +280,71 @@ test("exact thread selection refuses zero, multiple, paginated, and cwd-mismatch
     assert.equal(outcome.outcome, "deferred");
     assert.equal(transport.calls.some((call) => call.method.startsWith("turn/")), false);
   }
+});
+
+test("exact thread selection ignores loaded threads from another workspace", async () => {
+  const transport = fakeTransport([
+    { method: "thread/loaded/list", response: loaded(["other", "thread-1"]) },
+    {
+      method: "thread/read",
+      response: thread({ type: "idle" }, otherWorkspace),
+    },
+    { method: "thread/read", response: thread({ type: "idle" }) },
+    { method: "turn/start", response: started() },
+  ]);
+  const outcome = await adapter(transport).wake(wake);
+  assert.equal(outcome.outcome, "submitted");
+  assert.equal(transport.calls.at(-1).params.threadId, "thread-1");
+});
+
+test("the adapter rebinds only when one exact cwd replacement remains", async () => {
+  const transport = fakeTransport([
+    { method: "thread/loaded/list", response: loaded(["thread-1"]) },
+    { method: "thread/read", response: thread({ type: "idle" }) },
+    { method: "turn/start", response: started() },
+    { method: "thread/loaded/list", response: loaded(["thread-2"]) },
+    { method: "thread/read", response: thread({ type: "idle" }) },
+    { method: "turn/start", response: started() },
+  ]);
+  const instance = adapter(transport);
+  assert.equal((await instance.wake(wake)).outcome, "submitted");
+  assert.equal(
+    (await instance.wake({ ...wake, attemptId: "attempt-codex-2" })).outcome,
+    "submitted",
+  );
+  assert.equal(transport.calls.at(-1).params.threadId, "thread-2");
+});
+
+test("exact thread selection canonicalizes equivalent workspace symlinks", async () => {
+  const root = await mkdtemp(join(tmpdir(), "codex-workspace-identity-"));
+  const target = join(root, "target");
+  const alias = join(root, "alias");
+  await mkdir(target);
+  await symlink(target, alias, "dir");
+  try {
+    const transport = fakeTransport([
+      { method: "thread/loaded/list", response: loaded(["thread-1"]) },
+      { method: "thread/read", response: thread({ type: "idle" }, target) },
+      { method: "turn/start", response: started() },
+    ]);
+    const outcome = await adapter(transport, { workspace: alias }).wake(wake);
+    assert.equal(outcome.outcome, "submitted");
+    assert.equal(transport.calls.at(-1).params.threadId, "thread-1");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("macOS ignores ephemeral same-workspace history and binds the durable thread", async () => {
+  const transport = fakeTransport([
+    { method: "initialize", response: ok({ platformOs: "macos" }) },
+    { method: "thread/loaded/list", response: loaded(["thread-1", "thread-2"]) },
+    { method: "thread/read", response: thread({ type: "idle" }, workspace, true) },
+    { method: "thread/read", response: thread({ type: "active" }) },
+    { method: "thread/queue/add", response: queued("submission-1") },
+  ]);
+  assert.equal((await adapter(transport).wake(wake)).outcome, "submitted");
+  assert.equal(transport.calls.at(-1).params.threadId, "thread-2");
 });
 
 test("active exact turn steers only the one in-progress turn", async () => {
@@ -218,6 +409,22 @@ test("endpoint failure is deferred while post-request transport loss is ambiguou
   const ambiguous = await adapter(transport).wake(wake);
   assert.equal(ambiguous.outcome, "ambiguous");
   assert.match(ambiguous.detail, /ECONNRESET/);
+});
+
+test("initialized notification failure is deferred before any wake request", async () => {
+  const transport = fakeTransport([
+    {
+      method: "initialized",
+      throw: new CodexTransportError("notify", "EPIPE"),
+    },
+  ]);
+  const deferred = await adapter(transport).wake(wake);
+  assert.equal(deferred.outcome, "deferred");
+  assert.match(deferred.detail, /initialized notification.*EPIPE/);
+  assert.deepEqual(
+    transport.calls.map(({ method }) => method),
+    ["initialize"],
+  );
 });
 
 test("adapter binding, token hygiene, and dead launcher gates avoid transport use", async () => {
