@@ -1,5 +1,5 @@
 {
-  "revision": "provider-native-cross-client-mailbox-decisions-v2",
+  "revision": "provider-native-cross-client-mailbox-decisions-v3",
   "events": [
     {
       "event_id": "mailbox-address-shape-20261103",
@@ -53,6 +53,15 @@
       "user_answer": "yes using agent stack, if its not an agent stack agent session then no",
       "context": "Automatic restart is needed for an idle running process to load an upgraded provider binary.",
       "authority": "top-level product decision",
+      "resolved": true
+    },
+    {
+      "event_id": "mailbox-cross-platform-recovery-20261104",
+      "question": "After Codex 0.166.0 rejects bearer-token authentication on a Unix remote, should the work stop or use the supported authenticated loopback transport on macOS?",
+      "recommended_answer": "Continue with authenticated loopback WebSocket on macOS. It preserves the launch-scoped token boundary, matches the proved Windows topology, and keeps one cross-platform Codex adapter instead of weakening authentication for a Unix-only path.",
+      "user_answer": "ok so wait why did you stop? what should we do how do we fix this? our goal is a reliable cross client cross platform messaging system, lets not give up",
+      "context": "Codex 0.166.0 accepts --remote-auth-token-env only for wss:// or loopback ws://. Its app-server and TUI both support an authenticated loopback WebSocket, and the same topology is already admitted on native Windows.",
+      "authority": "top-level product direction; transport selected from installed-client evidence",
       "resolved": true
     }
   ]

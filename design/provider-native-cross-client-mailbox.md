@@ -2,24 +2,28 @@
 
 ## Status
 
-**Proposal revision:** `provider-native-cross-client-mailbox-design-v6-reviewed`
+**Proposal revision:** `provider-native-cross-client-mailbox-design-v7-loopback-review`
 **Lane:** Critical
 **Evidence packet:** [`provider-native-cross-client-mailbox-evidence-v1`](provider-native-cross-client-mailbox-evidence.md)
-**Decision record:** [`provider-native-cross-client-mailbox-decisions-v2`](provider-native-cross-client-mailbox-decisions.json)
+**Decision record:** [`provider-native-cross-client-mailbox-decisions-v3`](provider-native-cross-client-mailbox-decisions.json)
 **Independent challenge:** [`provider-native-cross-client-mailbox-constraint-challenge.md`](provider-native-cross-client-mailbox-constraint-challenge.md)
 **Dual design review:** [`provider-native-cross-client-mailbox-design-review.md`](provider-native-cross-client-mailbox-design-review.md)
-**Design status:** Approved; implementation active under development-loop.
+**Current focused challenge:** fresh two-pass `CONTINUE` for
+`provider-native-cross-client-mailbox-design-v7-loopback-review`
+**Current design review:** passed for
+`provider-native-cross-client-mailbox-design-v7-loopback-review`
+**Design status:** Approved; implementation handoff pending.
 
 ```yaml
 design_incubation:
-  status: approved
+  status: handoff_pending
   cycle: 1
-  objective_file: C:\Users\dfrysinger\code\skills-provider-mailbox\design\provider-native-cross-client-mailbox-design-objective.txt
+  objective_file: /Users/dfrysinger/.copilot/session-state/e926f7bf-0a7e-471d-95a4-e8098c75bdfb/files/mailbox-codex-design-objective.txt
   reminder:
     kind: design_progress
     id: 3
     interval: 30m
-    status: stopped
+    status: live
 ```
 
 ## Objective
@@ -124,7 +128,7 @@ after that failure.
 | Mutable state stays local; remote files remain immutable. | Existing reviewed OneDrive transport design. | Prevents shared-filesystem locking and acknowledgement corruption. | Revisit only if remote transport becomes transactional. |
 | Provider control carries only a fixed wakeup prompt. | Least privilege and existing Copilot mailbox behavior. | Provider channels never become a second mailbox or leak attachments. | Revisit only if a provider requires a structured opaque notification. |
 | Claude control uses its documented per-session socket or named pipe and inbound controls. | Official Claude Code behavior. | Uses the provider's authentication, ownership, and permission boundary. | Revisit if the provider removes hook access or own-session posting. |
-| Codex TUI and control use one Agent Stack-managed app-server. | Official Codex remote TUI and turn APIs; queue alone is not immediate. | Gives the sender a reachable exact live thread without terminal injection. | Revisit if Codex exposes a simpler supported exact-session control API. |
+| Codex TUI and control use one Agent Stack-managed app-server on an authenticated loopback WebSocket. | Official Codex remote TUI and turn APIs; the installed TUI accepts bearer-token authentication for loopback WebSocket but rejects it for Unix remotes. | Gives the sender a reachable exact live thread without terminal injection or a platform-specific authentication downgrade. | Revisit if Codex exposes a supported authenticated local socket or a simpler exact-session control API. |
 | Automatic upgrade/restart is deferred; this change returns upgrade or managed-relaunch guidance. | Constraint challenge found the user statement tactical and permissive, while upgrade guidance already satisfies the required unavailable-control outcome. | Keeps package management, idle-input proof, and restart supervision off the critical delivery path. | Revisit in a separate work order using the recorded idle and Agent Stack ownership grant. |
 | Protected login remains manual. | Existing user autonomy boundary and credential policy. | Keeps secrets and protected identity actions outside agent control. | Revisit only for provider-supported non-secret synthetic test accounts. |
 
@@ -141,6 +145,8 @@ Implementation stops before adding another component when:
 - Codex cannot attach its normal TUI and a control client to one local managed
   app-server while preserving exact resume.
 - Codex immediate control requires an unauthenticated non-loopback listener.
+- The launcher cannot prove that the exact app-server child owns the loopback
+  listener before giving its endpoint and raw token to either client.
 - exact provider thread identity cannot be proved without parsing conversation
   content;
 - a provider-native accepted response cannot be distinguished from held,
@@ -160,9 +166,12 @@ For any trigger, record:
 authenticated own-session socket path to hooks and starts a turn when an idle
 session accepts a message. Official Codex documentation supplies local remote
 TUI attachment, authenticated loopback transport, generated version-matched
-schemas, runtime thread state, `turn/start`, and `turn/steer`. The remaining
-wire and lifecycle details are bounded pre-implementation mechanism probes,
-not reasons to add terminal injection.
+schemas, runtime thread state, `turn/start`, and `turn/steer`. Codex 0.166.0
+rejects bearer-token authentication for Unix remotes and accepts it for
+loopback WebSocket remotes, so both macOS and Windows use the authenticated
+loopback topology. The remaining macOS lifecycle details are bounded
+pre-implementation mechanism probes, not reasons to weaken authentication or
+add terminal injection.
 
 ## Reuse contract
 
@@ -334,15 +343,31 @@ and attaches the TUI to that app-server with `codex --remote`.
 Per-session ownership is preferred over one machine-wide daemon because it
 keeps lifecycle, workspace, and thread identity within one launcher.
 
-On macOS, use the provider's local Unix-socket transport when supported. On
-native Windows, use an authenticated loopback listener. The launcher passes
-only the token hash to app-server with `--ws-token-sha256` and passes the raw
-token to the TUI and watcher through private child environments. The token is
-never written to disk or placed on a command line. Codex requires the TUI to
-read the token from an environment variable, so subprocesses intentionally
-launched by that TUI inherit it unless Codex clears the variable. This is part
-of the documented same-user-process limitation, not a same-user isolation
-claim.
+On macOS and native Windows, use an authenticated loopback WebSocket listener
+bound to `127.0.0.1`. Codex 0.166.0 accepts the TUI bearer-token option for
+loopback WebSocket remotes and rejects it for Unix remotes. One cross-platform
+transport therefore preserves the reviewed authentication boundary without a
+macOS-only downgrade. The launcher passes only the token hash to app-server
+with `--ws-token-sha256` and passes the raw token to the TUI and watcher
+through private child environments. The token is never written to disk or
+placed on a command line. Codex requires the TUI to read the token from an
+environment variable, so subprocesses intentionally launched by that TUI
+inherit it unless Codex clears the variable. This is part of the documented
+same-user-process limitation, not a same-user isolation claim.
+
+The app-server child, not the launcher, chooses its port by binding port zero.
+Before the launcher gives the endpoint or raw token to the TUI or watcher, it
+derives the bound endpoint from an authoritative app-server startup signal or
+the operating system's socket ownership for that exact child PID. It requires
+exactly one `127.0.0.1` listener owned by the live child. A missing, multiple,
+non-loopback, mismatched-owner, or exited-child result fails closed as
+`deferred`; neither client starts and no token is sent. The native mechanism
+probe must prove that the installed app-server supports this ownership chain.
+This is a point-in-time ownership check, not server authentication. A residual
+window remains if app-server exits after verification and another local user
+rebinds the same port before a client connects. The launcher watches the child
+and tears down both clients on exit; the native probe measures this exact
+completion-order race.
 
 Agent Stack, as the sole TUI launch owner, starts the TUI with the
 version-matched equivalent of:
@@ -408,10 +433,12 @@ platform probe settles these facts:
   clear, and compact; and successful old-to-new watcher handover after a
   changing generation.
 - Codex: the installed version's exact remote resume invocation; exactly one
-  loaded cwd-matching thread; token handling without command-line exposure;
-  merged concurrent `turn/start` input retention; exact `expectedTurnId`
-  steering and wrong-turn refusal; and app-server/watcher cleanup after
-  launcher death.
+  child-owned loopback listener discovered after bind, including
+  pre-bound-port and bind-failure cases; missing and wrong token refusal;
+  exactly one loaded cwd-matching thread; token handling without command-line
+  exposure; merged concurrent `turn/start` input retention; exact
+  `expectedTurnId` steering and wrong-turn refusal; and app-server/watcher
+  cleanup after launcher death.
 
 If a probe cannot preserve exact identity, authenticated local control, or
 truthful outcomes, that provider-platform pair remains disabled and the
@@ -481,6 +508,12 @@ or Agent Stack relaunch guidance. The process is not touched.
   and watcher children exit or are terminated by the launcher's cleanup path.
   Provider durable conversation state remains provider-owned; a normal Agent
   Stack launch resumes it. Mail remains pending.
+- **Loopback ownership failure:** the launcher gives no endpoint or token to a
+  client until the exact live app-server child owns one loopback listener at
+  the ownership checkpoint. Bind failure, a pre-bound candidate port, missing
+  or multiple listeners, or a mismatched owner returns `deferred` and
+  terminates the incomplete launch. A controlled child-exit and port-rebind
+  case measures the residual interval before each client connects.
 - **Remote outage:** existing local outbox and immutable retry behavior remain
   unchanged.
 
@@ -599,7 +632,7 @@ returns Claude/Codex to manual mailbox pickup.
 | `legacy-copilot-compat` | AC-1, AC-11 | Read and send against an existing bare Copilot fixture without `MAILBOX_SELF_ADDRESS`. | Same mailbox files and session-control target as before. | Migration breaks current callers. |
 | `wakeup-state-machine` | AC-3, AC-4, AC-5 | Fake each adapter outcome and generation race around a pending envelope, then run another watch tick. | Existing notified marker remains compatible; unverified payload distinguishes submitted/held/refused/ambiguous and suppresses replay; deferred writes no marker and may retry; envelope stays pending. | Persistence and live delivery claims are coupled incorrectly or prompts can repeat. |
 | `claude-native-contract` | AC-3 through AC-8 | Launch a temporary supported Claude session with the Agent Stack hook; probe socket reply semantics, idle and active sends, inbound hold/refuse, hook re-fire, socket change, parent death, and waiter acquisition after auth rejection, missing endpoint, and refused connection while preserving the watcher on transient busy. | Exact submitted/verified/held/refused/ambiguous outcome marker plus transcript marker; one acting watcher; no secret in captured files or process args. | Claude delivery or watcher lifecycle is not authenticated, immediate, truthful, single-owner, or secret-safe. |
-| `codex-native-contract` | AC-3 through AC-8 | Launch a temporary app-server, child watcher, and attached TUI; probe `resume --last --remote`, idle start, two-client concurrent start with distinct markers, exact-turn steer, wrong-turn race, parent death, and app-server exit. | Both concurrent inputs occur exactly once in one authoritative turn; successful start is reported only as submitted; exact/wrong-turn behavior is truthful; no orphaned watcher or server. | Control can reach the wrong thread, lose or duplicate racing input, or claim an unproved side effect. |
+| `codex-native-contract` | AC-3 through AC-8 | Launch app-server with a loopback port-zero bind; prove the reported or OS-observed listener belongs to the exact child before giving the endpoint or token to clients; exercise pre-bound-port, bind-failure, missing/wrong-token, and child-exit cases, including killing the child after ownership verification and immediately rebinding its port before each client connect; then attach the TUI and watcher and probe `resume --last --remote`, idle start, two-client concurrent start with distinct markers, exact-turn steer, wrong-turn race, parent death, endpoint closure, and app-server exit. | Exactly one child-owned loopback listener exists at the ownership checkpoint; uncertain ownership starts no client and sends no token; child exit triggers client teardown before either client can continue against a replacement listener in the controlled race; the endpoint rejects missing or wrong bearer tokens; both concurrent inputs occur exactly once in one authoritative turn; successful start is reported only as submitted; exact/wrong-turn behavior is truthful; no orphaned watcher, server, or listener. | A foreign listener can receive the token or conversation, local control is unauthenticated, control can reach the wrong thread, racing input can be lost or duplicated, or the adapter can claim an unproved side effect. |
 | `cross-provider-live-windows` | AC-3, AC-6, AC-11 | Send Copilot to Claude and Codex, then reply to provider-qualified Copilot in isolated Windows workspaces. | All envelopes read and acknowledged by exact targets without terminal input. | The composed Windows journey fails despite adapter tests. |
 | `cross-provider-live-macos` | AC-3, AC-6, AC-11 | Repeat the provider journey on macOS before removing that provider's tmux fallback. | Exact native targets acknowledge and no tmux input occurs. | Native macOS control is not ready to replace the old path. |
 | `secret-hygiene` | AC-7 | Scan deterministic fixtures, logs, markers, durable state, command lines, and test captures using unique canary secrets. | Canary absent everywhere outside child process environments and provider memory. | A provider credential escaped its allowed boundary. |
@@ -618,11 +651,18 @@ that provider-platform pair.
 - Claude documents socket authentication and own-child posting but not the full
   message object or reply in the public page. A bounded live probe must settle
   the exact framing and whether runtime status is verified or only submitted.
-- Native Windows Codex currently depends on loopback WebSocket transport that
-  its documentation calls experimental and unsupported. The design contains
-  that risk to one local per-session endpoint, requires authentication, and
-  keeps manual pickup as rollback. A supported Windows local transport would
+- Codex currently depends on loopback WebSocket transport that its
+  documentation calls experimental and unsupported. The design contains that
+  risk to one authenticated per-session endpoint on each platform and keeps
+  manual pickup as rollback. A supported authenticated local socket would
   remove the largest provider risk.
+- Plain `ws://` authenticates clients to app-server but does not authenticate
+  app-server to clients. Port-zero binding and exact child ownership block a
+  listener that is already foreign at launch. A residual cross-user race
+  remains if app-server exits after that checkpoint and another user rebinds
+  the port before initial client connection. Launcher child-exit teardown and
+  the controlled rebind probe bound this risk; same-user process isolation
+  remains outside the claim below.
 - Claude and Codex tokens authenticate provider protocols but do not isolate
   one process from another process running as the same operating-system user.
   The design does not claim that boundary. It keeps secrets out of durable and

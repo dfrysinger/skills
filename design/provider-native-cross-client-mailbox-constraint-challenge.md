@@ -3,7 +3,7 @@
 ## Status
 
 **Evidence packet:** `provider-native-cross-client-mailbox-evidence-v1`
-**Decision record:** `provider-native-cross-client-mailbox-decisions-v2`
+**Decision record:** `provider-native-cross-client-mailbox-decisions-v3`
 **Pass 1 challenger:** fresh Claude Opus 5.5 context
 **Pass 1 status:** complete
 **Pass 2 challenger:** fresh Claude Opus 5.5 context, using this file as the
@@ -522,3 +522,91 @@ content from expanding that grant.
 **Smallest next step:** write one corrected bounded macOS Codex action that
 selects a transport and names its trust boundary, then reconcile and probe that
 exact action before writing adapter or launcher code.
+
+## Authenticated-loopback reconciliation for macOS Codex
+
+**Decision: `CONTINUE`.** The corrected action uses one authenticated
+`127.0.0.1` WebSocket app-server per Agent Stack-owned Codex launch on both
+macOS and Windows. The launcher gives app-server only the token hash and gives
+the raw token to the TUI and watcher through private child environments.
+
+The user's cross-client, cross-platform outcome remains unchanged. This
+topology reuses the admitted Windows contract and the installed macOS TUI's
+supported authentication form. It adds no broker, registry, durable token,
+new lock, or terminal input path.
+
+### Keep
+
+- One launcher-owned app-server, watcher, and TUI per Codex session.
+- Bearer-token authentication, exact loaded-thread and working-directory
+  checks, exact active-turn steering, and fail-closed pending mail.
+- Existing app-server arbitration for the two evidenced thread writers, the
+  TUI and watcher.
+
+### Remove
+
+- The macOS Unix transport choice.
+- Any platform-specific Codex authentication downgrade.
+
+### Unresolved
+
+The corrected macOS mechanism still needs a bounded live proof for loopback
+binding, missing and wrong token refusal, exact TUI resume, idle start, active
+steering, concurrent start retention, launcher-child cleanup, endpoint
+closure, and token secrecy. These are proof gates, not new architecture.
+
+Deliberate owner grants are allowed. No external policy in the evidence
+forbids an authenticated local listener. The bearer token governs the
+owner-approved control path and prevents other local clients without the token
+from exercising Codex control. Exact thread checks prevent mailbox content
+from redirecting that authority.
+
+**Smallest next step:** run the corrected macOS native contract probe. Write no
+adapter or launcher code until every listed mechanism gate passes.
+
+## Fresh two-pass macOS loopback challenge
+
+**Evidence packet:** `provider-native-cross-client-mailbox-evidence-v1`
+**Decision record:** `provider-native-cross-client-mailbox-decisions-v3`
+**Challenger:** fresh read-only context
+`98df4602-ac7d-4a1d-8312-5bde65090aa4`
+**Pass 2 subject:** `provider-native-cross-client-mailbox-design-v7-loopback-review`
+**Decision: `CONTINUE`, narrowly gated**
+
+Pass 1 received the evidence and decision records without the proposal. It
+independently derived the minimum macOS Codex design:
+
+- one authenticated loopback app-server shared by the Agent Stack-owned TUI
+  and watcher;
+- one launch-scoped raw token in private child environments, with only its hash
+  passed to app-server;
+- exact loaded-thread, workspace, and active-turn checks;
+- launcher-owned cleanup; and
+- truthful `submitted`, `deferred`, and `ambiguous` outcomes while the envelope
+  remains pending until acknowledgement.
+
+Pass 2 found that the revised proposal matches that minimum and closes the
+foreign-listener risk. App-server binds port zero, and the launcher must prove
+exactly one `127.0.0.1` listener belongs to the live app-server child before it
+gives either client the endpoint or raw token.
+
+Keep the per-launch app-server, TUI, and watcher; token/hash separation; exact
+listener, thread, workspace, and turn checks; truthful pending outcomes; and
+the ban on terminal injection. Remove the Unix-authentication assumption and
+block all adapter or launcher code until the native-contract probe passes.
+
+The remaining unknowns are probe facts: whether the installed macOS app-server
+supports an authoritative port-zero ownership chain, the exact remote resume
+form, missing and wrong token refusal, thread identity, idle and active
+delivery, concurrent-start retention, cleanup, endpoint closure, and secret
+hygiene.
+
+Agent Stack owns launch, lifecycle, and workspace authority. App-server owns
+thread and turn arbitration. The bearer token grants local client authority
+but does not claim same-user process isolation. Operating-system listener
+ownership prevents endpoint substitution before token disclosure. Mailbox
+content cannot alter identity, permissions, or control policy.
+
+**Smallest next step:** run one bounded macOS native-contract probe against the
+exact port-zero, child-owned authenticated-loopback design. Write no adapter or
+launcher code until every gate passes.
