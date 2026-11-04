@@ -146,6 +146,22 @@ exact provider-mailbox candidate fixed that consumer mismatch. The final
 acceptance used the reviewed Skills candidate and the macOS Agent Stack
 candidate together.
 
+The committed-candidate acceptance on 2026-11-04 used Skills commit
+`6b90342b816a47352505787894b5485aa361ffb3` and Agent Stack commit
+`410367ac252a7222b76fdff31c29aad88ae63b4a`:
+
+- an envelope written without sender-side wakeup started an idle native turn;
+- the receiver replied `CLAUDE_FINAL_IDLE_PASS` and acknowledged the envelope;
+- a second envelope arrived while Claude owned a 30-second Bash tool call;
+- the receiver handled it after the tool checkpoint, replied
+  `CLAUDE_FINAL_ACTIVE_PASS`, and acknowledged the envelope;
+- closing the owning `claude-mailbox-final` tmux session stopped watcher process
+  `85700`;
+- the final Skills suite passed 54 tests, including notification-claim
+  arbitration and terminal-interruption state handling;
+- both feature branches matched their remote commit identities before the live
+  proof.
+
 This admits native macOS Claude delivery through the session-bound
 SessionStart hook. It does not admit Codex changes.
 
