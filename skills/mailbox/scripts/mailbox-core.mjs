@@ -948,9 +948,9 @@ export function createMailbox(options = {}) {
           }
           wakeup = await poke(localMailboxAddress(canonicalTarget.address), {
             targetName:
-              target.provider === "copilot"
+              canonicalTarget.provider === "copilot"
                 ? target.name
-                : `${target.provider}-${target.name}`,
+                : `${canonicalTarget.provider}-${target.name}`,
             wait,
           });
         } catch (error) {

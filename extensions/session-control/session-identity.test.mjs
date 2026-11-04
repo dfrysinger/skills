@@ -150,6 +150,8 @@ test("identity ignores an auto-generated session title", async () => {
   try {
     delete process.env.TMUX_PANE;
     const session = {
+      sessionId: "session-1",
+      connection: foregroundConnection("session-1"),
       rpc: {
         metadata: {
           async snapshot() {

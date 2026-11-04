@@ -320,7 +320,7 @@ test("exact thread selection canonicalizes equivalent workspace symlinks", async
   const target = join(root, "target");
   const alias = join(root, "alias");
   await mkdir(target);
-  await symlink(target, alias, "dir");
+  await symlink(target, alias, process.platform === "win32" ? "junction" : "dir");
   try {
     const transport = fakeTransport([
       { method: "thread/loaded/list", response: loaded(["thread-1"]) },

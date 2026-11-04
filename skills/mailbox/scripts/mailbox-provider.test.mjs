@@ -1066,7 +1066,9 @@ test("provider mail without a registered adapter stays deferred and never reache
   });
 });
 
-test("provider terminal fallback holds the notification claim against the native watcher", async () => {
+test("provider terminal fallback holds the notification claim against the native watcher", {
+  skip: process.platform === "win32",
+}, async () => {
   await sandbox("fallback-claim", async (root) => {
     const started = join(root, "fallback-started");
     const release = join(root, "fallback-release");
@@ -1107,7 +1109,9 @@ echo 'poked: claude:alpha (submission observed)'
   });
 });
 
-test("provider terminal interruption after submission begins is durably unverified", async () => {
+test("provider terminal interruption after submission begins is durably unverified", {
+  skip: process.platform === "win32",
+}, async () => {
   await sandbox("fallback-interrupted", async (root) => {
     const helper = join(root, "terminal-poke.sh");
     await writeFile(
