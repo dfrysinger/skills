@@ -99,3 +99,50 @@ The corrected contract is admitted:
 - a wrong-turn error proves pre-acceptance refusal and permits one exact
   re-read/re-steer;
 - unclassified post-request failures are `ambiguous`.
+
+## Claude Code 2.1.222 on macOS
+
+**Gate: BLOCKED — UPGRADE REQUIRED**
+
+The installed arm64 macOS client was checked against the reviewed native
+messaging requirement before any launcher change:
+
+- installed version: `2.1.222`;
+- documented macOS minimum: `2.1.224`;
+- the installed binary contains `CLAUDE_PID`, but does not contain
+  `CLAUDE_CODE_MESSAGING_SOCKET` or `CLAUDE_CODE_MESSAGING_TOKEN`.
+
+This version cannot establish the authenticated own-session socket contract.
+The macOS Claude adapter remains disabled and the guarded tmux compatibility
+path remains in place. The next supported probe requires an attended upgrade
+to Claude Code 2.1.224 or later. No provider token was read, printed, written,
+or placed in process arguments.
+
+## Codex CLI 0.142.2 on macOS
+
+**Gate: BLOCKED — PROTECTED LOGIN REQUIRED**
+
+The installed arm64 macOS client passed the transport portion of the bounded
+probe:
+
+- `codex app-server` supports `unix://PATH`;
+- `codex resume` supports `--remote unix://PATH` and
+  `--remote-auth-token-env`;
+- the generated installed-version schema contains the required thread and turn
+  methods;
+- the app-server created its Unix socket as `srw-------`, owned by the current
+  user;
+- the Unix socket accepted an HTTP WebSocket upgrade, establishing that the
+  existing WebSocket RPC protocol can be carried over the private local socket.
+
+The exact-session and delivery portions could not run. The real Codex TUI
+reported that its refresh token had already been used and required protected
+sign-in. A remote TUI attached to the Unix app-server stopped at the same
+sign-in flow before it could load and prove the expected workspace thread.
+
+No macOS Codex adapter or Agent Stack launch change is admitted from this
+partial result. The guarded tmux compatibility path remains in place. After
+the user signs in to Codex, rerun exact loaded-thread identity, idle start,
+active-turn steering, launcher-child cleanup, fixture-free mailbox reply and
+acknowledgement, and token-secrecy checks. No token value appeared in arguments,
+files, logs, diagnostics, or user-visible output during this probe.
