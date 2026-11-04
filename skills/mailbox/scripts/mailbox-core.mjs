@@ -1279,7 +1279,22 @@ export function createMailbox(options = {}) {
             "utf8",
           ),
         );
-        if (value?.outcome) outcomes.set(envelopeId, value);
+        if (value?.outcome === "attempting") {
+          await markUnverified(
+            address,
+            envelopeId,
+            value.attemptId,
+            "ambiguous",
+            "prior mailbox wakeup was interrupted during provider submission",
+          );
+          outcomes.set(envelopeId, {
+            ...value,
+            outcome: "ambiguous",
+            detail: "prior mailbox wakeup was interrupted during provider submission",
+          });
+        } else if (value?.outcome) {
+          outcomes.set(envelopeId, value);
+        }
       } catch {
         outcomes.set(envelopeId, {
           outcome: "ambiguous",
@@ -1509,14 +1524,86 @@ export function createMailbox(options = {}) {
           };
         }
         const attemptId = await notificationAttemptId(mailboxAddress, newest.id);
-        const result = await adapter.wake({
+        const wakeRequest = {
           address: localMailboxAddress(parsedMailbox.address),
           provider: parsedMailbox.provider,
           name: parsedMailbox.name,
           envelopeId: newest.id,
           attemptId,
           prompt: `check mailbox; skip if empty ${marker}`,
-        });
+        };
+        let prepared;
+        if (typeof adapter.prepare === "function") {
+          try {
+            prepared = await adapter.prepare(wakeRequest);
+          } catch (error) {
+            const detail = `unexpected ${parsedMailbox.provider} wakeup preparation error: ${
+              error?.code ?? error?.name ?? "UNKNOWN"
+            }`;
+            diagnostics.log("wakeup.adapter_prepare_failed", {
+              mailbox: mailboxAddress,
+              targetName,
+              envelopeId: newest.id,
+              error: errorDetails(error),
+            });
+            return {
+              status: "deferred",
+              outcome: "deferred",
+              envelopeId: newest.id,
+              detail,
+            };
+          }
+          if (prepared?.outcome === "deferred") {
+            diagnostics.log("wakeup.deferred", {
+              mailbox: mailboxAddress,
+              targetName,
+              envelopeId: newest.id,
+              phase: "prepare",
+              detail: prepared.detail,
+            });
+            return {
+              status: "deferred",
+              outcome: "deferred",
+              envelopeId: newest.id,
+              ...(prepared.detail ? { detail: prepared.detail } : {}),
+              ...(prepared.releaseWatcher ? { releaseWatcher: true } : {}),
+            };
+          }
+        }
+        await markUnverified(
+          mailboxAddress,
+          newest.id,
+          attemptId,
+          "attempting",
+          `${parsedMailbox.provider} wakeup submission is in progress`,
+        );
+        let result;
+        try {
+          result = await adapter.wake(wakeRequest, prepared);
+        } catch (error) {
+          const detail = `unexpected ${parsedMailbox.provider} wakeup error: ${
+            error?.code ?? error?.name ?? "UNKNOWN"
+          }`;
+          await markUnverified(
+            mailboxAddress,
+            newest.id,
+            attemptId,
+            "ambiguous",
+            detail,
+          );
+          diagnostics.log("wakeup.adapter_failed", {
+            mailbox: mailboxAddress,
+            targetName,
+            envelopeId: newest.id,
+            error: errorDetails(error),
+          });
+          return {
+            status: "unverified",
+            outcome: "ambiguous",
+            envelopeId: newest.id,
+            detail,
+          };
+        }
         const outcome = result?.outcome;
         if (![
           "verified",
@@ -1547,6 +1634,18 @@ export function createMailbox(options = {}) {
             envelopeId: newest.id,
             ...(result.detail ? { detail: result.detail } : {}),
           };
+        }
+        if (outcome === "deferred") {
+          diagnostics.log("wakeup.deferred", {
+            mailbox: mailboxAddress,
+            targetName,
+            envelopeId: newest.id,
+            phase: "submit",
+            detail: result.detail,
+          });
+          await rm(unverifiedNotificationPath(mailboxAddress, newest.id), {
+            force: true,
+          });
         }
         if (ownershipGuard && !(await ownershipGuard())) {
           return {

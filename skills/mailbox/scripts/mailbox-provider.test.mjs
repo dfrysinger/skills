@@ -847,6 +847,100 @@ test("terminal provider outcomes write structured .unverified markers and never 
   }
 });
 
+test("provider preparation precedes attempting and interrupted submission becomes ambiguous", async () => {
+  await sandbox("outcome-attempting", async (root) => {
+    let preparedWithoutMarker = false;
+    let wokeWithAttempting = false;
+    const adapter = {
+      calls: 0,
+      async prepare(request) {
+        preparedWithoutMarker = !(await exists(
+          notificationFile(
+            root,
+            "_providers/claude/alpha",
+            request.envelopeId,
+            "unverified",
+          ),
+        ));
+        return { prepared: true };
+      },
+      async wake(request) {
+        this.calls += 1;
+        const marker = JSON.parse(
+          await readFile(
+            notificationFile(
+              root,
+              "_providers/claude/alpha",
+              request.envelopeId,
+              "unverified",
+            ),
+            "utf8",
+          ),
+        );
+        wokeWithAttempting =
+          marker.outcome === "attempting" && marker.attemptId === request.attemptId;
+        throw Object.assign(new Error("synthetic transport loss"), {
+          code: "ECONNRESET",
+        });
+      },
+    };
+    const mailbox = providerMailbox(root, { claude: adapter });
+    const sent = await sendProviderMail(mailbox, "claude:alpha", true);
+    const marker = JSON.parse(
+      await readFile(
+        notificationFile(
+          root,
+          "_providers/claude/alpha",
+          sent.envelope.id,
+          "unverified",
+        ),
+        "utf8",
+      ),
+    );
+
+    assert.equal(preparedWithoutMarker, true);
+    assert.equal(wokeWithAttempting, true);
+    assert.equal(sent.wakeup.outcome, "ambiguous");
+    assert.equal(marker.outcome, "ambiguous");
+    assert.equal(adapter.calls, 1);
+    await mailbox.watch("claude:alpha", { once: true, intervalMs: 100 });
+    assert.equal(adapter.calls, 1, "an interrupted attempt must never replay");
+  });
+});
+
+test("a stale attempting marker is promoted to ambiguous without replay", async () => {
+  await sandbox("outcome-stale-attempting", async (root) => {
+    const adapter = recordingAdapter({ outcome: "verified" });
+    const mailbox = providerMailbox(root, { claude: adapter });
+    const sent = await sendProviderMail(mailbox, "claude:alpha", false);
+    const path = notificationFile(
+      root,
+      "_providers/claude/alpha",
+      sent.envelope.id,
+      "unverified",
+    );
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        version: 1,
+        attemptId: "interrupted-attempt",
+        outcome: "attempting",
+        detail: "submission in progress",
+        updatedAt: new Date().toISOString(),
+      })}\n`,
+      { flag: "wx" },
+    );
+
+    const outcome = await mailbox.poke("claude:alpha");
+    const marker = JSON.parse(await readFile(path, "utf8"));
+    assert.equal(outcome.outcome, "ambiguous");
+    assert.equal(marker.outcome, "ambiguous");
+    assert.equal(marker.attemptId, "interrupted-attempt");
+    assert.equal(adapter.calls.length, 0);
+  });
+});
+
 test("a later envelope after a terminal outcome starts a new attempt", async () => {
   await sandbox("outcome-new-envelope", async (root) => {
     const adapter = recordingAdapter([
@@ -920,6 +1014,34 @@ test("deferred outcome writes no marker and retries on a later watch tick", asyn
     await mailbox.watch("claude:alpha", { once: true, intervalMs: 100 });
     assert.equal(adapter.calls.length, 3, "verified stops retries");
     assert.ok(adapter.calls.every((call) => call.envelopeId === id));
+  });
+});
+
+test("deferred outcome removes attempting before an ownership handoff", async () => {
+  await sandbox("outcome-deferred-handoff", async (root) => {
+    const adapter = recordingAdapter({
+      outcome: "deferred",
+      detail: "definitive pre-submission refusal",
+    });
+    const mailbox = providerMailbox(root, { claude: adapter });
+    const sent = await sendProviderMail(mailbox, "claude:alpha", false);
+    const outcome = await mailbox.poke("claude:alpha", {
+      ownershipGuard: async () => false,
+    });
+
+    assert.equal(outcome.outcome, "deferred");
+    assert.equal(outcome.releaseWatcher, true);
+    assert.equal(
+      await exists(
+        notificationFile(
+          root,
+          "_providers/claude/alpha",
+          sent.envelope.id,
+          "unverified",
+        ),
+      ),
+      false,
+    );
   });
 });
 

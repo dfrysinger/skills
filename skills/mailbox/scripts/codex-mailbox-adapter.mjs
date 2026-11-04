@@ -6,6 +6,7 @@
 // in the WebSocket Authorization header; it never enters argv, files, logs, or
 // returned details.
 import { createHash, randomBytes } from "node:crypto";
+import { realpathSync } from "node:fs";
 import net from "node:net";
 import { isAbsolute, resolve } from "node:path";
 
@@ -48,6 +49,14 @@ function safeCode(value) {
   return typeof value === "string" && /^[A-Z][A-Z0-9_]{1,40}$/.test(value)
     ? value
     : "UNKNOWN";
+}
+
+function safeRpcMessage(value) {
+  if (typeof value !== "string") return "no provider detail";
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized !== "" && normalized.length <= 160
+    ? normalized
+    : "provider detail unavailable";
 }
 
 function result(outcome, detail, releaseWatcher = false) {
@@ -96,15 +105,24 @@ export function codexGeneration({ endpoint, workspace, launcherPid }) {
   if (!Number.isSafeInteger(launcherPid) || launcherPid < 1) {
     throw new CodexEnvironmentError(`${CODEX_ENV.launcherPid} must be a positive integer`);
   }
+  const normalizedWorkspace = normalizeWorkspace(workspace);
+  if (!normalizedWorkspace) {
+    throw new CodexEnvironmentError(`${CODEX_ENV.workspace} must resolve to an existing path`);
+  }
   return createHash("sha256")
-    .update(`${parsed.href}\0${normalizeWorkspace(workspace)}\0${launcherPid}`, "utf8")
+    .update(`${parsed.href}\0${normalizedWorkspace}\0${launcherPid}`, "utf8")
     .digest("hex");
 }
 
 function normalizeWorkspace(workspace) {
-  return process.platform === "win32"
-    ? resolve(workspace).toLowerCase()
-    : resolve(workspace);
+  try {
+    const normalized = realpathSync.native(resolve(workspace));
+    return process.platform === "win32"
+      ? normalized.toLowerCase()
+      : normalized;
+  } catch {
+    return null;
+  }
 }
 
 // Validates names and shape without ever returning a token in an error.
@@ -200,35 +218,103 @@ async function rpcStateRequest(session, method, params) {
   }
 }
 
-async function readExactThread(session, workspace) {
+async function initializeSession(session) {
+  const initialized = await rpcStateRequest(session, "initialize", {
+    clientInfo: {
+      name: "mailbox-codex-watcher",
+      title: "Mailbox Codex Watcher",
+      version: "1",
+    },
+    capabilities: { experimentalApi: true },
+  });
+  if (initialized.kind !== "ok") return initialized;
+  try {
+    await session.notify("initialized", {});
+  } catch (error) {
+    return {
+      kind: "deferred",
+      detail: transportDetail(
+        error,
+        "codex initialized notification unavailable before wakeup submission",
+      ),
+    };
+  }
+  const platformOs = initialized.response.result.platformOs;
+  if (platformOs !== "macos" && platformOs !== "windows") {
+    return {
+      kind: "deferred",
+      detail: `codex mailbox delivery is unsupported on platform ${String(platformOs)}`,
+    };
+  }
+  return { kind: "ok", platformOs };
+}
+
+async function readExactThread(
+  session,
+  workspace,
+  platformOs = "windows",
+  expectedThreadId,
+) {
   const loaded = await rpcStateRequest(session, "thread/loaded/list", {
     cursor: null,
-    limit: 2,
+    limit: 100,
   });
   if (loaded.kind !== "ok") return loaded;
   const loadedIds = loaded.response.result.data;
-  if (!Array.isArray(loadedIds) || loadedIds.length !== 1 || loaded.response.result.nextCursor !== null) {
-    return { kind: "deferred", detail: "codex does not have exactly one loaded thread" };
-  }
-  const threadId = loadedIds[0];
-  if (typeof threadId !== "string" || threadId === "") {
-    return { kind: "deferred", detail: "codex loaded thread identity is invalid" };
-  }
-  const thread = await rpcStateRequest(session, "thread/read", {
-    threadId,
-    includeTurns: false,
-  });
-  if (thread.kind !== "ok") return thread;
-  const cwd = thread.response.result.thread?.cwd;
   if (
-    typeof cwd !== "string" ||
-    cwd === "" ||
-    !isAbsolute(cwd) ||
-    normalizeWorkspace(cwd) !== workspace
+    !Array.isArray(loadedIds) ||
+    loaded.response.result.nextCursor !== null ||
+    loadedIds.some((id) => typeof id !== "string" || id === "")
   ) {
-    return { kind: "deferred", detail: "codex loaded thread workspace does not match launcher workspace" };
+    return { kind: "deferred", detail: "codex loaded thread inventory is incomplete or invalid" };
   }
-  const status = thread.response.result.thread?.status;
+  const matching = [];
+  for (const threadId of new Set(loadedIds)) {
+    const thread = await rpcStateRequest(session, "thread/read", {
+      threadId,
+      includeTurns: false,
+    });
+    if (thread.kind !== "ok") return thread;
+    const cwd = thread.response.result.thread?.cwd;
+    if (typeof cwd !== "string" || cwd === "" || !isAbsolute(cwd)) {
+      return { kind: "deferred", detail: "codex loaded thread workspace is invalid" };
+    }
+    const canonicalCwd = normalizeWorkspace(cwd);
+    if (!canonicalCwd) {
+      return { kind: "deferred", detail: "codex loaded thread workspace is unavailable" };
+    }
+    if (canonicalCwd === workspace) {
+      matching.push({ threadId, thread: thread.response.result.thread });
+    }
+  }
+  const eligible =
+    platformOs === "macos"
+      ? matching.filter(({ thread }) => thread?.ephemeral === false)
+      : matching;
+  let selected = eligible;
+  if (expectedThreadId) {
+    const bound = eligible.filter(({ threadId }) => threadId === expectedThreadId);
+    if (bound.length === 1) {
+      selected = bound;
+    } else if (eligible.length === 1) {
+      selected = eligible;
+    } else {
+      selected = [];
+    }
+  }
+  if (selected.length !== 1) {
+    return {
+      kind: "deferred",
+      detail: expectedThreadId
+        ? "codex cannot identify one exact current cwd-matching thread"
+        : "codex does not have exactly one loaded cwd-matching thread",
+    };
+  }
+  const [{ threadId, thread }] = selected;
+  if (platformOs === "macos") {
+    return { kind: "macos", threadId };
+  }
+  const status = thread.status;
   if (status?.type === "idle") return { kind: "idle", threadId };
   if (status?.type !== "active") {
     return { kind: "deferred", detail: "codex loaded thread is not safely idle or active" };
@@ -296,7 +382,12 @@ async function submitForState(
     if (retry) {
       return result("deferred", "codex active turn changed again before retry");
     }
-    const reread = await readExactThread(session, state.workspace);
+    const reread = await readExactThread(
+      session,
+      state.workspace,
+      "windows",
+      state.threadId,
+    );
     if (reread.kind !== "idle" && reread.kind !== "active") {
       return result("deferred", reread.detail);
     }
@@ -320,19 +411,78 @@ export function createCodexWakeupAdapter({
   }
   const generation = codexGeneration({ endpoint, workspace, launcherPid });
   const expectedWorkspace = normalizeWorkspace(workspace);
+  if (!expectedWorkspace) {
+    throw new CodexEnvironmentError(`${CODEX_ENV.workspace} must resolve to an existing path`);
+  }
+  let boundThreadId;
+
+  function requestGate(request) {
+    if (request?.provider !== CODEX_PROVIDER || request.address !== address) {
+      return result("deferred", "codex adapter is bound to a different mailbox address");
+    }
+    if (typeof request.prompt !== "string" || request.prompt === "") {
+      return result("deferred", "wakeup prompt must be a non-empty string");
+    }
+    if (!isAlive(launcherPid)) {
+      return result("deferred", "codex launcher process is no longer running", true);
+    }
+    return null;
+  }
+
+  async function prepare(request) {
+    const gated = requestGate(request);
+    if (gated) return gated;
+    let session;
+    try {
+      session = await transport.connect({ endpoint, token });
+    } catch (error) {
+      return result("deferred", transportDetail(error, "codex endpoint unavailable"));
+    }
+    try {
+      const initialized = await initializeSession(session);
+      if (initialized.kind !== "ok") {
+        return result("deferred", initialized.detail);
+      }
+      const state = await readExactThread(
+        session,
+        expectedWorkspace,
+        initialized.platformOs,
+        boundThreadId,
+      );
+      if (
+        state.kind !== "idle" &&
+        state.kind !== "active" &&
+        state.kind !== "macos"
+      ) {
+        return result("deferred", state.detail);
+      }
+      if (initialized.platformOs === "macos" && allowAll) {
+        const settings = await rpcStateRequest(session, "thread/settings/update", {
+          threadId: state.threadId,
+          approvalPolicy: "never",
+          sandboxPolicy: { type: "dangerFullAccess" },
+        });
+        if (settings.kind !== "ok") {
+          return result("deferred", settings.detail);
+        }
+      }
+      boundThreadId = state.threadId;
+      return {
+        platformOs: initialized.platformOs,
+        threadId: state.threadId,
+        allowAllApplied: initialized.platformOs === "macos" && allowAll,
+      };
+    } finally {
+      session.close?.();
+    }
+  }
 
   return {
     generation,
-    async wake(request) {
-      if (request?.provider !== CODEX_PROVIDER || request.address !== address) {
-        return result("deferred", "codex adapter is bound to a different mailbox address");
-      }
-      if (typeof request.prompt !== "string" || request.prompt === "") {
-        return result("deferred", "wakeup prompt must be a non-empty string");
-      }
-      if (!isAlive(launcherPid)) {
-        return result("deferred", "codex launcher process is no longer running", true);
-      }
+    prepare,
+    async wake(request, prepared) {
+      const gated = requestGate(request);
+      if (gated) return gated;
       let session;
       try {
         session = await transport.connect({ endpoint, token });
@@ -340,20 +490,79 @@ export function createCodexWakeupAdapter({
         return result("deferred", transportDetail(error, "codex endpoint unavailable"));
       }
       try {
-        const initialized = await rpcStateRequest(session, "initialize", {
-          clientInfo: {
-            name: "mailbox-codex-watcher",
-            title: "Mailbox Codex Watcher",
-            version: "1",
-          },
-          capabilities: null,
-        });
+        const initialized = await initializeSession(session);
         if (initialized.kind !== "ok") {
           return result("deferred", initialized.detail);
         }
-        const state = await readExactThread(session, expectedWorkspace);
-        if (state.kind !== "idle" && state.kind !== "active") {
+        const state = await readExactThread(
+          session,
+          expectedWorkspace,
+          initialized.platformOs,
+          prepared?.threadId ?? boundThreadId,
+        );
+        if (
+          state.kind !== "idle" &&
+          state.kind !== "active" &&
+          state.kind !== "macos"
+        ) {
           return result("deferred", state.detail);
+        }
+        if (
+          prepared &&
+          (prepared.platformOs !== initialized.platformOs ||
+            prepared.threadId !== state.threadId)
+        ) {
+          return result("deferred", "codex mailbox preparation is stale");
+        }
+        boundThreadId = state.threadId;
+        if (
+          initialized.platformOs === "macos" &&
+          allowAll &&
+          !prepared?.allowAllApplied
+        ) {
+          const settings = await rpcStateRequest(session, "thread/settings/update", {
+            threadId: state.threadId,
+            approvalPolicy: "never",
+            sandboxPolicy: { type: "dangerFullAccess" },
+          });
+          if (settings.kind !== "ok") {
+            return result("deferred", settings.detail);
+          }
+        }
+        if (initialized.platformOs === "macos") {
+          try {
+            const queued = await session.request("thread/queue/add", {
+              threadId: state.threadId,
+              input: [{ type: "text", text: request.prompt }],
+              clientUserMessageId: request.attemptId,
+            });
+            if (typeof responseResult(queued)?.queuedSubmission?.id === "string") {
+              return result(
+                "submitted",
+                "codex thread/queue/add accepted the mailbox prompt",
+              );
+            }
+            if (queued?.error) {
+              return result(
+                "deferred",
+                `codex thread/queue/add was refused before wakeup submission: ${safeCode(
+                  queued.error.code,
+                )} ${safeRpcMessage(queued.error.message)}`,
+              );
+            }
+            return result(
+              "ambiguous",
+              "codex thread/queue/add returned without a queued submission ID",
+            );
+          } catch (error) {
+            return result(
+              "ambiguous",
+              transportDetail(
+                error,
+                "codex thread/queue/add connection ended after wakeup request",
+              ),
+            );
+          }
         }
         state.workspace = expectedWorkspace;
         return await submitForState(session, state, request.prompt, { allowAll });
@@ -400,6 +609,22 @@ class WebSocketRpcSession {
         clearTimeout(pending?.timer);
         pending?.reject(new CodexTransportError("request", error.code));
       });
+    });
+  }
+
+  notify(method, params) {
+    if (this.#closed) {
+      return Promise.reject(new CodexTransportError("notify", "CLOSED"));
+    }
+    return new Promise((resolveNotify, rejectNotify) => {
+      this.#sendFrame(
+        0x1,
+        Buffer.from(JSON.stringify({ method, params }), "utf8"),
+        (error) => {
+          if (error) rejectNotify(new CodexTransportError("notify", safeCode(error.code)));
+          else resolveNotify();
+        },
+      );
     });
   }
 

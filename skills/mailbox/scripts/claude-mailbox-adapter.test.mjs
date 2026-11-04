@@ -642,7 +642,9 @@ test("the watcher delivers durable mail once through the pipe and records a subm
       const id = sent.envelope.id;
       const marker = await waitFor("submitted marker", async () => {
         const text = await readIfExists(unverifiedFile(root, id));
-        return text && JSON.parse(text);
+        if (!text) return undefined;
+        const value = JSON.parse(text);
+        return value.outcome === "submitted" ? value : undefined;
       });
       assert.equal(marker.outcome, "submitted");
       assert.equal(pipe.connections.length, 1);

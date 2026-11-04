@@ -198,7 +198,7 @@ probe.
 
 ## Codex CLI 0.166.0 on macOS
 
-**Gate: REFRAME OPEN - ACTIVE DELIVERY MECHANISM**
+**Gate: PASS - AUTHENTICATED LOOPBACK NATIVE MAILBOX**
 
 The upgraded arm64 macOS client retained ChatGPT authentication and completed a
 real `gpt-6.1-sol` request. Its app-server also created an explicit Unix socket
@@ -280,3 +280,31 @@ policy race without relying on concurrent `turn/start`.
 These observations admit a macOS queue-based proposal only after its work
 order and design review are updated. They do not replace the separately
 admitted Windows start/steer contract.
+
+The reviewed implementation then exposed and closed two composition gaps:
+
+- a fresh remote TUI defaults to an ephemeral thread; idle queueing may be
+  accepted, but active `thread/queue/add` is rejected with `-32600`. A focused
+  native proof showed `-c ephemeral=false` creates a durable fresh TUI thread
+  and accepts active queueing without a synthetic bootstrap turn;
+- macOS can report one workspace as both `/tmp/...` and `/private/tmp/...`.
+  Canonical filesystem identity plus exclusion of ephemeral macOS threads
+  selects the durable TUI thread without recency or activity heuristics.
+
+The final dirty candidate passed real TUI acceptance:
+
+- active/concurrent envelopes
+  `20261104T230348050Z-26663-51c12c71b668` and
+  `20261104T230348103Z-26664-320bd7007000` were accepted by
+  `thread/queue/add`, read, replied to with `CODEX_ACTIVE_CONCURRENT_V19`, and
+  acknowledged;
+- idle envelope `20261104T230607774Z-35721-f3ec8305c4a9` was accepted, read,
+  replied to with `CODEX_IDLE_REPLY_V19`, and acknowledged;
+- closing the owning tmux session stopped launcher, app-server, watcher, TUI,
+  and monitor PIDs `26213,26241,26304,26365,26374` and closed
+  `127.0.0.1:52374`;
+- exact diff and proof-artifact scans found no raw capability token.
+
+This evidence admits the reviewed macOS queue implementation after
+two-family implementation review, committed-candidate identity, and remote
+branch verification complete.

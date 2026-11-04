@@ -409,24 +409,32 @@ rebinds the same port before a client connects. The launcher watches the child
 and tears down both clients on exit; the native probe measures this exact
 completion-order race.
 
-Agent Stack, as the sole TUI launch owner, starts the TUI with the
+Agent Stack, as the sole TUI launch owner, starts a fresh TUI with the
 version-matched equivalent of:
 
 ```text
-codex resume --last --cd <workspace> --remote <endpoint>
+codex -c ephemeral=false --cd <workspace> --remote <endpoint>
 ```
+
+An existing session uses `codex resume --last` with the same workspace and
+remote arguments. Fresh remote TUI threads otherwise default to ephemeral;
+Codex accepts idle queueing on such a thread but rejects active
+`thread/queue/add`. The launcher therefore requires a durable fresh thread
+rather than adding a synthetic bootstrap turn.
 
 The bounded native probe must establish the exact supported argument order and
 authentication form before Codex adapter code is written. The child watcher
 only connects to the already-running app-server; it never launches the TUI.
 Codex remains the owner of selecting the last durable thread for that
-workspace. After the TUI loads it, every wakeup attempt requires exactly one
-loaded thread, reads it back, and verifies its working directory is the
-expected Agent Stack workspace.
-Zero, multiple, or mismatched loaded threads fail closed. Checking on each
-attempt also refuses delivery if the TUI leaves more than one thread loaded
-after an interactive switch. The watcher never starts or loads a thread
-itself.
+workspace. The watcher canonicalizes the configured workspace and each loaded
+thread cwd through the filesystem so equivalent macOS paths such as `/tmp` and
+`/private/tmp` retain one identity; an unresolved filesystem identity fails
+closed. On macOS it excludes ephemeral threads because the provider rejects
+active queueing to them, then binds to the exact durable cwd-matching thread.
+If that bound thread later disappears, it may rebind only when one durable
+canonical cwd match remains. Zero or multiple durable replacements fail
+closed. The watcher never selects by activity or recency and never starts or
+loads a thread itself.
 
 The adapter preserves two platform contracts because the installed runtimes
 expose different supported state:
@@ -494,10 +502,11 @@ platform probe settles these facts:
 - Codex: the installed version's exact remote resume invocation; exactly one
   child-owned loopback listener discovered after bind, including
   pre-bound-port and bind-failure cases; missing and wrong token refusal;
-  exactly one loaded cwd-matching thread; token handling without command-line
-  exposure; Windows idle/active state discovery and the admitted start/steer
-  contract; macOS `thread/queue/add` without idle/active discovery, concurrent
-  queue retention, queue-attempt identity,
+  a non-ephemeral fresh remote TUI, exact canonical cwd-matching thread
+  identity and fail-closed bounded rebinding; token handling without
+  command-line exposure; Windows idle/active state discovery and the admitted
+  start/steer contract; macOS `thread/queue/add` without active-turn ID
+  discovery, concurrent queue retention, queue-attempt identity,
   accepted `thread/settings/update` before allow-all queueing, and
   app-server/watcher cleanup after launcher death.
 - Provider marker state: a process death before or after request submission
@@ -706,7 +715,7 @@ returns Claude/Codex to manual mailbox pickup.
 | `legacy-copilot-compat` | AC-1, AC-11 | Read and send against an existing bare Copilot fixture without `MAILBOX_SELF_ADDRESS`. | Same mailbox files and session-control target as before. | Migration breaks current callers. |
 | `wakeup-state-machine` | AC-3, AC-4, AC-5, AC-8 | Fake each adapter outcome and generation race around a pending envelope; for macOS allow-all, settle settings before the attempt transition; kill the actor before atomic marker rename, after rename but before request, after provider acceptance, and after terminal marker replacement; then run another watch tick. | Existing notified marker remains compatible; prerequisite settings create no wake marker; an atomically durable `attempting` marker precedes every wake submission; terminal unverified payload distinguishes submitted/held/refused/ambiguous and suppresses replay; definitive deferred removes the marker and may retry; interrupted attempting becomes ambiguous; envelope stays pending. | Persistence and live delivery claims are coupled incorrectly, a crash can replay a prompt, an unsent attempt can be misreported as submitted, or policy setup can be confused with wake submission. |
 | `claude-native-contract` | AC-3 through AC-8 | Launch a temporary supported Claude session with the Agent Stack hook; probe socket reply semantics, idle and active sends, inbound hold/refuse, hook re-fire, socket change, parent death, and waiter acquisition after auth rejection, missing endpoint, and refused connection while preserving the watcher on transient busy. | Exact submitted/verified/held/refused/ambiguous outcome marker plus transcript marker; one acting watcher; no secret in captured files or process args. | Claude delivery or watcher lifecycle is not authenticated, immediate, truthful, single-owner, or secret-safe. |
-| `codex-native-contract` | AC-3 through AC-8 | On each enabled platform, launch app-server with a loopback port-zero bind; prove the reported or OS-observed listener belongs to the exact child before giving the endpoint or token to clients; exercise pre-bound-port, bind-failure, missing/wrong-token, and child-exit cases, including killing the child after ownership verification and immediately rebinding its port before each client connect. Attach the TUI and watcher and prove exact resume and loaded-thread identity. On Windows, preserve the admitted idle start, exact active steer, wrong-turn refusal, and concurrent-start contract. On macOS, queue while idle and active, issue two concurrent queue calls with distinct attempt IDs, and apply `thread/settings/update` before an allow-all queue whose turn writes outside the workspace without prompting. Finish with parent death, endpoint closure, and app-server exit. | Exactly one child-owned loopback listener exists at the ownership checkpoint; uncertain ownership starts no client and sends no token; child exit tears down both clients before either can continue against a replacement listener; the endpoint rejects missing or wrong bearer tokens; Windows retains its admitted exact-turn behavior; macOS queue submissions return distinct IDs and each input occurs exactly once whether idle, active, or concurrent; accepted thread settings govern the subsequent allow-all queue turn; accepted operations are reported only as submitted; no orphaned watcher, server, or listener. | A foreign listener can receive the token or conversation, local control is unauthenticated, control can reach the wrong thread, a platform's admitted behavior regresses, racing input can be lost or duplicated, the configured owner grant can be silently dropped, or the adapter can claim an unproved side effect. |
+| `codex-native-contract` | AC-3 through AC-8 | On each enabled platform, launch app-server with a loopback port-zero bind; prove the reported or OS-observed listener belongs to the exact child before giving the endpoint or token to clients; exercise pre-bound-port, bind-failure, missing/wrong-token, and child-exit cases, including killing the child after ownership verification and immediately rebinding its port before each client connect. Attach the TUI and watcher, prove durable fresh launch and exact resume, canonical cwd identity across equivalent filesystem paths, bounded rebinding after thread rotation, and fail-closed ambiguous replacements. On Windows, preserve the admitted idle start, exact active steer, wrong-turn refusal, and concurrent-start contract. On macOS, queue while idle and active, issue two concurrent queue calls with distinct attempt IDs, and apply `thread/settings/update` before an allow-all queue whose turn writes outside the workspace without prompting. Finish with parent death, endpoint closure, and app-server exit. | Exactly one child-owned loopback listener exists at the ownership checkpoint; uncertain ownership starts no client and sends no token; child exit tears down both clients before either can continue against a replacement listener; the endpoint rejects missing or wrong bearer tokens; a fresh TUI thread is non-ephemeral; canonical path aliases preserve the same exact workspace while ambiguous same-workspace replacements defer; Windows retains its admitted exact-turn behavior; macOS queue submissions return distinct IDs and each input occurs exactly once whether idle, active, or concurrent; accepted thread settings govern the subsequent allow-all queue turn; accepted operations are reported only as submitted; no orphaned watcher, server, or listener. | A foreign listener can receive the token or conversation, local control is unauthenticated, control can reach the wrong or ephemeral thread, filesystem aliases can hide the intended thread, a platform's admitted behavior regresses, racing input can be lost or duplicated, the configured owner grant can be silently dropped, or the adapter can claim an unproved side effect. |
 | `cross-provider-live-windows` | AC-3, AC-6, AC-11 | Send Copilot to Claude and Codex, then reply to provider-qualified Copilot in isolated Windows workspaces. | All envelopes read and acknowledged by exact targets without terminal input. | The composed Windows journey fails despite adapter tests. |
 | `cross-provider-live-macos` | AC-3, AC-6, AC-11 | Repeat the provider journey on macOS before removing that provider's tmux fallback. | Exact native targets acknowledge and no tmux input occurs. | Native macOS control is not ready to replace the old path. |
 | `secret-hygiene` | AC-7 | Scan deterministic fixtures, logs, markers, durable state, command lines, and test captures using unique canary secrets. | Canary absent everywhere outside child process environments and provider memory. | A provider credential escaped its allowed boundary. |
