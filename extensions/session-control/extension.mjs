@@ -259,7 +259,7 @@ async function refreshIdentity() {
         error: errorDetails(error),
       });
     }
-    let refreshedTmuxSession;
+    let refreshedTmuxSession = foreground ? tmuxSession : undefined;
     try {
       if (foreground) refreshedTmuxSession = await currentTmuxSession();
     } catch (error) {
@@ -268,7 +268,7 @@ async function refreshIdentity() {
         error: errorDetails(error),
       });
     }
-    let refreshedSessionName;
+    let refreshedSessionName = foreground ? sessionName : undefined;
     try {
       if (foreground) refreshedSessionName = await currentSessionName(session);
     } catch (error) {
