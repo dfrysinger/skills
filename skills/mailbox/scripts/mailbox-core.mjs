@@ -41,6 +41,7 @@ const RETRYABLE_FILE_ERRORS = new Set(["EACCES", "EBUSY", "EPERM"]);
 export const POKE_UNVERIFIED = 3;
 export const POKE_NO_ACTIVE_COPILOT = 4;
 export const POKE_REMOTE_PENDING = 5;
+export const POKE_FALLBACK_DEFERRED = 6;
 
 const MAILBOX_CONFIG_SCHEMA_VERSION = 1;
 const MAILBOX_CONFIG_KEYS = new Set([
@@ -946,7 +947,10 @@ export function createMailbox(options = {}) {
             await importRemote(target.address);
           }
           wakeup = await poke(localMailboxAddress(canonicalTarget.address), {
-            targetName: target.name,
+            targetName:
+              target.provider === "copilot"
+                ? target.name
+                : `${target.provider}-${target.name}`,
             wait,
           });
         } catch (error) {
@@ -1416,6 +1420,87 @@ export function createMailbox(options = {}) {
       if (parsedMailbox.provider !== "copilot") {
         const adapter = wakeupAdapters[parsedMailbox.provider];
         if (!adapter) {
+          if (terminalPokeCli) {
+            const attemptId = await notificationAttemptId(
+              mailboxAddress,
+              newest.id,
+            );
+            try {
+              const fallback = await execFileAsync(
+                terminalPokeCli,
+                [
+                  mailboxAddress,
+                  "--terminal-only",
+                  "--tmux-session",
+                  targetName,
+                  ...(wait ? ["--wait"] : []),
+                ],
+                {
+                  env: {
+                    ...process.env,
+                    MAILBOX_LOCAL_ROOT: mailboxRoot,
+                    MAILBOX_STATE_ROOT: stateRoot,
+                    MAILBOX_TERMINAL_RECEIPT: "1",
+                  },
+                  timeout: wait ? 50_000 : 20_000,
+                },
+              );
+              if (fallback.stdout.includes("submission observed")) {
+                await markNotified(mailboxAddress, [...readyIds]);
+                diagnostics.log("wakeup.accepted", {
+                  mailbox: mailboxAddress,
+                  targetName,
+                  envelopeId: newest.id,
+                  delivery: "terminal-fallback",
+                });
+                return {
+                  status: "delivered",
+                  outcome: "verified",
+                  envelopeId: newest.id,
+                  delivery: "terminal-fallback",
+                };
+              }
+            } catch (error) {
+              const detail = [error?.stderr, error?.stdout]
+                .filter(Boolean)
+                .join("\n")
+                .trim();
+              diagnostics.log("wakeup.terminal_fallback_failed", {
+                mailbox: mailboxAddress,
+                targetName,
+                envelopeId: newest.id,
+                error: errorDetails(error),
+              });
+              const definitelyNoSideEffect = detail.includes(
+                "disappeared before the poke could be entered",
+              );
+              if (
+                !definitelyNoSideEffect &&
+                (detail.includes("MAILBOX_TERMINAL_PHASE=SUBMITTING") ||
+                  detail.includes("sent the poke"))
+              ) {
+                await markUnverified(
+                  mailboxAddress,
+                  newest.id,
+                  attemptId,
+                  "ambiguous",
+                  detail,
+                );
+                return {
+                  status: "unverified",
+                  outcome: "ambiguous",
+                  envelopeId: newest.id,
+                  detail,
+                };
+              }
+            }
+            return {
+              status: "fallback-deferred",
+              outcome: "deferred",
+              envelopeId: newest.id,
+              detail: `guarded terminal fallback for ${parsedMailbox.provider} did not submit`,
+            };
+          }
           return {
             status: "deferred",
             outcome: "deferred",

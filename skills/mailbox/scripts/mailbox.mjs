@@ -4,6 +4,7 @@ import {
   canonicalizeMailboxAddress,
   createConfiguredMailbox,
   parseMailboxAddress,
+  POKE_FALLBACK_DEFERRED,
   POKE_NO_ACTIVE_COPILOT,
   POKE_REMOTE_PENDING,
   POKE_UNVERIFIED,
@@ -221,11 +222,19 @@ try {
         break;
       }
       const result = await mailbox.poke(positional[0], {
-        targetName: address.name,
+        targetName:
+          options["tmux-session"] ??
+          (address.provider === "copilot"
+            ? address.name
+            : `${address.provider}-${address.name}`),
         wait: Boolean(options.wait),
       });
       if (result.status === "delivered") {
-        console.log(`poked: ${positional[0]} (SDK wakeup accepted)`);
+        console.log(
+          result.delivery === "terminal-fallback"
+            ? `poked: ${positional[0]} (submission observed)`
+            : `poked: ${positional[0]} (SDK wakeup accepted)`,
+        );
       } else if (result.status === "no-active-copilot") {
         console.error(
           `UNAVAILABLE: no active Copilot session named '${positional[0]}'; the mail remains queued.`,
@@ -236,6 +245,16 @@ try {
           `UNVERIFIED: '${positional[0]}' did not acknowledge the SDK wakeup; the mail remains queued.`,
         );
         process.exitCode = POKE_UNVERIFIED;
+      } else if (result.status === "deferred") {
+        console.error(
+          `UNAVAILABLE: native wakeup for '${positional[0]}' is not active; the mail remains queued.`,
+        );
+        process.exitCode = POKE_NO_ACTIVE_COPILOT;
+      } else if (result.status === "fallback-deferred") {
+        console.error(
+          `UNAVAILABLE: guarded terminal wakeup for '${positional[0]}' did not submit; the mail remains queued.`,
+        );
+        process.exitCode = POKE_FALLBACK_DEFERRED;
       }
       break;
     }

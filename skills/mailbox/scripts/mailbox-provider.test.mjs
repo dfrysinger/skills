@@ -944,6 +944,118 @@ test("provider mail without a registered adapter stays deferred and never reache
   });
 });
 
+test("provider terminal fallback holds the notification claim against the native watcher", async () => {
+  await sandbox("fallback-claim", async (root) => {
+    const started = join(root, "fallback-started");
+    const release = join(root, "fallback-release");
+    const helper = join(root, "terminal-poke.sh");
+    await writeFile(
+      helper,
+      `#!/bin/sh
+: > '${started}'
+while [ ! -f '${release}' ]; do sleep 0.01; done
+echo 'poked: claude:alpha (submission observed)'
+`,
+      { mode: 0o700 },
+    );
+    const terminal = providerMailbox(root, {}, {
+      extra: { terminalPokeCli: helper },
+    });
+    const adapter = recordingAdapter({ outcome: "verified" });
+    const watcher = providerMailbox(root, { claude: adapter });
+    await sendProviderMail(terminal, "claude:alpha", false);
+
+    const fallbackResult = terminal.poke("claude:alpha", {
+      targetName: "claude-alpha",
+    });
+    for (let attempt = 0; attempt < 100 && !(await exists(started)); attempt += 1) {
+      await sleep(10);
+    }
+    assert.ok(await exists(started), "terminal fallback did not start");
+
+    const watcherResult = await watcher.poke("claude:alpha", {
+      targetName: "alpha",
+    });
+    assert.equal(watcherResult.status, "in-progress");
+    assert.equal(adapter.calls.length, 0, "native watcher submitted a duplicate wakeup");
+
+    await writeFile(release, "");
+    assert.equal((await fallbackResult).status, "delivered");
+    assert.equal(adapter.calls.length, 0);
+  });
+});
+
+test("provider terminal interruption after submission begins is durably unverified", async () => {
+  await sandbox("fallback-interrupted", async (root) => {
+    const helper = join(root, "terminal-poke.sh");
+    await writeFile(
+      helper,
+      `#!/bin/sh
+echo 'MAILBOX_TERMINAL_PHASE=SUBMITTING' >&2
+exit 3
+`,
+      { mode: 0o700 },
+    );
+    const mailbox = providerMailbox(root, {}, {
+      extra: { terminalPokeCli: helper },
+    });
+    const sent = await sendProviderMail(mailbox, "claude:alpha", false);
+
+    const result = await mailbox.poke("claude:alpha", {
+      targetName: "claude-alpha",
+    });
+    assert.equal(result.status, "unverified");
+    assert.equal(result.outcome, "ambiguous");
+    assert.ok(
+      await exists(
+        notificationFile(
+          root,
+          "_providers/claude/alpha",
+          sent.envelope.id,
+          "unverified",
+        ),
+      ),
+    );
+    assert.equal((await mailbox.poke("claude:alpha")).status, "unverified");
+  });
+});
+
+test("provider terminal send failure before input remains retryable", async () => {
+  await sandbox("fallback-send-failed", async (root) => {
+    const helper = join(root, "terminal-poke.sh");
+    await writeFile(
+      helper,
+      `#!/bin/sh
+echo 'MAILBOX_TERMINAL_PHASE=SUBMITTING' >&2
+echo 'UNVERIFIED: target disappeared before the poke could be entered; the mail is queued.' >&2
+exit 3
+`,
+      { mode: 0o700 },
+    );
+    const mailbox = providerMailbox(root, {}, {
+      extra: { terminalPokeCli: helper },
+    });
+    const sent = await sendProviderMail(mailbox, "claude:alpha", false);
+
+    const result = await mailbox.poke("claude:alpha", {
+      targetName: "claude-alpha",
+    });
+    assert.equal(result.status, "fallback-deferred");
+    assert.equal(result.outcome, "deferred");
+    assert.equal(
+      await exists(
+        notificationFile(
+          root,
+          "_providers/claude/alpha",
+          sent.envelope.id,
+          "unverified",
+        ),
+      ),
+      false,
+    );
+  });
+});
+
 test("Copilot ambiguous wakeups record a structured .unverified outcome", async () => {
   await sandbox("copilot-ambiguous", async (root) => {
     const requestMock = await writeRequestMock(root, {

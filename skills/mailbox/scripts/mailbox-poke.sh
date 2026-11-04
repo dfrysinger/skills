@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mailbox-poke.sh <session-name> [--wait|--terminal-only]
+# mailbox-poke.sh <mailbox-address> [--tmux-session <name>] [--wait|--terminal-only]
 #
 # If <session-name>'s mailbox has pending mail, send a natural-language wakeup
 # prompt through the recipient backend. Copilot uses the session-control SDK
@@ -29,26 +29,37 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REQUEST_CLI="$SCRIPT_DIR/../../../extensions/session-control/request.mjs"
 STORAGE_ROOT_CLI="$SCRIPT_DIR/../../../extensions/session-control/storage-root.mjs"
 
-[[ $# -lt 1 ]] && { echo "usage: mailbox-poke.sh <name> [--wait]" >&2; exit 2; }
+if ! command -v node >/dev/null 2>&1; then
+  echo "UNVERIFIED: Node.js is unavailable; the mail is queued and no keys were sent." >&2
+  exit 3
+fi
+
+[[ $# -lt 1 ]] && {
+  echo "usage: mailbox-poke.sh <mailbox-address> [--tmux-session <name>] [--wait]" >&2
+  exit 2
+}
 NAME="$1"; shift
 WAIT=0
 TERMINAL_ONLY=0
+TMUX_SESSION=""
 EXPECTED_SESSION_ID=""
 EXPECTED_GENERATION=""
 EXPECTED_HOST_PID=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --wait) WAIT=1; shift ;;
+    --tmux-session) TMUX_SESSION="${2:-}"; shift 2 ;;
     --terminal-only) TERMINAL_ONLY=1; shift ;;
     --expected-session-id) EXPECTED_SESSION_ID="${2:-}"; shift 2 ;;
     --expected-generation) EXPECTED_GENERATION="${2:-}"; shift 2 ;;
     --expected-host-pid) EXPECTED_HOST_PID="${2:-}"; shift 2 ;;
-    *) echo "usage: mailbox-poke.sh <name> [--wait] [--terminal-only --expected-session-id ID --expected-generation ID --expected-host-pid PID]" >&2; exit 2 ;;
+    *) echo "usage: mailbox-poke.sh <mailbox-address> [--tmux-session NAME] [--wait] [--terminal-only --expected-session-id ID --expected-generation ID --expected-host-pid PID]" >&2; exit 2 ;;
   esac
 done
 
 if [[ "$TERMINAL_ONLY" -eq 0 ]]; then
   NODE_ARGS=(poke "$NAME")
+  [[ -n "$TMUX_SESSION" ]] && NODE_ARGS+=(--tmux-session "$TMUX_SESSION")
   [[ "$WAIT" -eq 1 ]] && NODE_ARGS+=(--wait)
   set +e
   NODE_OUTPUT="$(node "$SCRIPT_DIR/mailbox.mjs" "${NODE_ARGS[@]}" 2>&1)"
@@ -60,16 +71,38 @@ if [[ "$TERMINAL_ONLY" -eq 0 ]]; then
   elif [[ "$NODE_STATUS" -eq 5 ]]; then
     [[ -n "$NODE_OUTPUT" ]] && printf '%s\n' "$NODE_OUTPUT"
     exit 5
+  elif [[ "$NODE_STATUS" -eq 6 ]]; then
+    [[ -n "$NODE_OUTPUT" ]] && printf '%s\n' "$NODE_OUTPUT" >&2
+    exit 4
   elif [[ "$NODE_STATUS" -ne 4 ]]; then
     [[ -n "$NODE_OUTPUT" ]] && printf '%s\n' "$NODE_OUTPUT" >&2
     exit 3
   fi
 fi
 
-DIR="$MAILBOX_LOCAL_ROOT/$NAME/pending"
+ADDRESS_FIELDS="$(
+  node --input-type=module - "$SCRIPT_DIR/mailbox-core.mjs" "$NAME" <<'NODE'
+import { pathToFileURL } from "node:url";
+
+const [corePath, address] = process.argv.slice(2);
+const { canonicalizeMailboxAddress, mailboxPathKey } =
+  await import(pathToFileURL(corePath).href);
+const parsed = canonicalizeMailboxAddress(address);
+const session =
+  parsed.provider === "copilot" ? parsed.name : `${parsed.provider}-${parsed.name}`;
+process.stdout.write(`${mailboxPathKey(parsed.address)}\t${session}\n`);
+NODE
+)" || {
+  echo "UNVERIFIED: '$NAME' is not a valid mailbox address; no keys were sent." >&2
+  exit 3
+}
+IFS=$'\t' read -r MAILBOX_KEY DEFAULT_SESSION <<<"$ADDRESS_FIELDS"
+[ -n "$MAILBOX_KEY" ] && [ -n "$DEFAULT_SESSION" ] || exit 3
+
+DIR="$MAILBOX_LOCAL_ROOT/$MAILBOX_KEY/pending"
 STATE_ROOT="${MAILBOX_STATE_ROOT:-$HOME/.copilot/mailbox-state}"
-WATERMARK_FILE="$STATE_ROOT/watermarks/$NAME.txt"
-TARGET_NAME="${NAME%%@*}"
+WATERMARK_FILE="$STATE_ROOT/watermarks/$MAILBOX_KEY.txt"
+TARGET_NAME="${TMUX_SESSION:-$DEFAULT_SESSION}"
 mkdir -p "$(dirname "$WATERMARK_FILE")"
 shopt -s nullglob
 ENVS=("$DIR"/*.json)
@@ -115,7 +148,7 @@ if [[ "$BACKEND" == "copilot" && "$TERMINAL_ONLY" -eq 0 ]]; then
   trap 'rm -f -- "$PROMPT_FILE"' EXIT
   chmod 600 "$PROMPT_FILE"
   printf '%s' "$PROMPT" >"$PROMPT_FILE"
-  ATTEMPT_FILE="$STATE_ROOT/notified/$NAME/$NEWEST_ID.attempt"
+  ATTEMPT_FILE="$STATE_ROOT/notified/$MAILBOX_KEY/$NEWEST_ID.attempt"
   mkdir -p "$(dirname "$ATTEMPT_FILE")"
   ATTEMPT_ID=""
   [[ -f "$ATTEMPT_FILE" ]] && ATTEMPT_ID="$(cat "$ATTEMPT_FILE" 2>/dev/null || true)"
@@ -259,6 +292,10 @@ read_input() {
     BOX=none
   fi
 }
+
+if [[ "${MAILBOX_TERMINAL_RECEIPT:-0}" == "1" ]]; then
+  printf 'MAILBOX_TERMINAL_PHASE=SUBMITTING\n' >&2
+fi
 
 if tmux send-keys -t "$PANE" -l -- "$PROMPT"; then
   SUBMITTED=0

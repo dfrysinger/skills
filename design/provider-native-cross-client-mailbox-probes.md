@@ -151,7 +151,7 @@ SessionStart hook. It does not admit Codex changes.
 
 ## Codex CLI 0.142.2 on macOS
 
-**Gate: BLOCKED — PROTECTED LOGIN REQUIRED**
+**Gate: BLOCKED — CLIENT UPGRADE REQUIRED**
 
 The installed arm64 macOS client passed the transport portion of the bounded
 probe:
@@ -166,14 +166,16 @@ probe:
 - the Unix socket accepted an HTTP WebSocket upgrade, establishing that the
   existing WebSocket RPC protocol can be carried over the private local socket.
 
-The exact-session and delivery portions could not run. The real Codex TUI
-reported that its refresh token had already been used and required protected
-sign-in. A remote TUI attached to the Unix app-server stopped at the same
-sign-in flow before it could load and prove the expected workspace thread.
+The user completed a fresh protected device login for this exact CLI, and
+`codex login status` confirmed ChatGPT authentication. Authenticated requests
+then reached the service but every model advertised by the 0.142.2 app-server
+catalog was rejected as unsupported for the ChatGPT account. The available
+package version is 0.166.0.
 
 No macOS Codex adapter or Agent Stack launch change is admitted from this
 partial result. The guarded tmux compatibility path remains in place. After
-the user signs in to Codex, rerun exact loaded-thread identity, idle start,
-active-turn steering, launcher-child cleanup, fixture-free mailbox reply and
-acknowledgement, and token-secrecy checks. No token value appeared in arguments,
-files, logs, diagnostics, or user-visible output during this probe.
+an explicitly authorized Codex upgrade, rerun exact loaded-thread identity,
+idle start, active-turn steering, launcher-child cleanup, fixture-free mailbox
+reply and acknowledgement, and token-secrecy checks. No token value appeared
+in arguments, files, logs, diagnostics, or user-visible output during this
+probe.

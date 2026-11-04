@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$SCRIPT_DIR/mailbox-poke.sh"
+REAL_NODE="$(command -v node)"
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/mailbox-poke-test.XXXXXX")"
 FAKE_BIN="$ROOT/bin"
 MAILBOX_ROOT="$ROOT/mailbox"
@@ -25,12 +26,37 @@ chmod +x "$FAKE_BIN/ps"
 
 cat >"$FAKE_BIN/node" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${FAKE_USE_REAL_NODE:-0}" == 1 ]]; then
+  exec "$REAL_NODE" "$@"
+fi
 printf '%s\n' "$*" >>"$FAKE_NODE_CALLS"
 if [[ "$1" == */storage-root.mjs ]]; then
   if [[ "${FAKE_STORAGE_ROOT_STATUS:-0}" -ne 0 ]]; then
     exit "$FAKE_STORAGE_ROOT_STATUS"
   fi
   printf '%s\n' "$FAKE_SESSION_CONTROL_ROOT"
+  exit 0
+fi
+if [[ "$1" == "--input-type=module" ]]; then
+  address="${@: -1}"
+  local_address="${address%@*}"
+  machine=""
+  [[ "$address" == *"@"* ]] && machine="@${address##*@}"
+  if [[ "$local_address" == *":"* ]]; then
+    provider="${local_address%%:*}"
+    name="${local_address#*:}"
+  else
+    provider=copilot
+    name="$local_address"
+  fi
+  if [[ "$provider" == copilot ]]; then
+    key="$name$machine"
+    session="$name"
+  else
+    key="_providers/$provider/$name$machine"
+    session="$provider-$name"
+  fi
+  printf '%s\t%s\n' "$key" "$session"
   exit 0
 fi
 if [[ "$1" == "-e" ]]; then
@@ -43,6 +69,7 @@ if [[ "$1" == */mailbox.mjs && "$2" == poke ]]; then
     3) printf "UNVERIFIED: '%s' did not acknowledge the SDK wakeup; the mail remains queued.\n" "$recipient" >&2 ;;
     4) printf "UNAVAILABLE: no active Copilot session named '%s'.\n" "$recipient" >&2 ;;
     5) printf 'poke: deferred to mailbox watcher on other-machine\n' ;;
+    6) printf "UNAVAILABLE: guarded terminal wakeup for '%s' did not submit.\n" "$recipient" >&2 ;;
   esac
   exit "${FAKE_MAILBOX_NODE_STATUS:-0}"
 fi
@@ -104,6 +131,7 @@ make_mail() {
 }
 
 export PATH="$FAKE_BIN:$PATH"
+export REAL_NODE
 export MAILBOX_ROOT
 export MAILBOX_STATE_ROOT
 export FAKE_NODE_CALLS="$ROOT/node-calls"
@@ -222,30 +250,51 @@ grep -Fq 'deferred to mailbox watcher on other-machine' "$ROOT/remote-pending.ou
 [ ! -s "$FAKE_TMUX_CALLS" ] ||
   fail "remote qualified poke fell back to tmux"
 
+FAKE_RECIPIENT=claude-juliet
+FAKE_BACKEND=claude
+FAKE_MAILBOX_NODE_STATUS=6
+export FAKE_RECIPIENT FAKE_BACKEND FAKE_MAILBOX_NODE_STATUS
+make_mail _providers/claude/juliet 20260827T000002Z-coordinated
+if "$SCRIPT" claude:juliet --tmux-session claude-juliet \
+  >"$ROOT/coordinated-deferred.out" 2>&1; then
+  fail "coordinated deferred fallback was reported as delivered"
+else
+  coordinated_status=$?
+fi
+[ "$coordinated_status" -eq 4 ] ||
+  fail "coordinated deferred fallback did not preserve retryable status"
+[ ! -s "$FAKE_TMUX_CALLS" ] ||
+  fail "outer shell repeated the coordinated terminal fallback"
+
 FAKE_RECIPIENT=claude-kilo
 FAKE_BACKEND=claude
 FAKE_MAILBOX_NODE_STATUS=4
 export FAKE_RECIPIENT FAKE_BACKEND FAKE_MAILBOX_NODE_STATUS
 printf empty >"$FAKE_PANE_STATE"
 : >"$FAKE_TYPED_PROMPT"
-make_mail claude-kilo 20260827T000002Z-claudeproof
-node_call_count="$(wc -l <"$FAKE_NODE_CALLS" | tr -d '[:space:]')"
-output="$("$SCRIPT" claude-kilo)"
-grep -Fq 'poked: claude-kilo (submission observed)' <<<"$output" ||
+MAILBOX_LOCAL_ROOT="$MAILBOX_ROOT" MAILBOX_STATE_ROOT="$MAILBOX_STATE_ROOT" \
+  "$REAL_NODE" "$SCRIPT_DIR/mailbox.mjs" send claude:kilo \
+    --summary proof --message proof --from test --no-wakeup >/dev/null
+CLAUDE_PATH="$(printf '%s\n' "$MAILBOX_ROOT/_providers/claude/kilo/pending/"*.json | tail -1)"
+CLAUDE_ID="$(basename "$CLAUDE_PATH" .json)"
+CLAUDE_MARKER="${CLAUDE_ID##*-}"
+FAKE_USE_REAL_NODE=1
+export FAKE_USE_REAL_NODE
+output="$("$SCRIPT" claude:kilo --tmux-session claude-kilo)"
+unset FAKE_USE_REAL_NODE
+grep -Fq 'poked: claude:kilo (submission observed)' <<<"$output" ||
   fail "Claude fallback submission was not verified"
-[ "$(wc -l <"$FAKE_NODE_CALLS" | tr -d '[:space:]')" = "$((node_call_count + 1))" ] ||
-  fail "Claude fallback made an unexpected Node call"
-grep -Fq -- '-l -- check mailbox; skip if empty [mb:claudeproof]' \
+grep -Fq -- "-l -- check mailbox; skip if empty [mb:$CLAUDE_MARKER]" \
   "$FAKE_TMUX_CALLS" || fail "Claude fallback did not type the mailbox prompt"
 grep -Fq 'send-keys -t %1 Enter' "$FAKE_TMUX_CALLS" ||
   grep -Fq -- '-t %1 Enter' "$FAKE_TMUX_CALLS" ||
   fail "Claude fallback did not submit the verified prompt"
-[ "$(cat "$MAILBOX_STATE_ROOT/watermarks/claude-kilo.txt")" = \
-  20260827T000002Z-claudeproof ] ||
+[ "$(cat "$MAILBOX_STATE_ROOT/watermarks/_providers/claude/kilo.txt")" = \
+  "$CLAUDE_ID" ] ||
   fail "Claude fallback did not advance the watermark"
 
 tmux_call_count="$(wc -l <"$FAKE_TMUX_CALLS" | tr -d '[:space:]')"
-"$SCRIPT" claude-kilo
+"$SCRIPT" claude:kilo --tmux-session claude-kilo
 [ "$(wc -l <"$FAKE_TMUX_CALLS" | tr -d '[:space:]')" = "$tmux_call_count" ] ||
   fail "watermark dedupe repeated a Claude wakeup"
 
