@@ -7,8 +7,55 @@ import test from "node:test";
 import {
   currentSessionName,
   currentTmuxSession,
+  isForegroundSession,
   preferredAgentName,
 } from "./session-identity.mjs";
+
+function foregroundConnection(sessionId) {
+  return {
+    async sendRequest(method, params) {
+      assert.equal(method, "session.getForeground");
+      assert.deepEqual(params, {});
+      return { sessionId };
+    },
+  };
+}
+
+test("foreground ownership follows the native host rather than the joined session", async () => {
+  let foreground = "old";
+  const session = {
+    sessionId: "old",
+    connection: {
+      async sendRequest() { return { sessionId: foreground }; },
+    },
+  };
+  assert.equal(await isForegroundSession(session), true);
+  foreground = "current";
+  assert.equal(await isForegroundSession(session), false);
+  assert.equal(await preferredAgentName(session), undefined);
+  foreground = undefined;
+  assert.equal(await isForegroundSession(session), false);
+});
+
+test("foreground ownership refuses unavailable, malformed and stalled answers", async () => {
+  await assert.rejects(isForegroundSession({}), /unavailable/);
+  for (const response of [null, [], { sessionId: 1 }, { sessionId: "" }]) {
+    await assert.rejects(
+      isForegroundSession({
+        sessionId: "old",
+        connection: { async sendRequest() { return response; } },
+      }),
+      /invalid foreground/,
+    );
+  }
+  await assert.rejects(
+    isForegroundSession({
+      sessionId: "old",
+      connection: { sendRequest() { return new Promise(() => {}); } },
+    }),
+    /timed out/,
+  );
+});
 
 async function writeExecutable(root, body) {
   if (process.platform === "win32") {
@@ -47,6 +94,7 @@ test("identity prefers the current tmux name and refreshes after a rename", {
 
     const session = {
       sessionId: "session-1",
+      connection: foregroundConnection("session-1"),
       rpc: {
         metadata: {
           async snapshot() {
@@ -72,6 +120,7 @@ test("identity falls back to the current live Copilot session name", async () =>
     delete process.env.TMUX_PANE;
     const session = {
       sessionId: "session-1",
+      connection: foregroundConnection("session-1"),
       rpc: {
         metadata: {
           async snapshot() {
@@ -102,6 +151,8 @@ test("identity falls back to the session name when tmux lookup fails", {
     process.env.PATH = `${root}${delimiter}${previousPath}`;
     process.env.TMUX_PANE = "%stale";
     const session = {
+      sessionId: "session-1",
+      connection: foregroundConnection("session-1"),
       rpc: {
         metadata: {
           async snapshot() {
