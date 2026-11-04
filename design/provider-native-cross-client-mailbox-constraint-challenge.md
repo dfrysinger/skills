@@ -467,3 +467,58 @@ Claude/Codex explicit-poke fallback. Those phrases were removed.
 findings and v5 delta. Codex adapter code remains blocked until the native
 Windows remote-resume probe passes. Provider enablement remains blocked until
 that provider-platform pair's native contract probe passes.
+
+## macOS Codex authenticated-transport reframe
+
+**Decision: `REFRAME`.** Codex 0.166.0 rejects
+`--remote-auth-token-env` for a `unix://PATH` remote. The reviewed macOS action
+requires the TUI and watcher to authenticate to one launcher-owned Unix
+app-server with the same in-memory token. That action cannot launch, so macOS
+Codex implementation and the dependent identity, delivery, steering, and
+cleanup proofs remain blocked.
+
+### User outcome and authority
+
+The retained outcome is immediate native wakeup of the exact Agent Stack-owned
+Codex thread, with durable mail left pending when exact local control cannot be
+proved. The user authorized the Codex upgrade and proof. That authorization
+does not select a different local transport or weaken the authenticated-control
+boundary after the reviewed Unix contract fails.
+
+### Keep
+
+- One app-server and one mailbox watcher owned by each Agent Stack launch.
+- Exactly one loaded thread whose working directory matches the launch.
+- No token in arguments, files, logs, mailbox data, or diagnostics.
+- No terminal input injection.
+- Fail-closed pending mail when endpoint, thread, or turn identity is not exact.
+
+The app-server remains the shared state owner for two evidenced writers, the
+TUI and watcher. No additional coordination lock is justified.
+
+### Remove
+
+- The assumption that `--remote-auth-token-env` works with `unix://PATH` on
+  macOS Codex 0.166.0.
+- Any implementation or proof claim that depends on that rejected launch.
+
+### Unresolved
+
+The deciding fact is which corrected owner-approved boundary should replace
+the failed contract:
+
+1. a private Unix socket with operating-system file permissions and no Codex
+   bearer token; or
+2. an authenticated loopback WebSocket, which the installed TUI explicitly
+   permits with `--remote-auth-token-env`.
+
+The second option reuses the already proved Windows topology and preserves the
+provider bearer-token check. The first option keeps the smaller macOS-local
+transport but changes what authenticates the client. No external policy in the
+evidence forbids either deliberate owner grant. Both govern owner-approved
+local control; the token and exact-thread checks prevent untrusted mailbox
+content from expanding that grant.
+
+**Smallest next step:** write one corrected bounded macOS Codex action that
+selects a transport and names its trust boundary, then reconcile and probe that
+exact action before writing adapter or launcher code.

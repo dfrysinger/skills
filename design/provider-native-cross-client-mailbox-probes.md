@@ -195,3 +195,39 @@ idle start, active-turn steering, launcher-child cleanup, fixture-free mailbox
 reply and acknowledgement, and token-secrecy checks. No token value appeared
 in arguments, files, logs, diagnostics, or user-visible output during this
 probe.
+
+## Codex CLI 0.166.0 on macOS
+
+**Gate: BLOCKED - AUTHENTICATED UNIX REMOTE IS NOT SUPPORTED**
+
+The upgraded arm64 macOS client retained ChatGPT authentication and completed a
+real `gpt-6.1-sol` request. Its app-server also created an explicit Unix socket
+as `srw-------`, owned by the current user, and accepted an authenticated
+WebSocket client when started with:
+
+```text
+codex app-server --listen unix://PATH --ws-auth capability-token \
+  --ws-token-sha256 HASH
+```
+
+The matching remote TUI cannot use that authenticated Unix endpoint. Codex
+0.166.0 rejects this launch before it connects:
+
+```text
+ERROR: `--remote-auth-token-env` requires a `wss://` or loopback `ws://` remote.
+```
+
+This is the first divergent checkpoint from the reviewed macOS design. The
+design requires Agent Stack to give the same raw token to the TUI and watcher
+through private child environments while the app-server receives only the
+token hash. The installed TUI accepts that token form for loopback WebSocket
+endpoints, but not for `unix://PATH`.
+
+No macOS Codex adapter or Agent Stack launch change is admitted. Loaded-thread
+identity, idle start, active steering, mailbox reply and acknowledgement, and
+launcher-child cleanup remain unproven because they depend on the rejected
+launch contract. The guarded terminal compatibility path remains in place.
+Further work needs an explicit design decision between a private Unix socket
+without Codex bearer authentication and an authenticated loopback WebSocket
+listener. No raw token appeared in command arguments, files, logs,
+diagnostics, or user-visible output during this probe.
