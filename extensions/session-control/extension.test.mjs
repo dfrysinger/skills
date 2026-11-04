@@ -92,6 +92,7 @@ async function createHarness(initialState = {}) {
     idleCounter: 0,
     sessionName: "hotel",
     userNamed: true,
+    foregroundSessionId: "test-session",
     ...initialState,
   });
   await writeFile(callsPath, "");
@@ -134,6 +135,13 @@ export async function joinSession() {
   }
   return {
     sessionId: "test-session",
+    connection: {
+      async sendRequest(method) {
+        if (method !== "session.getForeground") throw new Error("unexpected RPC");
+        if (state().foregroundLookupFails) throw new Error("foreground unavailable");
+        return {sessionId: state().foregroundSessionId};
+      },
+    },
     on(name, listener) {
       const group = listeners.get(name) ?? new Set();
       group.add(listener);
@@ -590,6 +598,57 @@ export async function joinSession() {
     stop,
   };
 }
+
+test("background workers withdraw aliases and refuse stale named requests", async () => {
+  const harness = await createHarness();
+  try {
+    assert.equal(harness.heartbeat.sessionName, "hotel");
+    await harness.setState({ foregroundSessionId: "resumed-session" });
+    await harness.request("stale-name-send", {
+      target: { ...harness.heartbeat, targetName: "hotel" },
+      kind: "send",
+      prompt: "must not reach the former conversation",
+      mode: "immediate",
+    });
+    const refused = await harness.receipt("failed", "stale-name-send");
+    assert.match(refused.error, /not the foreground session/);
+    assert.equal(refused.ambiguousSideEffect, undefined);
+    assert.equal((await harness.calls()).some((call) => call.kind === "send"), false);
+    await waitFor(async () => {
+      const current = await harness.currentHeartbeat();
+      return current.sessionName === undefined ? current : undefined;
+    }, "alias withdrawal", 400);
+    await harness.request("explicit-background-maintenance", {
+      kind: "reload-extensions",
+    });
+    assert.equal(
+      (await harness.receipt("completed", "explicit-background-maintenance")).result.reloadRequested,
+      true,
+    );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("foreground lookup failure prevents named work but preserves exact addressing", async () => {
+  const harness = await createHarness({ foregroundLookupFails: true });
+  try {
+    assert.equal(harness.heartbeat.sessionName, undefined);
+    await harness.request("unknown-name", {
+      target: { ...harness.heartbeat, tmuxSession: "hotel" },
+      kind: "send",
+      prompt: "must remain undelivered",
+      mode: "immediate",
+    });
+    assert.match(
+      (await harness.receipt("failed", "unknown-name")).error,
+      /not the foreground session/,
+    );
+    assert.equal((await harness.calls()).some((call) => call.kind === "send"), false);
+  } finally {
+    await harness.stop();
+  }
+});
 
 test("heartbeat renewal does not wait for session-name refresh", async () => {
   const harness = await createHarness();
