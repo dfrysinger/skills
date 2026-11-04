@@ -198,7 +198,7 @@ probe.
 
 ## Codex CLI 0.166.0 on macOS
 
-**Gate: BLOCKED - AUTHENTICATED UNIX REMOTE IS NOT SUPPORTED**
+**Gate: REFRAME OPEN - ACTIVE DELIVERY MECHANISM**
 
 The upgraded arm64 macOS client retained ChatGPT authentication and completed a
 real `gpt-6.1-sol` request. Its app-server also created an explicit Unix socket
@@ -231,3 +231,52 @@ Further work needs an explicit design decision between a private Unix socket
 without Codex bearer authentication and an authenticated loopback WebSocket
 listener. No raw token appeared in command arguments, files, logs,
 diagnostics, or user-visible output during this probe.
+
+The reviewed authenticated loopback replacement then passed these macOS
+mechanism checks through the real remote TUI:
+
+- app-server bound an ephemeral `127.0.0.1` port chosen with port zero;
+- the launcher derived exactly one listener owned by the exact app-server
+  child PID before starting either client;
+- missing and wrong bearer tokens were refused;
+- stopping the child released the port, and a replacement process could bind
+  that same port for the controlled child-exit/rebind case;
+- the TUI resumed one exact cwd-matching loaded thread;
+- idle `turn/start` completed a real `gpt-6.1-sol` turn;
+- two concurrent `turn/start` calls returned one turn ID while retaining both
+  distinct inputs and replies exactly once;
+- wrong `expectedTurnId` steering was refused;
+- closing the owning tmux session stopped the TUI and app-server, closed the
+  listener, and left the raw token absent from arguments and proof files.
+
+The probe also disproved one load-bearing adapter assumption. On this installed
+runtime, `thread/read(includeTurns=false)` reports only
+`{"type":"active","activeFlags":[]}` for an active thread.
+`thread/turns/list`, `thread/items/list`, and
+`thread/read(includeTurns=true)` return runtime "not supported yet" errors.
+Notifications are scoped to the client that owns the turn, so a separate
+session-bound watcher does not receive another client's active turn ID. A
+production watcher therefore cannot satisfy the reviewed exact
+`expectedTurnId` steering path.
+
+The same installed runtime supports `thread/queue/add`. During a real
+12-second active tool call, a second authenticated client added a distinct
+queued prompt with a `clientUserMessageId`. App-server returned a queued
+submission ID, automatically ran the queued prompt after the active turn, and
+persisted the queued user marker and its assistant reply exactly once. This
+also held when the thread became idle before queue acceptance: a second queued
+prompt was accepted on the idle loaded thread, started automatically, and
+persisted exactly once. Two simultaneous `thread/queue/add` calls from
+separately authenticated clients returned distinct submission IDs and
+persisted both distinct user markers and replies exactly once.
+
+The runtime also supports `thread/settings/update`. For the exact loaded
+thread, an accepted update set `approvalPolicy: "never"` and
+`sandboxPolicy: { "type": "dangerFullAccess" }` for subsequent turns. A queued
+turn then wrote a synthetic marker outside the workspace without an approval
+prompt and completed its exact reply. This closes the macOS `ALLOW_ALL`
+policy race without relying on concurrent `turn/start`.
+
+These observations admit a macOS queue-based proposal only after its work
+order and design review are updated. They do not replace the separately
+admitted Windows start/steer contract.

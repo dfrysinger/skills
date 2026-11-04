@@ -2,22 +2,24 @@
 
 ## Status
 
-**Proposal revision:** `provider-native-cross-client-mailbox-design-v7-loopback-review`
+**Proposal revision:** `provider-native-cross-client-mailbox-design-v8-queue-review`
 **Lane:** Critical
 **Evidence packet:** [`provider-native-cross-client-mailbox-evidence-v1`](provider-native-cross-client-mailbox-evidence.md)
 **Decision record:** [`provider-native-cross-client-mailbox-decisions-v3`](provider-native-cross-client-mailbox-decisions.json)
 **Independent challenge:** [`provider-native-cross-client-mailbox-constraint-challenge.md`](provider-native-cross-client-mailbox-constraint-challenge.md)
 **Dual design review:** [`provider-native-cross-client-mailbox-design-review.md`](provider-native-cross-client-mailbox-design-review.md)
-**Current focused challenge:** fresh two-pass `CONTINUE` for
-`provider-native-cross-client-mailbox-design-v7-loopback-review`
+**Current focused challenge:** pass 1 returned `REFRAME` after the installed
+macOS runtime disproved cross-client active-turn discovery; pass 2 first
+returned `NARROW`, then returned `CONTINUE` after the review delta preserved
+Windows steering and used the proved macOS queue plus thread-policy update
 **Current design review:** passed for
-`provider-native-cross-client-mailbox-design-v7-loopback-review`
-**Design status:** Approved; implementation active under development-loop.
+`provider-native-cross-client-mailbox-design-v8-queue-review`
+**Design status:** Approved; implementation may resume under development-loop.
 
 ```yaml
 design_incubation:
   status: approved
-  cycle: 1
+  cycle: 2
   objective_file: /Users/dfrysinger/.copilot/session-state/e926f7bf-0a7e-471d-95a4-e8098c75bdfb/files/mailbox-codex-design-objective.txt
   reminder:
     kind: design_progress
@@ -108,7 +110,7 @@ The boundary fails closed when any of these facts cannot be proved:
 - provider endpoint authentication;
 - provider conversation or thread identity;
 - idle or active-turn state for provider delivery;
-- exact active turn for steering;
+- exact loaded thread for active queue submission;
 - supported provider capability;
 - supported launch mode.
 
@@ -162,11 +164,37 @@ For any trigger, record:
 4. the simplest design without that constraint; and
 5. the option with fewer trusted components and maintenance surfaces.
 
-**Reframe status: `CLEAR`.** Official Claude documentation supplies an
+**Reframe status: `CLEAR`.** The authenticated loopback topology passed its
+native mechanism proof, but the reviewed exact active-steering mechanism did
+not. The five reframe answers are:
+
+1. **Blocked result:** a mailbox watcher must submit a fixed wakeup while the
+   exact Codex thread is active.
+2. **Triggering constraint:** the work order required
+   `turn/steer(expectedTurnId)`, but Codex 0.166.0 on macOS exposes active state
+   without the active turn ID, does not implement its advertised turn or item
+   pagination at runtime, and scopes turn notifications to the owning client.
+3. **Protected invariant:** the watcher must not guess a turn ID or submit to a
+   different thread.
+4. **Simplest design without that mechanism:** preserve the admitted Windows
+   `turn/start` and exact `turn/steer` path. On macOS, keep exact loaded-thread
+   and workspace checks, apply configured owner policy through
+   `thread/settings/update`, then call `thread/queue/add` with the mailbox
+   attempt ID whether the thread is idle or active.
+5. **Smaller trusted surface:** the macOS queue path removes active-turn
+   discovery, notification sharing, wrong-turn retry, and any new registry or
+   lock without changing the proved Windows path.
+
+The v8 work order now preserves the admitted Windows start/steer contract,
+uses the proved queue and thread-policy APIs on macOS, and passed two-family
+design review. The one remaining Windows mixed-policy concurrent-start concern
+predates this delta and is recorded as a non-blocking follow-up; this work does
+not change that admitted path. The rest of the prior `CLEAR` evidence still
+applies: official Claude documentation supplies an
 authenticated own-session socket path to hooks and starts a turn when an idle
 session accepts a message. Official Codex documentation supplies local remote
 TUI attachment, authenticated loopback transport, generated version-matched
-schemas, runtime thread state, `turn/start`, and `turn/steer`. Codex 0.166.0
+schemas, runtime thread state, `turn/start`, and `thread/queue/add`. Codex 0.166.0
 rejects bearer-token authentication for Unix remotes and accepts it for
 loopback WebSocket remotes, so both macOS and Windows use the authenticated
 loopback topology. The remaining macOS lifecycle details are bounded
@@ -280,11 +308,23 @@ provider token is added.
 Existing `.notified` marker content stays compatible and continues to mean
 verified delivery. Existing `.unverified` markers evolve from a legacy
 attempt-ID string to a versioned payload containing `attemptId`, `outcome`,
-provider detail, and update time. `submitted`, `held`, `refused`, and
-`ambiguous` use that marker and suppress automatic replay. `deferred` writes no
-marker because it proves no provider side effect and may retry on a later
-watcher poll. The sender reads and reports the recorded outcome without
-converting `submitted` into `verified`.
+provider detail, and update time. A native request in this marker contract is
+the wake submission itself: the Claude message write, Codex `turn/start` or
+`turn/steer`, or macOS Codex `thread/queue/add`. Prerequisite identity reads
+and macOS `thread/settings/update` are not wake submissions.
+
+Immediately before a wake submission, the claim holder atomically writes and
+durably renames `outcome: "attempting"` into that existing marker. It sends
+nothing until this write completes. It replaces the marker with `submitted`,
+`held`, `refused`, or `ambiguous` after the direct provider response. A
+definitive pre-submission or pre-acceptance `deferred` result removes the
+attempting marker. If the process dies while the marker is still `attempting`,
+the next watcher promotes it to `ambiguous` and never replays that attempt.
+This conservative transition can strand an unsent wakeup after a crash before
+the request, but the durable envelope remains pending and the
+at-most-one-submission invariant holds. The sender treats a live `attempting`
+marker as in progress and reads terminal outcomes without converting
+`submitted` into `verified`.
 
 ## Provider adapters
 
@@ -386,22 +426,39 @@ expected Agent Stack workspace.
 Zero, multiple, or mismatched loaded threads fail closed. Checking on each
 attempt also refuses delivery if the TUI leaves more than one thread loaded
 after an interactive switch. The watcher never starts or loads a thread
-itself. It then:
+itself.
 
-- calls `turn/start` with the fixed prompt when the thread is idle;
-- calls `turn/steer` only with the exact active `expectedTurnId`;
-- returns `deferred` when the endpoint is unavailable or state is not safe;
-- returns `ambiguous` when the connection fails after a request might have
-  been accepted.
+The adapter preserves two platform contracts because the installed runtimes
+expose different supported state:
+
+- **Native Windows:** keep the admitted contract. Call `turn/start` while idle
+  and call `turn/steer` only with the exact active `expectedTurnId`. Keep the
+  proved wrong-turn refusal and one exact reread/retry.
+- **macOS:** do not require an active turn ID. Call `thread/queue/add` with the
+  fixed prompt and mailbox attempt ID as `clientUserMessageId` whether the
+  loaded thread is idle or active. The installed runtime starts the item
+  immediately when idle and after the current turn when active.
+
+The initialized app-server platform selects the reviewed branch. Unsupported
+or unknown platforms return `deferred`; they never guess a method. Both
+branches return `deferred` when the endpoint or exact thread state is
+unavailable and `ambiguous` when the connection fails after a request might
+have been accepted.
 
 Codex rejects permission-override flags on a remote TUI resume. Agent Stack
 therefore passes the configured `ALLOW_ALL` intent to the watcher as
-`CODEX_ALLOW_ALL`. For an idle thread, the watcher is the authority issuing
-`turn/start`; when allow-all is enabled it includes
-`approvalPolicy: "never"` and `sandboxPolicy: { type: "dangerFullAccess" }`.
-Those settings apply to that turn and subsequent turns. An active-thread
-`turn/steer` keeps the policy already owned by that turn rather than claiming
-to change it.
+`CODEX_ALLOW_ALL`. The admitted Windows branch keeps its existing policy
+handling. On macOS, when allow-all is enabled, the watcher first calls
+`thread/settings/update` for the exact loaded thread with
+`approvalPolicy: "never"` and
+`sandboxPolicy: { type: "dangerFullAccess" }`. The provider defines these as
+overrides for subsequent turns. Only an accepted settings response permits the
+watcher to write the `attempting` marker and issue `thread/queue/add`; refusal
+or transport loss before settings acceptance leaves the envelope pending with
+no wake-attempt marker. The native probe proved this path by queueing a
+subsequent turn that wrote outside the workspace without an approval prompt.
+This is Agent Stack applying the owner's session-wide `ALLOW_ALL` choice, not
+mailbox content changing permissions.
 
 The installed app-server may merge concurrent `turn/start` requests into one
 active turn and return that same turn ID to both callers. The bounded native
@@ -411,16 +468,18 @@ authoritative turn history and reach the model exactly once. A successful
 or joined a concurrently created turn. It is not `verified`; the durable
 envelope remains pending until mailbox acknowledgement.
 
-If active-turn steering loses its `expectedTurnId` race, the explicit
-wrong-turn refusal proves that request was not accepted. The watcher may
-re-read once and steer only the exact newly active turn. Any response that
-does not prove either successful submission or explicit pre-acceptance refusal
-is `ambiguous`.
+On macOS, two concurrent `thread/queue/add` calls return distinct queue
+submission IDs and retain both distinct prompts and replies exactly once.
+Queue acceptance is independent of an idle/active state-read race because the
+same operation is used in both states. A successful response containing the
+submitted `clientUserMessageId` is `submitted`, never `verified`; the design
+does not claim provider deduplication for replay. Any transport loss after the
+request may have been accepted and is `ambiguous`.
 
-The app-server response and subsequent state notification update the existing
-notification markers. The TUI and mailbox watcher cannot operate on different
-app-server processes because the same launcher created both children with one
-in-memory endpoint and token.
+The direct app-server response updates the existing notification marker. The
+adapter does not depend on another client's state notifications. The TUI and
+mailbox watcher cannot operate on different app-server processes because the
+same launcher created both children with one in-memory endpoint and token.
 
 ## Pre-adapter mechanism gates
 
@@ -436,9 +495,14 @@ platform probe settles these facts:
   child-owned loopback listener discovered after bind, including
   pre-bound-port and bind-failure cases; missing and wrong token refusal;
   exactly one loaded cwd-matching thread; token handling without command-line
-  exposure; merged concurrent `turn/start` input retention; exact
-  `expectedTurnId` steering and wrong-turn refusal; and app-server/watcher
-  cleanup after launcher death.
+  exposure; Windows idle/active state discovery and the admitted start/steer
+  contract; macOS `thread/queue/add` without idle/active discovery, concurrent
+  queue retention, queue-attempt identity,
+  accepted `thread/settings/update` before allow-all queueing, and
+  app-server/watcher cleanup after launcher death.
+- Provider marker state: a process death before or after request submission
+  leaves one durable `attempting` marker that the next watcher promotes to
+  `ambiguous`, so the attempt is not replayed.
 
 If a probe cannot preserve exact identity, authenticated local control, or
 truthful outcomes, that provider-platform pair remains disabled and the
@@ -465,11 +529,12 @@ Alpha in Copilot sends mail to `codex:alpha`.
    exact launch's in-memory endpoint and token.
 4. The watcher authenticates to its app-server and verifies the loaded thread
    and workspace.
-5. If idle, it starts a turn containing only
-   `check mailbox; skip if empty <marker>`.
+5. On macOS, it queues only
+   `check mailbox; skip if empty <marker>`; on Windows, it uses the admitted
+   idle-start or exact-active-steer operation.
 6. Codex reads the durable envelope with the mailbox skill and acknowledges it.
-7. The watcher records the existing notification marker, and the sender sees a
-   verified wakeup result. The envelope moves to delivered only when Codex
+7. The watcher records `submitted`, and the sender sees that the provider
+   accepted the wakeup. The envelope moves to delivered only when Codex
    acknowledges it, not when step 5 succeeds.
 
 If Codex is too old or was not launched through Agent Stack, step 3 or 4
@@ -492,18 +557,23 @@ or Agent Stack relaunch guidance. The process is not touched.
 - **Provider hold/refusal:** when the provider exposes that outcome, the
   envelope remains pending and the marker names it. A provider with no
   authoritative reply reports only `submitted`.
-- **Repeated submission:** terminal attempt outcomes suppress automatic replay;
-  only `deferred` retries automatically. A later new envelope triggers a new
-  wakeup attempt and lets the provider process all still-pending mail.
+- **Repeated submission:** the watcher writes `attempting` before native
+  submission. Terminal outcomes suppress automatic replay; only a definitive
+  `deferred` removes that marker and retries automatically. Process death
+  leaves `attempting`, which the next watcher promotes to `ambiguous`. A later
+  new envelope triggers a new wakeup attempt and lets the provider process all
+  still-pending mail.
 - **Lost wakeup:** Claude/Codex watcher polling retries a deferred envelope.
   Copilot may also use its existing explicit poke path. Acknowledgement remains
   separate.
 - **Ambiguous send:** the attempt is marked ambiguous and the same attempt
   identity is never replayed automatically.
-- **Codex active-turn race:** a successful concurrent start is `submitted`
-  because the installed server retains each distinct input exactly once in the
-  shared turn. Steering still requires the exact current turn identity; a
-  changed turn rejects the request before acceptance.
+- **Codex state race:** Windows keeps its proved exact start/steer behavior.
+  macOS uses the same queue operation whether idle or active, so an
+  idle-to-active or active-to-idle transition does not select a different
+  request. Concurrent queue calls return distinct submissions and retain both
+  inputs exactly once. An allow-all policy update must be accepted before its
+  queue request.
 - **Launcher death:** `codex-native-contract` must prove that its app-server
   and watcher children exit or are terminated by the launcher's cleanup path.
   Provider durable conversation state remains provider-owned; a normal Agent
@@ -588,13 +658,16 @@ self-identity exact for check, acknowledge, send, and reply.
 existing immutable transport without mixing provider identity with machine
 identity.
 
-`AC-3` A live idle Copilot and Codex Agent Stack session each returns a verified
-native wakeup for one fixed prompt. Claude returns verified only if its socket
-provides an authoritative reply; otherwise it returns submitted and live proof
-shows the turn started.
+`AC-3` A live idle Copilot Agent Stack session returns a verified native wakeup
+for one fixed prompt. Codex returns submitted after an accepted start or queue
+operation. Claude returns verified only if its socket provides an authoritative
+reply; otherwise it returns submitted and live proof shows the turn started.
 
 `AC-4` Active Claude delivery occurs only through its documented between-tool
-queue, and active Codex delivery steers only the exact active turn.
+queue. Windows Codex uses its admitted exact-turn steering contract. macOS
+Codex uses the exact loaded thread's provider-owned queue with the mailbox
+attempt ID whether idle or active; configured `ALLOW_ALL` first updates that
+thread's subsequent-turn policy through the provider API.
 
 `AC-5` Held and refused outcomes are reported when the provider exposes them.
 Unavailable, stale, unsupported, submitted-only, and ambiguous targets remain
@@ -608,8 +681,9 @@ proof; macOS tmux removal requires separate native macOS proof.
 durable state, diagnostics, markers, process command lines, and captured test
 output.
 
-`AC-8` Hook re-fire, process death, stale watcher locks, and duplicate launch do
-not redirect mail to another generation or conversation.
+`AC-8` Hook re-fire, process death, stale watcher locks, duplicate launch, and
+death around provider submission do not redirect or replay mail into another
+generation or conversation.
 
 `AC-9` An unsupported version or unmanaged launch returns actionable upgrade or
 Agent Stack relaunch guidance without changing the installed binary or process.
@@ -630,9 +704,9 @@ returns Claude/Codex to manual mailbox pickup.
 | `address-schema` | AC-1, AC-2 | Table-test valid and invalid bare, provider, and machine forms; round-trip canonical envelope fields; set each provider self address and run check, acknowledge, send, and reply resolution. | Exact canonical structures; Claude/Codex never touch bare Copilot paths; invalid non-Copilot self identity refuses. | Provider or machine identity can collide, route incorrectly, or consume another provider's mail. |
 | `provider-remote-transport` | AC-2 | Publish `claude:alpha@surface-pro` and `codex:alpha@surface-pro` through a temporary immutable remote root while bare Copilot `alpha` exists; import each twice and acknowledge locally. | Each imports exactly once into its provider-qualified local mailbox; bare Copilot is untouched; remote bytes are unchanged; no mutable marker enters remote storage. | Provider identity is lost or the existing immutable transport contract regresses. |
 | `legacy-copilot-compat` | AC-1, AC-11 | Read and send against an existing bare Copilot fixture without `MAILBOX_SELF_ADDRESS`. | Same mailbox files and session-control target as before. | Migration breaks current callers. |
-| `wakeup-state-machine` | AC-3, AC-4, AC-5 | Fake each adapter outcome and generation race around a pending envelope, then run another watch tick. | Existing notified marker remains compatible; unverified payload distinguishes submitted/held/refused/ambiguous and suppresses replay; deferred writes no marker and may retry; envelope stays pending. | Persistence and live delivery claims are coupled incorrectly or prompts can repeat. |
+| `wakeup-state-machine` | AC-3, AC-4, AC-5, AC-8 | Fake each adapter outcome and generation race around a pending envelope; for macOS allow-all, settle settings before the attempt transition; kill the actor before atomic marker rename, after rename but before request, after provider acceptance, and after terminal marker replacement; then run another watch tick. | Existing notified marker remains compatible; prerequisite settings create no wake marker; an atomically durable `attempting` marker precedes every wake submission; terminal unverified payload distinguishes submitted/held/refused/ambiguous and suppresses replay; definitive deferred removes the marker and may retry; interrupted attempting becomes ambiguous; envelope stays pending. | Persistence and live delivery claims are coupled incorrectly, a crash can replay a prompt, an unsent attempt can be misreported as submitted, or policy setup can be confused with wake submission. |
 | `claude-native-contract` | AC-3 through AC-8 | Launch a temporary supported Claude session with the Agent Stack hook; probe socket reply semantics, idle and active sends, inbound hold/refuse, hook re-fire, socket change, parent death, and waiter acquisition after auth rejection, missing endpoint, and refused connection while preserving the watcher on transient busy. | Exact submitted/verified/held/refused/ambiguous outcome marker plus transcript marker; one acting watcher; no secret in captured files or process args. | Claude delivery or watcher lifecycle is not authenticated, immediate, truthful, single-owner, or secret-safe. |
-| `codex-native-contract` | AC-3 through AC-8 | Launch app-server with a loopback port-zero bind; prove the reported or OS-observed listener belongs to the exact child before giving the endpoint or token to clients; exercise pre-bound-port, bind-failure, missing/wrong-token, and child-exit cases, including killing the child after ownership verification and immediately rebinding its port before each client connect; then attach the TUI and watcher and probe `resume --last --remote`, idle start, two-client concurrent start with distinct markers, exact-turn steer, wrong-turn race, parent death, endpoint closure, and app-server exit. | Exactly one child-owned loopback listener exists at the ownership checkpoint; uncertain ownership starts no client and sends no token; child exit triggers client teardown before either client can continue against a replacement listener in the controlled race; the endpoint rejects missing or wrong bearer tokens; both concurrent inputs occur exactly once in one authoritative turn; successful start is reported only as submitted; exact/wrong-turn behavior is truthful; no orphaned watcher, server, or listener. | A foreign listener can receive the token or conversation, local control is unauthenticated, control can reach the wrong thread, racing input can be lost or duplicated, or the adapter can claim an unproved side effect. |
+| `codex-native-contract` | AC-3 through AC-8 | On each enabled platform, launch app-server with a loopback port-zero bind; prove the reported or OS-observed listener belongs to the exact child before giving the endpoint or token to clients; exercise pre-bound-port, bind-failure, missing/wrong-token, and child-exit cases, including killing the child after ownership verification and immediately rebinding its port before each client connect. Attach the TUI and watcher and prove exact resume and loaded-thread identity. On Windows, preserve the admitted idle start, exact active steer, wrong-turn refusal, and concurrent-start contract. On macOS, queue while idle and active, issue two concurrent queue calls with distinct attempt IDs, and apply `thread/settings/update` before an allow-all queue whose turn writes outside the workspace without prompting. Finish with parent death, endpoint closure, and app-server exit. | Exactly one child-owned loopback listener exists at the ownership checkpoint; uncertain ownership starts no client and sends no token; child exit tears down both clients before either can continue against a replacement listener; the endpoint rejects missing or wrong bearer tokens; Windows retains its admitted exact-turn behavior; macOS queue submissions return distinct IDs and each input occurs exactly once whether idle, active, or concurrent; accepted thread settings govern the subsequent allow-all queue turn; accepted operations are reported only as submitted; no orphaned watcher, server, or listener. | A foreign listener can receive the token or conversation, local control is unauthenticated, control can reach the wrong thread, a platform's admitted behavior regresses, racing input can be lost or duplicated, the configured owner grant can be silently dropped, or the adapter can claim an unproved side effect. |
 | `cross-provider-live-windows` | AC-3, AC-6, AC-11 | Send Copilot to Claude and Codex, then reply to provider-qualified Copilot in isolated Windows workspaces. | All envelopes read and acknowledged by exact targets without terminal input. | The composed Windows journey fails despite adapter tests. |
 | `cross-provider-live-macos` | AC-3, AC-6, AC-11 | Repeat the provider journey on macOS before removing that provider's tmux fallback. | Exact native targets acknowledge and no tmux input occurs. | Native macOS control is not ready to replace the old path. |
 | `secret-hygiene` | AC-7 | Scan deterministic fixtures, logs, markers, durable state, command lines, and test captures using unique canary secrets. | Canary absent everywhere outside child process environments and provider memory. | A provider credential escaped its allowed boundary. |
@@ -656,6 +730,14 @@ that provider-platform pair.
   risk to one authenticated per-session endpoint on each platform and keeps
   manual pickup as rollback. A supported authenticated local socket would
   remove the largest provider risk.
+- Codex 0.166.0 advertises turn and item history methods that return "not
+  supported yet" on macOS, and it does not share another client's turn
+  notifications. macOS delivery therefore uses the provider-owned queue rather
+  than same-turn steering. Windows keeps its already-proved steering contract.
+  This platform split is less elegant than one operation everywhere, but it
+  avoids changing shipped Windows behavior without Windows queue evidence.
+  The macOS wakeup runs immediately after an active turn instead of joining
+  that turn.
 - Plain `ws://` authenticates clients to app-server but does not authenticate
   app-server to clients. Port-zero binding and exact child ownership block a
   listener that is already foreign at launch. A residual cross-user race
