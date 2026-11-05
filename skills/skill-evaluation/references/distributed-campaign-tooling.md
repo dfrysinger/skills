@@ -1,7 +1,7 @@
 # Distributed campaign tooling
 
-The skill includes reusable tooling for evaluations that need native runners,
-full repositories, container graders, or many parallel attempts:
+The skill includes reusable tooling for Actions-based evaluations, from one
+attempt to many parallel cases, including native builds and container graders:
 
 - `scripts/package_distributed_campaign.py` creates deterministic full and
   candidate-safe archives plus a completion manifest.

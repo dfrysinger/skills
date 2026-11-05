@@ -1,6 +1,6 @@
 ---
 name: skill-evaluation
-description: Build and run frozen behavioral evaluation corpora for any agent skill. Use when regression-testing a skill against historical or synthetic cases, adding transcript-derived cases, checking that general prompt language handles new evidence, comparing a revised skill against unchanged or no-skill controls, or qualifying a released skill for generalization.
+description: Evaluate agent skills with frozen cases. Use when building corpora or adding historical or synthetic cases, repairing user steering events, optimizing skill descriptions, comparing models, collections or revised skills against unchanged or no-skill controls, minimizing a skill, running regressions, or qualifying release and generalization claims.
 ---
 
 # skill-evaluation
@@ -8,6 +8,49 @@ description: Build and run frozen behavioral evaluation corpora for any agent sk
 Use a **frozen case** to separate evidence from the answer the skill is expected
 to reach. The target skill may be any installed or development skill; this
 procedure does not encode its output shape or domain.
+
+## Choose the evaluation path
+
+Before creating a case or dispatching a run, read the
+[evaluation playbook](references/evaluation-playbook.md). It routes steering
+repairs, skill-selection tests, model or skill-collection comparisons, and skill
+minimization to the existing methods. Read its shared measurement, case-role
+and staged-search rules, then follow the selected workflow rather than running
+every branch.
+
+Match the measurement to the user's outcome. A response-only continuation can
+test a proposed decision; an executed-work claim needs actions and observable
+results in an environment that supports them.
+
+Complete when the existing plan names the scenario, runtime, observable result
+and comparison before paid execution.
+
+## Execution default: GitHub Actions VMs
+
+Run behavioral evaluations and experiments through the existing evaluator on
+**GitHub Actions VMs**, including a single case or a small old/new comparison.
+Actions supplies the machines; the evaluator controls the task, skill version,
+model, tools, checks, judgments, and retained results.
+
+Prepare cases, freeze inputs, inspect results, and debug deterministic checks
+locally. Launch candidate and judge model runs through the Actions workflow.
+Use local model runs or native Copilot cloud-agent tasks (CCA) only when the
+user explicitly chooses that execution method. A request to use cloud VMs
+means Actions, not CCA.
+
+Reuse the corpus's private evaluation repository, workflow, and task runtime.
+Follow the [Actions execution procedure](references/large-actions-campaign.md)
+for dispatch and the
+[tooling guide](references/distributed-campaign-tooling.md) for package inputs.
+If the workflow cannot start or finish because a required input, dependency,
+credential, or runner is unavailable, name that setup problem and fix it within
+scope or report what is needed. A task failing its checks is an evaluation
+result, not a setup problem. Keep the Actions execution method unless the user
+chooses another; do not silently create a second runner.
+
+Complete when the execution record identifies the Actions workflow, source
+revision, and exact run and attempt IDs, or the user's explicit alternative
+and its matched settings.
 
 For a multi-task corpus, the goal is to refine and ship one shared skill or
 coherent set of skills that solves every evaluation task. Carry each proven
@@ -49,7 +92,7 @@ as an experiment.
 | --- | --- |
 | Question | The uncertainty this evaluation will resolve and whether it is setup diagnosis, exploratory search, or final confirmation. |
 | Candidate and comparison | Exact skill and case identities, the unchanged control when comparing changes, and the model, tools, environment, limits, and judging contract held fixed. |
-| Cases | Development cases used to choose changes, maintained regression cases, and reserved cases used to check transfer. |
+| Cases | Development cases used to write changes, selection cases used to choose candidates, maintained regression cases, and unused confirmation cases. |
 | Attempts | Planned repetitions or bounded retries, first-outcome retention, and handling of incomplete execution. |
 | Decision rule | What results mean keep, reject, or inconclusive, including the qualification threshold when applicable. |
 | Stop rule | The batch boundary, any applicable time or cost ceiling, and the observation that ends or changes the search. Unknown cost remains unknown. |
@@ -431,14 +474,9 @@ maps declared arms to treatments and exact snapshots and binds the maintained
 task set. Missing arms remain absent. Without this declaration, the project
 page does not show a whole-skill ablation section.
 
-Bind an evaluator run to the snapshot whose bytes it is meant to exercise:
-
-```sh
-python3 "$SKILL_DIR/scripts/skill_eval.py" run-suite CORPUS \
-  --plugin-dir /path/to/plugin \
-  --dashboard-snapshot SNAPSHOT_ID \
-  --run-goal "Check whether the current revision passes every declared task"
-```
+Bind an evaluator run to the snapshot whose bytes it is meant to exercise.
+For `run` and `run-suite`, pass `--dashboard-snapshot SNAPSHOT_ID` through the
+task runtime; see the [direct evaluator commands](references/direct-evaluator-commands.md).
 
 The evaluator pins the plugin first and refuses the run before model execution
 if the pinned target-skill identities do not match the snapshot. Campaign-level
@@ -596,29 +634,19 @@ the case directory.
 
 ## 5. Run the target skill unchanged
 
-Run against an installed or development plugin:
+Use the execution method selected above. For the Actions default, dispatch the
+frozen cases and exact installed or development skill snapshot through the
+[Actions execution procedure](references/large-actions-campaign.md).
+For an explicit alternative, record the user's choice and the actual model,
+tools, limits, and retained results; do not claim matched settings that the
+chosen method cannot establish. Use the
+[direct evaluator commands](references/direct-evaluator-commands.md) for a
+user-selected local run.
 
-```sh
-python3 "$SKILL_DIR/scripts/skill_eval.py" run CORPUS \
-  --case CASE_ID \
-  --plugin-dir /path/to/plugin
-```
-
-After changing a skill with a maintained regression corpus, run every frozen
-case together:
-
-```sh
-python3 "$SKILL_DIR/scripts/skill_eval.py" run-suite CORPUS \
-  --plugin-dir /path/to/plugin
-```
-
-Use `--case CASE_ID` repeatedly for a deliberate subset and `--workers N` to
-bound concurrent cases. Treat a subset as focused iteration, never as the
-release regression gate. For stochastic model or judge variance, use
-`--max-attempts N` to retry only cases that did not reach unanimous `PASS`;
-every attempt remains preserved and the report identifies cases that passed
-after retry. The suite command writes one aggregate report while preserving
-each case's independent run, receipts, and judgments.
+Use the predeclared attempt set and concurrency, not the workflow template's
+maximum. Use staged subsets for focused iteration. For release regression
+after a skill change, include every case in its declared maintained corpus;
+a deliberate subset does not satisfy that gate.
 
 For a corpus-wide improvement, begin with the published skill or skill set,
 inventory existing experimental passes, and consolidate eligible general
@@ -633,8 +661,15 @@ to that question rather than an arm-count target. Freeze its controls,
 treatments, repetitions and selection rule before execution. Several plausible
 ideas do not by themselves require a field before a focused comparison.
 
-Before a coding comparison, establish that the existing execution route can
-perform the required edits and tests under its normal permission controls.
+Before dispatch, match the task to the runtime's available tools. The prose
+case path exposes only `skill` and `view`: it can assess supplied evidence but
+cannot edit files or run commands. It is suitable for read-only tasks, not
+proof of coding or executed repairs. For those tasks, use an editable
+repository runtime with executable checks. Moving a read-only path onto a VM
+does not add tools.
+
+Establish that the selected task runtime can perform the required actions
+under its normal permission controls.
 Reuse that proof while the relevant runner and approval settings are unchanged.
 Authentication and CLI exit zero do not prove this. A noninteractive process
 without a supported approval channel cannot assume requested operations will
@@ -644,99 +679,33 @@ for forbidden or unnecessary operations remain behavioral evidence. Preserve
 original outcomes. Do not broaden permissions or repeat an unchanged denied
 invocation; identify the supported route before another paid attempt.
 
-Use the existing supported runner for ordinary corpora. When actual capacity
-or a required platform makes local execution unsuitable, follow
-[`references/large-actions-campaign.md`](references/large-actions-campaign.md).
-Repository size, several treatments or a native build alone does not require
-a distributed campaign.
 Choose execution, experiment recording, and candidate proposal tools separately.
 Adopt or extend one only when a bounded comparison with the current method shows
 a concrete benefit in results, feedback time, total cost, or coordination work.
 Keep qualification unchanged, record differences in model, tools and environment,
 and include integration overhead. A faster launch alone does not prove faster
 evaluation; use an approved data destination before sending private evidence.
-Use the reusable scripts and workflow template described in
-[`references/distributed-campaign-tooling.md`](references/distributed-campaign-tooling.md)
-rather than copying a historical campaign repository.
-Use the bounded [run observer](references/run-observation.md) for batched
-read-only metadata collection when it reduces the measured individual-read
-cost. Preserve exact run and attempt bindings; an absent, incomplete or
-mismatched observation is not a completed attempt.
-The distributed campaign procedure seals one immutable release with separately addressed
-candidate and hidden payloads, fans unfinished attempts out through private
-GitHub Actions, preserves first model outcomes, resumes only invalid downstream
-stages, checksum-verifies retained artifacts, and reconciles one exact
-effective-result map. When changing the evaluator itself, prove each changed
-stage first with the cheapest representative canary, counting package
-construction, upload and download volume, runner time, native builds, model
-calls, and judge calls as test cost. Reuse retained upstream evidence instead
-of launching a fresh model attempt when only a downstream stage changed.
 
-The runner:
+Require the evaluator to:
 
-1. verifies the frozen case;
-2. snapshots the plugin and runs the exact pinned target-skill files it digests;
-3. gives each candidate phase only its allowlisted evidence;
-4. resumes the same candidate session across ordered phases;
-5. keeps judge evidence in separate sessions;
-6. records prompts, raw logs, outputs, model settings, harness and CLI identity,
+1. verify the frozen case;
+2. snapshot the plugin and run the exact pinned target-skill files it digests;
+3. give each candidate phase only its allowlisted evidence;
+4. resume the same candidate session across ordered phases;
+5. keep judge evidence in separate sessions;
+6. record prompts, raw logs, outputs, model settings, harness and CLI identity,
    command configuration, tool-boundary audit, and receipts; and
-7. produces `REPORT.md`.
+7. produce the retained result and report.
 
 Required skill loading needs a matching successful tool completion. A denied
 call or a start without completion does not prove loading, even if the CLI
 exits successfully. When target-skill invocation is forbidden, an attempt is
 enough to reject the run, whether or not that call succeeds.
 
-Use `--home-mode isolated` when `COPILOT_GITHUB_TOKEN` is available. The default
-`existing` mode uses the current authenticated Copilot home while still
-disabling custom instructions and built-in MCP servers; its receipt states that
-the authentication home was shared.
-
-Repository tasks require successful `validate-case` admission and caller-supplied
-`COPILOT_GITHUB_TOKEN`. They always use an isolated Docker candidate and
-isolated judge homes. `--arm baseline` exposes no target plugin; `--arm skill`
-invokes the unchanged skill. Their executable score, behavioral verdict, and
-first-attempt suite success are reported separately. Candidate timeouts are
-scored failures; retries do not improve pass@1.
-
-Frozen workflow comparisons may add a strict direct treatment descriptor:
-
-```sh
-python3 "$SKILL_DIR/scripts/skill_eval.py" run CORPUS \
-  --case CASE_ID --plugin-dir /path/to/complete/plugin \
-  --arm skill --treatment-file /path/to/treatment.json
-```
-
-The descriptor records immutable source, adapter, intervention, compatibility,
-and entry-skill identity. Its `entry_skill` overrides the case's historical
-`target_skill` for candidate invocation without changing the case or plugin
-snapshot. Unsupported fields, runner kinds, compatibility predicates, and
-incompatible case/treatment pairs fail before model execution.
-
-Before a reportable repository run, execute the same command once with
-`--treatment-admission`. Admission attempts are retained under
-`treatment-admission-runs/`, excluded from comparison history, and bind the
-case, treatment and adapter snapshots, complete plugin snapshot, plugin entry
-skill, harness, model, and effort. A later reportable run refuses to start
-without the matching successful admission receipt.
-
-The only external candidate runner is the reviewed Sandcastle sequential
-reviewer adapter:
-
-```sh
-python3 "$SKILL_DIR/scripts/skill_eval.py" run CORPUS \
-  --case TYPESCRIPT_CASE --plugin-dir /path/to/plugin \
-  --arm skill --model gpt-5.6-sol-fast \
-  --sandcastle-treatment-file /path/to/frozen/treatment.json \
-  --sandcastle-adapter-dir /path/to/frozen/adapter
-```
-
-Its ID, package revision, version, command, model, adapter digest, and
-implementer/reviewer subroles are fixed in the evaluator. The evaluator
-preallocates both possible session UUIDs. Missing, malformed, duplicate,
-wrong-model, or undeclared session evidence remains incomplete and cannot
-produce exact candidate credits.
+For package-runtime invocation or a user-selected local run, use the
+[direct evaluator commands](references/direct-evaluator-commands.md).
+That reference owns CLI options, repository-task admission, and supported
+treatment adapters; it does not select a different execution method.
 
 Every attempt records owned usage observations and elapsed timing, including
 failed invocations, judgments and cleanup. Clock implementation and sleep
@@ -745,12 +714,10 @@ Missing credits or full-wall coverage remain unknown.
 For repository tasks, `--quality-review` adds paid, independent source-only
 shipping assessments without changing correctness or retry policy.
 
-Read local results with:
-
-```sh
-python3 "$SKILL_DIR/scripts/skill_eval.py" history CORPUS --format markdown
-python3 "$SKILL_DIR/scripts/skill_eval.py" history CORPUS --format json
-```
+Inspect the retained results for the selected method. For Actions, follow the
+execution procedure's artifact retrieval and use the
+[run observer](references/run-observation.md) for bounded metadata collection
+over exact known run bindings, not as evidence of a task pass.
 
 See [`references/measurement.md`](references/measurement.md) for accounting
 coverage, resumed-session totals, quality evidence and matched history
@@ -759,8 +726,8 @@ different task revisions as the same experiment.
 
 Complete when the report identifies the exact skill revision, case revision,
 candidate outputs, treatment and compatibility identity, and independent
-judgments. After a skill change, completion
-also requires the maintained full suite to pass when one exists.
+judgments. Release qualification after a skill change also requires the
+maintained full suite to meet its predeclared rule when one exists.
 
 ## 6. Interpret and improve
 
@@ -911,15 +878,13 @@ dose-matching, planned replication, mechanism scoring, finalist selection, and
 held-out transfer.
 
 For corpus consolidation, preserve the declared prior-win set on the combined
-draft before minimizing it, following the cumulative hill climb. When observed
-instruction dilution or contradiction warrants rebuilding the whole skill,
-compare a neutral baseline, a lean replacement, and the unchanged full skill instead of
-assuming incremental editing is safest. Follow
-[`references/ablation-campaign.md`](references/ablation-campaign.md): start the
-lean arm from the smallest load-bearing rules, run one discriminating case,
-then add back a rule only when a repeated corpus regression proves it is
-missing. Compare a focused add-back with the unchanged lean arm, or use parallel
-treatment search when the question requires selecting among alternatives.
+draft before minimizing it, following the cumulative hill climb. For a separate
+whole-skill minimization, follow the
+[ablation campaign](references/ablation-campaign.md). Keep the unchanged full
+skill as the comparison; start the lean arm without target procedure and add
+one compact general rule only when observed failures and matched comparisons
+support it. The campaign owns add-back, interaction and final preservation
+checks; normal permission controls remain unchanged.
 Existing prose earns retention through behavior, not age.
 
 Complete when the result is labeled `PASS`, `FAIL`, or `UNANSWERABLE`, with the
@@ -963,9 +928,9 @@ The evaluation is complete only when:
 - at least two independent judges assess behavioral correctness for a material
   skill change;
 - a new case does not change any older case root digest; and
-- a maintained regression suite runs through one command and every included
-  case meets its predeclared qualification rule after a target-skill change,
-  with complete original attempt outcomes retained; and
+- for release qualification after a target-skill change, a maintained
+  regression suite runs through one command and every included case meets its
+  predeclared rule, with complete original attempt outcomes retained; and
 - every no-skill advantage, broad transfer, or packaged-generalization claim
   about a published revision completes the applicable
   [`generalization gate`](references/release-qualification-and-generalization.md)

@@ -95,6 +95,42 @@ class CatalogTests(unittest.TestCase):
         self.assertNotIn(str(self.root), shared)
         self.assertNotIn("hidden correction", shared)
 
+    def test_restored_repository_case_materializes_with_history_intact(self):
+        import test_repository_task as repository_fixtures
+
+        self.image = "sha256:" + "1" * 64
+        case = repository_fixtures.RepositoryTaskTests.make_case(self, "restored-case")
+        definition = native.read_json(case / "case.json")
+        restoration = {
+            "history_file": "history.jsonl",
+            "source_session_id": "original-session",
+            "cutoff_event_id": "trigger-event",
+            "skill_context": "before-target-load",
+            "limitations": ["Synthetic catalog integration fixture."],
+        }
+        definition["phases"][0]["session_restore"] = restoration
+        definition["repository_task"]["candidate_permissions"] = {
+            "write_paths": ["code.py"], "shell_commands": [],
+        }
+        native.write_json(case / "case.json", definition)
+        history = '{"type":"session","version":1,"externalId":"original-session"}\n'
+        (case / "evidence/candidate/history.jsonl").write_text(history)
+        frozen = native.freeze_case(self.root, "restored-case", False)
+        self.call("import", "--corpus", self.root, "--namespace", "sample",
+                  "--case", "restored-case", "--family", "restored-incident",
+                  "--title", "Restored task", "--summary", "Continue a recorded task",
+                  "--behavior", "continuation")
+        plan = self.call("plan", "--member", f"sample:restored-case@{frozen.name}",
+                         "--lineage", "example-skill", "--role", "regression")
+        self.call("bind", "--namespace", "sample", "--corpus", self.root)
+        output = self.base / "restored-replay"
+        self.call("materialize", "--suite", plan["suite"], "--output", output)
+        copied = native.frozen_case_path(output / "sample", "restored-case")
+        self.assertEqual(native.read_json(copied / "case.json")["phases"][0]["session_restore"],
+                         restoration)
+        self.assertEqual((copied / "candidate/history.jsonl").read_text(), history)
+        self.assertGreater(native.verify_case(output / "sample", "restored-case"), 0)
+
     def test_unknown_holdout_and_later_exposure_rechecks_old_plan(self):
         self.register()
         self.plan("holdout", failure="unknown or contaminated")

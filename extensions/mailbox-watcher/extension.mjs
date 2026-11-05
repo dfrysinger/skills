@@ -5,8 +5,8 @@ import { joinSession } from "@github/copilot-sdk/extension";
 
 import { createDiagnosticLogger, errorDetails } from "../session-control/diagnostics.mjs";
 import {
-  currentSessionName,
-  currentTmuxSession,
+  configuredCopilotName,
+  preferredAgentName,
 } from "../session-control/session-identity.mjs";
 import { createConfiguredMailbox } from "../../skills/mailbox/scripts/mailbox-core.mjs";
 
@@ -53,6 +53,8 @@ const activeWatchers = new Map();
 let refreshing = false;
 let shuttingDown = false;
 let identityInterval;
+const managedName =
+  configuredCopilotName();
 
 async function stopActiveWatchers() {
   const watchers = [...activeWatchers.values()];
@@ -94,34 +96,23 @@ async function refreshIdentity() {
   if (refreshing || shuttingDown) return;
   refreshing = true;
   try {
-    let tmuxSession;
+    let nextName;
     try {
-      tmuxSession = await currentTmuxSession();
+      nextName = await preferredAgentName(session, managedName);
     } catch (error) {
       diagnostics.log("watcher.identity_failed", {
         sessionId: session.sessionId,
-        identitySource: "tmux",
+        identitySource: "foreground-agent-name",
         error: errorDetails(error),
       });
     }
-    let sessionName;
-    try {
-      sessionName = await currentSessionName(session);
-    } catch (error) {
-      diagnostics.log("watcher.identity_failed", {
-        sessionId: session.sessionId,
-        identitySource: "session-name",
-        error: errorDetails(error),
-      });
-    }
-    const nextName = tmuxSession ?? sessionName;
     if (nextName !== activeName) {
       await stopActiveWatchers();
       diagnostics.log("watcher.identity_changed", {
         sessionId: session.sessionId,
         previousName: activeName,
         agentName: nextName,
-        identitySource: tmuxSession ? "tmux" : sessionName ? "session-name" : undefined,
+        identitySource: nextName ? "foreground-agent-name" : undefined,
       });
       activeName = nextName;
     }

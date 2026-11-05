@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 
 import {
+  canonicalizeMailboxAddress,
   createConfiguredMailbox,
   parseMailboxAddress,
+  POKE_FALLBACK_DEFERRED,
+  POKE_HELD,
+  POKE_IN_PROGRESS,
   POKE_NO_ACTIVE_COPILOT,
+  POKE_REFUSED,
   POKE_REMOTE_PENDING,
+  POKE_SUBMITTED,
   POKE_UNVERIFIED,
-  resolveOwnName,
+  resolveOwnAddress,
   writeMailboxConfiguration,
 } from "./mailbox-core.mjs";
 
@@ -46,7 +52,7 @@ function parseOptions(args, booleanFlags = new Set()) {
 }
 
 async function requiredOwnName(explicitName) {
-  const name = await resolveOwnName(explicitName);
+  const name = await resolveOwnAddress(explicitName);
   if (!name) {
     throw new Error(
       "agent name is required; pass --name, set COPILOT_AGENT_NAME, or run inside tmux",
@@ -55,9 +61,15 @@ async function requiredOwnName(explicitName) {
   return name;
 }
 
+function displayAddress(value) {
+  const address =
+    typeof value === "string" ? value : (value.address ?? value.name);
+  return canonicalizeMailboxAddress(address).address;
+}
+
 function printEnvelope(envelope, attachmentDirectory) {
-  console.log(`FROM: ${envelope.from.name}`);
-  console.log(`TO:   ${envelope.to.name}`);
+  console.log(`FROM: ${displayAddress(envelope.from)}`);
+  console.log(`TO:   ${displayAddress(envelope.to)}`);
   console.log(`SENT: ${envelope.sent_at}`);
   console.log(`ID:   ${envelope.id}`);
   console.log(`SUMMARY: ${envelope.summary}`);
@@ -98,10 +110,12 @@ try {
         new Set(["no-wakeup", "wait"]),
       );
       if (positional.length !== 1) usage("send requires one recipient");
-      const sender = (await resolveOwnName(options.from)) ?? "unknown";
+      const resolvedSender = options.from
+        ? await resolveOwnAddress(options.from)
+        : (await resolveOwnAddress()) ?? "unknown";
       const result = await mailbox.send({
         recipient: positional[0],
-        sender,
+        sender: resolvedSender,
         summary: options.summary,
         message: options.message,
         files: options.file ?? [],
@@ -138,15 +152,17 @@ try {
       const name = await requiredOwnName(options.name);
       const envelopes = await mailbox.checkLocal(name);
       if (envelopes.length === 0) {
-        console.log(`no pending mail for ${mailbox.localAddresses(name).join(" or ")}`);
+        console.log(
+          `no pending mail for ${mailbox.localAddresses(name).map(displayAddress).join(" or ")}`,
+        );
         break;
       }
       console.log(
-        `${mailbox.localAddresses(name).join(" + ")} have ${envelopes.length} pending envelope(s):`,
+        `${mailbox.localAddresses(name).map(displayAddress).join(" + ")} have ${envelopes.length} pending envelope(s):`,
       );
       for (const { envelope, path, mailboxAddress } of envelopes) {
         console.log(
-          `  [${envelope.id}]  mailbox=${mailboxAddress}  from=${envelope.from.name}  sent=${envelope.sent_at}`,
+          `  [${envelope.id}]  mailbox=${displayAddress(mailboxAddress)}  from=${displayAddress(envelope.from)}  sent=${envelope.sent_at}`,
         );
         console.log(`     summary: ${envelope.summary}`);
         if (envelope.attachments.length > 0) {
@@ -203,18 +219,26 @@ try {
     case "poke": {
       const { positional, options } = parseOptions(args, new Set(["wait"]));
       if (positional.length !== 1) usage("poke requires one agent name");
-      const address = parseMailboxAddress(positional[0]);
+      const address = canonicalizeMailboxAddress(positional[0]);
       if (address.machine && address.machine !== mailbox.machineName) {
         console.log(`poke: deferred to mailbox watcher on ${address.machine}`);
         process.exitCode = POKE_REMOTE_PENDING;
         break;
       }
       const result = await mailbox.poke(positional[0], {
-        targetName: address.name,
+        targetName:
+          options["tmux-session"] ??
+          (address.provider === "copilot"
+            ? address.name
+            : `${address.provider}-${address.name}`),
         wait: Boolean(options.wait),
       });
       if (result.status === "delivered") {
-        console.log(`poked: ${positional[0]} (SDK wakeup accepted)`);
+        console.log(
+          result.delivery === "terminal-fallback"
+            ? `poked: ${positional[0]} (submission observed)`
+            : `poked: ${positional[0]} (SDK wakeup accepted)`,
+        );
       } else if (result.status === "no-active-copilot") {
         console.error(
           `UNAVAILABLE: no active Copilot session named '${positional[0]}'; the mail remains queued.`,
@@ -225,6 +249,36 @@ try {
           `UNVERIFIED: '${positional[0]}' did not acknowledge the SDK wakeup; the mail remains queued.`,
         );
         process.exitCode = POKE_UNVERIFIED;
+      } else if (result.status === "deferred") {
+        console.error(
+          `UNAVAILABLE: native wakeup for '${positional[0]}' is not active; the mail remains queued.`,
+        );
+        process.exitCode = POKE_NO_ACTIVE_COPILOT;
+      } else if (result.status === "fallback-deferred") {
+        console.error(
+          `UNAVAILABLE: guarded terminal wakeup for '${positional[0]}' did not submit; the mail remains queued.`,
+        );
+        process.exitCode = POKE_FALLBACK_DEFERRED;
+      } else if (result.status === "in-progress") {
+        console.error(
+          `IN_PROGRESS: another watcher is already handling '${positional[0]}'.`,
+        );
+        process.exitCode = POKE_IN_PROGRESS;
+      } else if (result.status === "submitted") {
+        console.error(
+          `SUBMITTED: '${positional[0]}' accepted the native wakeup without acknowledgement.`,
+        );
+        process.exitCode = POKE_SUBMITTED;
+      } else if (result.status === "held") {
+        console.error(
+          `HELD: '${positional[0]}' retained the wakeup without submitting it.`,
+        );
+        process.exitCode = POKE_HELD;
+      } else if (result.status === "refused") {
+        console.error(
+          `REFUSED: '${positional[0]}' rejected the native wakeup.`,
+        );
+        process.exitCode = POKE_REFUSED;
       }
       break;
     }

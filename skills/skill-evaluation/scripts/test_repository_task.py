@@ -82,6 +82,140 @@ class RepositoryTaskTests(unittest.TestCase):
         self.make_case()
         return evaluator.freeze_case(self.root, "example", False)
 
+    def test_restored_candidate_uses_scoped_permissions_and_native_resume(self):
+        session_id = str(uuid.uuid4())
+        command = repository.candidate_command(
+            "model", "high", "Original request", "skill", session_id, resume=True,
+            candidate_permissions={
+                "write_paths": ["code.py"],
+                "shell_commands": ["python3 -m unittest -q"],
+            },
+        )
+        self.assertIn(f"--resume={session_id}", command)
+        self.assertIn("--allow-tool=write(/workspace/repo/code.py)", command)
+        self.assertIn("--allow-tool=shell(python3 -m unittest -q)", command)
+        self.assertNotIn("--session-id", command)
+        for forbidden in ("--allow-all-tools", "--allow-all-paths", "--allow-tool=shell"):
+            self.assertNotIn(forbidden, command)
+        with self.assertRaisesRegex(ValueError, "requires candidate_permissions"):
+            repository.candidate_command("model", "high", "request", "skill", resume=True)
+
+    def test_recorded_context_repository_report_discloses_noncomparative_scope(self):
+        case = self.make_case()
+        definition = evaluator.read_json(case / "case.json")
+        definition["phases"][0]["session_restore"] = {
+            "history_file": "history.jsonl",
+            "source_session_id": "original-session",
+            "cutoff_event_id": "trigger-event",
+            "skill_context": "recorded-target-context",
+            "limitations": ["Original loaded instructions remain in history."],
+        }
+        definition["repository_task"]["candidate_permissions"] = {
+            "write_paths": ["code.py"], "shell_commands": [],
+        }
+        evaluator.write_json(case / "case.json", definition)
+        (case / "evidence/candidate/history.jsonl").write_text(json.dumps({
+            "type": "session", "version": 1, "externalId": "original-session",
+        }) + "\n")
+        evaluator.freeze_case(self.root, "example", False)
+        plugin = Path(self.temp.name) / "plugin"
+        skill = plugin / "skills/example-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: example-skill\ndescription: Test skill.\n---\nInspect the task.\n")
+        with (
+            mock.patch("repository_task.execute_repository", return_value={
+                "execution_status": "PASS", "behavioral_verdict": None, "failure_kind": None,
+            }),
+            mock.patch("skill_eval.run_judges"),
+            mock.patch("skill_eval.result_from_run", return_value="PASS"),
+        ):
+            run = evaluator.run_case(
+                self.root, "example", plugin, Path("/unused-copilot"),
+                "fixture-model", "high", "isolated", 60,
+                copilot_identity_record={"version": "fixture"},
+            )
+        report = (run / "REPORT.md").read_text()
+        self.assertIn("**Executable result: PASS**", report)
+        self.assertIn("Historical behavior/mechanism validation only", report)
+        self.assertIn("not that historical text", report)
+        self.assertIn("does not isolate a skill change", report)
+
+    def test_restored_permission_profiles_reject_escape_and_command_expansion(self):
+        from session_restore import permission_rules
+        for path in ("../outside", "/absolute", "src/*", "x),shell(bash"):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                permission_rules({"write_paths": [path], "shell_commands": []})
+        for command in ("python3 *", "printf ok > result.txt", "printf ok; pwd",
+                        "copilot --allow-all-tools", "printf $(pwd)"):
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                permission_rules({"write_paths": [], "shell_commands": [command]})
+
+    def test_restored_repository_staging_excludes_history_copies(self):
+        case = self.make_case()
+        definition = evaluator.read_json(case / "case.json")
+        definition["phases"][0]["session_restore"] = {
+            "history_file": "history.jsonl",
+            "source_session_id": "original-session",
+            "cutoff_event_id": "trigger-event",
+            "skill_context": "before-target-load",
+            "limitations": ["Synthetic staging fixture."],
+        }
+        definition["repository_task"]["candidate_permissions"] = {
+            "write_paths": ["code.py"], "shell_commands": [],
+        }
+        evaluator.write_json(case / "case.json", definition)
+        history = json.dumps({
+            "type": "session", "version": 1, "externalId": "original-session",
+        }) + "\n"
+        (case / "evidence/candidate/history.jsonl").write_text(history)
+        (case / "evidence/candidate/archived-context.txt").write_text(history)
+        (case / "repository/archived-context.txt").write_text(history)
+        frozen = evaluator.freeze_case(self.root, "example", False)
+        run = self.root / "staging-run"
+        run.mkdir()
+        admission = run / "admission.json"
+        admission.write_text("{}")
+        observed = {}
+
+        def observe_staging(image, mounts, *args, **kwargs):
+            staged = {destination: source for source, destination, _ in mounts}
+            observed["repository"] = sorted(
+                path.name for path in staged["/workspace/repo"].iterdir()
+                if path.name != ".git"
+            )
+            observed["evidence"] = sorted(
+                path.name for path in staged["/evidence"].iterdir()
+            )
+            self.assertEqual(
+                (staged["/restoration"] / "history.jsonl").read_text(), history)
+            (staged["/workspace/repo"] / "code.py").write_text(
+                "def add(a, b): return a + b\n")
+            repository.export_patch(
+                frozen, staged["/workspace/repo"], run / "staging.patch",
+                excluded={"archived-context.txt"},
+            )
+            raise ValueError("staging observation complete")
+
+        with (
+            mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "synthetic-only"}),
+            mock.patch("repository_task.image_identity", return_value={"id": self.image}),
+            mock.patch("repository_task.require_admission", return_value=admission),
+            mock.patch("repository_task.Container", side_effect=observe_staging),
+        ):
+            result = repository.execute_repository(
+                self.root, "example", frozen, run, Path("/unused-plugin"),
+                "fixture-model", "high", 60, "baseline",
+            )
+        self.assertEqual(result["execution_status"], "INVALID")
+        self.assertTrue(observed)
+        self.assertEqual(observed["evidence"], ["task.md"])
+        self.assertEqual(
+            observed["repository"], [".gitignore", "code.py", "mode.sh", "remove.txt"])
+        patch = (run / "staging.patch").read_text()
+        self.assertIn("+def add(a, b): return a + b", patch)
+        self.assertNotIn("archived-context.txt", patch)
+
     def test_scaffold_and_parser(self):
         self.make_case()
         arguments = evaluator.parser().parse_args([
@@ -92,6 +226,53 @@ class RepositoryTaskTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exactly one"):
             evaluator.add_case(self.root, "multiple", "s", ["one", "two"],
                                case_type="repository-task")
+
+    def test_restored_grading_applies_new_files_to_filtered_baseline(self):
+        case = self.make_case()
+        definition = evaluator.read_json(case / "case.json")
+        definition["phases"][0]["session_restore"] = {
+            "history_file": "history.jsonl", "source_session_id": "original-session",
+            "cutoff_event_id": "trigger-event", "skill_context": "before-target-load",
+            "limitations": ["Synthetic grading fixture."],
+        }
+        definition["repository_task"]["candidate_permissions"] = {
+            "write_paths": ["archived-context.txt"], "shell_commands": [],
+        }
+        evaluator.write_json(case / "case.json", definition)
+        history = json.dumps({
+            "type": "session", "version": 1, "externalId": "original-session",
+        }) + "\n"
+        (case / "evidence/candidate/history.jsonl").write_text(history)
+        (case / "repository/archived-context.txt").write_text(history)
+        frozen = evaluator.freeze_case(self.root, "example", False)
+        candidate = self.root / "replacement"
+        repository.copy_packet(frozen / "repository", candidate,
+                               excluded={"archived-context.txt"})
+        (candidate / "archived-context.txt").write_text("new candidate data\n")
+        patch = self.root / "replacement.patch"
+        repository.export_patch(frozen, candidate, patch, excluded={"archived-context.txt"})
+        self.assertIn("new file mode", patch.read_text())
+        observed = []
+
+        def observe_grade(image, mounts, artifacts, **kwargs):
+            source = next(path for path, target, _ in mounts if target == "/workspace/repo")
+            observed.append((source / "archived-context.txt").read_text())
+            artifacts.mkdir(parents=True, exist_ok=True)
+            container = mock.MagicMock()
+            container.__enter__.return_value = container
+
+            def execute(command, label):
+                (artifacts / f"{label}.log").write_text(command["success_output_contains"])
+                return {"exit_code": 0, "timed_out": False, "log": f"{label}.log"}
+
+            container.execute.side_effect = execute
+            return container
+
+        with mock.patch("repository_task.Container", side_effect=observe_grade):
+            result = repository.grade(
+                frozen, definition["repository_task"], self.root / "grading", patch)
+        self.assertTrue(all(item["passed"] for item in result.values()))
+        self.assertEqual(observed, ["new candidate data\n"] * 2)
 
     def test_freeze_modes_tamper_and_case_independence(self):
         frozen = self.freeze()
@@ -1004,7 +1185,7 @@ class RepositoryTaskTests(unittest.TestCase):
         identity = evaluator.harness_identity(destination)
         self.assertEqual({item["path"] for item in identity["modules"]},
                          {"skill_eval.py", "repository_task.py", "measurement.py",
-                          "quality_review.py", "evaluation_history.py"})
+                          "quality_review.py", "evaluation_history.py", "session_restore.py"})
         for module in identity["modules"]:
             self.assertEqual(evaluator.digest(destination / module["path"]), module["sha256"])
 
@@ -1030,6 +1211,8 @@ class RepositoryTaskTests(unittest.TestCase):
 
         def fake_run_copilot(**kwargs):
             captured_prompts.append(kwargs["prompt"])
+            self.assertIn(f"Evidence root: {kwargs['cwd']}", kwargs["prompt"])
+            self.assertIn("absolute paths rooted here", kwargs["prompt"])
             self.assertIn("Return exactly the six fields", kwargs["prompt"])
             self.assertIn("Put every observation and qualification in the existing fields",
                           kwargs["prompt"])

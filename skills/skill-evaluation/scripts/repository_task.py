@@ -231,6 +231,14 @@ def validate_definition(definition: dict, root: Path, *, frozen: bool = False) -
     repository = resolve_under(root, "repository" if frozen else task["snapshot_dir"])
     if not repository.is_dir() or not ordinary_files(repository):
         raise ValueError("repository snapshot must contain ordinary source files")
+    if "session_restore" in phases[0]:
+        from session_restore import permission_rules
+        permission_rules(task.get("candidate_permissions"))
+        for path in task["candidate_permissions"]["write_paths"]:
+            if (repository / path).is_dir():
+                raise ValueError("candidate write permissions must name files, not directories")
+    elif "candidate_permissions" in task:
+        raise ValueError("candidate_permissions requires session_restore")
     if not frozen and (repository / "bundle-manifest.json").exists():
         raise ValueError("bundle-manifest.json is reserved for the freezer")
     judge_root = resolve_under(root, "judge-reference" if frozen else definition["judge"]["evidence_dir"])
@@ -467,15 +475,31 @@ def copy_source(source: Path, destination: Path,
             shutil.copy2(path, target)
 
 
+def restoration_exclusions(frozen: Path, packet: Path) -> set[str] | None:
+    phase = read_json(frozen / "case.json")["phases"][0]
+    restoration = phase.get("session_restore")
+    if not restoration:
+        return None
+    history_sha256 = digest(frozen / phase["id"] / restoration["history_file"])
+    return {
+        record["path"]
+        for record in read_json(packet / "bundle-manifest.json")["files"]
+        if record["sha256"] == history_sha256
+    }
+
+
 def export_patch(frozen: Path, candidate: Path, patch: Path,
-                 setup_links: list[dict[str, str]] | None = None) -> None:
+                 setup_links: list[dict[str, str]] | None = None,
+                 *, excluded: set[str] | None = None) -> None:
     runtime_links = {
         item["path"]: item["target"]
         for item in setup_links or []
     }
     with tempfile.TemporaryDirectory(prefix="skill-eval-export-") as directory:
         trusted = Path(directory) / "repository"
-        copy_packet(frozen / "repository", trusted)
+        if excluded is None:
+            excluded = restoration_exclusions(frozen, frozen / "repository")
+        copy_packet(frozen / "repository", trusted, excluded=excluded)
         git(trusted, ["init", "--quiet"])
         # Disable attributes so candidate filter/diff drivers cannot affect the export.
         attributes = trusted / ".git" / "info" / "attributes"
@@ -518,7 +542,8 @@ def grade(frozen: Path, task: dict, artifacts: Path, patch: Path | None = None) 
         stage = artifacts / name
         with tempfile.TemporaryDirectory(prefix=".grader-", dir=artifacts) as directory:
             repository = Path(directory) / "repository"
-            copy_packet(frozen / "repository", repository)
+            copy_packet(frozen / "repository", repository,
+                        excluded=restoration_exclusions(frozen, frozen / "repository"))
             if patch is not None:
                 apply_patch(repository, patch)
             mounts = [
@@ -547,7 +572,8 @@ def check_candidate_setup(frozen: Path, task: dict, artifacts: Path,
     artifacts.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".setup-", dir=artifacts) as directory:
         source = Path(directory) / "repository"
-        copy_packet(frozen / "repository", source)
+        copy_packet(frozen / "repository", source,
+                    excluded=restoration_exclusions(frozen, frozen / "repository"))
         if patch is not None:
             apply_patch(source, patch)
         records = []
@@ -581,7 +607,7 @@ def harness_sources() -> list[dict]:
     return [
         {"path": name, "sha256": digest(directory / name)}
         for name in ("skill_eval.py", "repository_task.py", "measurement.py",
-                     "quality_review.py", "evaluation_history.py")
+                     "quality_review.py", "evaluation_history.py", "session_restore.py")
     ]
 
 
@@ -668,18 +694,32 @@ def require_admission(root: Path, case_id: str, binding: dict) -> Path:
 
 
 def candidate_command(model: str, effort: str, prompt: str, arm: str,
-                      session_id: str | None = None) -> list[str]:
-    tools = LOCAL_TOOLS + (",skill" if arm == "skill" else "")
+                      session_id: str | None = None, *, resume: bool = False,
+                      candidate_permissions: dict | None = None) -> list[str]:
+    if resume and candidate_permissions is None:
+        raise ValueError("restored repository execution requires candidate_permissions")
+    if candidate_permissions is not None:
+        from session_restore import permission_rules
+        tools = "view,glob,rg,edit,create,apply_patch,bash,read_bash,stop_bash,list_bash"
+        approvals = ["--allow-tool=view,glob,rg,read_bash,stop_bash,list_bash"]
+        approvals += permission_rules(candidate_permissions)
+        if arm == "skill":
+            tools += ",skill"
+            approvals.append("--allow-tool=skill")
+    else:
+        tools = LOCAL_TOOLS + (",skill" if arm == "skill" else "")
+        approvals = ["--allow-all-tools", "--allow-tool=shell", "--allow-all-paths"]
     command = [
         "copilot", "-C", "/workspace/repo", "-p", prompt,
         "--model", model, "--effort", effort,
-        f"--available-tools={tools}", "--allow-all-tools", "--allow-tool=shell",
-        "--allow-all-paths", "--no-custom-instructions", "--disable-builtin-mcps",
+        f"--available-tools={tools}", *approvals,
+        "--no-custom-instructions", "--disable-builtin-mcps",
         "--no-remote-export", "--no-auto-update", "--no-bash-env",
         "--no-ask-user", "--no-color", "--output-format", "json", "--log-level", "error",
-        "--secret-env-vars=COPILOT_GITHUB_TOKEN", "--session-id",
-        measurement.session_uuid(session_id or str(uuid.uuid4())),
+        "--secret-env-vars=COPILOT_GITHUB_TOKEN",
     ]
+    identity = measurement.session_uuid(session_id or str(uuid.uuid4()))
+    command += [f"--resume={identity}"] if resume else ["--session-id", identity]
     if arm == "skill":
         command += ["--plugin-dir", "/plugin"]
     return command
@@ -818,25 +858,37 @@ def execute_repository(
         if not os.environ.get("COPILOT_GITHUB_TOKEN"):
             raise ValueError("repository execution requires caller-supplied COPILOT_GITHUB_TOKEN")
         phase = definition["phases"][0]
-        prompt = (
-            (frozen / phase["prompt_file"]).read_text(encoding="utf-8")
-            + "\nRead the task and context in /evidence. Work in /workspace/repo.\n"
-            + "Do not retrieve source-origin answers or historical solutions from the network.\n"
-        )
-        if arm == "skill" and runner_kind == "direct-copilot":
-            prompt = f"Invoke the `{entry_skill}` skill unchanged.\n\n" + prompt
+        restoration = phase.get("session_restore")
+        if restoration and runner_kind != "direct-copilot":
+            raise ValueError("session restoration requires the direct-copilot runner")
+        prompt = (frozen / phase["prompt_file"]).read_text(encoding="utf-8")
+        if not restoration:
+            prompt += (
+                "\nRead the task and context in /evidence. Work in /workspace/repo.\n"
+                "Do not retrieve source-origin answers or historical solutions from the network.\n"
+            )
+            if arm == "skill" and runner_kind == "direct-copilot":
+                prompt = f"Invoke the `{entry_skill}` skill unchanged.\n\n" + prompt
         prompt_path = run_root / "candidate-prompt.md"
         prompt_path.write_text(prompt, encoding="utf-8")
         with tempfile.TemporaryDirectory(prefix=".candidate-", dir=run_root) as directory:
             temporary = Path(directory)
             repository = temporary / "repository"
             evidence = temporary / "evidence"
-            copy_packet(frozen / "repository", repository)
-            copy_packet(frozen / phase["id"], evidence)
+            repository_excluded = None
+            for packet, destination in (
+                (frozen / "repository", repository), (frozen / phase["id"], evidence),
+            ):
+                excluded = restoration_exclusions(frozen, packet)
+                if destination == repository:
+                    repository_excluded = excluded
+                copy_packet(packet, destination, excluded=excluded)
             git(repository, ["init", "--quiet"])
             git(repository, ["add", "--all", "--force"])
             git(repository, ["commit", "--quiet", "--allow-empty", "-m", "Frozen task source"])
             mounts = [(repository, "/workspace/repo", True), (evidence, "/evidence", False)]
+            if restoration:
+                mounts.append((frozen / phase["id"], "/restoration", False))
             if arm == "skill" and runner_kind == "direct-copilot":
                 mounts.append((plugin, "/plugin", False))
             if runner_kind != "direct-copilot":
@@ -869,9 +921,26 @@ def execute_repository(
                         "schema_version": 1,
                         "links": setup_links,
                     })
+                    session_id = str(uuid.uuid4())
+                    if restoration:
+                        from session_restore import import_session
+                        stage = "session_restore"
+
+                        def execute_import(command):
+                            record = container.execute(
+                                {"argv": command, "timeout_seconds": timeout_seconds}, "session-import")
+                            return record["exit_code"], (container.artifacts / record["log"]).read_text(
+                                encoding="utf-8")
+
+                        session_id = import_session(
+                            restoration, frozen / phase["id"] / restoration["history_file"],
+                            copilot="copilot", workdir="/workspace/repo", execute=execute_import,
+                            import_path=f"/restoration/{restoration['history_file']}",
+                            receipt_path=run_root / "restoration-receipt.json",
+                            cli_identity=result["candidate_cli"],
+                        )
                     stage = "candidate"
                     timeline.switch("candidate")
-                    session_id = str(uuid.uuid4())
                     reviewer_session_id = str(uuid.uuid4()) if runner_kind != "direct-copilot" else None
                     result["candidate_session_id"] = session_id
                     if reviewer_session_id:
@@ -880,7 +949,11 @@ def execute_repository(
                             "candidate_reviewer": reviewer_session_id,
                         }
                     command = (
-                        candidate_command(model, effort, prompt, arm, session_id)
+                        candidate_command(
+                            model, effort, prompt, arm, session_id,
+                            resume=restoration is not None,
+                            candidate_permissions=task.get("candidate_permissions"),
+                        )
                         if runner_kind == "direct-copilot"
                         else treatment_descriptor["runner"]["command"]
                     )
@@ -943,7 +1016,8 @@ def execute_repository(
                             parsed = parse_run(
                                 run_root / "candidate" / "trajectory.log",
                                 skill=parsed_skill, expected_model=model,
-                                cwd=Path("/workspace/repo"), require_skill=arm == "skill",
+                                cwd=Path("/workspace/repo"),
+                                require_skill=None if restoration else arm == "skill",
                                 boundary="docker-local-packets",
                             )
                             result.update({key: parsed[key] for key in
@@ -1054,7 +1128,10 @@ def execute_repository(
                                 if copied.is_file() and not copied.is_symlink():
                                     copied.unlink()
                             raise
-                    export_patch(frozen, repository, patch, setup_links)
+                    export_patch(
+                        frozen, repository, patch, setup_links,
+                        excluded=repository_excluded,
+                    )
                     result["patch_sha256"] = digest(patch)
             if result["failure_kind"] != "candidate_timeout":
                 stage = "grading"
