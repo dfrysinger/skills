@@ -438,6 +438,203 @@ class SkillEvalTests(unittest.TestCase):
         path.write_text(json.dumps(write, indent=2) + "\n")
         return path
 
+    def restoration_case(self):
+        case_dir = self.make_case()
+        definition_path = case_dir / "case.json"
+        definition = json.loads(definition_path.read_text())
+        restoration = {
+            "history_file": "history.jsonl",
+            "source_session_id": "original-session",
+            "cutoff_event_id": "trigger-event",
+            "skill_context": "before-target-load",
+            "limitations": [],
+        }
+        definition["phases"][0]["session_restore"] = restoration
+        definition_path.write_text(json.dumps(definition))
+        history = case_dir / "evidence/candidate-pass-1/history.jsonl"
+        records = [
+            {"type": "session", "version": 1, "externalId": "original-session",
+             "createdAt": "2026-01-01T00:00:00Z"},
+            {"type": "message", "id": "earlier-user", "role": "user",
+             "timestamp": "2026-01-01T00:00:00Z",
+             "content": [{"type": "text", "text": "Original earlier request."}]},
+        ]
+        history.write_text("".join(json.dumps(record) + "\n" for record in records))
+        return case_dir, definition, history
+
+    def test_restoration_history_is_frozen_but_not_staged(self):
+        from skill_eval import copy_packet
+        case_dir, definition, history = self.restoration_case()
+        frozen = freeze_case(self.root, "example-case", replace=False)
+        verify_case(self.root, "example-case")
+        destination = Path(self.temp.name) / "restored-workspace"
+        manifest = copy_packet(
+            frozen / "candidate-pass-1", destination,
+            excluded={definition["phases"][0]["session_restore"]["history_file"]},
+        )
+        self.assertTrue((destination / "product.md").is_file())
+        self.assertFalse((destination / "history.jsonl").exists())
+        self.assertIn("history.jsonl", [record["path"] for record in manifest["files"]])
+        self.assertEqual((frozen / "candidate-pass-1/history.jsonl").read_bytes(),
+                         history.read_bytes())
+
+    def test_restoration_rejects_later_phase_and_target_context(self):
+        case_dir, definition, history = self.restoration_case()
+        cases = [
+            ("target", {"type": "tool-call", "id": "old-load",
+                        "name": "skill", "arguments": {"skill": "example-skill"}}),
+            ("cutoff", {"type": "message", "id": "trigger-event", "role": "user"}),
+        ]
+        original = history.read_text()
+        for label, record in cases:
+            with self.subTest(label=label):
+                history.write_text(original + json.dumps(record) + "\n")
+                with self.assertRaises(ValueError):
+                    freeze_case(self.root, "example-case", replace=True)
+        history.write_text(original)
+        definition["phases"][1]["session_restore"] = definition["phases"][0].pop("session_restore")
+        (case_dir / "case.json").write_text(json.dumps(definition))
+        with self.assertRaisesRegex(ValueError, "first phase"):
+            freeze_case(self.root, "example-case", replace=True)
+
+    def test_restoration_skill_context_policy_preserves_or_rejects_old_text(self):
+        case_dir, definition, history = self.restoration_case()
+        original = history.read_text()
+        for record, reason in [
+            ({"type": "tool-call", "id": "old-load", "name": "skill",
+              "arguments": {"skill": "example-skill"}}, "target-skill invocation"),
+            ({"type": "message", "id": "old-context", "role": "user",
+              "content": [{"type": "text",
+                           "text": '<skill-context name="example-skill">Original body</skill-context>'}]},
+             "old target-skill context"),
+        ]:
+            history.write_text(original + json.dumps(record) + "\n")
+            for policy in ("before-target-load", "recorded-target-context", "unknown", []):
+                with self.subTest(record=record["id"], policy=policy):
+                    definition["phases"][0]["session_restore"]["skill_context"] = policy
+                    (case_dir / "case.json").write_text(json.dumps(definition))
+                    if policy == "recorded-target-context":
+                        frozen = freeze_case(self.root, "example-case", replace=True)
+                        verify_case(self.root, "example-case")
+                        self.assertEqual((frozen / "candidate-pass-1/history.jsonl").read_bytes(),
+                                         history.read_bytes())
+                    else:
+                        expected = reason if policy == "before-target-load" else "skill context"
+                        with self.assertRaisesRegex(ValueError, expected):
+                            freeze_case(self.root, "example-case", replace=True)
+
+    def test_restored_run_resumes_imported_id_with_unmodified_prompts(self):
+        case_dir, definition, history = self.restoration_case()
+        definition["phases"][0]["session_restore"]["skill_context"] = "recorded-target-context"
+        with history.open("a") as stream:
+            stream.write(json.dumps({
+                "type": "message", "id": "old-context", "role": "user",
+                "content": [{"type": "text",
+                             "text": '<skill-context name="example-skill">Old instructions</skill-context>'}],
+            }) + "\n")
+        definition["phases"][1]["evidence_dir"] = definition["phases"][0]["evidence_dir"]
+        (case_dir / "case.json").write_text(json.dumps(definition))
+        history.with_name("archived-context.txt").write_bytes(history.read_bytes())
+        history.with_name("target-plugin").write_text("Original candidate evidence.\n")
+        freeze_case(self.root, "example-case", replace=False)
+        plugin = Path(self.temp.name) / "restored-plugin"
+        skill = plugin / "skills/example-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: example-skill\ndescription: Example test skill.\n---\nInspect the task.\n")
+        (skill / "references").mkdir()
+        (skill / "references/checklist.md").write_text("Inspect the current evidence.\n")
+        copilot = Path(self.temp.name) / "identity-cli"
+        copilot.write_text("#!/usr/bin/env python3\nprint('fixture-cli')\n")
+        copilot.chmod(0o755)
+        imported_id = str(uuid.uuid4())
+        prompts = [(case_dir / phase["prompt_file"]).read_text()
+                   for phase in definition["phases"]]
+
+        def import_history(restoration, frozen_history, **kwargs):
+            self.assertEqual(frozen_history.read_bytes(), history.read_bytes())
+            self.assertFalse((Path(kwargs["workdir"]) / restoration["history_file"]).exists())
+            return imported_id
+
+        def continue_candidate(**kwargs):
+            self.assertEqual(kwargs["session_id"], imported_id)
+            self.assertTrue(kwargs["resume"])
+            self.assertEqual(kwargs["home_mode"], "isolated")
+            self.assertEqual(kwargs["prompt"], prompts.pop(0))
+            self.assertTrue((kwargs["cwd"] / "product.md").is_file())
+            self.assertFalse((kwargs["cwd"] / "history.jsonl").exists())
+            self.assertFalse((kwargs["cwd"] / "archived-context.txt").exists())
+            self.assertEqual((kwargs["cwd"] / "target-plugin").read_text(),
+                             "Original candidate evidence.\n")
+            reference = kwargs["plugin_dir"] / "skills/example-skill/references/checklist.md"
+            self.assertEqual(reference.read_text(), "Inspect the current evidence.\n")
+            kwargs["log"].write_text(
+                json.dumps({"type": "tool.execution_start", "data": {
+                    "toolName": "view", "toolCallId": "reference",
+                    "arguments": {"path": str(reference)}}}) + "\n"
+                + json.dumps({"type": "tool.execution_complete", "data": {
+                    "toolCallId": "reference", "success": True}}) + "\n"
+                + json.dumps({"type": "assistant.message", "data": {
+                    "content": "candidate-result", "model": "fixture-model"}}) + "\n"
+                + json.dumps({"type": "result", "exitCode": 0}) + "\n")
+            return [str(copilot), "--resume", imported_id, "-p", kwargs["prompt"]]
+
+        with (
+            mock.patch("session_restore.import_session", side_effect=import_history) as imported,
+            mock.patch("skill_eval.run_copilot", side_effect=continue_candidate),
+            mock.patch("skill_eval.run_judges", return_value=[
+                {"model": "claude-opus-5", "verdict": "PASS"},
+                {"model": "gpt-5.3-codex", "verdict": "PASS"},
+            ]),
+        ):
+            run = run_case(self.root, "example-case", plugin, copilot,
+                           "fixture-model", "high", "isolated", 60)
+        imported.assert_called_once()
+        self.assertEqual(prompts, [])
+        report = (run / "REPORT.md").read_text()
+        self.assertIn("**Result: PASS**", report)
+        self.assertIn("Historical behavior/mechanism validation only", report)
+        self.assertIn("not that historical text", report)
+        self.assertIn("does not isolate a skill change", report)
+
+    def test_native_import_failure_retains_receipt_and_does_not_resume(self):
+        from session_restore import import_session
+        case_dir, definition, history = self.restoration_case()
+        receipt = Path(self.temp.name) / "restoration-receipt.json"
+        execute = mock.Mock(return_value=(1, '{"ok":false,"code":"invalid_history"}'))
+        with self.assertRaisesRegex(ValueError, "native session import"):
+            import_session(
+                definition["phases"][0]["session_restore"], history,
+                copilot="copilot", workdir="/workspace/repo",
+                execute=execute, receipt_path=receipt, cli_identity={"version": "test"},
+            )
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual(json.loads(receipt.read_text())["status"], "FAIL")
+
+    def test_native_import_uses_only_a_validated_new_session_id(self):
+        from session_restore import import_session
+        _, definition, history = self.restoration_case()
+        receipt = Path(self.temp.name) / "restoration-receipt.json"
+        session_id = str(uuid.uuid4())
+        native = {"ok": True, "code": "session_imported", "sessionId": session_id}
+        execute = mock.Mock(return_value=(0, json.dumps(native)))
+        actual = import_session(
+            definition["phases"][0]["session_restore"], history,
+            copilot="copilot", workdir="/workspace/repo",
+            execute=execute, receipt_path=receipt, cli_identity={"version": "test"},
+        )
+        self.assertEqual(actual, session_id)
+        self.assertEqual(json.loads(receipt.read_text())["history_sha256"], digest(history))
+        for result in ("not-json", "[]", json.dumps({**native, "sessionId": "../../other"})):
+            with self.subTest(result=result), self.assertRaises(ValueError):
+                import_session(
+                    definition["phases"][0]["session_restore"], history,
+                    copilot="copilot", workdir="/workspace/repo",
+                    execute=lambda command: (0, result), receipt_path=receipt,
+                    cli_identity={"version": "test"},
+                )
+            self.assertEqual(json.loads(receipt.read_text())["status"], "FAIL")
+
     def test_treatment_descriptor_is_strict_and_compatibility_is_explicit(self) -> None:
         path = self.make_treatment()
         treatment = load_treatment(path)

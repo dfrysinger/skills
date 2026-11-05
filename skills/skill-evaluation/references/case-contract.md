@@ -33,6 +33,66 @@ source modes, offline admission, and executable grading. Its authoring and
 execution contract is in [repository-tasks.md](repository-tasks.md).
 Missing `case_type` retains prose evaluation.
 
+## Native historical continuation
+
+A first candidate phase can declare `session_restore`:
+
+```json
+{
+  "history_file": "history.jsonl",
+  "source_session_id": "original-session-id",
+  "cutoff_event_id": "first-excluded-event",
+  "skill_context": "before-target-load",
+  "limitations": []
+}
+```
+
+The history uses native `copilot sessions import` interchange, not raw native
+`events.jsonl`. It stays in the phase manifest but is excluded from the
+candidate workspace. The executor imports it in an isolated candidate home
+and resumes the returned session ID. Unsupported or failed imports stop the
+attempt; the runner never substitutes a transcript file for restored history.
+
+End the prefix before the original triggering user request.
+The phase prompt contains that exact request.
+Restored phases receive no evaluation announcement or forced skill invocation.
+Choose the skill-context policy explicitly:
+
+- `before-target-load`: end before target activation; recorded invocations and
+  target context are rejected. Use this policy for clean skill comparisons.
+- `recorded-target-context`: preserve original target invocations and loaded
+  text unchanged. Use this policy only for historical behavior/mechanism
+  validation, not an isolated skill-change or current-skill-improvement claim.
+  Reports state that limit. Record historical body hashes and differences from
+  the current catalog in provenance and limitations; existing pinned skill and
+  plugin identities identify the available catalog, not old loaded bytes.
+
+Audit other instruction exposure and required state separately. Neither policy
+proves complete restoration. Do not silently strip or replace old instructions.
+
+Bind files, instructions and operational state to the same cutoff. Keep the
+wrong response and later correction in hidden judge evidence. Disclose path,
+tool and runtime differences. Do not dispatch when missing state prevents the
+required actions or criteria. Reloading skills changes discovery, not old
+instruction text already in the conversation.
+
+Restored repository tasks also require `repository_task.candidate_permissions`:
+
+```json
+{
+  "write_paths": ["src/example.py"],
+  "shell_commands": ["python3 -m unittest -q"]
+}
+```
+
+These are operator-approved files and literal native command rules, not a
+candidate-editable policy. Wildcards, shell operators, escaping paths and
+permission-changing flags are rejected. Normal path and URL checks still
+apply. This mode does not expose delegation tools. Prove import/resume and the
+native permission boundary without model calls before paid attempts, then use
+the existing Actions runtime for actual candidate and judge execution.
+Repository admission and offline grading remain required.
+
 ## Evidence boundaries
 
 - Candidate phases contain only evidence available at that point.

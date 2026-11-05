@@ -159,9 +159,12 @@ change may proceed through its maintained and release gates without another
 search; report its size without claiming minimality.
 
 When delta ablation is warranted, start at the published skill plus any
-previously retained increments, not at no skill. Add
-only the new general sentences or mechanisms needed to reproduce the gain. Test single
-additions first; test combinations when their behavior interacts. Remove
+previously retained increments, not at no skill. Freeze that parent and define
+the increment by its added, removed and rewritten instructions. Minimize only
+that declared change; leave all other rules and earlier retained increments
+fixed. Whole-skill minimization is a separate work order, not a prerequisite.
+Retain only the changed general rules needed to reproduce the gain. Test one
+change or reversion first; test combinations when their behavior interacts. Remove
 instructions whose absence does not reduce target success or weaken an earlier
 passing task. For each maintained win, retain its exact contract, original
 per-attempt result and control; compare planned repeated attempts on the new
@@ -187,12 +190,12 @@ not establish that every retained instruction is necessary.
 
 ## 5. Rebuild the whole skill only when warranted
 
-If accumulated procedure appears to dilute or contradict load-bearing rules,
-run the full [`ablation campaign`](ablation-campaign.md). Compare neutral,
-from-first-principles lean, and unchanged published/full arms on the same
-corpus. Build the lean skill back up from the independently demonstrated
-behaviors across *all* maintained tasks, not just the newest task. Its lack of
-history makes it a diagnostic arm until it reproduces the existing wins.
+For explicit whole-skill minimization or suspected dilution, use the separate
+[ablation campaign](ablation-campaign.md). Keep the working full skill fixed,
+start lean at the neutral boundary and add compact rules from demonstrated
+failures rather than preselecting old sections. The campaign owns staged
+comparisons, add-back decisions and final qualification across all maintained
+tasks. Lean is a diagnostic arm until it preserves the required behavior.
 
 Complete when the lean replacement's exact bytes, pass distribution, retry
 dependence, and lost or retained behaviors have been compared with the
