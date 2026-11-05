@@ -3125,12 +3125,18 @@ def parser() -> argparse.ArgumentParser:
     history.add_argument("--model")
     from dashboard_cli import configure_parser
     configure_parser(sub)
+    from task_catalog import configure_parser as configure_catalog
+    configure_catalog(sub)
     return result
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
+        if args.command == "catalog":
+            from task_catalog import dispatch
+            print(json.dumps(dispatch(args), indent=2, allow_nan=False))
+            return 0
         if args.command == "dashboard":
             from dashboard_cli import dispatch
             print(json.dumps(dispatch(args), indent=2, allow_nan=False))

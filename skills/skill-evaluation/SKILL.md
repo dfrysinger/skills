@@ -61,6 +61,20 @@ pooled count of passes from different experiments. Follow the
 [`cumulative skill hill climb`](references/cumulative-skill-hill-climb.md)
 for the complete process.
 
+## Find shared tasks and prior evidence
+
+Before selecting tuning or regression cases, check `SKILL_EVAL_CATALOG` or
+`$HOME/.copilot/skill-task-catalog` for a catalog checkout. When one exists,
+read [`shared task catalog`](references/task-catalog.md), search by skill and
+behavior, and inspect separate historical outcomes before creating another
+case. Use stable skill lineages and incident families to record exposure.
+Plan exact revisions before replay; register compact outcomes after the run.
+Without a catalog, continue the existing per-corpus workflow.
+
+Complete when selection cites exact revisions and known exposure, or records
+that shared evidence is unavailable. A missing binding is not runnable
+acceptance, and snapshot-only exposure is not globally verified freshness.
+
 ## Decide what the evaluation will establish
 
 Evaluation measures behavior. Validation uses those measurements to decide
