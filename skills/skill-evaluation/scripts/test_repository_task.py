@@ -1211,6 +1211,8 @@ class RepositoryTaskTests(unittest.TestCase):
 
         def fake_run_copilot(**kwargs):
             captured_prompts.append(kwargs["prompt"])
+            self.assertIn(f"Evidence root: {kwargs['cwd']}", kwargs["prompt"])
+            self.assertIn("absolute paths rooted here", kwargs["prompt"])
             self.assertIn("Return exactly the six fields", kwargs["prompt"])
             self.assertIn("Put every observation and qualification in the existing fields",
                           kwargs["prompt"])
