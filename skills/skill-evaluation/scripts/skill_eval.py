@@ -809,6 +809,8 @@ def freeze_case(root: Path, case_id: str, replace: bool) -> Path:
         ensure_case_id(phase_id)
         if phase_id == "judge-reference":
             raise ValueError("phase ID judge-reference is reserved")
+    from session_restore import validate_restoration
+    validate_restoration(definition, case_dir)
 
     frozen_root = root / "frozen"
     case_root = frozen_root / case_id
@@ -991,6 +993,8 @@ def verify_case(root: Path, case_id: str) -> int:
         raise ValueError("judge manifest digest mismatch")
     count += verify_bundle(judge_bundle)
     definition = read_json(target / "case.json")
+    from session_restore import validate_restoration
+    validate_restoration(definition, target, frozen=True)
     case_type = definition.get("case_type", "prose")
     if case_type not in {"prose", "repository-task"}:
         raise ValueError(f"unsupported case type: {case_type}")
@@ -1258,10 +1262,12 @@ def partition_fields(value: dict, fields: set[str]) -> tuple[dict, list[list[str
     )
 
 
-def copy_packet(bundle: Path, workdir: Path) -> dict:
+def copy_packet(bundle: Path, workdir: Path, *, excluded: set[str] | None = None) -> dict:
     workdir.mkdir(parents=True)
     manifest = read_json(bundle / "bundle-manifest.json")
     for record in manifest["files"]:
+        if record["path"] in (excluded or set()):
+            continue
         source = bundle / record["path"]
         target = workdir / record["path"]
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1715,6 +1721,14 @@ def _run_case(
     if expected_revision is not None and digest(frozen / "case-manifest.json") != expected_revision:
         raise ValueError("frozen case changed during suite; refusing a different-byte retry")
     definition = read_json(frozen / "case.json")
+    restoration_scope = (
+        "**Scope:** Historical behavior/mechanism validation only. "
+        "Recorded skill text remains in history. Current skill/plugin identities "
+        "describe the available catalog, not that historical text. This run does "
+        "not isolate a skill change or establish current-skill improvement.\n\n"
+        if definition["phases"][0].get("session_restore", {}).get("skill_context")
+        == "recorded-target-context" else ""
+    )
     measurement.write_once(run_root / "run-context.json", {
         "schema_version": 1, "case_revision": digest(frozen / "case-manifest.json"),
         "case_type": definition.get("case_type", "prose"),
@@ -1759,6 +1773,7 @@ def _run_case(
         write_json(run_root / "repository-result.json", blocked)
         (run_root / "REPORT.md").write_text(
             f"# Evaluation: {case_id}\n\n**Result: BLOCKED**\n\n"
+            f"{restoration_scope}"
             "The treatment/case compatibility predicates did not admit model execution.\n",
             encoding="utf-8",
         )
@@ -1861,6 +1876,7 @@ def _run_case(
         write_json(run_root / "repository-result.json", invalid)
         (run_root / "REPORT.md").write_text(
             f"# Repository evaluation: {case_id}\n\n**Executable result: INVALID**\n\n"
+            f"{restoration_scope}"
             "Run setup failed; see `execution-result.json`.\n", encoding="utf-8",
         )
         return run_root
@@ -1904,6 +1920,7 @@ def _run_case(
         (run_root / "REPORT.md").write_text(
             f"# Repository evaluation: {case_id}\n\n"
             f"**Executable result: {result['execution_status']}**\n\n"
+            f"{restoration_scope}"
             f"- Behavioral verdict: {result['behavioral_verdict'] or 'UNAVAILABLE'}\n"
             f"- Arm: `{arm}`\n- Case revision: `{case_revision}`\n"
             f"- Failure kind: `{result['failure_kind']}`\n"
@@ -1916,14 +1933,32 @@ def _run_case(
     phase_outputs = []
     runtime = resources.enter_context(tempfile.TemporaryDirectory(prefix="skill-evaluation-"))
     runtime_root = Path(runtime)
+    restored_case = "session_restore" in definition["phases"][0]
+    if restored_case and home_mode != "isolated":
+        raise ValueError("session restoration requires an isolated candidate home")
+    history_sha256 = None
+    if restored_case:
+        initial_phase = definition["phases"][0]
+        history_sha256 = digest(
+            frozen / initial_phase["id"] / initial_phase["session_restore"]["history_file"]
+        )
 
     for phase in definition["phases"]:
         timeline.switch("preparation")
         phase_id = phase["id"]
         workdir = runtime_root / f"{phase_id}-workdir"
-        manifest = copy_packet(frozen / phase_id, workdir)
+        restoration = phase.get("session_restore")
+        excluded = {
+            record["path"]
+            for record in read_json(frozen / phase_id / "bundle-manifest.json")["files"]
+            if record["sha256"] == history_sha256
+        } if restored_case else None
+        manifest = copy_packet(
+            frozen / phase_id, workdir,
+            excluded=excluded,
+        )
         prompt_body = (frozen / phase["prompt_file"]).read_text(encoding="utf-8")
-        prompt = (
+        prompt = prompt_body if restored_case else (
             "This is a frozen skill evaluation. Candidate evidence files:\n"
             f"{evidence_list(manifest)}\n\n{prompt_body}\n"
             f"Case revision: {case_revision}\n"
@@ -1932,17 +1967,47 @@ def _run_case(
         prompt_path.write_text(prompt, encoding="utf-8")
         log = run_root / f"{phase_id}-raw.jsonl"
         try:
+            candidate_plugin = workdir / "target-plugin"
+            if candidate_plugin.exists():
+                candidate_plugin = Path(tempfile.mkdtemp(
+                    prefix="candidate-plugin-", dir=workdir)) / "target-plugin"
+            snapshot_plugin(pinned_plugin, candidate_plugin)
+            if directory_identity(candidate_plugin) != plugin_identity:
+                raise ValueError("candidate plugin changed while being staged")
+            if restoration:
+                from session_restore import import_session
+                run_home = run_root / "candidate-home"
+                run_home.mkdir(parents=True, exist_ok=True)
+
+                def execute_import(command):
+                    completed = subprocess.run(
+                        command, env={**os.environ, "COPILOT_HOME": str(run_home)},
+                        cwd=workdir, stdin=subprocess.DEVNULL, text=True,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        timeout=timeout_seconds, check=False,
+                    )
+                    if completed.stderr:
+                        (run_root / f"{phase_id}-import-stderr.log").write_text(
+                            completed.stderr, encoding="utf-8")
+                    return completed.returncode, completed.stdout
+
+                session_id = import_session(
+                    restoration, frozen / phase_id / restoration["history_file"],
+                    copilot=str(copilot), workdir=str(workdir), execute=execute_import,
+                    receipt_path=run_root / f"{phase_id}-restoration-receipt.json",
+                    cli_identity=read_json(run_root / "copilot-identity.json"),
+                )
             timeline.switch("candidate")
             command = run_copilot(
                 copilot=copilot,
-                plugin_dir=pinned_plugin,
+                plugin_dir=candidate_plugin,
                 cwd=workdir,
                 prompt=prompt,
                 model=model,
                 effort=effort,
                 log=log,
                 session_id=session_id,
-                resume=bool(phase.get("resume")),
+                resume=bool(phase.get("resume")) or restoration is not None,
                 home_mode=home_mode,
                 run_home=run_root / "candidate-home",
                 timeout_seconds=timeout_seconds,
@@ -1956,7 +2021,7 @@ def _run_case(
                 skill=treatment["descriptor"]["entry_skill"],
                 expected_model=model,
                 cwd=workdir,
-                require_skill=None if phase.get("resume") else True,
+                require_skill=None if phase.get("resume") or restored_case else True,
             )
             content = run_result["answer"]
             validate_candidate(content, phase)
@@ -2031,6 +2096,7 @@ def _run_case(
         "",
         f"**Result: {overall}**",
         "",
+        *restoration_scope.splitlines(),
         f"- Target skill: `{definition['target_skill']}`",
         f"- Treatment: `{treatment['descriptor']['id']}`",
         f"- Case revision: `{case_revision}`",

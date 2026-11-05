@@ -1,6 +1,6 @@
 ---
 name: skill-evaluation
-description: Build and run frozen behavioral evaluation corpora for any agent skill. Use when regression-testing a skill against historical or synthetic cases, adding transcript-derived cases, checking that general prompt language handles new evidence, comparing a revised skill against unchanged or no-skill controls, or qualifying a released skill for generalization.
+description: Evaluate agent skills with frozen cases. Use when building corpora or adding historical or synthetic cases, repairing user steering events, optimizing skill descriptions, comparing models, collections or revised skills against unchanged or no-skill controls, minimizing a skill, running regressions, or qualifying release and generalization claims.
 ---
 
 # skill-evaluation
@@ -8,6 +8,22 @@ description: Build and run frozen behavioral evaluation corpora for any agent sk
 Use a **frozen case** to separate evidence from the answer the skill is expected
 to reach. The target skill may be any installed or development skill; this
 procedure does not encode its output shape or domain.
+
+## Choose the evaluation path
+
+Before creating a case or dispatching a run, read the
+[evaluation playbook](references/evaluation-playbook.md). It routes steering
+repairs, skill-selection tests, model or skill-collection comparisons, and skill
+minimization to the existing methods. Read its shared measurement, case-role
+and staged-search rules, then follow the selected workflow rather than running
+every branch.
+
+Match the measurement to the user's outcome. A response-only continuation can
+test a proposed decision; an executed-work claim needs actions and observable
+results in an environment that supports them.
+
+Complete when the existing plan names the scenario, runtime, observable result
+and comparison before paid execution.
 
 ## Execution default: GitHub Actions VMs
 
@@ -62,7 +78,7 @@ as an experiment.
 | --- | --- |
 | Question | The uncertainty this evaluation will resolve and whether it is setup diagnosis, exploratory search, or final confirmation. |
 | Candidate and comparison | Exact skill and case identities, the unchanged control when comparing changes, and the model, tools, environment, limits, and judging contract held fixed. |
-| Cases | Development cases used to choose changes, maintained regression cases, and reserved cases used to check transfer. |
+| Cases | Development cases used to write changes, selection cases used to choose candidates, maintained regression cases, and unused confirmation cases. |
 | Attempts | Planned repetitions or bounded retries, first-outcome retention, and handling of incomplete execution. |
 | Decision rule | What results mean keep, reject, or inconclusive, including the qualification threshold when applicable. |
 | Stop rule | The batch boundary, any applicable time or cost ceiling, and the observation that ends or changes the search. Unknown cost remains unknown. |
@@ -614,9 +630,9 @@ chosen method cannot establish. Use the
 user-selected local run.
 
 Use the predeclared attempt set and concurrency, not the workflow template's
-maximum. After changing a skill, include every case in its maintained
-regression corpus; a deliberate subset is focused iteration, not the release
-regression gate.
+maximum. Use staged subsets for focused iteration. For release regression
+after a skill change, include every case in its declared maintained corpus;
+a deliberate subset does not satisfy that gate.
 
 For a corpus-wide improvement, begin with the published skill or skill set,
 inventory existing experimental passes, and consolidate eligible general
@@ -696,8 +712,8 @@ different task revisions as the same experiment.
 
 Complete when the report identifies the exact skill revision, case revision,
 candidate outputs, treatment and compatibility identity, and independent
-judgments. After a skill change, completion
-also requires the maintained full suite to pass when one exists.
+judgments. Release qualification after a skill change also requires the
+maintained full suite to meet its predeclared rule when one exists.
 
 ## 6. Interpret and improve
 
@@ -848,15 +864,13 @@ dose-matching, planned replication, mechanism scoring, finalist selection, and
 held-out transfer.
 
 For corpus consolidation, preserve the declared prior-win set on the combined
-draft before minimizing it, following the cumulative hill climb. When observed
-instruction dilution or contradiction warrants rebuilding the whole skill,
-compare a neutral baseline, a lean replacement, and the unchanged full skill instead of
-assuming incremental editing is safest. Follow
-[`references/ablation-campaign.md`](references/ablation-campaign.md): start the
-lean arm from the smallest load-bearing rules, run one discriminating case,
-then add back a rule only when a repeated corpus regression proves it is
-missing. Compare a focused add-back with the unchanged lean arm, or use parallel
-treatment search when the question requires selecting among alternatives.
+draft before minimizing it, following the cumulative hill climb. For a separate
+whole-skill minimization, follow the
+[ablation campaign](references/ablation-campaign.md). Keep the unchanged full
+skill as the comparison; start the lean arm without target procedure and add
+one compact general rule only when observed failures and matched comparisons
+support it. The campaign owns add-back, interaction and final preservation
+checks; normal permission controls remain unchanged.
 Existing prose earns retention through behavior, not age.
 
 Complete when the result is labeled `PASS`, `FAIL`, or `UNANSWERABLE`, with the
@@ -900,9 +914,9 @@ The evaluation is complete only when:
 - at least two independent judges assess behavioral correctness for a material
   skill change;
 - a new case does not change any older case root digest; and
-- a maintained regression suite runs through one command and every included
-  case meets its predeclared qualification rule after a target-skill change,
-  with complete original attempt outcomes retained; and
+- for release qualification after a target-skill change, a maintained
+  regression suite runs through one command and every included case meets its
+  predeclared rule, with complete original attempt outcomes retained; and
 - every no-skill advantage, broad transfer, or packaged-generalization claim
   about a published revision completes the applicable
   [`generalization gate`](references/release-qualification-and-generalization.md)
