@@ -19,6 +19,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -1526,6 +1527,66 @@ test("remote outbox retry preserves provider identity beside bare Copilot", asyn
       );
     }
     assert.deepEqual(await listFiles(join(stateRoot, "remote-outbox", "envelopes")), []);
+    assert.deepEqual(
+      await listFiles(join(stateRoot, "remote-outbox", "provider-envelopes")),
+      [],
+    );
+  });
+});
+
+test("legacy provider outbox staging publishes after rollback-safe layout upgrade", async () => {
+  await sandbox("legacy-provider-outbox", async (root) => {
+    const remoteMailboxRoot = join(root, "remote");
+    const stateRoot = join(root, "state");
+    const attachment = join(root, "proof.txt");
+    await writeFile(attachment, "legacy provider attachment");
+    await writeFile(remoteMailboxRoot, "temporarily unavailable");
+    const mailbox = createMailbox({
+      mailboxRoot: join(root, "mailbox"),
+      remoteMailboxRoot,
+      stateRoot,
+      machineName: "desktop",
+      terminalPokeCli: null,
+    });
+    const sent = await mailbox.send({
+      recipient: "claude:alpha@surface-pro",
+      sender: "whisky",
+      summary: "legacy staged provider",
+      message: "publish after upgrade",
+      files: [attachment],
+      wake: false,
+    });
+
+    const currentDirectory = join(
+      stateRoot,
+      "remote-outbox",
+      "provider-envelopes",
+      "claude",
+      "alpha@surface-pro",
+    );
+    const legacyDirectory = join(
+      stateRoot,
+      "remote-outbox",
+      "envelopes",
+      "_providers",
+      "claude",
+      "alpha@surface-pro",
+    );
+    await mkdir(dirname(legacyDirectory), { recursive: true });
+    await rename(currentDirectory, legacyDirectory);
+
+    await rm(remoteMailboxRoot);
+    await mkdir(remoteMailboxRoot);
+    await mailbox.flushRemoteOutbox();
+
+    const remoteFiles = await listFiles(remoteMailboxRoot);
+    const remotePrefix = `_providers/claude/alpha@surface-pro/pending/${sent.envelope.id}`;
+    assert.ok(remoteFiles.includes(`${remotePrefix}.json`));
+    assert.ok(remoteFiles.includes(`${remotePrefix}/proof.txt`));
+    assert.deepEqual(
+      await listFiles(join(stateRoot, "remote-outbox", "envelopes", "_providers")),
+      [],
+    );
     assert.deepEqual(
       await listFiles(join(stateRoot, "remote-outbox", "provider-envelopes")),
       [],

@@ -8,6 +8,7 @@ import {
   readdir,
   rename,
   rm,
+  rmdir,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -754,8 +755,11 @@ export function createMailbox(options = {}) {
     return envelopePath;
   }
 
-  async function publishStagedRemoteEnvelope(address, id) {
-    const outbox = remoteOutboxDirectory("envelopes", address);
+  async function publishStagedRemoteEnvelope(
+    address,
+    id,
+    outbox = remoteOutboxDirectory("envelopes", address),
+  ) {
     const sourceEnvelope = join(outbox, `${id}.json`);
     const envelope = JSON.parse(await readFile(sourceEnvelope, "utf8"));
     const remotePending = mailboxDirectory(address, "pending");
@@ -806,7 +810,7 @@ export function createMailbox(options = {}) {
         }
       }
       try {
-        await rm(directory);
+        await rmdir(directory);
       } catch (error) {
         if (
           error?.code !== "ENOENT" &&
@@ -834,7 +838,7 @@ export function createMailbox(options = {}) {
           continue;
         }
         try {
-          await publishStagedRemoteEnvelope(address, id);
+          await publishStagedRemoteEnvelope(address, id, dirname(source));
           diagnostics.log("remote.envelope_published", {
             mailbox: address,
             envelopeId: id,
