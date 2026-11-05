@@ -1227,6 +1227,7 @@ console.log('{"status":"completed","result":{"delivery":"idle"}}');
       stateRoot,
       requestCli: mockRequest,
       terminalPokeCli: null,
+      processIdentity: async () => "2026-01-01T00:00:00.000Z",
     });
     await mailbox.send({
       recipient: "hotel",
@@ -1239,10 +1240,11 @@ console.log('{"status":"completed","result":{"delivery":"idle"}}');
     const claimPath = join(stateRoot, "notifying", "hotel.lock");
     await mkdir(dirname(claimPath), { recursive: true });
     const liveOwner = {
-      pid: process.pid,
+      pid: process.ppid,
       claimId: "live-owner",
       address: "hotel",
       startedAt: new Date(Date.now() - 120_000).toISOString(),
+      processIdentity: "2026-01-01T00:00:00.000Z",
     };
     await writeFile(claimPath, `${JSON.stringify(liveOwner)}\n`);
     assert.equal((await mailbox.poke("hotel")).status, "in-progress");
@@ -1258,6 +1260,7 @@ console.log('{"status":"completed","result":{"delivery":"idle"}}');
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
     }
+    assert.equal((await mailbox.poke("hotel")).status, "in-progress");
     const successor = {
       pid: process.pid,
       claimId: "successor-owner",
@@ -1268,6 +1271,68 @@ console.log('{"status":"completed","result":{"delivery":"idle"}}');
     await writeFile(releasePath, "release");
     assert.equal((await first).status, "delivered");
     assert.deepEqual(JSON.parse(await readFile(claimPath, "utf8")), successor);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("notification claims reclaim a reused live PID with a different process identity", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-claim-pid-reuse-"));
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const stateRoot = join(root, "state");
+    const mockRequest = join(root, "request.mjs");
+    await writeFile(
+      mockRequest,
+      `console.log('{"status":"completed","result":{"delivery":"idle"}}');\n`,
+    );
+    const mailbox = createMailbox({
+      mailboxRoot,
+      stateRoot,
+      requestCli: mockRequest,
+      terminalPokeCli: null,
+      processIdentity: async () => "current-process",
+    });
+    await mailbox.send({
+      recipient: "hotel",
+      sender: "whisky",
+      summary: "pid reuse",
+      message: "replace a stale owner",
+      wake: false,
+    });
+    const claimPath = join(stateRoot, "notifying", "hotel.lock");
+    await mkdir(dirname(claimPath), { recursive: true });
+    await writeFile(
+      claimPath,
+      `${JSON.stringify({
+        pid: process.pid,
+        claimId: "stale-owner",
+        address: "hotel",
+        processIdentity: "prior-process",
+      })}\n`,
+    );
+
+    assert.equal((await mailbox.poke("hotel")).status, "delivered");
+    await assert.rejects(readFile(claimPath, "utf8"), { code: "ENOENT" });
+
+    await mailbox.send({
+      recipient: "hotel",
+      sender: "whisky",
+      summary: "orphaned own claim",
+      message: "replace a claim no longer active in this process",
+      wake: false,
+    });
+    await writeFile(
+      claimPath,
+      `${JSON.stringify({
+        pid: process.pid,
+        claimId: "orphaned-own-claim",
+        address: "hotel",
+        processIdentity: "current-process",
+      })}\n`,
+    );
+    assert.equal((await mailbox.poke("hotel")).status, "delivered");
+    await assert.rejects(readFile(claimPath, "utf8"), { code: "ENOENT" });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

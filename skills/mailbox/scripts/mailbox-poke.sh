@@ -74,6 +74,9 @@ if [[ "$TERMINAL_ONLY" -eq 0 ]]; then
   elif [[ "$NODE_STATUS" -eq 6 ]]; then
     [[ -n "$NODE_OUTPUT" ]] && printf '%s\n' "$NODE_OUTPUT" >&2
     exit 4
+  elif [[ "$NODE_STATUS" -ge 7 && "$NODE_STATUS" -le 10 ]]; then
+    [[ -n "$NODE_OUTPUT" ]] && printf '%s\n' "$NODE_OUTPUT" >&2
+    exit "$NODE_STATUS"
   elif [[ "$NODE_STATUS" -ne 4 ]]; then
     [[ -n "$NODE_OUTPUT" ]] && printf '%s\n' "$NODE_OUTPUT" >&2
     exit 3

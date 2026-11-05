@@ -17,7 +17,7 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, platform } from "node:os";
 import {
   basename,
   dirname,
@@ -42,6 +42,10 @@ export const POKE_UNVERIFIED = 3;
 export const POKE_NO_ACTIVE_COPILOT = 4;
 export const POKE_REMOTE_PENDING = 5;
 export const POKE_FALLBACK_DEFERRED = 6;
+export const POKE_IN_PROGRESS = 7;
+export const POKE_SUBMITTED = 8;
+export const POKE_HELD = 9;
+export const POKE_REFUSED = 10;
 
 const MAILBOX_CONFIG_SCHEMA_VERSION = 1;
 const MAILBOX_CONFIG_KEYS = new Set([
@@ -60,6 +64,38 @@ export class MailboxConfigurationError extends Error {
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
+
+async function processStartIdentity(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+  try {
+    const { stdout } =
+      platform() === "win32"
+        ? await execFileAsync(
+            "powershell.exe",
+            [
+              "-NoProfile",
+              "-NonInteractive",
+              "-Command",
+              `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString("O")`,
+            ],
+            { timeout: 2_000 },
+          )
+        : await execFileAsync(
+            "ps",
+            ["-o", "lstart=", "-p", String(pid)],
+            { timeout: 2_000 },
+          );
+    const raw = stdout.trim();
+    if (!raw) return undefined;
+    const timestamp = Date.parse(raw);
+    return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+let ownProcessIdentityPromise;
+const activeNotificationClaims = new Set();
 
 function validateName(name, label = "mailbox name") {
   if (
@@ -197,6 +233,18 @@ async function renameWithRetries(source, destination) {
   for (let attempt = 0; ; attempt += 1) {
     try {
       await rename(source, destination);
+      return;
+    } catch (error) {
+      if (!RETRYABLE_FILE_ERRORS.has(error?.code) || attempt >= 9) throw error;
+      await sleep(200);
+    }
+  }
+}
+
+async function rmWithRetries(path, options = {}) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rm(path, options);
       return;
     } catch (error) {
       if (!RETRYABLE_FILE_ERRORS.has(error?.code) || attempt >= 9) throw error;
@@ -420,9 +468,14 @@ export async function resolveOwnAddress(explicitAddress) {
       throw new Error(`MAILBOX_SELF_ADDRESS is invalid: ${error.message}`);
     }
   }
-  if (process.env.CLAUDE_CODE_MESSAGING_SOCKET) {
+  if (
+    process.env.CLAUDE_CODE_MESSAGING_SOCKET ||
+    process.env.CODEX_AGENT_STACK_REMOTE_TOKEN ||
+    process.env.CODEX_APP_SERVER_ENDPOINT ||
+    process.env.CODEX_LAUNCHER_PID
+  ) {
     throw new Error(
-      "MAILBOX_SELF_ADDRESS is required for an Agent Stack Claude session",
+      "MAILBOX_SELF_ADDRESS is required for an Agent Stack provider session",
     );
   }
   return resolveOwnName();
@@ -456,6 +509,10 @@ export function createMailbox(options = {}) {
     component: "mailbox",
     pid: process.pid,
   });
+  const inspectProcessIdentity = options.processIdentity ?? processStartIdentity;
+  const processIdentityPromise = options.processIdentity
+    ? Promise.resolve(inspectProcessIdentity(process.pid))
+    : (ownProcessIdentityPromise ??= processStartIdentity(process.pid));
   const attachmentObservations = new Map();
   const wakeupAdapters = options.wakeupAdapters ?? {};
 
@@ -622,11 +679,22 @@ export function createMailbox(options = {}) {
   }
 
   function remoteOutboxDirectory(kind, address) {
+    const key = mailboxPathKey(address);
+    const parsed = canonicalizeMailboxAddress(address);
+    if (kind === "envelopes" && parsed.provider !== "copilot") {
+      return join(
+        stateRoot,
+        "remote-outbox",
+        "provider-envelopes",
+        parsed.provider,
+        `${parsed.name}${parsed.machine ? `@${parsed.machine}` : ""}`,
+      );
+    }
     return join(
       stateRoot,
       "remote-outbox",
       kind,
-      mailboxPathKey(address),
+      key,
     );
   }
 
@@ -704,13 +772,10 @@ export function createMailbox(options = {}) {
 
   async function flushRemoteOutbox() {
     if (!remoteMailboxRoot) return;
-    const envelopeRoot = join(stateRoot, "remote-outbox", "envelopes");
-    let addresses = [];
-    try {
-      addresses = await readdir(envelopeRoot, { withFileTypes: true });
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
+    const envelopeRoots = [
+      join(stateRoot, "remote-outbox", "envelopes"),
+      join(stateRoot, "remote-outbox", "provider-envelopes"),
+    ];
     async function stagedEnvelopes(directory) {
       const result = [];
       let entries = [];
@@ -727,21 +792,47 @@ export function createMailbox(options = {}) {
       }
       return result;
     }
-    for (const source of await stagedEnvelopes(envelopeRoot)) {
-      const name = basename(source);
-      const id = name.slice(0, -5);
-      let address;
+    async function removeEmptyDirectories(directory) {
+      let entries;
       try {
-        const envelope = JSON.parse(await readFile(source, "utf8"));
-        address = envelope.to?.address ?? envelope.to?.name;
-        if (!canonicalizeMailboxAddress(address).machine) continue;
+        entries = await readdir(directory, { withFileTypes: true });
       } catch (error) {
-        diagnostics.log("remote.envelope_publish_failed", {
-          envelopeId: id,
-          error: errorDetails(error),
-        });
-        continue;
+        if (error?.code === "ENOENT") return;
+        throw error;
       }
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          await removeEmptyDirectories(join(directory, entry.name));
+        }
+      }
+      try {
+        await rm(directory);
+      } catch (error) {
+        if (
+          error?.code !== "ENOENT" &&
+          error?.code !== "ENOTEMPTY" &&
+          error?.code !== "EEXIST"
+        ) {
+          throw error;
+        }
+      }
+    }
+    for (const envelopeRoot of envelopeRoots) {
+      for (const source of await stagedEnvelopes(envelopeRoot)) {
+        const name = basename(source);
+        const id = name.slice(0, -5);
+        let address;
+        try {
+          const envelope = JSON.parse(await readFile(source, "utf8"));
+          address = envelope.to?.address ?? envelope.to?.name;
+          if (!canonicalizeMailboxAddress(address).machine) continue;
+        } catch (error) {
+          diagnostics.log("remote.envelope_publish_failed", {
+            envelopeId: id,
+            error: errorDetails(error),
+          });
+          continue;
+        }
         try {
           await publishStagedRemoteEnvelope(address, id);
           diagnostics.log("remote.envelope_published", {
@@ -755,33 +846,31 @@ export function createMailbox(options = {}) {
             error: errorDetails(error),
           });
         }
+      }
     }
+    await removeEmptyDirectories(
+      join(stateRoot, "remote-outbox", "envelopes", "_providers"),
+    );
 
     const receiptRoot = join(stateRoot, "remote-outbox", "receipts");
-    try {
-      addresses = await readdir(receiptRoot, { withFileTypes: true });
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-      addresses = [];
-    }
     for (const source of await stagedEnvelopes(receiptRoot)) {
-        const name = basename(source);
-        const relativePath = relative(receiptRoot, source);
-        try {
-          await copyImmutable(
-            source,
-            join(remoteMailboxRoot, "receipts", relativePath),
-          );
-          await rm(source, { force: true });
-          diagnostics.log("remote.receipt_published", {
-            envelopeId: name.slice(0, -5),
-          });
-        } catch (error) {
-          diagnostics.log("remote.receipt_publish_failed", {
-            envelopeId: name.slice(0, -5),
-            error: errorDetails(error),
-          });
-        }
+      const name = basename(source);
+      const relativePath = relative(receiptRoot, source);
+      try {
+        await copyImmutable(
+          source,
+          join(remoteMailboxRoot, "receipts", relativePath),
+        );
+        await rm(source, { force: true });
+        diagnostics.log("remote.receipt_published", {
+          envelopeId: name.slice(0, -5),
+        });
+      } catch (error) {
+        diagnostics.log("remote.receipt_publish_failed", {
+          envelopeId: name.slice(0, -5),
+          error: errorDetails(error),
+        });
+      }
     }
   }
 
@@ -1330,23 +1419,34 @@ export function createMailbox(options = {}) {
     );
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     const claimId = randomBytes(12).toString("hex");
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    const processIdentity = await processIdentityPromise;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
       try {
         const handle = await open(path, "wx", 0o600);
-        await handle.writeFile(
-          `${JSON.stringify({
-            pid: process.pid,
-            claimId,
-            address: mailboxAddress,
-            startedAt: new Date().toISOString(),
-          })}\n`,
-        );
-        await handle.close();
+        activeNotificationClaims.add(claimId);
+        try {
+          await handle.writeFile(
+            `${JSON.stringify({
+              pid: process.pid,
+              claimId,
+              address: mailboxAddress,
+              startedAt: new Date().toISOString(),
+              ...(processIdentity ? { processIdentity } : {}),
+            })}\n`,
+          );
+          await handle.close();
+        } catch (error) {
+          activeNotificationClaims.delete(claimId);
+          await handle.close().catch(() => {});
+          await rmWithRetries(path, { force: true }).catch(() => {});
+          throw error;
+        }
         return async () => {
+          activeNotificationClaims.delete(claimId);
           try {
             const owner = JSON.parse(await readFile(path, "utf8"));
             if (owner?.pid === process.pid && owner?.claimId === claimId) {
-              await rm(path, { force: true });
+              await rmWithRetries(path, { force: true });
             }
           } catch (error) {
             if (error?.code !== "ENOENT") throw error;
@@ -1360,16 +1460,51 @@ export function createMailbox(options = {}) {
         } catch {
           owner = undefined;
         }
+        if (!owner && attempt < 4) {
+          await sleep(25);
+          continue;
+        }
         if (owner?.pid) {
+          if (
+            owner.pid === process.pid &&
+            owner.claimId &&
+            !activeNotificationClaims.has(owner.claimId)
+          ) {
+            await rmWithRetries(path, { force: true });
+            continue;
+          }
+          let ownerAlive = false;
           try {
             process.kill(owner.pid, 0);
-            return undefined;
+            ownerAlive = true;
           } catch (ownerError) {
-            if (ownerError?.code === "EPERM") return undefined;
-            if (ownerError?.code !== "ESRCH") throw ownerError;
+            if (ownerError?.code === "EPERM") {
+              ownerAlive = true;
+            } else if (ownerError?.code !== "ESRCH") {
+              throw ownerError;
+            }
+          }
+          if (ownerAlive) {
+            const currentIdentity = await inspectProcessIdentity(owner.pid);
+            if (!currentIdentity) {
+              return undefined;
+            }
+            if (owner.processIdentity) {
+              if (currentIdentity === owner.processIdentity) return undefined;
+            } else {
+              const claimStartedAt = Date.parse(owner.startedAt);
+              const processStartedAt = Date.parse(currentIdentity);
+              if (
+                !Number.isFinite(claimStartedAt) ||
+                !Number.isFinite(processStartedAt) ||
+                processStartedAt <= claimStartedAt
+              ) {
+                return undefined;
+              }
+            }
           }
         }
-        await rm(path, { force: true });
+        await rmWithRetries(path, { force: true });
       }
     }
     throw new Error(
@@ -1440,6 +1575,13 @@ export function createMailbox(options = {}) {
               mailboxAddress,
               newest.id,
             );
+            await markUnverified(
+              mailboxAddress,
+              newest.id,
+              attemptId,
+              "attempting",
+              `${parsedMailbox.provider} terminal fallback submission is in progress`,
+            );
             try {
               const fallback = await execFileAsync(
                 terminalPokeCli,
@@ -1509,6 +1651,10 @@ export function createMailbox(options = {}) {
                 };
               }
             }
+            await rm(
+              unverifiedNotificationPath(mailboxAddress, newest.id),
+              { force: true },
+            );
             return {
               status: "fallback-deferred",
               outcome: "deferred",

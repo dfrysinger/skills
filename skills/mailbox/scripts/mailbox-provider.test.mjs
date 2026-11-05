@@ -728,6 +728,28 @@ test("MAILBOX_SELF_ADDRESS selects the provider watcher identity", async () => {
   });
 });
 
+test("bare Copilot poke CLI targets the legacy session name", async () => {
+  await sandbox("cli-bare-poke", async (root) => {
+    await writeCliConfiguration(root);
+    const environment = { COPILOT_AGENT_NAME: "sender" };
+    const sent = await runCli(
+      root,
+      ["send", "alpha", "--summary", "test", "--message", "test", "--no-wakeup"],
+      environment,
+    );
+    assert.equal(sent.code, 0, sent.stderr);
+
+    const poked = await runCli(root, ["poke", "alpha"], environment);
+    assert.notEqual(poked.code, 0, poked.stderr);
+    const log = (await readFile(join(root, "state", "logs", "mailbox.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const wakeup = log.findLast(({ targetName }) => typeof targetName === "string");
+    assert.equal(wakeup?.targetName, "alpha");
+  });
+});
+
 test("invalid MAILBOX_SELF_ADDRESS fails closed for every receiver command", async () => {
   await sandbox("cli-invalid-self", async (root) => {
     await seedSelfFixtures(root);
@@ -783,6 +805,30 @@ test("a Claude session without MAILBOX_SELF_ADDRESS never falls back to a bare n
     ]) {
       const result = await runCli(root, args, environment);
       assert.notEqual(result.code, 0, `${args[0]} fell back to a bare name`);
+      assert.match(result.stderr, /MAILBOX_SELF_ADDRESS/, args[0]);
+      assert.doesNotMatch(result.stdout, /bare-copilot/);
+    }
+    assert.ok(await exists(join(root, "mailbox", "alpha", "pending", `${BARE_ID}.json`)));
+    assert.deepEqual(await listFiles(join(root, "mailbox", "hotel")), []);
+  });
+});
+
+test("a managed Codex session without MAILBOX_SELF_ADDRESS never falls back to Copilot", async () => {
+  await sandbox("cli-missing-codex-self", async (root) => {
+    await seedSelfFixtures(root);
+    const environment = {
+      COPILOT_AGENT_NAME: "alpha",
+      CODEX_LAUNCHER_PID: String(process.pid),
+    };
+    for (const args of [
+      ["check"],
+      ["read", BARE_ID],
+      ["ack", BARE_ID],
+      ["send", "hotel", "--summary", "s", "--message", "m", "--no-wakeup"],
+      ["watch", "--once", "--interval", "100"],
+    ]) {
+      const result = await runCli(root, args, environment);
+      assert.notEqual(result.code, 0, `${args[0]} fell back to Copilot`);
       assert.match(result.stderr, /MAILBOX_SELF_ADDRESS/, args[0]);
       assert.doesNotMatch(result.stdout, /bare-copilot/);
     }
@@ -1446,17 +1492,24 @@ test("remote outbox retry preserves provider identity beside bare Copilot", asyn
       });
     }
     const outbox = await listFiles(join(stateRoot, "remote-outbox", "envelopes"));
+    assert.ok(
+      outbox.includes(`alpha@surface-pro/${sent["alpha@surface-pro"].envelope.id}.json`),
+    );
+    assert.ok(!outbox.some((path) => path.startsWith("_providers/")));
+    const providerOutbox = await listFiles(
+      join(stateRoot, "remote-outbox", "provider-envelopes"),
+    );
     for (const [recipient, key] of [
-      ["alpha@surface-pro", "alpha@surface-pro"],
-      ["claude:alpha@surface-pro", "_providers/claude/alpha@surface-pro"],
-      ["codex:alpha@surface-pro", "_providers/codex/alpha@surface-pro"],
+      ["claude:alpha@surface-pro", "claude/alpha@surface-pro"],
+      ["codex:alpha@surface-pro", "codex/alpha@surface-pro"],
     ]) {
       assert.ok(
-        outbox.includes(`${key}/${sent[recipient].envelope.id}.json`),
-        `${recipient} missing from outbox: ${outbox.join(", ")}`,
+        providerOutbox.includes(`${key}/${sent[recipient].envelope.id}.json`),
+        `${recipient} missing from provider outbox: ${providerOutbox.join(", ")}`,
       );
     }
     assert.ok(outbox.every((path) => !path.includes(":")));
+    assert.ok(providerOutbox.every((path) => !path.includes(":")));
 
     await rm(remoteMailboxRoot);
     await mkdir(remoteMailboxRoot);
@@ -1473,6 +1526,10 @@ test("remote outbox retry preserves provider identity beside bare Copilot", asyn
       );
     }
     assert.deepEqual(await listFiles(join(stateRoot, "remote-outbox", "envelopes")), []);
+    assert.deepEqual(
+      await listFiles(join(stateRoot, "remote-outbox", "provider-envelopes")),
+      [],
+    );
   });
 });
 

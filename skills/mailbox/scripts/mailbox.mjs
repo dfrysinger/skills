@@ -5,8 +5,12 @@ import {
   createConfiguredMailbox,
   parseMailboxAddress,
   POKE_FALLBACK_DEFERRED,
+  POKE_HELD,
+  POKE_IN_PROGRESS,
   POKE_NO_ACTIVE_COPILOT,
+  POKE_REFUSED,
   POKE_REMOTE_PENDING,
+  POKE_SUBMITTED,
   POKE_UNVERIFIED,
   resolveOwnAddress,
   writeMailboxConfiguration,
@@ -215,7 +219,7 @@ try {
     case "poke": {
       const { positional, options } = parseOptions(args, new Set(["wait"]));
       if (positional.length !== 1) usage("poke requires one agent name");
-      const address = parseMailboxAddress(positional[0]);
+      const address = canonicalizeMailboxAddress(positional[0]);
       if (address.machine && address.machine !== mailbox.machineName) {
         console.log(`poke: deferred to mailbox watcher on ${address.machine}`);
         process.exitCode = POKE_REMOTE_PENDING;
@@ -255,6 +259,26 @@ try {
           `UNAVAILABLE: guarded terminal wakeup for '${positional[0]}' did not submit; the mail remains queued.`,
         );
         process.exitCode = POKE_FALLBACK_DEFERRED;
+      } else if (result.status === "in-progress") {
+        console.error(
+          `IN_PROGRESS: another watcher is already handling '${positional[0]}'.`,
+        );
+        process.exitCode = POKE_IN_PROGRESS;
+      } else if (result.status === "submitted") {
+        console.error(
+          `SUBMITTED: '${positional[0]}' accepted the native wakeup without acknowledgement.`,
+        );
+        process.exitCode = POKE_SUBMITTED;
+      } else if (result.status === "held") {
+        console.error(
+          `HELD: '${positional[0]}' retained the wakeup without submitting it.`,
+        );
+        process.exitCode = POKE_HELD;
+      } else if (result.status === "refused") {
+        console.error(
+          `REFUSED: '${positional[0]}' rejected the native wakeup.`,
+        );
+        process.exitCode = POKE_REFUSED;
       }
       break;
     }

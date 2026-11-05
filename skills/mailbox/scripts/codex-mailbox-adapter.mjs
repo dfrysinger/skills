@@ -27,6 +27,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const MAX_WEBSOCKET_MESSAGE_BYTES = 1_048_576;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "[::1]"]);
 const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const TERMINAL_CONNECT_CODES = new Set(["EAUTH", "ECONNREFUSED", "ENOENT"]);
 
 export class CodexEnvironmentError extends Error {
   constructor(message) {
@@ -61,6 +62,10 @@ function safeRpcMessage(value) {
 
 function result(outcome, detail, releaseWatcher = false) {
   return releaseWatcher ? { outcome, detail, releaseWatcher: true } : { outcome, detail };
+}
+
+function terminalConnectFailure(error) {
+  return error instanceof CodexTransportError && TERMINAL_CONNECT_CODES.has(error.code);
 }
 
 function isLoopbackEndpoint(value) {
@@ -436,7 +441,11 @@ export function createCodexWakeupAdapter({
     try {
       session = await transport.connect({ endpoint, token });
     } catch (error) {
-      return result("deferred", transportDetail(error, "codex endpoint unavailable"));
+      return result(
+        "deferred",
+        transportDetail(error, "codex endpoint unavailable"),
+        terminalConnectFailure(error),
+      );
     }
     try {
       const initialized = await initializeSession(session);
@@ -487,7 +496,11 @@ export function createCodexWakeupAdapter({
       try {
         session = await transport.connect({ endpoint, token });
       } catch (error) {
-        return result("deferred", transportDetail(error, "codex endpoint unavailable"));
+        return result(
+          "deferred",
+          transportDetail(error, "codex endpoint unavailable"),
+          terminalConnectFailure(error),
+        );
       }
       try {
         const initialized = await initializeSession(session);

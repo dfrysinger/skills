@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { joinSession } from "@github/copilot-sdk/extension";
 import { createDiagnosticLogger, errorDetails } from "./diagnostics.mjs";
 import {
+  configuredCopilotName,
   currentSessionName,
   currentTmuxSession,
   isForegroundSession,
@@ -84,6 +85,8 @@ try {
 }
 let tmuxSession;
 let sessionName;
+const managedSessionName =
+  configuredCopilotName();
 const activeSessionStateDir = join(sessionStateRoot, session.sessionId);
 const rotationBarrier =
   process.env.COPILOT_SESSION_CONTROL_ROTATION_BARRIER ??
@@ -107,7 +110,9 @@ try {
   initialTmuxSessionError = error;
 }
 try {
-  if (initiallyForeground) sessionName = await currentSessionName(session);
+  if (initiallyForeground) {
+    sessionName = managedSessionName ?? await currentSessionName(session);
+  }
 } catch (error) {
   initialSessionNameError = error;
 }
@@ -270,7 +275,10 @@ async function refreshIdentity() {
     }
     let refreshedSessionName = foreground ? sessionName : undefined;
     try {
-      if (foreground) refreshedSessionName = await currentSessionName(session);
+      if (foreground) {
+        refreshedSessionName =
+          managedSessionName ?? await currentSessionName(session);
+      }
     } catch (error) {
       diagnostics.log("session.identity_lookup_failed", {
         identitySource: "session-name",

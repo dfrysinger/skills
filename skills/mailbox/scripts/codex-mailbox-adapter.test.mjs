@@ -391,16 +391,41 @@ test("wrong-turn -32600 re-reads once and starts only when the exact thread is i
   assert.equal(transport.calls.at(-1).params.threadId, "thread-1");
 });
 
-test("endpoint failure is deferred while post-request transport loss is ambiguous", async () => {
+test("terminal endpoint failures release the watcher while transient failures retain it", async () => {
   const unavailable = {
     async connect() {
       throw new CodexTransportError("connect", "ECONNREFUSED");
     },
   };
-  const deferred = await adapter(unavailable).wake(wake);
+  const instance = adapter(unavailable);
+  const prepared = await instance.prepare(wake);
+  assert.equal(prepared.outcome, "deferred");
+  assert.equal(prepared.releaseWatcher, true);
+  const deferred = await instance.wake(wake);
   assert.equal(deferred.outcome, "deferred");
+  assert.equal(deferred.releaseWatcher, true);
   assert.match(deferred.detail, /ECONNREFUSED/);
 
+  const authenticationRejected = {
+    async connect() {
+      throw new CodexTransportError("connect", "EAUTH");
+    },
+  };
+  const rejected = await adapter(authenticationRejected).wake(wake);
+  assert.equal(rejected.outcome, "deferred");
+  assert.equal(rejected.releaseWatcher, true);
+
+  const busy = {
+    async connect() {
+      throw new CodexTransportError("connect", "ETIMEDOUT");
+    },
+  };
+  const transient = await adapter(busy).wake(wake);
+  assert.equal(transient.outcome, "deferred");
+  assert.equal(transient.releaseWatcher, undefined);
+});
+
+test("post-request transport loss is ambiguous", async () => {
   const transport = fakeTransport([
     { method: "thread/loaded/list", response: loaded(["thread-1"]) },
     { method: "thread/read", response: thread({ type: "idle" }) },
