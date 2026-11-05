@@ -91,6 +91,7 @@ async function createHarness(initialState = {}) {
     delivery: "idle",
     idleCounter: 0,
     sessionName: "hotel",
+    userNamed: true,
     foregroundSessionId: "test-session",
     ...initialState,
   });
@@ -198,7 +199,13 @@ export async function joinSession() {
           if (state().sessionNameSnapshotNeverResolves) {
             return new Promise(() => {});
           }
-          return {workspace: {id: "test-session", name: state().sessionName}};
+          return {
+            workspace: {
+              id: "test-session",
+              name: state().sessionName,
+              user_named: state().userNamed,
+            },
+          };
         },
         async isProcessing() {
           return {processing: state().processing};
@@ -474,6 +481,11 @@ export async function joinSession() {
       MOCK_STATE: statePath,
       MOCK_CALLS: callsPath,
       MOCK_DEDUPE_DIR: join(inbox, "dedupe"),
+      MAILBOX_SELF_ADDRESS: initialState.mailboxSelfAddress,
+      CLAUDE_CODE_MESSAGING_SOCKET: undefined,
+      CODEX_AGENT_STACK_REMOTE_TOKEN: undefined,
+      CODEX_APP_SERVER_ENDPOINT: undefined,
+      CODEX_LAUNCHER_PID: undefined,
       COPILOT_SESSION_STATE_ROOT: join(root, "session-state"),
       COPILOT_SESSION_CONTROL_CONFIRM_TIMEOUT_MS:
         initialState.useDeprecatedConfiguration ? undefined : "500",
@@ -618,6 +630,33 @@ test("background workers withdraw aliases and refuse stale named requests", asyn
       (await harness.receipt("completed", "explicit-background-maintenance")).result.reloadRequested,
       true,
     );
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("managed Copilot identity remains fixed when the session is renamed", async () => {
+  const harness = await createHarness({
+    mailboxSelfAddress: "copilot:alpha",
+    sessionName: "renamed-before-start",
+  });
+  try {
+    assert.equal(harness.heartbeat.sessionName, "alpha");
+    await harness.setState({ sessionName: "renamed-again" });
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    assert.equal((await harness.currentHeartbeat()).sessionName, "alpha");
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("a nested Copilot CLI ignores an inherited non-Copilot mailbox address", async () => {
+  const harness = await createHarness({
+    mailboxSelfAddress: "claude:alpha",
+    sessionName: "nested-copilot",
+  });
+  try {
+    assert.equal(harness.heartbeat.sessionName, "nested-copilot");
   } finally {
     await harness.stop();
   }

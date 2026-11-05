@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { joinSession } from "@github/copilot-sdk/extension";
 
 import { createDiagnosticLogger, errorDetails } from "../session-control/diagnostics.mjs";
-import { preferredAgentName } from "../session-control/session-identity.mjs";
+import {
+  configuredCopilotName,
+  preferredAgentName,
+} from "../session-control/session-identity.mjs";
 import { createConfiguredMailbox } from "../../skills/mailbox/scripts/mailbox-core.mjs";
 
 const stateRoot =
@@ -50,6 +53,8 @@ const activeWatchers = new Map();
 let refreshing = false;
 let shuttingDown = false;
 let identityInterval;
+const managedName =
+  configuredCopilotName();
 
 async function stopActiveWatchers() {
   const watchers = [...activeWatchers.values()];
@@ -93,7 +98,7 @@ async function refreshIdentity() {
   try {
     let nextName;
     try {
-      nextName = await preferredAgentName(session);
+      nextName = await preferredAgentName(session, managedName);
     } catch (error) {
       diagnostics.log("watcher.identity_failed", {
         sessionId: session.sessionId,

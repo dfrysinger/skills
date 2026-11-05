@@ -1,11 +1,12 @@
 ---
 name: mailbox
-description: Hand a file or message to another named Copilot CLI, Claude Code, or Codex CLI session. Use when this session has produced a deliverable another named agent should pick up, or the user says to send something to an agent by name (e.g. "send this to juliett"). Copilot delivery uses a portable Node watcher and SDK session names; macOS tmux remains a compatibility identity and the guarded fallback for Claude and Codex.
+description: Hand a file or message to another named Copilot CLI, Claude Code, or Codex CLI session. Use when this session has produced a deliverable another named agent should pick up, or the user says to send something to an agent by name (e.g. "send this to juliett"). Addresses distinguish providers and computers; managed Windows sessions use provider-native wakeups, while macOS tmux remains a compatibility path.
 ---
 
 # mailbox
 
-Cross-session and cross-computer message + file handoff, keyed by agent name.
+Cross-session and cross-computer message + file handoff, keyed by provider,
+agent name, and optional machine.
 
 ## When to use
 
@@ -20,7 +21,14 @@ Do NOT use mailbox for:
 
 ## How it works
 
-- **Identity = a live agent name.** On macOS, a live tmux session name remains
+- **Identity = `[provider:]name[@machine]`.** Providers are `copilot`,
+  `claude`, and `codex`; an omitted provider means Copilot for compatibility.
+  `alpha`, `claude:alpha`, and `codex:alpha` are independent local mailboxes.
+  Add `@machine` only for cross-computer transport, such as
+  `codex:alpha@surface-pro`. Agent Stack exports the exact
+  `MAILBOX_SELF_ADDRESS` for every managed process. Invalid explicit identity
+  fails closed rather than falling back to another provider. On macOS, a live
+  tmux session name remains
   the first choice so existing Agent Stack sessions keep their established
   identity. When no live tmux identity matches, Copilot falls back to the
   session's current `/rename` name. Only fresh session-control heartbeats are
@@ -46,9 +54,8 @@ Do NOT use mailbox for:
   hosts outside tmux, use Copilot's native `--name` for a new session or
   `/rename <name>` for a running session; resume by exact session ID when
   historical names are ambiguous.
-- **Cross-computer address = `name@machine`.** An unqualified name such as
-  `hotel` means Hotel on this computer only. Address another computer
-  explicitly with `hotel@surface-pro`. There is no implicit broadcast or
+- **Cross-computer address includes `@machine`.** An address without a machine
+  suffix means this computer only. There is no implicit broadcast or
   cross-machine aggregation. Set the stable machine label with
   `COPILOT_AGENT_MACHINE`; there is no hostname fallback.
 - **Durable ownership records use qualified addresses.** When a worktree,
@@ -64,18 +71,16 @@ Do NOT use mailbox for:
   configurations. Reading, notification markers, watcher locks, retries, and
   pending-to-delivered acknowledgement all stay on the local disk.
 - **Remote transport = immutable files.** Qualified envelopes are first staged
-  under `MAILBOX_STATE_ROOT/remote-outbox`, then copied to
-  `$MAILBOX_REMOTE_ROOT/<name@machine>/pending/`. Attachments are published
+  under   `MAILBOX_STATE_ROOT/remote-outbox`, then copied to the provider-qualified
+  address path under `$MAILBOX_REMOTE_ROOT`. Attachments are published
   before the envelope. Published files are never edited, renamed, or deleted
   by delivery or acknowledgement. The recipient imports a complete remote
   envelope into its ordinary unqualified local mailbox and later publishes a
   separate immutable receipt under `$MAILBOX_REMOTE_ROOT/receipts/`.
-- **Remote wakeup = recipient-local polling.** The packaged
-  `mailbox-watcher` extension runs beside each Copilot session. It uses the
-  tmux name when available, otherwise the live Copilot session name, and polls
-  the unqualified local mailbox plus its configured `name@machine` remote
-  transport address every two seconds. Qualified mail is copied into the
-  ordinary local mailbox before notification.
+- **Remote wakeup = recipient-local polling.** Each native watcher polls its
+  exact local provider address plus the matching provider-qualified
+  `@machine` import address. Qualified mail is copied into the ordinary local
+  provider mailbox before notification.
   New mail is bridged into the machine-local session-control request queue. Session-control
   heartbeats, claims, locks, receipts, and logs remain local and must not be
   placed in OneDrive.
@@ -85,8 +90,12 @@ Do NOT use mailbox for:
   through the plugin's `session-control` extension and immediate SDK
   `session.send()`. An active Copilot turn receives the nudge through its
   steering lane, while an idle session starts it normally. The extension does
-  not wait for idle before submitting it. Claude and Codex retain the
-  guarded terminal path:
+  not wait for idle before submitting it. Agent Stack-managed Windows Claude
+  sessions receive the same fixed nudge through Claude's authenticated
+  messaging pipe. Managed Windows Codex sessions receive it through their
+  launch-scoped authenticated loopback app-server, using exact thread and turn
+  identity. Neither Windows adapter injects terminal input. On macOS, Claude
+  and Codex retain the guarded terminal compatibility path:
   they require an initialized backend-specific footer and empty input box
   before the same marked prompt is entered. The shared parser in
   `skills/_lib/agent-pane.sh` detects the nearest recognized agent process in
@@ -104,8 +113,12 @@ Do NOT use mailbox for:
   as a slash command** — slash dispatch races cold-start skill
   loading and fails as "unknown command" before the snapshot is ready.
   **Recipient agent: when you receive the message "check mailbox; skip if
-  empty" (or are otherwise invoked as the mailbox skill with no args), run
-  `~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/mailbox/scripts/mailbox-check.sh`.
+  empty" (or are otherwise invoked as the mailbox skill with no args), run the
+  portable CLI from `MAILBOX_SCRIPTS_DIR`: on Windows,
+  `node "$env:MAILBOX_SCRIPTS_DIR\mailbox.mjs" check`; on POSIX,
+  `node "$MAILBOX_SCRIPTS_DIR/mailbox.mjs" check`. If that environment variable
+  is unavailable, resolve `scripts/mailbox.mjs` beside this skill and run its
+  `check` command.
   If it reports `no pending mail`, say nothing and continue with whatever you
   were doing — no visible turn output needed. If there IS mail, surface and act
   on it per the receive workflow.**
@@ -124,22 +137,22 @@ Do NOT use mailbox for:
   --file <path> [--file <path> ...]
 ```
 
-Recipient name is the agent's live tmux name or Copilot `/rename` name (for
-example, `juliett` or `kilo`). Attachments are copied rather than symlinked.
-The script prints `wakeup: ... (verified | deferred | NOT verified | skipped)` so you know
-whether the live wakeup landed; either way the envelope is durable.
+Use a bare Copilot name or an explicit provider-qualified address, for example
+`juliett`, `claude:kilo`, or `codex:alpha@surface-pro`. Attachments are copied
+rather than symlinked. The script prints the structured wakeup outcome; either
+way the envelope is durable until acknowledged.
 
 The portable entry point, including on Windows, is:
 
 ```sh
-node <plugin>/skills/mailbox/scripts/mailbox.mjs send <recipient-name[@machine]> \
+node <plugin>/skills/mailbox/scripts/mailbox.mjs send <[provider:]name[@machine]> \
   --summary "<short title>" \
   --message "<free text>" \
   --file <path>
 ```
 
-The shell wrapper adds only the macOS notification and Claude/Codex tmux
-fallback.
+The shell wrapper adds only the macOS notification and guarded terminal
+compatibility fallback.
 
 For a qualified remote recipient, the sender stages the durable envelope
 locally and attempts to publish it to `MAILBOX_REMOTE_ROOT`. A publication
@@ -153,24 +166,25 @@ and `ack` commands never operate directly on the shared transport.
 
 Three ways the receiver finds out:
 
-1. **Wakeup prompt arrives as a user message.** When you see "check mailbox; skip if empty", or are otherwise invoked as the `mailbox` skill with no args, run `~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/mailbox/scripts/mailbox-check.sh`. If it reports `no pending mail`, the wakeup was a stale race (mail was acked in the meantime) — say nothing and continue. If mail IS present, surface it.
+1. **Wakeup prompt arrives as a user message.** When you see "check mailbox; skip if empty", or are otherwise invoked as the `mailbox` skill with no args, run `node "$env:MAILBOX_SCRIPTS_DIR\mailbox.mjs" check` on Windows or `node "$MAILBOX_SCRIPTS_DIR/mailbox.mjs" check` on POSIX. If it reports `no pending mail`, the wakeup was a stale race (mail was acked in the meantime) — say nothing and continue. If mail IS present, surface it.
 2. **Resume-hook prepended to the session prompt.** When this happens you'll see "You have N unread mailbox envelope(s) ..." as part of your initial context. Run `mailbox-check.sh`.
 3. **User says "check mail" / "any mailbox?"** Same response: run `mailbox-check.sh`.
 
 Workflow once you know there's mail:
 
-1. `~/.copilot/installed-plugins/_direct/dfrysinger--skills/skills/mailbox/scripts/mailbox-check.sh` — list pending envelopes for this session. Outside tmux, use `node .../mailbox.mjs check --name <name>` or set `COPILOT_AGENT_NAME`.
-2. `mailbox-read.sh <id>` — full message + attachment paths.
+1. `node "$env:MAILBOX_SCRIPTS_DIR\mailbox.mjs" check` on Windows, or the equivalent POSIX path — list pending envelopes for this session. Outside Agent Stack, use `node .../mailbox.mjs check --name <[provider:]name>` or set `MAILBOX_SELF_ADDRESS`.
+2. Use the same portable CLI's `read <id>` command for the full message and attachment paths.
 3. Surface summary + sender to the user concisely. Decide whether to act.
-4. After acting (or skipping), `mailbox-ack.sh <id>` moves it to `delivered/`.
+4. After acting (or skipping), use its `ack <id>` command to move the envelope to `delivered/`.
 
 ## Agent Stack integration
 
-On macOS, set `MAILBOX_INTEGRATION="true"` in
+Set `MAILBOX_INTEGRATION="true"` in
 `~/.config/remote-agent-stack/config`. Agent Stack calls `mailbox-poke.sh` with
-the full backend-specific tmux session name when attaching or starting an
-agent. Without this integration, mail still arrives durably but the recipient
-will not notice until the user manually says "check mail".
+the full backend-specific identity when attaching or starting an agent. On
+Windows it launches provider-native Claude and Codex watchers and exports
+`MAILBOX_SELF_ADDRESS`. Without this integration, mail still arrives durably
+but the recipient will not notice until the user manually says "check mail".
 
 For cross-computer delivery, also configure:
 
@@ -217,9 +231,20 @@ still override the persisted machine and remote root for an explicit process.
   for an ambiguous send, a rotation barrier, or a missing/unrecognized pane,
   and it still requires the exact prompt to appear in the transcript before
   marking the envelope notified.
-- **Claude and Codex wakeups remain fail-closed and best-effort.** Their poke
-  requires a ready pane and verifies a transcript entry; otherwise rely on the
-  osascript notification and resume hook.
+- **Wakeup outcomes are truthful and fail closed.** `verified` is reserved for
+  an acknowledged native delivery. `submitted`, `held`, `refused`, and
+  `ambiguous` are durable terminal outcomes for that exact attempt and do not
+  replay automatically. `deferred` writes no terminal marker and may retry.
+  Claude and Codex Windows transports currently prove submission, not provider
+  execution, so success is reported as `submitted`. Missing integration or an
+  unmanaged provider session remains queued with managed-relaunch or upgrade
+  guidance.
+- **Codex remote permissions are set by `turn/start`.** Codex rejects
+  permission-override flags on a remote TUI resume. When Agent Stack
+  `ALLOW_ALL` is true, the native watcher starts an idle mailbox turn with
+  approval policy `never` and sandbox policy `dangerFullAccess`; Codex applies
+  that policy to the turn and subsequent turns. Steering an already active
+  turn keeps that turn's existing permission policy.
 - **Mailbox writeable by anyone with shell access.** Treat envelope contents as not-secret. Don't put credentials in messages or attachments.
 - **No reply-thread bookkeeping.** If A sends to B and B wants to reply, B sends back to A's name. There's no thread-id linkage in v1.
 - **Acked mail is moved, not deleted.** `delivered/` accumulates; periodically prune.
@@ -236,9 +261,11 @@ still override the persisted machine and remote root for an explicit process.
   envelope and the recipient's two-second watcher can notice the same mail at
   nearly the same time. A short machine-local claim under
   `MAILBOX_STATE_ROOT/notifying/` uses the full mailbox address, so only one
-  path submits each local SDK request. The other path reports that notification is already in
-  progress. Failed or abandoned claims are released or reclaimed, while the
-  durable envelope remains pending.
+  path submits each local SDK request. The other path reports that notification
+  is already in progress. Claims carry random ownership IDs; a live owner is
+  never reclaimed by age alone, and an older owner cannot remove a successor's
+  claim. Dead or released claims may be reclaimed while the durable envelope
+  remains pending.
 - **Attachment stabilization must not erase notification state.** The watcher
   may temporarily exclude an envelope whose synced attachments have not yet
   remained unchanged for two polls. Marker cleanup compares against every
@@ -249,7 +276,9 @@ still override the persisted machine and remote root for an explicit process.
 ## Verification
 
 - `mailbox-list.sh` — pending/delivered counts per mailbox + active tmux sessions.
-- `mailbox-send.sh` reports `wakeup: ... (verified|deferred|NOT verified|skipped)` — `deferred` means a qualified remote envelope is durable but its machine watcher has not confirmed delivery; anything other than `verified` means rely on the resume-hook or human notification.
+- `mailbox-send.sh` reports the structured outcome (`verified`, `submitted`,
+  `held`, `refused`, `ambiguous`, or `deferred`). The envelope remains durable
+  until the recipient acknowledges it.
 - `git -C ~/.copilot/skills status` clean after sending or receiving (mailbox queue lives at `~/.copilot/mailbox/`, not tracked in the skills repo).
 
 ## Scripts

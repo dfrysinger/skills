@@ -5,11 +5,29 @@ import { delimiter, join } from "node:path";
 import test from "node:test";
 
 import {
+  configuredCopilotName,
   currentSessionName,
   currentTmuxSession,
   isForegroundSession,
   preferredAgentName,
 } from "./session-identity.mjs";
+
+test("managed Copilot identity remains fixed across session renames", () => {
+  assert.equal(configuredCopilotName({}), undefined);
+  assert.equal(
+    configuredCopilotName({ MAILBOX_SELF_ADDRESS: "copilot:alpha" }),
+    "alpha",
+  );
+  assert.equal(configuredCopilotName({ MAILBOX_SELF_ADDRESS: "alpha" }), "alpha");
+  assert.equal(configuredCopilotName({ MAILBOX_SELF_ADDRESS: "claude:alpha" }), undefined);
+  assert.equal(configuredCopilotName({ MAILBOX_SELF_ADDRESS: "codex:alpha" }), undefined);
+  for (const address of ["gemini:alpha", "copilot:alpha@surface-pro", "copilot:bad name"]) {
+    assert.throws(
+      () => configuredCopilotName({ MAILBOX_SELF_ADDRESS: address }),
+      /canonical local provider address/,
+    );
+  }
+});
 
 function foregroundConnection(sessionId) {
   return {
@@ -33,8 +51,22 @@ test("foreground ownership follows the native host rather than the joined sessio
   foreground = "current";
   assert.equal(await isForegroundSession(session), false);
   assert.equal(await preferredAgentName(session), undefined);
+  assert.equal(await preferredAgentName(session, "alpha"), undefined);
   foreground = undefined;
   assert.equal(await isForegroundSession(session), false);
+});
+
+test("managed identity is published only by the foreground session", async () => {
+  let foreground = "managed";
+  const session = {
+    sessionId: "managed",
+    connection: {
+      async sendRequest() { return { sessionId: foreground }; },
+    },
+  };
+  assert.equal(await preferredAgentName(session, "alpha"), "alpha");
+  foreground = "replacement";
+  assert.equal(await preferredAgentName(session, "alpha"), undefined);
 });
 
 test("foreground ownership refuses unavailable, malformed and stalled answers", async () => {
@@ -98,7 +130,13 @@ test("identity prefers the current tmux name and refreshes after a rename", {
       rpc: {
         metadata: {
           async snapshot() {
-            return { workspace: { id: "session-1", name: "session-name" } };
+            return {
+              workspace: {
+                id: "session-1",
+                name: "session-name",
+                user_named: true,
+              },
+            };
           },
         },
       },
@@ -124,13 +162,45 @@ test("identity falls back to the current live Copilot session name", async () =>
       rpc: {
         metadata: {
           async snapshot() {
-            return { workspace: { id: "session-1", name: "india" } };
+            return {
+              workspace: { id: "session-1", name: "india", user_named: true },
+            };
           },
         },
       },
     };
     assert.equal(await currentSessionName(session), "india");
     assert.equal(await preferredAgentName(session), "india");
+  } finally {
+    if (previousPane === undefined) delete process.env.TMUX_PANE;
+    else process.env.TMUX_PANE = previousPane;
+  }
+});
+
+test("identity ignores an auto-generated session title", async () => {
+  const previousPane = process.env.TMUX_PANE;
+  try {
+    delete process.env.TMUX_PANE;
+    const session = {
+      sessionId: "session-1",
+      connection: foregroundConnection("session-1"),
+      rpc: {
+        metadata: {
+          async snapshot() {
+            return {
+              workspace: {
+                id: "session-1",
+                name: "Set Up Local Dev Builds",
+                user_named: false,
+              },
+            };
+          },
+        },
+      },
+    };
+
+    assert.equal(await currentSessionName(session), undefined);
+    assert.equal(await preferredAgentName(session), undefined);
   } finally {
     if (previousPane === undefined) delete process.env.TMUX_PANE;
     else process.env.TMUX_PANE = previousPane;
@@ -156,7 +226,7 @@ test("identity falls back to the session name when tmux lookup fails", {
       rpc: {
         metadata: {
           async snapshot() {
-            return { workspace: { name: "india" } };
+            return { workspace: { name: "india", user_named: true } };
           },
         },
       },
