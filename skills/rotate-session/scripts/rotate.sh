@@ -147,7 +147,6 @@ COPILOT_BIN="$(command -v copilot 2>/dev/null || true)"
 HOST_COMMAND="$(ps -ww -o command= -p "$HOST_PID" 2>/dev/null || true)"
 HOST_OPTIONS="${HOST_COMMAND%% --interactive *}"
 HOST_OPTIONS="${HOST_OPTIONS%% -i *}"
-REMOTE_FLAG=""
 PERMISSION_FLAG=""
 set -f
 set -- $HOST_OPTIONS
@@ -155,11 +154,9 @@ set -- $HOST_OPTIONS
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --remote)
-      REMOTE_FLAG="--remote"
       shift
       ;;
     --no-remote)
-      REMOTE_FLAG="--no-remote"
       shift
       ;;
     --allow-all|--yolo)
@@ -245,7 +242,6 @@ LAUNCH_EXIT="$RECOVERY_FILE.launch-exit"
   printf 'trap '\''status=$?; printf "%%s\\n" "$status" > %q'\'' EXIT\n' "$LAUNCH_EXIT"
   printf 'prompt=$(cat -- %q)\n' "$RECOVERY_FILE"
   printf '%q --new-session-id=%q --name=%q' "$COPILOT_BIN" "$NEW" "$PANE_NAME"
-  [ -z "$REMOTE_FLAG" ] || printf ' %q' "$REMOTE_FLAG"
   [ -z "$PERMISSION_FLAG" ] || printf ' %q' "$PERMISSION_FLAG"
   [ -z "$AGENT_MODE" ] || printf ' --mode %q' "$AGENT_MODE"
   printf ' -C %q --interactive "$prompt" 2> >(tee -a %q >&2)\n' "$PANE_CWD" "$LOG"

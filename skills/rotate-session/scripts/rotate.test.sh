@@ -70,6 +70,10 @@ if (process.env.MOCK_STARTUP_EXIT) {
   console.error("synthetic startup failure");
   process.exit(Number(process.env.MOCK_STARTUP_EXIT));
 }
+if (args.includes("--remote") || args.includes("--no-remote")) {
+  console.error("synthetic current CLI: remote launch flags were removed");
+  process.exit(64);
+}
 const value = (name) => {
   const equals = args.find((arg) => arg.startsWith(`${name}=`));
   if (equals) return equals.slice(name.length + 1);
@@ -280,6 +284,17 @@ grep -Fq 'seeded through tmux process replacement' "$mode_log"
 mode_new="$(sed -n 's/^replacement session: //p' "$mode_log" | tail -1)"
 grep -Fq '"agentMode":"autopilot"' \
   "$ROOT/home/.copilot/session-state/$mode_new/events.jsonl"
+
+export MOCK_PS_COMMAND="$ROOT/bin/copilot --no-remote --yolo --new-session-id old-no-remote"
+IFS=$'\t' read -r no_remote_state no_remote_log < <(
+  start_rotation old-no-remote no-remote \
+    'continue retired session old-no-remote'
+)
+unset MOCK_PS_COMMAND
+printf '%s\n' '{"type":"assistant.turn_end","data":{}}' \
+  >>"$no_remote_state/events.jsonl"
+wait_for_result "$no_remote_log"
+grep -Fq 'seeded through tmux process replacement' "$no_remote_log"
 
 IFS=$'\t' read -r cancel_state cancel_log < <(
   start_rotation old-cancel cancel
