@@ -2,24 +2,27 @@
 
 ## Status
 
-**Proposal revision:** `provider-native-cross-client-mailbox-design-v8-queue-review`
+**Proposal revision:** `provider-native-cross-client-mailbox-design-v9-claude-inbound-accept`
 **Lane:** Critical
-**Evidence packet:** [`provider-native-cross-client-mailbox-evidence-v1`](provider-native-cross-client-mailbox-evidence.md)
+**Evidence packet:** [`provider-native-cross-client-mailbox-evidence-v2`](provider-native-cross-client-mailbox-evidence.md)
 **Decision record:** [`provider-native-cross-client-mailbox-decisions-v3`](provider-native-cross-client-mailbox-decisions.json)
 **Independent challenge:** [`provider-native-cross-client-mailbox-constraint-challenge.md`](provider-native-cross-client-mailbox-constraint-challenge.md)
 **Dual design review:** [`provider-native-cross-client-mailbox-design-review.md`](provider-native-cross-client-mailbox-design-review.md)
 **Current focused challenge:** pass 1 returned `REFRAME` after the installed
 macOS runtime disproved cross-client active-turn discovery; pass 2 first
 returned `NARROW`, then returned `CONTINUE` after the review delta preserved
-Windows steering and used the proved macOS queue plus thread-policy update
+Windows steering and used the proved macOS queue plus thread-policy update.
+The Claude 2.1.318 live replay then returned `NARROW`: use Claude's documented
+launch-scoped inbound grant only for mailbox-enabled Agent Stack sessions
 **Current design review:** passed for
-`provider-native-cross-client-mailbox-design-v8-queue-review`
-**Design status:** Approved; implementation may resume under development-loop.
+`provider-native-cross-client-mailbox-design-v9-claude-inbound-accept`
+**Design status:** Approved; the v9 Claude inbound-policy amendment may proceed
+under development-loop.
 
 ```yaml
 design_incubation:
   status: approved
-  cycle: 2
+  cycle: 3
   objective_file: /Users/dfrysinger/.copilot/session-state/e926f7bf-0a7e-471d-95a4-e8098c75bdfb/files/mailbox-codex-design-objective.txt
   reminder:
     kind: design_progress
@@ -92,7 +95,10 @@ ownership, provider version checks, and managed provider launch.
 An agent in normal or autopilot mode may ask these owners to perform an
 operation. The mailbox message text, receiving model, and provider process do
 not gain authority to change identity, upgrade software, restart another
-session, bypass inbound controls, or acknowledge mail.
+session, change inbound controls, or acknowledge mail. The trusted launcher
+may apply the documented launch-scoped inbound policy that the user selected
+by enabling mailbox integration; message content cannot create or widen that
+grant.
 
 The user permitted a future autopilot upgrade and restart flow, with idle and
 Agent Stack ownership conditions. This work does not exercise that grant.
@@ -129,7 +135,7 @@ after that failure.
 | The envelope remains the durable source of truth. | Existing mailbox architecture. | Wakeup loss cannot lose the message. | Revisit only if mailbox persistence is replaced as a separate project. |
 | Mutable state stays local; remote files remain immutable. | Existing reviewed OneDrive transport design. | Prevents shared-filesystem locking and acknowledgement corruption. | Revisit only if remote transport becomes transactional. |
 | Provider control carries only a fixed wakeup prompt. | Least privilege and existing Copilot mailbox behavior. | Provider channels never become a second mailbox or leak attachments. | Revisit only if a provider requires a structured opaque notification. |
-| Claude control uses its documented per-session socket or named pipe and inbound controls. | Official Claude Code behavior. | Uses the provider's authentication, ownership, and permission boundary. | Revisit if the provider removes hook access or own-session posting. |
+| Claude control uses its documented per-session socket or named pipe and inbound controls. A mailbox-enabled Agent Stack launch sets `crossSessionInbound: "accept"` in that launch's inline `--settings` JSON. | Official Claude Code behavior, the user's Agent Stack-only boundary, and Claude 2.1.318 live evidence that a bypass-permissions receiver holds an unclassified detached watcher. | Uses the provider's authentication and permission boundary while limiting the owner grant to one managed launch. Managed `hold` or `refuse` policy remains authoritative. | Revisit if Claude exposes documented watcher-only attestation, changes settings precedence, or removes launch-scoped inbound policy. |
 | Codex TUI and control use one Agent Stack-managed app-server on an authenticated loopback WebSocket. | Official Codex remote TUI and turn APIs; the installed TUI accepts bearer-token authentication for loopback WebSocket but rejects it for Unix remotes. | Gives the sender a reachable exact live thread without terminal injection or a platform-specific authentication downgrade. | Revisit if Codex exposes a supported authenticated local socket or a simpler exact-session control API. |
 | Automatic upgrade/restart is deferred; this change returns upgrade or managed-relaunch guidance. | Constraint challenge found the user statement tactical and permissive, while upgrade guidance already satisfies the required unavailable-control outcome. | Keeps package management, idle-input proof, and restart supervision off the critical delivery path. | Revisit in a separate work order using the recorded idle and Agent Stack ownership grant. |
 | Protected login remains manual. | Existing user autonomy boundary and credential policy. | Keeps secrets and protected identity actions outside agent control. | Revisit only for provider-supported non-secret synthetic test accounts. |
@@ -340,6 +346,15 @@ Agent Stack starts Claude with a SessionStart hook that launches one
 session-bound mailbox watcher as Claude's own child. The watcher inherits
 `CLAUDE_CODE_MESSAGING_SOCKET` and
 `CLAUDE_CODE_MESSAGING_TOKEN` in memory. It never writes the token.
+
+When mailbox integration is enabled, Agent Stack adds
+`crossSessionInbound: "accept"` to the same inline `--settings` JSON that
+contains the SessionStart hook. It does not write user, project, or local
+Claude settings. This is a deliberate owner grant for that one managed launch:
+every Claude peer that the provider authenticates for that session may submit
+an inbound message. A managed `hold` or `refuse` setting remains stricter and
+wins through Claude's normal settings precedence. Disabling mailbox
+integration removes both the hook and this launch-scoped grant.
 
 The hook may run again on resume, clear, or compact. Its watcher identity uses
 only a non-secret hash of the socket address. If that identity matches the live
@@ -575,6 +590,13 @@ or Agent Stack relaunch guidance. The process is not touched.
 - **Lost wakeup:** Claude/Codex watcher polling retries a deferred envelope.
   Copilot may also use its existing explicit poke path. Acknowledgement remains
   separate.
+- **Over-broad Claude inbound grant:** `crossSessionInbound: "accept"` applies
+  to every provider-authenticated peer for that managed Claude session, not
+  only the mailbox watcher. The grant exists only in Agent Stack's inline
+  settings when mailbox integration is enabled; it is never persisted to
+  ordinary Claude settings, and stricter managed policy still wins. The design
+  already does not claim isolation among processes or provider peers owned by
+  the same user.
 - **Ambiguous send:** the attempt is marked ambiguous and the same attempt
   identity is never replayed automatically.
 - **Codex state race:** Windows keeps its proved exact start/steer behavior.
@@ -627,6 +649,11 @@ normalization reads it in place.
   Codex app-server children.
 - Launch Codex with its prior embedded mode and Claude with its prior direct
   mode.
+- Removing the Claude launch-scoped `crossSessionInbound` value returns that
+  session to Claude's normal hold/refuse rules and manual mailbox pickup.
+- A running Claude session keeps the launch-scoped grant until it exits.
+  Rollback relaunches that Agent Stack session without mailbox integration or
+  without the v9 setting; it does not claim to mutate a live provider session.
 - Do not restore terminal injection. Manual mailbox pickup is the safe
   rollback for Claude and Codex.
 - Do not rewrite or delete pending, delivered, remote, or provider conversation
@@ -714,7 +741,7 @@ returns Claude/Codex to manual mailbox pickup.
 | `provider-remote-transport` | AC-2 | Publish `claude:alpha@surface-pro` and `codex:alpha@surface-pro` through a temporary immutable remote root while bare Copilot `alpha` exists; import each twice and acknowledge locally. | Each imports exactly once into its provider-qualified local mailbox; bare Copilot is untouched; remote bytes are unchanged; no mutable marker enters remote storage. | Provider identity is lost or the existing immutable transport contract regresses. |
 | `legacy-copilot-compat` | AC-1, AC-11 | Read and send against an existing bare Copilot fixture without `MAILBOX_SELF_ADDRESS`. | Same mailbox files and session-control target as before. | Migration breaks current callers. |
 | `wakeup-state-machine` | AC-3, AC-4, AC-5, AC-8 | Fake each adapter outcome and generation race around a pending envelope; for macOS allow-all, settle settings before the attempt transition; kill the actor before atomic marker rename, after rename but before request, after provider acceptance, and after terminal marker replacement; then run another watch tick. | Existing notified marker remains compatible; prerequisite settings create no wake marker; an atomically durable `attempting` marker precedes every wake submission; terminal unverified payload distinguishes submitted/held/refused/ambiguous and suppresses replay; definitive deferred removes the marker and may retry; interrupted attempting becomes ambiguous; envelope stays pending. | Persistence and live delivery claims are coupled incorrectly, a crash can replay a prompt, an unsent attempt can be misreported as submitted, or policy setup can be confused with wake submission. |
-| `claude-native-contract` | AC-3 through AC-8 | Launch a temporary supported Claude session with the Agent Stack hook; probe socket reply semantics, idle and active sends, inbound hold/refuse, hook re-fire, socket change, parent death, and waiter acquisition after auth rejection, missing endpoint, and refused connection while preserving the watcher on transient busy. | Exact submitted/verified/held/refused/ambiguous outcome marker plus transcript marker; one acting watcher; no secret in captured files or process args. | Claude delivery or watcher lifecycle is not authenticated, immediate, truthful, single-owner, or secret-safe. |
+| `claude-native-contract` | AC-3 through AC-8 | Before launch, snapshot the user, project, and local Claude settings files. Launch a temporary supported Claude session with Agent Stack mailbox integration and bypass permissions on macOS and Windows. Verify the inline settings contain both the SessionStart hook and `crossSessionInbound: "accept"`; verify integration-disabled launches contain neither; verify every snapshotted settings file remains byte-identical. Record the current official settings-precedence source that says managed policy is authoritative; do not mutate machine-wide managed policy during acceptance. Probe socket reply semantics, idle and active sends, hook re-fire, socket change, parent death, and waiter acquisition after auth rejection, missing endpoint, and refused connection while preserving the watcher on transient busy. | The mailbox prompt is delivered rather than held; ordinary settings files remain byte-identical; the launcher never writes managed settings; the official precedence source still places managed policy above inline `--settings`; exact submitted/verified/held/refused/ambiguous outcome marker plus transcript marker; one acting watcher; no secret in captured files or process args. | Claude delivery is held, the owner grant leaks into non-Agent-Stack settings, managed-policy precedence is no longer documented, or watcher lifecycle is not authenticated, immediate, truthful, single-owner, or secret-safe. |
 | `codex-native-contract` | AC-3 through AC-8 | On each enabled platform, launch app-server with a loopback port-zero bind; prove the reported or OS-observed listener belongs to the exact child before giving the endpoint or token to clients; exercise pre-bound-port, bind-failure, missing/wrong-token, and child-exit cases, including killing the child after ownership verification and immediately rebinding its port before each client connect. Attach the TUI and watcher, prove durable fresh launch and exact resume, canonical cwd identity across equivalent filesystem paths, bounded rebinding after thread rotation, and fail-closed ambiguous replacements. On Windows, preserve the admitted idle start, exact active steer, wrong-turn refusal, and concurrent-start contract. On macOS, queue while idle and active, issue two concurrent queue calls with distinct attempt IDs, and apply `thread/settings/update` before an allow-all queue whose turn writes outside the workspace without prompting. Finish with parent death, endpoint closure, and app-server exit. | Exactly one child-owned loopback listener exists at the ownership checkpoint; uncertain ownership starts no client and sends no token; child exit tears down both clients before either can continue against a replacement listener; the endpoint rejects missing or wrong bearer tokens; a fresh TUI thread is non-ephemeral; canonical path aliases preserve the same exact workspace while ambiguous same-workspace replacements defer; Windows retains its admitted exact-turn behavior; macOS queue submissions return distinct IDs and each input occurs exactly once whether idle, active, or concurrent; accepted thread settings govern the subsequent allow-all queue turn; accepted operations are reported only as submitted; no orphaned watcher, server, or listener. | A foreign listener can receive the token or conversation, local control is unauthenticated, control can reach the wrong or ephemeral thread, filesystem aliases can hide the intended thread, a platform's admitted behavior regresses, racing input can be lost or duplicated, the configured owner grant can be silently dropped, or the adapter can claim an unproved side effect. |
 | `cross-provider-live-windows` | AC-3, AC-6, AC-11 | Send Copilot to Claude and Codex, then reply to provider-qualified Copilot in isolated Windows workspaces. | All envelopes read and acknowledged by exact targets without terminal input. | The composed Windows journey fails despite adapter tests. |
 | `cross-provider-live-macos` | AC-3, AC-6, AC-11 | Repeat the provider journey on macOS before removing that provider's tmux fallback. | Exact native targets acknowledge and no tmux input occurs. | Native macOS control is not ready to replace the old path. |

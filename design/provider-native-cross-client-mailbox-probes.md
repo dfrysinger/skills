@@ -165,6 +165,41 @@ The committed-candidate acceptance on 2026-11-04 used Skills commit
 This admits native macOS Claude delivery through the session-bound
 SessionStart hook. It does not admit Codex changes.
 
+### Claude 2.1.318 bypass-permissions inbound amendment
+
+**Gate: LAUNCH-SCOPED ACCEPT REQUIRED FOR THE FINAL CANDIDATE**
+
+The final exact-head replay on 2026-11-05 reached Claude's authenticated
+socket and wrote the fixed mailbox prompt cleanly, but Claude held the message.
+The receiver used `--dangerously-skip-permissions`, and the detached watcher
+was a live verified process without a permission-mode classification.
+
+A bounded distinguishing diagnostic kept the same real home directory,
+mailbox address, SessionStart hook, exact mailbox scripts, and bypass mode:
+
+- adding `crossSessionInbound: "accept"` to a project-local
+  `.claude/settings.local.json` did not loosen the inbound policy;
+- adding the same value to Claude's inline command-line `--settings` JSON
+  auto-delivered the native watcher message;
+- the receiver replied `CLAUDE_SETTINGS_DIAGNOSTIC_PASS`;
+- the receiver acknowledged source envelope
+  `20261105T020451108Z-67568-10d7d97ba6a6` in 12 seconds;
+- no manual UI action delivered the message.
+
+This diagnostic proves the mechanism but is not acceptance because it launched
+Claude outside Agent Stack. The required implementation is the documented
+launch-scoped setting in Agent Stack's generated native-Claude settings.
+
+The governing provider sources are:
+
+- [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging)
+  for `accept`, `hold`, `refuse`, unattended-worker guidance, and inbound
+  outcomes;
+- [Claude Code settings](https://code.claude.com/docs/en/settings) for inline
+  `--settings` and precedence;
+- [settings reference](https://code.claude.com/docs/en/settings-reference.md#crosssessioninbound)
+  for the accepted values.
+
 ## Codex CLI 0.142.2 on macOS
 
 **Gate: BLOCKED — CLIENT UPGRADE REQUIRED**

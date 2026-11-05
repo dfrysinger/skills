@@ -1,6 +1,6 @@
 # Provider-Native Cross-Client Mailbox Evidence
 
-**Packet revision:** `provider-native-cross-client-mailbox-evidence-v1`
+**Packet revision:** `provider-native-cross-client-mailbox-evidence-v2`
 
 This packet records facts and binding decisions before architecture selection.
 It intentionally does not propose a component layout.
@@ -96,10 +96,20 @@ documents these properties:
 - The session applies `crossSessionInbound` controls and normal permission
   boundaries. Incoming peer text cannot approve permissions or execute slash
   commands.
+- `crossSessionInbound` accepts `accept`, `hold`, or `refuse`. Claude's
+  [settings documentation](https://code.claude.com/docs/en/cross-session-messaging)
+  recommends launch-scoped `accept` for unattended workers. Inline
+  `--settings` is below managed policy and above ordinary user, project, and
+  local settings; those ordinary settings cannot loosen a stricter value.
 - A script or hook can post to its own session socket. The token can prove an
   own-child sender where process evidence is unavailable.
 - The installed native Windows Claude version observed on 2026-11-03 is
   `2.1.302`.
+- The final macOS Claude 2.1.318 replay held an authenticated detached watcher
+  while the receiver used bypass permissions. A distinguishing diagnostic with
+  `crossSessionInbound: "accept"` in inline command-line settings delivered,
+  replied, and acknowledged without manual UI. A project-local setting with
+  the same value did not loosen the inbound policy.
 
 ### Codex CLI
 

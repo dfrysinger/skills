@@ -1,8 +1,78 @@
 # Provider-Native Cross-Client Mailbox Constraint Challenge
 
+## Claude 2.1.318 inbound-policy reconciliation
+
+**Decision: `NARROW`.** Keep the authenticated per-session socket and existing
+watcher. Add only Claude's documented launch-scoped inbound grant to
+mailbox-enabled Agent Stack sessions. Do not add sender attestation, a resident
+supervisor, terminal input, or persisted Claude settings.
+
+The user limited managed delivery with `"yes using agent stack, if its not an
+agent stack agent session then no"`. `MAILBOX_INTEGRATION=true` is the trusted
+launcher's explicit opt-in. The exact macOS 2.1.318 replay proved that a
+`--dangerously-skip-permissions` receiver holds the detached watcher's
+authenticated message because the provider cannot classify that watcher as a
+matching permission-mode peer.
+
+### Keep
+
+- Put `crossSessionInbound: "accept"` in the same inline `--settings` JSON as
+  the SessionStart hook, only when mailbox integration is enabled.
+- Keep Claude's socket/token authentication and fixed mailbox prompt.
+- Preserve managed settings precedence; a managed `hold` or `refuse` remains
+  authoritative.
+- Prove integration-disabled launches contain no inbound grant.
+
+### Remove
+
+- Raw `fromMode` or sender-mode attestation because its socket encoding is not
+  documented.
+- Keeping the hook alive or adding a resident supervisor solely to preserve
+  process ancestry.
+- User, project, or local settings writes, which would affect sessions that
+  Agent Stack does not own.
+- Manual approval as the success path because it does not provide unattended
+  mailbox delivery.
+
+### Authority and boundary
+
+The launch-scoped grant is a deliberate owner action, not authority acquired by
+the receiving model or mailbox text. No external policy in the evidence
+forbids it. Managed policy remains the higher authority. The grant admits every
+provider-authenticated peer for that one Claude session, not only the watcher;
+the existing design already does not claim isolation among same-user processes
+or provider peers. There is one launcher writer and no new shared-state or
+coordination mechanism.
+
+**Smallest next step:** add the value to the existing generated settings on
+macOS and Windows, add positive and integration-disabled command guards, then
+rerun the exact Claude idle and active canaries on both platforms.
+
+### Focused v9 reconciliation
+
+**Decision: `CONTINUE`.** The exact amended subject is
+`provider-native-cross-client-mailbox-design-v9-claude-inbound-accept`.
+Its evidence packet is `provider-native-cross-client-mailbox-evidence-v2`.
+It applies the pass-1 minimum without adding another authority or process:
+
+- the grant exists only in the inline settings for a mailbox-enabled Agent
+  Stack launch;
+- the work order states that every provider-authenticated peer for that
+  session is admitted;
+- user, project, and local settings are snapshotted and must remain
+  byte-identical;
+- integration-disabled launches must contain neither the hook nor the grant;
+- the launcher never writes managed settings, and official precedence
+  documentation remains the evidence that managed policy wins;
+- rollback requires relaunch because an existing process keeps its launch
+  settings until exit.
+
+The v9 proposal therefore preserves the user's Agent Stack-only boundary and
+the provider's higher managed-policy authority. Design review may proceed.
+
 ## Status
 
-**Evidence packet:** `provider-native-cross-client-mailbox-evidence-v1`
+**Evidence packet:** `provider-native-cross-client-mailbox-evidence-v2`
 **Decision record:** `provider-native-cross-client-mailbox-decisions-v3`
 **Pass 1 challenger:** fresh Claude Opus 5.5 context
 **Pass 1 status:** complete
@@ -711,7 +781,6 @@ same challenger reconciled the evidence-backed delta and returned
   interruption promotes it to ambiguous instead of replaying.
 - Marker outcomes come from direct responses, not cross-client notifications.
 
-**Current gate: `CONTINUE` for the reviewed v8 implementation.** Two-family
-design review closed every material macOS delta finding. The separately
-admitted Windows start/steer path remains unchanged; its mixed-policy
-concurrent-start concern is a non-blocking pre-existing follow-up.
+**Current gate: `CONTINUE` for v9 design review.** The v8 implementation
+remains reviewed. The launch-scoped Claude inbound amendment is cleared only
+for design review until its own two-family review closes.
