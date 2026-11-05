@@ -53,8 +53,12 @@ candidate workspace. The executor imports it in an isolated candidate home
 and resumes the returned session ID. Unsupported or failed imports stop the
 attempt; the runner never substitutes a transcript file for restored history.
 
-End the prefix before the original triggering user request.
-The phase prompt contains that exact request.
+Choose the cutoff using the playbook's
+[replay starting-point procedure](evaluation-playbook.md#choose-the-replay-starting-point):
+prevention, unaided recovery and guided recovery require different prior state.
+End the prefix before the original triggering request or supported wake event.
+The phase prompt contains that exact trigger; an invented correction is not
+an unsteered continuation.
 Restored phases receive no evaluation announcement or forced skill invocation.
 Choose the skill-context policy explicitly:
 
@@ -70,8 +74,10 @@ Choose the skill-context policy explicitly:
 Audit other instruction exposure and required state separately. Neither policy
 proves complete restoration. Do not silently strip or replace old instructions.
 
-Bind files, instructions and operational state to the same cutoff. Keep the
-wrong response and later correction in hidden judge evidence. Disclose path,
+Bind files, instructions and operational state to the same cutoff. For
+prevention, keep the wrong response and later correction in hidden judge
+evidence. Recovery cases retain earlier mistakes; guided recovery also exposes
+the correction at its declared phase. Keep subsequent answers hidden. Disclose path,
 tool and runtime differences. Do not dispatch when missing state prevents the
 required actions or criteria. Reloading skills changes discovery, not old
 instruction text already in the conversation.
@@ -98,9 +104,11 @@ Repository admission and offline grading remain required.
 - Candidate phases contain only evidence available at that point.
 - A later phase may add evidence but cannot change bytes from an earlier frozen
   phase without creating a new case revision.
-- Hidden judge evidence contains the correction, accepted outcome, or an
-  independently defined synthetic oracle. Candidate prompts and workdirs never
-  include it.
+- Hidden judge evidence contains the criterion authority, accepted outcome,
+  or an independently defined synthetic oracle. Corrections stay hidden for
+  prevention and unaided recovery; guided recovery exposes the exact correction
+  only at its declared phase. All other judge-only material remains absent from
+  candidate prompts and workdirs.
 - `judge-reference/` contains at least one frozen file; criteria prose alone is
   not a reference packet.
 - Exact quotations carry their source record and stable event identifier

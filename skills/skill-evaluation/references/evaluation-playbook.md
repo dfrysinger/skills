@@ -50,11 +50,12 @@ Choose the task type, then confirm that its runtime supplies these capabilities:
 | [Skill selection](skill-selection.md) | Ordinary requests, available descriptions and recorded unforced choices | Tests discovery separately. Forced loading is not selection evidence; the standard first-phase prose route requires loading and does not qualify as-is. |
 | Infrastructure checks | Deterministic tests, tiny fixtures and retained-output replay; local preparation checks need no model call | Tests the evaluator boundary, not a skill's behavioral advantage. |
 
-For historical steering events, prefer a faithful executable continuation from
-before the first wrong decision. Restore prior messages in their conversation
+For historical steering events, prefer a faithful executable continuation.
+Choose the cutoff by the [decision being tested](#choose-the-replay-starting-point),
+not by a fixed number of turns. Restore prior messages in their conversation
 roles, relevant observed tool results, instructions and workspace or application
-state at the same cutoff. Keep later corrections hidden and let new actions
-determine subsequent observations. Use a repository-only reconstruction when
+state at the same cutoff. Apply the chosen question's evidence boundary and
+let new actions determine subsequent observations. Use a repository-only reconstruction when
 that state is sufficient; otherwise identify the missing restoration capability.
 An adapted test supports only its narrower claim. Running on Actions does not
 by itself restore a session.
@@ -178,14 +179,16 @@ and split fractions remain experiment choices.
 The question is whether a general instruction change prevents the need for the
 same user intervention, not whether an agent can agree with the correction.
 
-1. **Find the first wrong decision.** Resolve the original session, exact
+1. **Trace the causal mistake.** Resolve the original session, exact
    request, available instructions, tool results and later correction through
    [historical capture](historical-case-capture.md). Classify whether the cause
    is instructions, their interaction, model variance, tools, missing authority
    or the evaluation itself. An observed mistake does not automatically imply
    a missing skill sentence.
-2. **Restore the decision boundary.** Start before the mistake with the
-   conversation-visible context and relevant environment. Keep the correction,
+2. **Restore the decision boundary.** Use the
+   [starting-point procedure](#choose-the-replay-starting-point) to select the
+   prevention cutoff with the conversation-visible context and relevant
+   environment. Keep the correction,
    successful recovery and grading criteria hidden. Give the ordinary request
    without coaching the candidate about the mistake. Let its new actions
    determine subsequent observations; historical replies cannot be assumed
@@ -219,10 +222,6 @@ same user intervention, not whether an agent can agree with the correction.
    Apply [release qualification](release-qualification-and-generalization.md)
    only at the requested delivery boundary.
 
-A separate after-correction case can measure recovery from steering. It does
-not establish prevention of steering. A reconstructed or adapted environment
-may establish useful behavior without being an exact historical replay.
-
 If the current setup avoids the mistake, inspect restoration fidelity and
 variation before proposing a change. Record what worked under the measured
 conditions; a few successful screens neither establish that the real failure
@@ -231,6 +230,93 @@ is solved nor justify inventing a skill advantage.
 **Complete when:** the exact candidate has the required behavioral evidence,
 or the report identifies no supported change, an inconclusive comparison or a
 specific prerequisite. Preserve the observed historical mistake in every case.
+
+### Choose the replay starting point
+
+The starting point determines the question. For steering prevention, default to
+the latest restorable request boundary before the earliest supported causal
+mistake, not the last visible symptom or the first unrelated error. This keeps
+focused iteration short without fixing the decision the candidate must make.
+
+| Question | Starting state | What a pass establishes |
+| --- | --- | --- |
+| Prevent the mistake | Before the agent makes the causal decision; later mistake and correction hidden | Avoidance under the restored conditions, not recovery from an existing mistake |
+| Recover without steering | Mistaken plan, prior attempts and available evidence retained; before user correction | Recovery from that state without receiving the diagnosis or correction |
+| Recover after steering | The mistake and exact user correction retained or delivered in a later phase | Ability to act on correction, not prevention or unaided recovery |
+| Complete the larger task without steering | An earlier boundary before the relevant plan, objective or handoff was created | Success over the newly exercised path; a short local pass alone cannot establish this |
+
+Use the existing capture trace ledger and evaluation decision record:
+
+1. **Locate the cause with evidence.** Trace the observed failure backward
+   through decisions and artifacts. Name the earliest supported contributor
+   that the proposed change must prevent. Distinguish it from harmless errors
+   and later consequences. Record competing explanations when attribution is
+   uncertain; a trace diagnosis is a hypothesis, not proof of causation.
+2. **Choose a supported request boundary.** Name the last included event,
+   first excluded event and original request or wake trigger. If the decision
+   occurs inside an assistant turn, restart from that turn's original trigger
+   or an earlier supported boundary. Do not invent a request to reconsider the
+   known error. A later recovery case needs a real or explicitly adapted
+   continuation trigger; a new warning about being stuck supplies steering.
+3. **Check instruction exposure.** For a clean skill comparison, move back
+   before the target instructions first entered the relevant context, even
+   when that predates the causal mistake. Audit summaries, memory and
+   artifacts that carry those instructions forward. Use the
+   [skill-context policy](case-contract.md#native-historical-continuation);
+   if clean restoration is unavailable, retain recorded context and narrow the
+   claim rather than silently deleting or replacing old text. Reload does
+   not remove it. Model-only comparisons can hold recorded instructions fixed.
+4. **Restore matching state and regenerate consequences.** Files, plans,
+   objectives, schedules, tool state and permissions must agree with the
+   chosen cutoff. If objective creation is under test, each arm must write its
+   own objective from the original request; do not supply a corrected objective
+   or preserve the old one as an authoritative instruction. Keep an existing
+   bad objective when testing recovery from it. Let each branch's actions
+   produce later observations; replaying recorded future tool results or
+   dependent human replies after a different action changes the task.
+5. **Choose the observation horizon and expansion rule.** During development,
+   begin with the focused causal decision and enough executed work to see its
+   consequences. Declare the required progress or outcome, limits and stopping
+   rule before execution. Add an earlier task-level confirmation when the
+   focused case fixes an artifact the proposed improvement must generate,
+   omits relevant context buildup or compaction, or the claim covers the
+   larger workflow. Missing restoration or continuation capabilities remain
+   prerequisites; an earlier timestamp alone does not supply them.
+
+**Illustrative example:** an agent writes an objective that incorrectly makes
+deployment a human prerequisite, then repeatedly waits. Prevention starts before
+objective creation and checks both the resulting objective and permitted work.
+Unaided recovery starts with the bad objective intact and checks whether the
+agent revises it and proceeds on its own. Guided recovery includes the user's
+correction. Judge actual progress and preserve genuine human-only gates in all
+three; a promise to continue is not success.
+
+A short test can establish a corrected objective or an observed escape from a
+loop. It cannot establish that the agent stays productive for many hours.
+Retain relevant context length, compaction, real wake/resume behavior and timing
+for claims that depend on them; shortened waits prove only the transitions they
+preserve. An earlier cutoff does not recreate missing original model or runtime
+inputs. Report restoration fidelity separately.
+
+Freeze cutoff, skill exposure, state substitutions, horizon and claim before
+comparing candidates. Use the same start for both arms. Different cutoffs are
+separate cases or revisions, not extra repetitions or independent holdouts;
+keep the incident lineage together. An exploratory cutoff change preserves
+prior outcomes and records its reason, not just a newly favorable score.
+
+This is the playbook's operational rule, not a published universal optimum.
+[AgentRx](https://arxiv.org/html/2602.02475v2) supports distinguishing causal
+failure steps from cascading symptoms through trajectory diagnosis.
+[AgentDebugX](https://arxiv.org/html/2607.18754) connects diagnosis to checkpoint
+reruns, but its diagnosis-guided repairs do not establish blind prevention.
+Neither establishes a fixed rewind distance. Use
+[Anthropic's agent-evaluation guidance](https://www.anthropic.com/research/demystifying-evals-for-ai-agents)
+for realistic task state, outcome checks, trajectory inspection and repetitions.
+
+**Complete when:** the case record explains why its starting point tests the
+named decision, audits relevant instruction exposure and state, and names the
+observable horizon and allowed claim. Prevention, unaided recovery and guided
+recovery results remain separate.
 
 ## 5. Compare models or skill collections
 
