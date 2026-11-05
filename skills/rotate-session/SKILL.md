@@ -178,8 +178,10 @@ opens the durable result log synchronously. Under tmux it starts one short-lived
 detached verifier, which waits for the current turn boundary before calling
 `tmux respawn-pane` with a private launcher. The launcher starts the fresh
 session with an explicit UUID, preserves the pane's name, working directory,
-remote mode, and allow-all mode, and supplies the exact seed through
-`--interactive`.
+and allow-all mode, and supplies the exact seed through `--interactive`.
+Legacy parent-process `--remote` and `--no-remote` arguments are recognized but
+not copied: current Copilot CLI releases removed those launch options, and
+remote connectivity is managed inside the session.
 
 Automated rotation is supported only from the current Copilot tmux pane.
 Outside tmux, the script fails before consuming or snapshotting the prompt.
