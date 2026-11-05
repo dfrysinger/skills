@@ -6,7 +6,12 @@ import { dirname, join } from "node:path";
 
 import { joinSession } from "@github/copilot-sdk/extension";
 import { createDiagnosticLogger, errorDetails } from "./diagnostics.mjs";
-import { currentSessionName, currentTmuxSession } from "./session-identity.mjs";
+import {
+  configuredCopilotName,
+  currentSessionName,
+  currentTmuxSession,
+  isForegroundSession,
+} from "./session-identity.mjs";
 import {
   emitSessionControlDeprecation,
   resolveSessionControlRoot,
@@ -80,6 +85,8 @@ try {
 }
 let tmuxSession;
 let sessionName;
+const managedSessionName =
+  configuredCopilotName();
 const activeSessionStateDir = join(sessionStateRoot, session.sessionId);
 const rotationBarrier =
   process.env.COPILOT_SESSION_CONTROL_ROTATION_BARRIER ??
@@ -90,13 +97,22 @@ let heartbeatRefreshing = false;
 let identityRefreshing = false;
 let initialTmuxSessionError;
 let initialSessionNameError;
+let initialForegroundError;
+let initiallyForeground = false;
 try {
-  tmuxSession = await currentTmuxSession();
+  initiallyForeground = await isForegroundSession(session);
+} catch (error) {
+  initialForegroundError = error;
+}
+try {
+  if (initiallyForeground) tmuxSession = await currentTmuxSession();
 } catch (error) {
   initialTmuxSessionError = error;
 }
 try {
-  sessionName = await currentSessionName(session);
+  if (initiallyForeground) {
+    sessionName = managedSessionName ?? await currentSessionName(session);
+  }
 } catch (error) {
   initialSessionNameError = error;
 }
@@ -138,6 +154,12 @@ diagnostics.log("extension.started", {
   confirmationTimeoutMs,
   autopilotConfirmationTimeoutMs,
 });
+if (initialForegroundError) {
+  diagnostics.log("session.identity_lookup_failed", {
+    identitySource: "foreground",
+    error: errorDetails(initialForegroundError),
+  });
+}
 if (initialSessionNameError) {
   diagnostics.log("session.identity_lookup_failed", {
     identitySource: "session-name",
@@ -233,18 +255,30 @@ async function refreshIdentity() {
   if (identityRefreshing) return false;
   identityRefreshing = true;
   try {
-    let refreshedTmuxSession = tmuxSession;
+    let foreground = false;
     try {
-      refreshedTmuxSession = await currentTmuxSession();
+      foreground = await isForegroundSession(session);
+    } catch (error) {
+      diagnostics.log("session.identity_lookup_failed", {
+        identitySource: "foreground",
+        error: errorDetails(error),
+      });
+    }
+    let refreshedTmuxSession = foreground ? tmuxSession : undefined;
+    try {
+      if (foreground) refreshedTmuxSession = await currentTmuxSession();
     } catch (error) {
       diagnostics.log("session.identity_lookup_failed", {
         identitySource: "tmux",
         error: errorDetails(error),
       });
     }
-    let refreshedSessionName = sessionName;
+    let refreshedSessionName = foreground ? sessionName : undefined;
     try {
-      refreshedSessionName = await currentSessionName(session);
+      if (foreground) {
+        refreshedSessionName =
+          managedSessionName ?? await currentSessionName(session);
+      }
     } catch (error) {
       diagnostics.log("session.identity_lookup_failed", {
         identitySource: "session-name",
@@ -1381,6 +1415,19 @@ async function pump() {
             fingerprint: requestFingerprint(request),
             updatedAt: new Date().toISOString(),
           });
+          if (request.target?.targetName || request.target?.tmuxSession) {
+            let foreground = false;
+            try {
+              foreground = await isForegroundSession(session);
+            } catch {
+              // Unknown foreground ownership cannot authorize named delivery.
+            }
+            if (!foreground) {
+              throw definitiveNoSideEffectError(
+                "named target is not the foreground session",
+              );
+            }
+          }
           sideEffectStarted = true;
           diagnostics.log("request.executing", {
             requestId: request.id,

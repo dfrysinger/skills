@@ -11,6 +11,11 @@ Write the question the case tests, the actor whose session is authoritative,
 the approximate time window, and the observable correction or accepted outcome
 that will judge the candidate.
 
+Use the playbook's [replay starting-point procedure](evaluation-playbook.md#choose-the-replay-starting-point)
+to distinguish prevention from unaided or guided recovery. Record the causal
+decision, supported trigger, instruction exposure, matching state and observation
+horizon in the existing trace ledger and decision record before freezing.
+
 Identify:
 
 - the last event visible to the candidate;

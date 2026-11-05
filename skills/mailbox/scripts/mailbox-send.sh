@@ -20,8 +20,12 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -z "$SUMMARY" || -z "$MESSAGE" ]] && usage
 
-FROM_NAME="$(own_name 2>/dev/null || echo unknown)"
-NODE_ARGS=(send "$RECIPIENT" --summary "$SUMMARY" --message "$MESSAGE" --from "$FROM_NAME" --no-wakeup)
+NODE_ARGS=(send "$RECIPIENT" --summary "$SUMMARY" --message "$MESSAGE" --no-wakeup)
+FROM_NAME="${MAILBOX_SELF_ADDRESS:-}"
+if [[ -z "$FROM_NAME" ]]; then
+  FROM_NAME="$(own_name 2>/dev/null || echo unknown)"
+  NODE_ARGS+=(--from "$FROM_NAME")
+fi
 if [[ ${#FILES[@]} -gt 0 ]]; then
   for f in "${FILES[@]}"; do NODE_ARGS+=(--file "$f"); done
 fi
@@ -44,6 +48,14 @@ if [[ "$POKE_STATUS" -eq 0 ]]; then
   WAKEUP_STATUS="delivered"
 elif [[ "$POKE_STATUS" -eq 5 ]]; then
   WAKEUP_STATUS="deferred"
+elif [[ "$POKE_STATUS" -eq 7 ]]; then
+  WAKEUP_STATUS="in_progress"
+elif [[ "$POKE_STATUS" -eq 8 ]]; then
+  WAKEUP_STATUS="submitted"
+elif [[ "$POKE_STATUS" -eq 9 ]]; then
+  WAKEUP_STATUS="held"
+elif [[ "$POKE_STATUS" -eq 10 ]]; then
+  WAKEUP_STATUS="refused"
 elif [[ "$POKE_STATUS" -eq 4 ]]; then
   WAKEUP_STATUS="not_attempted"
 else
@@ -53,6 +65,10 @@ fi
 case "$WAKEUP_STATUS" in
   delivered)     echo "wakeup: recipient accepted the mailbox nudge (verified)" ;;
   deferred)      echo "wakeup: deferred to the recipient machine watcher; envelope waits in pending/" ;;
+  in_progress)   echo "wakeup: another watcher is already handling this envelope (in progress, not verified)" ;;
+  submitted)     echo "wakeup: provider accepted the mailbox nudge (submitted, not verified)" ;;
+  held)          echo "wakeup: provider held the mailbox nudge without submitting it" ;;
+  refused)       echo "wakeup: provider refused the mailbox nudge" ;;
   unverified)    echo "wakeup: recipient did not acknowledge the nudge (NOT verified) — envelope waits in pending/ and will be re-poked" ;;
   not_attempted) echo "wakeup: skipped (no active session named '$RECIPIENT'; envelope waits in pending/)" ;;
 esac

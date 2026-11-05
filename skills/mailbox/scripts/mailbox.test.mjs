@@ -139,13 +139,21 @@ test("wakeup failures never remove a published envelope", async () => {
   }
 });
 
-test("definitive steering rejection may use guarded terminal fallback", async () => {
+test(
+  "definitive steering rejection may use guarded terminal fallback",
+  { skip: process.platform === "win32" },
+  async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-terminal-fallback-"));
   try {
     const mailboxRoot = join(root, "mailbox");
     const stateRoot = join(root, "state");
     const mockRequest = join(root, "mock-request.mjs");
-    const mockTerminalPoke = join(root, "mock-terminal-poke.sh");
+    const mockTerminalPoke = join(
+      root,
+      process.platform === "win32"
+        ? "mock-terminal-poke.cmd"
+        : "mock-terminal-poke.sh",
+    );
     await writeFile(
       mockRequest,
       `console.log(JSON.stringify({
@@ -162,7 +170,11 @@ process.exit(1);
     );
     await writeFile(
       mockTerminalPoke,
-      `#!/usr/bin/env bash
+      process.platform === "win32"
+        ? `@echo off
+echo poked: %1 (submission observed)
+`
+        : `#!/usr/bin/env bash
 printf 'poked: %s (submission observed)\\n' "$1"
 `,
       { mode: 0o700 },
@@ -172,7 +184,8 @@ printf 'poked: %s (submission observed)\\n' "$1"
       stateRoot,
       requestCli: mockRequest,
       terminalPokeCli: mockTerminalPoke,
-    });
+      },
+    );
     const sent = await mailbox.send({
       recipient: "hotel",
       sender: "whisky",
@@ -340,26 +353,37 @@ test("persistent configuration survives a process without mailbox environment", 
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-config-"));
   const configPath = join(root, "mailbox-config.json");
   const remoteMailboxRoot = join(root, "remote");
-  await writeFile(
-    configPath,
-    `${JSON.stringify({
-      schemaVersion: 1,
-      machineName: "macbook-pro",
-      remoteMailboxRoot,
-    })}\n`,
-  );
+  const previousMachine = process.env.COPILOT_AGENT_MACHINE;
+  const previousRemote = process.env.MAILBOX_REMOTE_ROOT;
+  try {
+    delete process.env.COPILOT_AGENT_MACHINE;
+    delete process.env.MAILBOX_REMOTE_ROOT;
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        machineName: "macbook-pro",
+        remoteMailboxRoot,
+      })}\n`,
+    );
 
-  const mailbox = createConfiguredMailbox({
-    configPath,
-    mailboxRoot: join(root, "local"),
-    stateRoot: join(root, "state"),
-  });
-  assert.deepEqual(mailbox.watchAddresses("oscar"), [
-    "oscar",
-    "oscar@macbook-pro",
-  ]);
-  assert.equal(mailbox.remoteMailboxRoot, remoteMailboxRoot);
-  await rm(root, { recursive: true, force: true });
+    const mailbox = createConfiguredMailbox({
+      configPath,
+      mailboxRoot: join(root, "local"),
+      stateRoot: join(root, "state"),
+    });
+    assert.deepEqual(mailbox.watchAddresses("oscar"), [
+      "oscar",
+      "oscar@macbook-pro",
+    ]);
+    assert.equal(mailbox.remoteMailboxRoot, remoteMailboxRoot);
+  } finally {
+    if (previousMachine === undefined) delete process.env.COPILOT_AGENT_MACHINE;
+    else process.env.COPILOT_AGENT_MACHINE = previousMachine;
+    if (previousRemote === undefined) delete process.env.MAILBOX_REMOTE_ROOT;
+    else process.env.MAILBOX_REMOTE_ROOT = previousRemote;
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("mailbox environment overrides persistent routing configuration", async () => {
@@ -444,7 +468,11 @@ test("an explicit missing configuration path fails closed", () => {
 test("remote transport is path-disjoint from mutable mailbox roots", async () => {
   const root = await mkdtemp(join(tmpdir(), "node-mailbox-config-overlap-"));
   const configPath = join(root, "mailbox-config.json");
+  const previousMachine = process.env.COPILOT_AGENT_MACHINE;
+  const previousRemote = process.env.MAILBOX_REMOTE_ROOT;
   try {
+    delete process.env.COPILOT_AGENT_MACHINE;
+    delete process.env.MAILBOX_REMOTE_ROOT;
     for (const [mailboxRoot, stateRoot, remoteMailboxRoot] of [
       [join(root, "same"), join(root, "state"), join(root, "same")],
       [join(root, "local"), join(root, "state"), join(root, "local", "remote")],
@@ -464,6 +492,10 @@ test("remote transport is path-disjoint from mutable mailbox roots", async () =>
       );
     }
   } finally {
+    if (previousMachine === undefined) delete process.env.COPILOT_AGENT_MACHINE;
+    else process.env.COPILOT_AGENT_MACHINE = previousMachine;
+    if (previousRemote === undefined) delete process.env.MAILBOX_REMOTE_ROOT;
+    else process.env.MAILBOX_REMOTE_ROOT = previousRemote;
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -910,13 +942,15 @@ test("recipient-local watcher terminates an ambiguous wakeup without duplicate r
     );
     const attemptId = (await readFile(attemptPath, "utf8")).trim();
     assert.equal(request.dedupeKey.endsWith(`:${attemptId}`), true);
-    assert.equal(
-      (await readFile(
+    const unverified = JSON.parse(
+      await readFile(
         join(stateRoot, "notified", "hotel", `${sent.envelope.id}.unverified`),
         "utf8",
-      )).trim(),
-      attemptId,
+      ),
     );
+    assert.equal(unverified.version, 1);
+    assert.equal(unverified.attemptId, attemptId);
+    assert.equal(unverified.outcome, "ambiguous");
     assert.equal((await mailbox.poke("hotel")).status, "unverified");
     assert.deepEqual(
       (await readdir(join(inboxRoot, "pending"))).filter((entry) =>
@@ -1133,6 +1167,7 @@ console.log('{"status":"completed","result":{"messageAccepted":true,"delivery":"
       stateRoot,
       requestCli: mockRequest,
     });
+
     await mailbox.send({
       recipient: "hotel",
       sender: "whisky",
@@ -1167,6 +1202,138 @@ console.log('{"status":"completed","result":{"messageAccepted":true,"delivery":"
     } else {
       process.env.MOCK_MAILBOX_REQUEST_CALLS = previousCallLog;
     }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("notification claims preserve live and successor owners", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-claim-ownership-"));
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const stateRoot = join(root, "state");
+    const releasePath = join(root, "release");
+    const mockRequest = join(root, "blocking-request.mjs");
+    await writeFile(
+      mockRequest,
+      `import { existsSync } from "node:fs";
+while (!existsSync(${JSON.stringify(releasePath)})) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+}
+console.log('{"status":"completed","result":{"delivery":"idle"}}');
+`,
+    );
+    const mailbox = createMailbox({
+      mailboxRoot,
+      stateRoot,
+      requestCli: mockRequest,
+      terminalPokeCli: null,
+      processIdentity: async () => "2026-01-01T00:00:00.000Z",
+    });
+    await mailbox.send({
+      recipient: "hotel",
+      sender: "whisky",
+      summary: "claim ownership",
+      message: "one owner at a time",
+      wake: false,
+    });
+
+    const claimPath = join(stateRoot, "notifying", "hotel.lock");
+    await mkdir(dirname(claimPath), { recursive: true });
+    const liveOwner = {
+      pid: process.ppid,
+      claimId: "live-owner",
+      address: "hotel",
+      startedAt: new Date(Date.now() - 120_000).toISOString(),
+      processIdentity: "2026-01-01T00:00:00.000Z",
+    };
+    await writeFile(claimPath, `${JSON.stringify(liveOwner)}\n`);
+    assert.equal((await mailbox.poke("hotel")).status, "in-progress");
+    assert.deepEqual(JSON.parse(await readFile(claimPath, "utf8")), liveOwner);
+
+    await rm(claimPath);
+    const first = mailbox.poke("hotel");
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      try {
+        await stat(claimPath);
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    assert.equal((await mailbox.poke("hotel")).status, "in-progress");
+    const successor = {
+      pid: process.pid,
+      claimId: "successor-owner",
+      address: "hotel",
+      startedAt: new Date().toISOString(),
+    };
+    await writeFile(claimPath, `${JSON.stringify(successor)}\n`);
+    await writeFile(releasePath, "release");
+    assert.equal((await first).status, "delivered");
+    assert.deepEqual(JSON.parse(await readFile(claimPath, "utf8")), successor);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("notification claims reclaim a reused live PID with a different process identity", async () => {
+  const root = await mkdtemp(join(tmpdir(), "node-mailbox-claim-pid-reuse-"));
+  try {
+    const mailboxRoot = join(root, "mailbox");
+    const stateRoot = join(root, "state");
+    const mockRequest = join(root, "request.mjs");
+    await writeFile(
+      mockRequest,
+      `console.log('{"status":"completed","result":{"delivery":"idle"}}');\n`,
+    );
+    const mailbox = createMailbox({
+      mailboxRoot,
+      stateRoot,
+      requestCli: mockRequest,
+      terminalPokeCli: null,
+      processIdentity: async () => "current-process",
+    });
+    await mailbox.send({
+      recipient: "hotel",
+      sender: "whisky",
+      summary: "pid reuse",
+      message: "replace a stale owner",
+      wake: false,
+    });
+    const claimPath = join(stateRoot, "notifying", "hotel.lock");
+    await mkdir(dirname(claimPath), { recursive: true });
+    await writeFile(
+      claimPath,
+      `${JSON.stringify({
+        pid: process.pid,
+        claimId: "stale-owner",
+        address: "hotel",
+        processIdentity: "prior-process",
+      })}\n`,
+    );
+
+    assert.equal((await mailbox.poke("hotel")).status, "delivered");
+    await assert.rejects(readFile(claimPath, "utf8"), { code: "ENOENT" });
+
+    await mailbox.send({
+      recipient: "hotel",
+      sender: "whisky",
+      summary: "orphaned own claim",
+      message: "replace a claim no longer active in this process",
+      wake: false,
+    });
+    await writeFile(
+      claimPath,
+      `${JSON.stringify({
+        pid: process.pid,
+        claimId: "orphaned-own-claim",
+        address: "hotel",
+        processIdentity: "current-process",
+      })}\n`,
+    );
+    assert.equal((await mailbox.poke("hotel")).status, "delivered");
+    await assert.rejects(readFile(claimPath, "utf8"), { code: "ENOENT" });
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
