@@ -8,9 +8,9 @@ procedures linked here; this playbook does not define another runner.
 
 | User's decision | Comparison | Procedure |
 | --- | --- | --- |
-| Build a corpus or add a historical or synthetic case | Source evidence and behavioral criteria versus the frozen candidate and judge packets | [Build and freeze a case](../SKILL.md#1-define-the-behavioral-claim) |
-| Prevent a mistake that required user steering | Current instructions versus a general correction on the same task | [Repair a steering event](#4-repair-a-steering-event) |
-| Evaluate or improve a skill revision | Revised instructions versus the unchanged skill on the same frozen cases | [Plan the comparison](../SKILL.md#decide-what-the-evaluation-will-establish), then [interpret and improve](../SKILL.md#6-interpret-and-improve) |
+| Build a corpus or add a historical or synthetic case | Source evidence and behavioral criteria versus the frozen candidate and judge packets | [Build and freeze a case](../SKILL.md#2-make-the-test-capable-of-observing-that-behavior) |
+| Prevent a historical mistake that required user steering | Capture-time instructions versus a general correction on the same task | [Repair a steering event](#4-repair-a-steering-event) |
+| Evaluate or improve a skill revision | Revised instructions versus the unchanged skill on the same frozen cases | [Establish the baseline](../SKILL.md#3-establish-the-unchanged-baseline), then [compare](../SKILL.md#4-change-one-mechanism-and-compare) |
 | Make a skill activate at the right times | Unchanged versus revised description, with the body and surrounding collection fixed | [Test skill selection](skill-selection.md) |
 | Adopt a new model or skill collection | Current setup versus the proposed setup on representative tasks | [Compare setups](#5-compare-models-or-skill-collections) |
 | Simplify a working skill | Working instructions versus reduced instructions on preserved behavior | [Minimize a skill](#6-minimize-a-working-skill) |
@@ -18,7 +18,7 @@ procedures linked here; this playbook does not define another runner.
 | Qualify a release, no-skill advantage or transfer claim | The exact artifact, matched controls and applicable unused transfer cases | [Qualify release and generalization](release-qualification-and-generalization.md) |
 | Repair the evaluation system | Retained artifacts and the cheapest fixture exercising the changed boundary | [Prove the execution route](large-actions-campaign.md#3-prove-one-route-before-fan-out) |
 
-Use the decision record in [SKILL.md](../SKILL.md#decide-what-the-evaluation-will-establish).
+Use the decision record in [SKILL.md](../SKILL.md#1-declare-the-question-and-trigger).
 State the requested result, evidence boundary, comparator, case roles, planned
 attempts, selection rule and stop rule. A setup check, an exploratory comparison
 and final confirmation answer different questions.
@@ -196,11 +196,14 @@ same user intervention, not whether an agent can agree with the correction.
    claim, restore prior messages in their conversation roles through a
    supported restore path. Supplying them only as a file is a different task;
    label that adaptation rather than calling it the original session.
-3. **Prove the case, then measure the current setup.** Check that the task is
+   Recover the skills through the [Git restoration recipe](#restore-historical-skills-from-git).
+3. **Prove the case, then reproduce with the current setup.** Check that the task is
    achievable and the required behavior is observable. Prefer a faithful
    executable continuation for action-dependent failures. Record unavailable
-   historical state and every fixture substitution. If only a response test is
-   possible, identify it as a decision screen, not recovery proof.
+   historical state and every fixture substitution. Apply the main skill's
+   [baseline gate](../SKILL.md#3-establish-the-unchanged-baseline) before
+   proposing a repair. If only a response test is possible, keep it a separate
+   decision screen with the original executed-recovery requirement unresolved.
 4. **Investigate independent hypotheses in parallel when useful.** Use isolated
    copies of the same draft and unchanged control. Each alternative should
    change a distinct general mechanism. Follow
@@ -230,6 +233,124 @@ is solved nor justify inventing a skill advantage.
 **Complete when:** the exact candidate has the required behavioral evidence,
 or the report identifies no supported change, an inconclusive comparison or a
 specific prerequisite. Preserve the observed historical mistake in every case.
+
+### Restore historical skills from Git
+
+Recover the repository snapshot before declaring historical skills unavailable.
+Use the chosen replay cutoff, not merely the session's creation date: a long
+session can load updated skills before the failure.
+
+1. **Find the source revision.** Start with captured repository identities,
+   commit IDs, plugin versions and successful skill-load records. Prefer a
+   recorded revision; otherwise use the cutoff's UTC timestamp to locate a
+   candidate on the repository's canonical branch or release ancestry:
+
+   ```sh
+   COMMIT=$(git -C "$SKILLS_REPO" rev-list --first-parent -1 \
+     --before="$CUTOFF_UTC" "$CANONICAL_REF")
+   ```
+
+   Set `SKILLS_REPO` to the source checkout, `CANONICAL_REF` to the relevant
+   canonical branch or release, and `CUTOFF_UTC` to the selected event time.
+   If history is shallow or the revision is absent, retrieve the needed
+   history from that repository before concluding it cannot be recovered.
+   Commit dates locate candidates; they do not prove publication or installation.
+2. **Check against actual loads.** Compare version metadata and recorded skill
+   bodies or content hashes with the candidate revision. Account for documented
+   loader transformations, such as omitted front matter. If they disagree,
+   trace intervening updates, local edits or another source rather than silently
+   substituting the date-selected commit. One matching body does not establish
+   every installed file. Keep prior loaded text separate from the collection
+   available for future calls under the chosen
+   [context policy](case-contract.md#native-historical-continuation).
+3. **Freeze the full repository.** Preserve manifests, the surrounding skills,
+   references and helpers, not only the target's `SKILL.md`. First apply the
+   [sensitive-content boundary](historical-case-capture.md#1-define-the-event-boundary)
+   to the selected tree. If it contains protected content, capture permitted
+   files with labeled omissions instead of retaining an unredacted archive;
+   record the resulting reconstruction limits. Otherwise set `ARCHIVE` to a
+   new absolute file path in the evaluation's isolated input storage, then:
+
+   ```sh
+   test -n "$COMMIT" && test ! -e "$ARCHIVE" &&
+     git -C "$SKILLS_REPO" archive --format=tar --output="$ARCHIVE" "$COMMIT"
+   ```
+
+   Record the remote, cutoff, commit/tree IDs, version, archive SHA-256 and
+   source-load matches in the existing capture receipt or artifact ledger.
+   Verify required files against Git; account for export attributes and
+   submodules rather than assuming an archive includes them. Stage the verified
+   files through the existing evaluator's skill/catalog binding, without
+   changing the live installation.
+4. **Separate recovery from comparison.** Diff the actual declared skill
+   package, including references and helpers, against the proposed candidate.
+   If the bytes are identical, there is no changed-skill comparison to run.
+   Keep the recovered baseline, reproduce under its normal admission gates,
+   then design a justified change if needed. A version bump or changes elsewhere
+   in the collection do not establish a change to this package. An older
+   session-start version is a different starting point, not a way to manufacture
+   an old/new difference at the failure cutoff.
+
+Record personal overrides, uncommitted inputs and missing task/runtime state
+separately. Recoverable repository files need not wait for those investigations;
+a repository snapshot alone does not establish a complete historical machine.
+
+**Complete when:** required repository-backed skills are recovered and bound to
+source evidence, any installation uncertainty is explicit, and the proposed
+comparison has either a verified package delta or a baseline-only next step.
+This preparation is not proof that the failure reproduces or that a change helps.
+
+### Choose the trigger and recovery expectation
+
+Identify both the event that gives the agent an opportunity to act and the
+earlier decision that may have caused the failure. They are not always the
+same event. Record the exact trigger, then-current state, expected transition,
+observable progress and observation horizon before choosing skill changes.
+
+| Suspected source or opportunity | Replay starting point | Required observation |
+|---|---|---|
+| An ordinary scheduled prompt should recover a stalled run | Bad state intact, immediately before the original scheduled prompt | The prompt reaches the intended skills; the agent recognizes the problem, changes the relevant state and resumes permitted work. |
+| A schedule or objective was authored incorrectly | Before the request that produced it, with that request's context | Each arm creates its own artifact; later faithful wake prompts exercise that artifact and demonstrate the downstream result. |
+| An agent-produced design, plan or other source misdirects later work | Before its production trigger | Each arm produces its own source material, then the dependent work consumes it. A supplied corrected document would bypass the behavior under test. |
+| The response to a user request was wrong | Immediately before that exact request, retaining its original context | The agent performs the requested work correctly. If the request corrects an earlier mistake, label the result guided recovery. |
+| Drift develops during continuing work | The preceding supported work trigger, with relevant accumulated context | Exercise enough actions, context growth, interruption or compaction to observe the drift and its recovery or prevention. |
+
+These are not mutually exclusive categories. A bad design can produce a bad
+objective that later wake prompts reinforce. First isolate the supported
+causal decision; then confirm the changed artifact works in its downstream
+path. A long session describes the needed context and horizon, not a separate
+kind of fix. Use it when the failure depends on that journey; a short replay
+cannot support that longer claim.
+
+**Recovery without corrective steering** retains the mistake and gives the
+agent only the evidence and ordinary opportunity it would normally receive.
+A scheduled prompt may supply that opportunity. Preserve its exact wording.
+If it originally names a skill, successful invocation is part of that scheduled
+path, not unforced skill discovery.
+
+Adding a diagnosis, a corrected objective, or a new instruction to load the
+intended skill is a different intervention. It can test guided recovery or a
+proposed schedule change, but cannot establish recovery under the old trigger.
+For unforced selection, measure the original request before target loading.
+For proposed schedule changes, compare old and new schedules explicitly and
+exercise the resulting behavior rather than crediting the skill alone.
+
+Manually deliver a scheduled prompt only through a supported isolated test
+route, with its source and delivery adaptation recorded. This tests that wake
+path, not the scheduler's timing or delivery reliability. A claim about the
+scheduler needs the scheduler itself. Never inject test prompts into live
+unrelated sessions.
+
+If existing skill text is already in restored context, use the
+[skill-context policy](case-contract.md#native-historical-continuation).
+Choose between clean replacement before exposure and an update during ongoing
+work with identical historical text in both arms. Reloading availability alone
+proves neither fresh invocation nor removal of prior instructions. An in-place
+update can test recovery after an update, not prevention by a never-seen skill.
+
+**Complete when:** the case distinguishes original versus proposed triggers,
+recovery versus steering, artifact production versus downstream use, and
+focused versus sustained outcomes. Unavailable state remains a prerequisite.
 
 ### Choose the replay starting point
 

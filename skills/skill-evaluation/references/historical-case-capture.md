@@ -95,6 +95,10 @@ commit lineage. Capture committed files from the named revision, not from a
 later worktree. Capture an uncommitted file only when it is itself necessary
 evidence, and label its worktree state and capture time explicitly.
 
+For skill repositories, use the playbook's
+[Git restoration recipe](evaluation-playbook.md#restore-historical-skills-from-git)
+to recover the cutoff-specific collection and reconcile recorded skill loads.
+
 Preserve the smallest artifact slice that proves the behavior. Include complete
 files or command outputs when omitted context could change their meaning.
 Exclude credentials, tokens, unrelated private data, caches, dependencies, and
