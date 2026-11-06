@@ -2,7 +2,7 @@
 
 These commands execute on the machine that starts them. Use them inside an
 Actions task runtime, or locally when the user explicitly selects local model
-execution under the [execution default](../SKILL.md#execution-default-github-actions-vms).
+execution under the [execution default](../SKILL.md#2-make-the-test-capable-of-observing-that-behavior).
 They do not provision a VM or dispatch an Actions workflow.
 
 The prose case path provides `skill` and `view`, not editing or command
@@ -12,6 +12,21 @@ tools required by the task, regardless of where it runs.
 
 Resolve `SKILL_DIR` to the evaluator skill directory, separate from the target
 plugin snapshot.
+
+## Prepare a case
+
+Scaffold a new corpus and case when no reusable frozen case exists:
+
+```sh
+python3 "$SKILL_DIR/scripts/skill_eval.py" init CORPUS
+python3 "$SKILL_DIR/scripts/skill_eval.py" add-case CORPUS CASE_ID \
+  --skill TARGET_SKILL --phase candidate
+```
+
+Repeat `--phase` for ordered phases. Populate the candidate evidence and hidden
+criteria using the [case contract](case-contract.md), then freeze and verify
+before execution. Historical packets keep original request, restored context
+and evaluation-only operations distinct; map each addition to source evidence.
 
 ## Run a case or suite
 

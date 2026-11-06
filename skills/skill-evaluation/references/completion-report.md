@@ -1,81 +1,89 @@
-# Skill evaluation completion report
+# Skill evaluation findings
 
-Use this report after a skill-change evaluation finishes, whether or not the
-candidate qualifies. Describe an unqualified candidate as an observed or
-intended change, not as a released capability.
+Lead with the user's question and the supported answer. Use ordinary language
+for the decision; put run IDs, file hashes and workflow details afterward.
+Use this format for unchanged evaluations as well as skill-change experiments.
 
-## Required content
+## 1. Bottom line
 
-### Evaluation outcome
+State what was observed and what it establishes. Choose the supported claim:
 
-- Result and exact baseline and candidate identities.
-- Qualified claim and important claims that were not tested.
-- The question, planned decision and stop rules, actual decision, and any
-  departure from the plan. Separate exploratory evidence from final
-  confirmation; link the existing plan rather than creating another ledger.
+- **Observed success:** this setup produced the expected result.
+- **Measured improvement:** a matched comparison improved the declared outcome.
+- **No measured advantage:** the comparison found no supported improvement.
+- **Failure not reproduced:** the valid baseline did not exhibit the reported
+  problem; its repair remains unproven.
+- **Inconclusive or blocked:** name the missing observation or prerequisite.
 
-### What changed
+Qualification and release are separate delivery states. A judge's HIGH
+confidence is confidence in that assessment, not an estimate of reliability.
 
-| Area | Baseline behavior | Candidate behavior | Evidence |
-| --- | --- | --- | --- |
+## 2. What question and behavior were tested?
 
-Name the prior user-visible failure, the general rule or behavior that changed,
-and the exact case or product check that shows the effect.
+Describe the original user-visible problem and the exact behavior under test.
+Name the trigger and starting state. State whether the agent was expected to
+prevent a mistake, recover without correction, or respond to user steering.
+Explain whether it proposed actions or performed them, whether target loading
+was original or added, and how long the observation lasted.
 
-Use these labels:
+If the test is narrower than the user's original goal, name the unresolved
+goal here rather than only in a technical appendix.
 
-- **Proven capability:** the exact candidate passed the applicable focused and
-  maintained gates.
-- **Observed improvement:** behavior moved in the desired direction, but the
-  release gate did not pass.
-- **Intended change:** the implementation changed, but no behavioral result
-  establishes the effect.
+## 3. What changed and what was compared?
 
-### What it can do now
+Explain the general instruction change, or say no skill change was made.
+Identify exact skill/setup versions in supporting evidence.
 
-List the proven capabilities in user-facing terms. Do not restate
-implementation details as capabilities.
+| Condition | Run or NOT RUN | Valid results | What it can establish |
+|---|---|---|---|
+| Unchanged setup | | | Baseline behavior |
+| Proposed revision | | | Difference from the unchanged setup |
+| Target skill removed, other skills retained | | | Target contribution within that collection |
+| All skills removed | | | Collection advantage over no skills |
 
-### Size change
+Use the controls required by the claim; this table does not require every arm
+for every evaluation. Mark missing comparisons **NOT RUN**. An old historical
+failure with a different model, task or runtime is not a matched baseline.
+Never infer skill benefit from the current-setup row alone.
+
+## 4. What actually happened?
+
+Give each condition's requested, launched, valid completed and judged attempts.
+Report first-attempt outcomes separately from retry-assisted success.
+Preserve setup errors, boundary violations, changed-input attempts and
+disagreements rather than replacing them with later passes.
+
+For repair, state whether the baseline reproduced the target failure and
+whether the changed arm removed or reduced it under matched conditions.
+Separate instruction use from actual product movement. For selection, report
+attempted invocation, successful loading and task outcome separately.
+One passing invocation is not a production activation rate.
+
+State preserved behavior and maintained/unused-case coverage. Known
+development feedback is not independent confirmation.
+
+## 5. What can we conclude and what happens next?
+
+Connect the result to the original question. Name untested claims and exact
+missing prerequisites. A successful response proposal does not close an
+unexecuted recovery requirement. A small fixed pass rule does not establish
+reliability or transfer.
+
+State the decision: retain, revise, reject, qualify, or continue diagnosis.
+Name the smallest next comparison only when needed. Report observed usage,
+elapsed coverage and known cost; keep incomplete totals unknown.
+State whether source is a draft, reviewed, published, released or installed.
+
+## Supporting evidence
+
+Keep exact case, skill, model, tools, runtime, trigger, criteria, attempt and
+retention identities available without making them the main explanation.
+Measure size on the exact baseline and candidate using the same method:
 
 | Artifact | Bytes before | Bytes after | Delta | Lines before | Lines after | Delta |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+|---|---:|---:|---:|---:|---:|---:|
 
-Use the same measurement method for both revisions. Include percentages when
-the baseline is nonzero. Separate:
-
-- skill instructions and shipped references;
-- evaluator or runtime code;
-- frozen cases and generated manifests; and
-- project documentation and run artifacts.
-
-Do not call growth bloat or reduction simplification without applicable
-ablation or maintained-task evidence.
-
-### Proof and reliability
-
-- Focused and maintained regression results: first-attempt pass counts
-  alongside requested, valid completed, and judged first attempts. Distinguish
-  valid failures, incomplete executions, and missing judgments. Report success
-  within the retry limit separately; neither measure may hide original failed
-  attempts.
-- Development, regression, and reserved transfer coverage, including any
-  reserved results used as feedback for later changes or selection.
-- Deterministic checks and review gates.
-- Preserved genuine stops, abstentions, or other protected behavior.
-- Material duration or cost data already captured by the evaluator.
-
-### Remaining uncertainty
-
-Name stochastic outcomes, untested callers, missing accounting, and claims that
-still need a separate generalization, transfer, or ablation gate.
-Distinguish meeting a small fixed qualification threshold from estimating
-reliability. Do not infer broad superiority from a candidate-only pass or an
-incomplete control population.
-
-## Proportional form
-
-A one-case wording fix may use a few bullets and one size row. A multi-skill
-release should include both tables, exact report paths or receipt IDs, retry
-dependence, and material cost or duration data. Omit empty sections only when
-the omitted information does not apply.
+Separate skill instructions/references, evaluator code, frozen cases and run
+artifacts. Size alone proves neither simpler behavior nor improved results.
+For a small evaluation, use a short answer and a compact comparison table;
+omit only inapplicable detail, not missing controls or important uncertainty.
