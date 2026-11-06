@@ -9,7 +9,7 @@ procedures linked here; this playbook does not define another runner.
 | User's decision | Comparison | Procedure |
 | --- | --- | --- |
 | Build a corpus or add a historical or synthetic case | Source evidence and behavioral criteria versus the frozen candidate and judge packets | [Build and freeze a case](../SKILL.md#2-make-the-test-capable-of-observing-that-behavior) |
-| Prevent a mistake that required user steering | Current instructions versus a general correction on the same task | [Repair a steering event](#4-repair-a-steering-event) |
+| Prevent a historical mistake that required user steering | Capture-time instructions versus a general correction on the same task | [Repair a steering event](#4-repair-a-steering-event) |
 | Evaluate or improve a skill revision | Revised instructions versus the unchanged skill on the same frozen cases | [Establish the baseline](../SKILL.md#3-establish-the-unchanged-baseline), then [compare](../SKILL.md#4-change-one-mechanism-and-compare) |
 | Make a skill activate at the right times | Unchanged versus revised description, with the body and surrounding collection fixed | [Test skill selection](skill-selection.md) |
 | Adopt a new model or skill collection | Current setup versus the proposed setup on representative tasks | [Compare setups](#5-compare-models-or-skill-collections) |
@@ -276,8 +276,10 @@ unrelated sessions.
 
 If existing skill text is already in restored context, use the
 [skill-context policy](case-contract.md#native-historical-continuation).
-Reloading cannot create a clean old/new comparison. An earlier unexposed
-boundary or a separately scoped recorded-context result is required.
+Choose between clean replacement before exposure and an update during ongoing
+work with identical historical text in both arms. Reloading availability alone
+proves neither fresh invocation nor removal of prior instructions. An in-place
+update can test recovery after an update, not prevention by a never-seen skill.
 
 **Complete when:** the case distinguishes original versus proposed triggers,
 recovery versus steering, artifact production versus downstream use, and

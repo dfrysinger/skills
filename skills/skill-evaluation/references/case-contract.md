@@ -65,11 +65,13 @@ Choose the skill-context policy explicitly:
 - `before-target-load`: end before target activation; recorded invocations and
   target context are rejected. Use this policy for clean skill comparisons.
 - `recorded-target-context`: preserve original target invocations and loaded
-  text unchanged. Use this policy only for historical behavior/mechanism
-  validation, not an isolated skill-change or current-skill-improvement claim.
-  Reports state that limit. Record historical body hashes and differences from
-  the current catalog in provenance and limitations; existing pinned skill and
-  plugin identities identify the available catalog, not old loaded bytes.
+  text unchanged. This supports historical behavior validation or a matched
+  update-during-work experiment: both arms retain the same historical prefix,
+  while the declared intervention changes future available skills. Record
+  actual later loads and outcomes; this tests recovery after an update, not a
+  clean replacement or prevention claim. No new invocation is guaranteed.
+  Record historical body hashes separately from each arm's pinned available
+  catalog, with differences in provenance and limitations.
 
 Audit other instruction exposure and required state separately. Neither policy
 proves complete restoration. Do not silently strip or replace old instructions.
@@ -79,8 +81,22 @@ prevention, keep the wrong response and later correction in hidden judge
 evidence. Recovery cases retain earlier mistakes; guided recovery also exposes
 the correction at its declared phase. Keep subsequent answers hidden. Disclose path,
 tool and runtime differences. Do not dispatch when missing state prevents the
-required actions or criteria. Reloading skills changes discovery, not old
-instruction text already in the conversation.
+required actions or criteria.
+
+For clean replacement, choose a real request boundary before the relevant
+skill's first exposure, then let each arm load its own version naturally.
+Keep earlier mistakes only when that boundary actually retains them; otherwise
+the test measures prevention rather than recovery.
+
+For an in-place update, retain the same old loaded text in both arms and
+make the old or proposed catalog available before replaying the same real
+trigger. Use the same supported reload/setup operation in both arms and
+record its effects and any host notices. `/skills reload` refreshes availability;
+it is not proof of automatic invocation or rewritten conversation history.
+Verify host-specific behavior before claiming either. An extra request to
+reload the target body is corrective steering unless it was the real trigger.
+The existing context policy records exposure; it does not itself execute
+an interactive reload or prove catalog replacement in a restored process.
 
 Restored repository tasks also require `repository_task.candidate_permissions`:
 

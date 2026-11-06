@@ -26,7 +26,7 @@ tracking system:
 | Expected behavior | Prevention, recovery without corrective steering, response to user correction, or another concrete task outcome. |
 | Starting state | Conversation, loaded instructions, files, objective, schedules, tools and permissions needed at that trigger. |
 | Success | Observable result and horizon; distinguish a proposed action from performed work. |
-| Comparison | Exact unchanged setup and proposed change; name any no-target-skill or no-skills arm separately. |
+| Comparison | Capture-time control for historical repair, exact proposed change, and available versus already-loaded skill contents; name no-skill arms separately. |
 | Attempts | Planned repetitions, fixed model/settings, criteria, limits, first-outcome retention and stop rule. |
 | Case roles | Development, maintained regression, or unused confirmation, including prior feedback exposure. |
 
@@ -72,7 +72,9 @@ Match the runtime to the outcome:
 Inspect the rendered prompt and actual child-process configuration before
 dispatch. Prove required operations under normal permissions. A VM, successful
 import, authentication, or CLI exit zero alone does not establish readiness.
-Reloading skills does not erase previously loaded instructions.
+Distinguish a clean replacement from an update during ongoing work using the
+[skill-context policy](references/case-contract.md#native-historical-continuation).
+Reloading availability does not prove a fresh invocation or removal of old text.
 
 If needed state or tools are unavailable, record the missing prerequisite.
 A narrower decision screen may answer a separate question, but does not close
@@ -91,13 +93,27 @@ For scaffolding, commands and evidence layout, use
 [case contract](references/case-contract.md). Validate material criteria
 against the [actual environment](references/judgment-environment-fit.md).
 
+Before any behavioral run, including the baseline, apply the
+[experimental-method rules, rubric and reviewer addendum](references/experimental-method-review.md).
+Have independent Claude and GPT reviewers grade the same frozen method and
+evidence. Review completion is not execution readiness: unresolved prerequisites
+block the affected phase. Reuse an unchanged review; re-review material changes
+to the trigger, control, intervention, runtime, criteria or stopping rule.
+
 **Complete when:** the selected route can perform the required work, all
 criteria have observable evidence, and candidate access excludes hidden answers.
 Otherwise retain the concrete setup prerequisite and supported narrower scope.
 
 ## 3. Establish the unchanged baseline
 
-For a repair, run the exact unchanged setup first. Observe the reported bad
+For a historical repair, the primary control is the original capture-time skill
+setup, not the latest release. Recover actual loaded bodies and available
+collection where relevant, with source revisions or byte hashes. A current-release
+control answers a different question. Missing original bytes or state remain
+prerequisites; synthetic fixtures cannot replace the historical comparison.
+Disclose historical model/runtime substitutions and hold them fixed across arms.
+
+Run the exact unchanged setup first. Observe the reported bad
 behavior through the trigger and outcome above, not merely a related symptom
 or an answer agreeing with a correction.
 A grader rejecting an unfinished fixture proves its check can fail; it is not

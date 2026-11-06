@@ -33,6 +33,10 @@ goal here rather than only in a technical appendix.
 
 Explain the general instruction change, or say no skill change was made.
 Identify exact skill/setup versions in supporting evidence.
+For historical work, distinguish capture-time loaded bodies, each arm's
+available skills, and clean replacement versus update during ongoing work.
+Include the pre-run method/rubric revision, both reviewers' phase grades and
+any unresolved readiness gates. A reviewed method is not a completed experiment.
 
 | Condition | Run or NOT RUN | Valid results | What it can establish |
 |---|---|---|---|
