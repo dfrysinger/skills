@@ -196,6 +196,7 @@ same user intervention, not whether an agent can agree with the correction.
    claim, restore prior messages in their conversation roles through a
    supported restore path. Supplying them only as a file is a different task;
    label that adaptation rather than calling it the original session.
+   Recover the skills through the [Git restoration recipe](#restore-historical-skills-from-git).
 3. **Prove the case, then reproduce with the current setup.** Check that the task is
    achievable and the required behavior is observable. Prefer a faithful
    executable continuation for action-dependent failures. Record unavailable
@@ -232,6 +233,72 @@ is solved nor justify inventing a skill advantage.
 **Complete when:** the exact candidate has the required behavioral evidence,
 or the report identifies no supported change, an inconclusive comparison or a
 specific prerequisite. Preserve the observed historical mistake in every case.
+
+### Restore historical skills from Git
+
+Recover the repository snapshot before declaring historical skills unavailable.
+Use the chosen replay cutoff, not merely the session's creation date: a long
+session can load updated skills before the failure.
+
+1. **Find the source revision.** Start with captured repository identities,
+   commit IDs, plugin versions and successful skill-load records. Prefer a
+   recorded revision; otherwise use the cutoff's UTC timestamp to locate a
+   candidate on the repository's canonical branch or release ancestry:
+
+   ```sh
+   COMMIT=$(git -C "$SKILLS_REPO" rev-list --first-parent -1 \
+     --before="$CUTOFF_UTC" "$CANONICAL_REF")
+   ```
+
+   Set `SKILLS_REPO` to the source checkout, `CANONICAL_REF` to the relevant
+   canonical branch or release, and `CUTOFF_UTC` to the selected event time.
+   If history is shallow or the revision is absent, retrieve the needed
+   history from that repository before concluding it cannot be recovered.
+   Commit dates locate candidates; they do not prove publication or installation.
+2. **Check against actual loads.** Compare version metadata and recorded skill
+   bodies or content hashes with the candidate revision. Account for documented
+   loader transformations, such as omitted front matter. If they disagree,
+   trace intervening updates, local edits or another source rather than silently
+   substituting the date-selected commit. One matching body does not establish
+   every installed file. Keep prior loaded text separate from the collection
+   available for future calls under the chosen
+   [context policy](case-contract.md#native-historical-continuation).
+3. **Freeze the full repository.** Preserve manifests, the surrounding skills,
+   references and helpers, not only the target's `SKILL.md`. First apply the
+   [sensitive-content boundary](historical-case-capture.md#1-define-the-event-boundary)
+   to the selected tree. If it contains protected content, capture permitted
+   files with labeled omissions instead of retaining an unredacted archive;
+   record the resulting reconstruction limits. Otherwise set `ARCHIVE` to a
+   new absolute file path in the evaluation's isolated input storage, then:
+
+   ```sh
+   test -n "$COMMIT" && test ! -e "$ARCHIVE" &&
+     git -C "$SKILLS_REPO" archive --format=tar --output="$ARCHIVE" "$COMMIT"
+   ```
+
+   Record the remote, cutoff, commit/tree IDs, version, archive SHA-256 and
+   source-load matches in the existing capture receipt or artifact ledger.
+   Verify required files against Git; account for export attributes and
+   submodules rather than assuming an archive includes them. Stage the verified
+   files through the existing evaluator's skill/catalog binding, without
+   changing the live installation.
+4. **Separate recovery from comparison.** Diff the actual declared skill
+   package, including references and helpers, against the proposed candidate.
+   If the bytes are identical, there is no changed-skill comparison to run.
+   Keep the recovered baseline, reproduce under its normal admission gates,
+   then design a justified change if needed. A version bump or changes elsewhere
+   in the collection do not establish a change to this package. An older
+   session-start version is a different starting point, not a way to manufacture
+   an old/new difference at the failure cutoff.
+
+Record personal overrides, uncommitted inputs and missing task/runtime state
+separately. Recoverable repository files need not wait for those investigations;
+a repository snapshot alone does not establish a complete historical machine.
+
+**Complete when:** required repository-backed skills are recovered and bound to
+source evidence, any installation uncertainty is explicit, and the proposed
+comparison has either a verified package delta or a baseline-only next step.
+This preparation is not proof that the failure reproduces or that a change helps.
 
 ### Choose the trigger and recovery expectation
 
