@@ -53,6 +53,27 @@ candidate workspace. The executor imports it in an isolated candidate home
 and resumes the returned session ID. Unsupported or failed imports stop the
 attempt; the runner never substitutes a transcript file for restored history.
 
+For restored read-only cases, `session_restore` also accepts an optional
+`personal_instructions_file`: a nonempty, normalized packet-relative path to
+a regular, nonsymlink file beneath the first phase packet. Repository tasks
+reject this field. The five fields above remain required.
+
+The executor excludes this setup file from candidate evidence and copies its
+exact bytes to the isolated `COPILOT_HOME/copilot-instructions.md`. Discovery,
+import and every resumed candidate phase share that configuration, a separate
+empty `HOME`, and no ambient `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`. Before import
+and each candidate invocation, the selected CLI's `instruction list --json`
+must report exactly one enabled source: that staged personal file. Missing,
+disabled, malformed or additional enabled sources stop setup and retain the
+complete diagnostic output, stderr and file hashes.
+
+This opt-in supports personal-only instruction authority. Cases that require
+project, plugin or other instruction sources are unsupported by this mode.
+Do not remove required instructions or change the working directory to make
+a case pass discovery. Without this field, candidates keep custom instructions
+disabled. Judges always keep them disabled. Candidate tools and grants remain
+unchanged.
+
 Choose the cutoff using the playbook's
 [replay starting-point procedure](evaluation-playbook.md#choose-the-replay-starting-point):
 prevention, unaided recovery and guided recovery require different prior state.
@@ -176,6 +197,8 @@ The judges include at least one Claude and one GPT model. Each judge reads
 candidate outputs, receipts, and hidden evidence, but not another judge's
 result. A final `PASS` requires unanimous `PASS`; any `FAIL` yields `FAIL`; with
 no `FAIL`, any `UNANSWERABLE` yields `UNANSWERABLE`.
+For restored read-only cases, judges also receive the retained raw phase logs,
+including tool calls and results, with their receipt-bound hashes.
 
 ## Revisions
 
