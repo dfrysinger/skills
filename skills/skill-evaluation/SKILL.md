@@ -106,12 +106,14 @@ Otherwise retain the concrete setup prerequisite and supported narrower scope.
 
 ## 3. Establish the unchanged baseline
 
-For a historical repair, the primary control is the original capture-time skill
-setup, not the latest release. Recover actual loaded bodies and available
-collection where relevant, with source revisions or byte hashes. A current-release
-control answers a different question. Missing original bytes or state remain
-prerequisites; synthetic fixtures cannot replace the historical comparison.
-Disclose historical model/runtime substitutions and hold them fixed across arms.
+For a historical repair, recover the capture-time repository and recorded loaded
+instructions, not the latest release. Follow the playbook's
+[reconstruction and claim limits](references/evaluation-playbook.md#historical-reconstruction-and-claim-limits):
+a frozen historical Git reconstruction can be a usable control without proving
+the entire original installation. Preserve known mismatches, declare assumptions
+and let the method review assess their effect on the tested claim. Required task
+state and permitted operations still need evidence; a synthetic proxy is not a
+historical reconstruction.
 
 Run the exact unchanged setup first. Observe the reported bad
 behavior through the trigger and outcome above, not merely a related symptom

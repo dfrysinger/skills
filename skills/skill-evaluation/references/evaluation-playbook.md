@@ -300,6 +300,41 @@ source evidence, any installation uncertainty is explicit, and the proposed
 comparison has either a verified package delta or a baseline-only next step.
 This preparation is not proof that the failure reproduces or that a change helps.
 
+### Historical reconstruction and claim limits
+
+Separate recovering old skill files from proving the original installation.
+Use the recovered historical Git tree, recorded loaded bodies and relevant
+task artifacts to build the smallest executable reconstruction of the real
+trigger. Freeze that reconstruction and compare matched arms on it. Keep old
+loaded text in history under the chosen context policy; changing available
+files does not rewrite it.
+
+Record which inputs are directly captured, Git-reconstructed or substituted.
+Reconcile known contradictions explicitly. A mismatching loaded body belongs
+to its original history; a later repository file may be the declared available
+version, but is not thereby proved installed at the original cutoff.
+
+Installation uncertainty alone does not block a reconstructed baseline.
+Before retaining a blocker, name the missing input, a concrete way it could
+change the tested behavior or comparison, and the smallest check or alternate
+case that would resolve it. Proof of every unrelated installed copy, loader
+winner or machine detail is not a prerequisite. Give the reconstruction and
+its limits to both method reviewers; do not stop before review merely because
+exact installation evidence is incomplete.
+
+Claim reproduction and improvement under the frozen reconstructed conditions.
+Claim an exact original installation or historical causal attribution only
+when the corresponding evidence supports it. A material unresolved difference
+keeps that stronger claim open; it need not close an independently answerable
+phase. Missing state or tools required to perform the actual task still blocks
+executed-recovery claims. Preserve the real trigger, outcomes, normal
+permissions and regression obligations; narrowing a claim does not turn a
+synthetic substitute into the requested task.
+
+**Complete when:** the method identifies the reconstructed inputs, material
+limits and allowed conclusion, and both reviewers assess readiness for that
+specific phase rather than an unstated perfect-machine requirement.
+
 ### Choose the trigger and recovery expectation
 
 Identify both the event that gives the agent an opportunity to act and the
