@@ -447,25 +447,73 @@ export async function runProbe(op, config) {
     }
     if (report.permissions.some(entry => entry.error) || report.error) throw new Error("Premodel handler or event capture failed");
     report.checks.permission_traversal = true;
-    if (typeof session.sendAndWait !== "function" || typeof session.abort !== "function") {
-      throw new Error("Missing public SDK send/wait or abort surface");
+    if (typeof session.send !== "function" || typeof session.abort !== "function") {
+      throw new Error("Missing public SDK send or abort surface");
     }
     const renderedPrompt = readFileSync(report.prompt_path, "utf8");
     report.prompt_sha256 = hash(renderedPrompt);
+    const buffered = [];
+    let messageId;
+    let matchingMessage;
+    let active = true;
+    let resolveOutcome;
+    const outcome = new Promise(resolve => { resolveOutcome = resolve; });
+    const consume = event => {
+      if (!active || event.agentId || event.data?.parentToolCallId) return;
+      if (event.type === "session.error") {
+        resolveOutcome({ error: new Error(event.data?.message ?? "Native root session error") });
+      } else if (event.type === "session.idle" && event.data?.aborted === true) {
+        resolveOutcome({ error: new Error("Native session idle was aborted") });
+      } else if (messageId === undefined) {
+        buffered.push(event);
+      } else if (event.type === "assistant.message") {
+        matchingMessage = event.data?.originatingMessageId === messageId
+          && typeof event.id === "string" && typeof event.data.content === "string"
+          && (event.data.toolRequests === undefined
+            || (Array.isArray(event.data.toolRequests) && event.data.toolRequests.length === 0))
+          ? event : undefined;
+      } else if (event.type === "session.idle") {
+        resolveOutcome(matchingMessage && event.data && typeof event.id === "string"
+          && (event.data.aborted === undefined || event.data.aborted === false)
+          ? { message: matchingMessage, idle: event }
+          : { error: new Error("Native session idle lacked a matching root final response") });
+      }
+    };
+    const stopCompletion = session.on(consume);
     report.model_started_at = new Date().toISOString();
     const modelStarted = performance.now();
-    report.model_timing_source = "Owned SDK sendAndWait boundary, not provider HTTP timing";
+    report.model_timing_source = "Owned SDK send through correlated native session.idle, not provider HTTP timing";
+    let deadlineTimer;
     try {
-      report.model_result = await call("session.sendAndWait", { prompt: renderedPrompt, timeout_ms: 300000 }, async () => {
-        report.model_send_calls = 1;
-        try { return await session.sendAndWait({ prompt: renderedPrompt }, 300000); }
-        finally {
-          report.model_completed_at = new Date().toISOString();
-          report.model_elapsed_seconds = (performance.now() - modelStarted) / 1000;
-        }
-      });
-      if (report.model_result?.type !== "assistant.message" || typeof report.model_result.id !== "string"
-          || typeof report.model_result.data?.content !== "string") throw new Error("SDK completed without a terminal assistant message");
+      try {
+        const deadline = new Promise(resolve => {
+          deadlineTimer = setTimeout(() => resolve({ error: new Error("300-second SDK send/completion deadline exceeded") }), 300000);
+        });
+        void call("session.send", { prompt: renderedPrompt }, () => {
+          report.model_send_calls = 1;
+          return session.send({ prompt: renderedPrompt });
+        }).then(id => {
+          if (typeof id !== "string" || !id) throw new Error("SDK send returned no message ID");
+          report.model_message_id = id;
+          if (!active) return;
+          messageId = id;
+          for (const event of buffered) consume(event);
+          buffered.length = 0;
+        }).catch(error => resolveOutcome({ error }));
+        const terminal = await Promise.race([outcome, deadline]);
+        if (terminal.error) throw terminal.error;
+        report.model_result = terminal.message;
+        report.model_completion_event = terminal.idle;
+      } catch (error) {
+        fail(error);
+        throw error;
+      } finally {
+        active = false;
+        clearTimeout(deadlineTimer);
+        try { stopCompletion(); } catch (error) { fail(error); }
+        report.model_completed_at = new Date().toISOString();
+        report.model_elapsed_seconds = (performance.now() - modelStarted) / 1000;
+      }
       if (report.error) throw new Error("Candidate event capture failed");
       report.status = "CANDIDATE_OBSERVED";
     } catch (error) {
@@ -486,7 +534,8 @@ export async function runProbe(op, config) {
         "Fixed synthetic SDK diagnostic only; native mediation and full caller behavior require Actions proof",
         "One SDK send may produce multiple provider HTTP calls; billing and unobserved requests remain unknown",
         "No fabricated CLI results, transcript repair, custom tools or permission bypass",
-        "Paired SDK sendAndWait ignores session.idle marked autopilot; actual completion requires Actions proof",
+        "Public send/native idle correlation and full caller completion require Actions proof",
+        "A 300-second outer helper guard cannot cover preflight plus the 300-second model deadline and abort/shutdown",
       ];
     }
     validateOutput(config);

@@ -17,11 +17,12 @@ export const state = {
   mode: "interactive", connections: [], resumes: [], deleteFails: false,
   events: [], handlers: [], sendCalls: 0, aborts: 0,
 };
-const emit = (type, data) => {
-  const event = { id: randomUUID(), type, data, timestamp: new Date().toISOString(), parentId: null };
+const emit = (type, data, extra = {}) => {
+  const event = { id: randomUUID(), type, data, timestamp: new Date().toISOString(), parentId: null, ...extra };
   for (const handler of state.handlers) handler(event);
   return event;
 };
+state.emit = emit;
 export const RuntimeConnection = {
   forStdio(options) { state.connections.push(options); return options; },
 };
@@ -50,15 +51,20 @@ export class CopilotClient {
         return () => { state.handlers = state.handlers.filter(item => item !== handler); };
       },
       async abort() { state.aborts++; },
-      async sendAndWait(message, timeout) {
-        state.sendCalls++; state.sentPrompt = message.prompt; state.sendTimeout = timeout;
-        if (state.sendFails) throw new Error("Test model timeout");
+      async send(message) {
+        state.sendCalls++; state.sentPrompt = message.prompt;
+        const id = randomUUID();
+        state.sentId = id;
+        state.sendReady?.();
+        if (state.sendFails) throw new Error("Test send transport failure");
+        if (state.sendHook) return state.sendHook(id, emit);
         emit("assistant.turn_start", { model: options.model });
         emit("assistant.usage", { apiCallId: "test-api-1", model: options.model });
         emit("assistant.usage", { apiCallId: "test-api-2", model: options.model });
-        const result = emit("assistant.message", { content: "Test SDK response" });
+        emit("assistant.message", { content: "Test SDK response", originatingMessageId: id });
         emit("assistant.idle", {});
-        return result;
+        emit("session.idle", { mode: "autopilot" });
+        return id;
       },
       rpc: {
         eventLog: {
@@ -352,7 +358,7 @@ test("candidate gates one SDK send and retains unwrapped native events and separ
   assert.equal(report.firsterror, null);
   assert.equal(report.model_send_calls, 1);
   assert.equal(state.sendCalls, 1);
-  assert.equal(state.sendTimeout, 300000);
+  assert.equal(report.model_message_id, state.sentId);
   assert.equal(state.sentPrompt, readFileSync(join(root, "candidate-prompt.md"), "utf8"));
   assert.ok(Object.values(report.checks).every(value => value === true));
   assert.equal(report.model_calls, undefined);
@@ -364,10 +370,12 @@ test("candidate gates one SDK send and retains unwrapped native events and separ
   assert.ok(report.model_elapsed_seconds >= 0);
   const events = readFileSync(join(root, "candidate-raw.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
   assert.deepEqual(events.map(event => event.type), [
-    "assistant.turn_start", "assistant.usage", "assistant.usage", "assistant.message", "assistant.idle",
+    "assistant.turn_start", "assistant.usage", "assistant.usage", "assistant.message", "assistant.idle", "session.idle",
   ]);
   assert.equal(events[0].data.model, "gpt-5.6-sol-fast");
   assert.deepEqual(events.find(event => event.type === "assistant.message"), report.model_result);
+  assert.deepEqual(events.at(-1), report.model_completion_event);
+  assert.equal(report.model_result.data.originatingMessageId, report.model_message_id);
   assert.equal(state.owners, 0);
   assert.deepEqual(state.resumes.at(-1).availableTools, ["skill", "view", "sql", "manage_schedule"]);
   assert.equal(state.resumes.at(-1).skipCustomInstructions, false);
@@ -423,9 +431,91 @@ test("candidate send failure aborts and closes while retaining the first model e
   state.sendFails = true;
   const report = await runProbe("candidate", config);
   assert.equal(report.status, "FAILED");
-  assert.equal(report.firsterror, "Test model timeout");
+  assert.equal(report.firsterror, "Test send transport failure");
   assert.equal(report.model_send_calls, 1);
   assert.equal(state.aborts, 1);
   assert.equal(state.owners, 0);
   assert.ok(report.model_elapsed_seconds >= 0);
+});
+
+test("late correlated root response completes on autopilot session idle while child events remain retained", async t => {
+  const { config, root, state } = await candidateFixture(t);
+  const ready = new Promise(resolve => { state.sendReady = resolve; });
+  state.sendHook = id => id;
+  const pending = runProbe("candidate", config);
+  await ready;
+  await new Promise(setImmediate);
+  state.emit("assistant.message", { content: "Child response", originatingMessageId: state.sentId }, { agentId: "test-child" });
+  state.emit("session.idle", { mode: "autopilot" }, { agentId: "test-child" });
+  state.emit("session.error", { message: "Child-only error" }, { agentId: "test-child" });
+  const matching = state.emit("assistant.message", { content: "Root response", originatingMessageId: state.sentId });
+  const terminal = state.emit("session.idle", { mode: "autopilot", aborted: false });
+  const report = await pending;
+  assert.equal(report.status, "CANDIDATE_OBSERVED", report.firsterror);
+  assert.deepEqual(report.model_result, matching);
+  assert.deepEqual(report.model_completion_event, terminal);
+  assert.equal(report.model_message_id, state.sentId);
+  const events = readFileSync(join(root, "candidate-raw.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(events.filter(event => event.agentId === "test-child").length, 3);
+  assert.equal(state.owners, 0);
+  assert.equal(state.handlers.length, 0);
+});
+
+test("wrong, missing, child or tool-only responses and aborted/error idle cannot complete", async t => {
+  for (const failure of ["wrong-id", "missing-id", "missing-send-id", "child-only", "tool-only", "latest-wrong-id", "idle-first", "aborted-idle", "root-error"]) {
+    await t.test(failure, async child => {
+      const { config, state } = await candidateFixture(child);
+      state.sendHook = (id, emit) => {
+        if (failure === "idle-first") emit("session.idle", { mode: "autopilot" });
+        emit("assistant.message", {
+          content: "Test response",
+          ...(failure === "missing-id" ? {} : { originatingMessageId: failure === "wrong-id" ? "other-id" : id }),
+          ...(failure === "tool-only" ? { toolRequests: [{ toolCallId: "test-tool", name: "sql", arguments: {} }] } : {}),
+        }, failure === "child-only" ? { agentId: "test-child" } : {});
+        if (failure === "latest-wrong-id") emit("assistant.message", { content: "Unrelated last response", originatingMessageId: "other-id" });
+        if (failure === "root-error") emit("session.error", { message: "First native root error" });
+        emit("session.idle", { mode: "autopilot", aborted: failure === "aborted-idle" });
+        return failure === "missing-send-id" ? undefined : id;
+      };
+      const report = await runProbe("candidate", config);
+      assert.equal(report.status, "FAILED");
+      assert.equal(report.model_send_calls, 1);
+      assert.equal(report.model_completion_event, undefined);
+      assert.equal(state.aborts, 1);
+      assert.equal(state.owners, 0);
+      assert.equal(state.handlers.length, 0);
+      if (failure === "root-error") assert.equal(report.firsterror, "First native root error");
+      if (failure === "aborted-idle") assert.equal(report.firsterror, "Native session idle was aborted");
+      if (failure === "missing-send-id") assert.equal(report.firsterror, "SDK send returned no message ID");
+    });
+  }
+});
+
+test("assistant idle alone or a stalled admission expires at the fixed deadline and closes", async t => {
+  for (const stalled of [false, true]) await t.test(stalled ? "stalled admission" : "assistant idle only", async child => {
+    const { config, state } = await candidateFixture(child);
+    child.mock.timers.enable({ apis: ["setTimeout"] });
+    const ready = new Promise(resolve => { state.sendReady = resolve; });
+    state.sendHook = (id, emit) => {
+      if (stalled) return new Promise(() => {});
+      emit("assistant.message", { content: "Test response", originatingMessageId: id });
+      emit("assistant.idle", {});
+      return id;
+    };
+    const pending = runProbe("candidate", config);
+    await ready;
+    await new Promise(setImmediate);
+    child.mock.timers.tick(299999);
+    await new Promise(setImmediate);
+    assert.equal(state.aborts, 0);
+    child.mock.timers.tick(1);
+    const report = await pending;
+    assert.equal(report.status, "FAILED");
+    assert.equal(report.firsterror, "300-second SDK send/completion deadline exceeded");
+    assert.equal(report.model_send_calls, 1);
+    assert.equal(report.model_completion_event, undefined);
+    assert.equal(state.aborts, 1);
+    assert.equal(state.owners, 0);
+    assert.equal(state.handlers.length, 0);
+  });
 });
