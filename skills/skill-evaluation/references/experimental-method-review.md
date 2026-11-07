@@ -49,6 +49,28 @@ Finding disposition cannot override an unresolved BLOCKED or REVISE grade.
 Material method/evidence changes invalidate affected approvals until reviewed.
 Unchanged repetitions within the reviewed attempt set need no new review.
 
+### Collect operational prerequisites without a circular gate
+
+Bounded owner prerequisite collection is separate from candidate/judge
+execution and acceptance of its results. Do not require a no-model setup check
+to already possess the operational observations it exists to collect.
+
+Collection may proceed while operational grades remain BLOCKED only after
+both families complete static review of the exact collection action and its
+replacement boundary. They must confirm that no material method defect,
+unresolved authority, input identity or control issue prevents collection.
+The missing facts must be outputs of that action, not unavailable inputs.
+Use the existing approved runtime, normal permissions and a fresh owned scope,
+with zero candidate sends, zero judge calls, bounded cleanup and a declared
+stop before behavioral execution. This exception grants no new capabilities.
+
+Retain the original grades, first results, actual call counts, cleanup and
+archive observations, and accounting limits. Collection does not make a
+BLOCKED grade READY, establish recovery, or qualify a skill. Unexpected model
+execution is a setup failure, not an admitted behavioral experiment.
+Reassess the retained facts with both families before opening the applicable
+candidate/judge phase or acceptance claim. Both READY grades remain required.
+
 When checking a rubric against a known malformed plan, give both reviewers
 the original user outcome and that plan's actual inputs, not merely its
 author's narrowed goal. Record this as static calibration, not evidence that
@@ -68,6 +90,11 @@ control identity, exposure, causal contrast, runtime observability and gates.
 Return a complete static review even when the method correctly records missing
 execution prerequisites. If a claimed fact cannot be assessed from supplied
 evidence, mark that fact unresolved; do not treat it as proved.
+Distinguish owner prerequisite collection from acceptance and behavioral
+execution. If the bounded zero-candidate/zero-judge collection branch is
+proposed, assess its exact replacement boundary separately. Keep missing
+operational grades BLOCKED; do not require the collection's own outputs as
+preconditions for collecting them or silently waive other missing prerequisites.
 Assess the declared reconstruction separately from an exact-original claim.
 For a blocking fidelity gap, name the missing input and a concrete effect on
 the tested behavior or comparison; incomplete installation evidence alone is
