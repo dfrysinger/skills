@@ -452,6 +452,8 @@ export async function runProbe(op, config) {
     }
     const renderedPrompt = readFileSync(report.prompt_path, "utf8");
     report.prompt_sha256 = hash(renderedPrompt);
+    report.timeout_ms = Math.max(0, Math.floor(Math.min(report.max_timeout_ms, 330000 - (performance.now() - started))));
+    if (!report.timeout_ms) throw new Error("Owned helper budget exhausted before model dispatch");
     const buffered = [];
     let messageId;
     let matchingMessage;
@@ -487,7 +489,9 @@ export async function runProbe(op, config) {
     try {
       try {
         const deadline = new Promise(resolve => {
-          deadlineTimer = setTimeout(() => resolve({ error: new Error("300-second SDK send/completion deadline exceeded") }), 300000);
+          deadlineTimer = setTimeout(() => resolve({
+            error: new Error(`${report.timeout_ms}-millisecond SDK send/completion deadline exceeded`),
+          }), report.timeout_ms);
         });
         void call("session.send", { prompt: renderedPrompt }, () => {
           report.model_send_calls = 1;
@@ -525,6 +529,7 @@ export async function runProbe(op, config) {
     if (op === "candidate") {
       delete report.model_calls;
       report.model_send_calls = 0;
+      report.max_timeout_ms = 300000;
       report.checks = {
         effective_tools: false, instruction_correspondence: false, cold_state: false,
         permission_traversal: false, prefix_preserved: false,
@@ -535,7 +540,7 @@ export async function runProbe(op, config) {
         "One SDK send may produce multiple provider HTTP calls; billing and unobserved requests remain unknown",
         "No fabricated CLI results, transcript repair, custom tools or permission bypass",
         "Public send/native idle correlation and full caller completion require Actions proof",
-        "A 300-second outer helper guard cannot cover preflight plus the 300-second model deadline and abort/shutdown",
+        "Model deadline uses the remaining 330-second owner budget, capped at 300 seconds, reserving 30 seconds under the 360-second helper watchdog",
       ];
     }
     validateOutput(config);
