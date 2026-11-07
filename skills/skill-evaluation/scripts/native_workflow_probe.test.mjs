@@ -5,15 +5,22 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { matchesFixtureState, runProbe, validateConfig } from "./native_workflow_probe.mjs";
+import { candidatePermissionHandler, matchesFixtureState, runProbe, validateConfig } from "./native_workflow_probe.mjs";
 
 // This SDK double exercises control flow only, never native interoperability.
 const sdkDouble = `
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 export const state = {
   rows: [], entries: [], nextId: 1, owners: 0, starts: 0, stops: 0,
   mode: "interactive", connections: [], resumes: [], deleteFails: false,
+  events: [], handlers: [], sendCalls: 0, aborts: 0,
+};
+const emit = (type, data) => {
+  const event = { id: randomUUID(), type, data, timestamp: new Date().toISOString(), parentId: null };
+  for (const handler of state.handlers) handler(event);
+  return event;
 };
 export const RuntimeConnection = {
   forStdio(options) { state.connections.push(options); return options; },
@@ -38,7 +45,35 @@ export class CopilotClient {
     if (current && state.coldMismatch && state.starts > 1) current.id = 18;
     const session = {
       sessionId: id,
+      on(handler) {
+        state.handlers.push(handler);
+        return () => { state.handlers = state.handlers.filter(item => item !== handler); };
+      },
+      async abort() { state.aborts++; },
+      async sendAndWait(message, timeout) {
+        state.sendCalls++; state.sentPrompt = message.prompt; state.sendTimeout = timeout;
+        if (state.sendFails) throw new Error("Test model timeout");
+        emit("assistant.turn_start", { model: options.model });
+        emit("assistant.usage", { apiCallId: "test-api-1", model: options.model });
+        emit("assistant.usage", { apiCallId: "test-api-2", model: options.model });
+        const result = emit("assistant.message", { content: "Test SDK response" });
+        emit("assistant.idle", {});
+        return result;
+      },
       rpc: {
+        eventLog: {
+          read: async ({ cursor }) => ({ events: structuredClone(state.events.slice(Number(cursor ?? 0))),
+            cursor: String(state.events.length), hasMore: false, cursorStatus: "ok" }),
+          tail: async () => ({ cursor: String(state.events.length) }),
+        },
+        instructions: {
+          getSources: async () => {
+            const path = join(this.options.baseDirectory, "copilot-instructions.md");
+            return state.instructionOverride ?? { sources: [{ id: "personal", label: "Personal",
+              sourcePath: path, content: readFileSync(path, "utf8"), type: "home", location: "user" }] };
+          },
+        },
+        model: { getCurrent: async () => ({ modelId: options.model, reasoningEffort: options.reasoningEffort }) },
         autopilotObjective: { getState: async () => ({ state: current && {
           id: current.id, objective: current.objective, status: current.status,
           turnCount: current.turnCount, creditCountNanoAiu: current.creditCountNanoAiu,
@@ -63,8 +98,21 @@ export class CopilotClient {
           },
         },
         tools: {
+          getCurrentMetadata: async () => state.metadataOverride ?? ({
+            tools: ["skill", "view", "sql", "manage_schedule"].map(name => ({ name, description: "Native test double" })),
+          }),
           initializeAndValidate: async () => ({}),
-          execute: async ({ name, arguments: args }) => {
+          execute: async ({ name, arguments: args, toolCallId }) => {
+            if (name === "view") {
+              if (state.preflightFails) throw new Error("Test native preflight RPC failure");
+              const decision = state.ownerBypass ? { kind: "approve-once" } : options.onPermissionRequest({
+                kind: "read", intention: "Test view",
+                path: state.handlerError ? args.path + ".missing" : args.path, toolCallId,
+              }, { sessionId: id });
+              if (state.semanticPollution) state.events.push(emit("tool.execution_complete", { result: "Injected test result" }));
+              const denied = args.path.endsWith("synthetic-denied-sibling.txt") || decision.kind === "reject";
+              return { resultType: denied ? "denied" : "success", textResultForLlm: "Test native view" };
+            }
             if (name === "sql" && args.query.startsWith("INSERT")) {
               state.rows.push({ id: "native-workflow-fixture", title: "Synthetic pending work",
                 description: "Owned diagnostic fixture", status: "pending" });
@@ -162,6 +210,7 @@ test("cold fixture check, observation and cleanup use sequential closed owners",
   assert.equal(state.starts, 2);
   assert.equal(state.stops, 2);
   assert.equal(state.owners, 0);
+  assert.equal(state.sendCalls, 0);
   assert.equal(JSON.parse(readFileSync(config.output)).status, "SETUP_OBSERVED");
   assert.equal(JSON.stringify(setup).includes("excluded"), false);
   for (const connection of state.connections) {
@@ -244,4 +293,139 @@ test("shutdown failure forces owner termination and fails setup before handoff",
   assert.deepEqual(report.cleanup.schedules.entries, []);
   assert.deepEqual(report.cleanup.todos.rows, []);
   assert.equal(state.owners, 0);
+});
+
+async function candidateFixture(t) {
+  const owned = fixture(t);
+  const { root, config } = owned;
+  const { state } = await import(pathToFileURL(config.sdk).href);
+  assert.equal((await runProbe("setup", config)).status, "SETUP_OBSERVED");
+  mkdirSync(join(root, "pinned-plugin"));
+  writeFileSync(join(root, "candidate-prompt.md"), "Unchanged rendered diagnostic prompt.\n");
+  writeFileSync(join(root, "synthetic-denied-sibling.txt"), "Synthetic denied sibling.\n");
+  writeFileSync(join(config.cwd, "plan.md"), "Synthetic ordinary plan.\n");
+  writeFileSync(join(config.home, "copilot-instructions.md"), "Synthetic personal instructions.\n");
+  state.events.push({ id: "test-prior-id", type: "user.message", data: { content: "Prior-only test marker" } });
+  return { ...owned, state, config: { ...config, output: join(root, "candidate.json") } };
+}
+
+test("candidate permission handler approves only canonical owned reads and three native names", t => {
+  const { config, root, goalPath } = fixture(t);
+  const plan = join(config.cwd, "plan.md");
+  const plugin = join(root, "pinned-plugin");
+  mkdirSync(plugin);
+  writeFileSync(plan, "Test plan");
+  writeFileSync(goalPath, "{}");
+  writeFileSync(join(root, "sibling.txt"), "Test sibling");
+  const alias = join(config.cwd, "alias.md");
+  symlinkSync(plan, alias);
+  const receipts = [];
+  const handler = candidatePermissionHandler(config, goalPath, plugin, receipts);
+  const invocation = { sessionId: config.session_id };
+  const read = { kind: "read", intention: "Test read", toolCallId: "test-read", path: plan };
+  for (const path of [plan, "plan.md", goalPath, config.cwd]) {
+    assert.equal(handler({ ...read, path }, invocation).kind, "approve-once");
+  }
+  for (const request of [
+    { ...read, path: join(root, "sibling.txt") }, { ...read, path: plugin },
+    { ...read, path: alias }, { ...read, path: "alias.md" },
+    { ...read, path: `${config.cwd}/../${config.cwd.split("/").at(-1)}/plan.md` },
+    { ...read, resolvedPath: goalPath }, { ...read, managedApprovalRequired: true },
+    { ...read, requestSandboxBypass: true }, { ...read, kind: "write" },
+    { ...read, arbitraryGrant: true }, { ...read, managedApprovalRequired: 0 },
+    { kind: "custom-tool", toolCallId: "test", toolDescription: "Native view", toolName: "view" },
+    { kind: "custom-tool", toolCallId: "test", toolDescription: "Native SQL", toolName: "sql", skipPermission: true },
+  ]) assert.equal(handler(request, invocation).kind, "reject");
+  assert.equal(handler(read, { sessionId: randomUUID() }).kind, "reject");
+  for (const toolName of ["skill", "sql", "manage_schedule"]) {
+    assert.equal(handler({ kind: "custom-tool", toolDescription: "Native test tool", toolName, toolCallId: "native-test" }, invocation).kind, "approve-once");
+  }
+  const broken = { kind: "read", intention: "Test error", toolCallId: "broken", get path() { throw new Error("Test handler error"); } };
+  assert.equal(handler(broken, invocation).kind, "reject");
+  assert.equal(receipts.at(-1).error.message, "Test handler error");
+});
+
+test("candidate gates one SDK send and retains unwrapped native events and separate timing", async t => {
+  const { config, root, state } = await candidateFixture(t);
+  const report = await runProbe("candidate", config);
+  assert.equal(report.status, "CANDIDATE_OBSERVED", JSON.stringify(report.error));
+  assert.equal(report.firsterror, null);
+  assert.equal(report.model_send_calls, 1);
+  assert.equal(state.sendCalls, 1);
+  assert.equal(state.sendTimeout, 300000);
+  assert.equal(state.sentPrompt, readFileSync(join(root, "candidate-prompt.md"), "utf8"));
+  assert.ok(Object.values(report.checks).every(value => value === true));
+  assert.equal(report.model_calls, undefined);
+  assert.equal(report.observed_model_calls, null);
+  assert.equal(report.observed_usage_events, 2);
+  assert.deepEqual(report.observed_api_call_ids, ["test-api-1", "test-api-2"]);
+  assert.ok(Number.isFinite(Date.parse(report.model_started_at)));
+  assert.ok(Number.isFinite(Date.parse(report.model_completed_at)));
+  assert.ok(report.model_elapsed_seconds >= 0);
+  const events = readFileSync(join(root, "candidate-raw.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+  assert.deepEqual(events.map(event => event.type), [
+    "assistant.turn_start", "assistant.usage", "assistant.usage", "assistant.message", "assistant.idle",
+  ]);
+  assert.equal(events[0].data.model, "gpt-5.6-sol-fast");
+  assert.deepEqual(events.find(event => event.type === "assistant.message"), report.model_result);
+  assert.equal(state.owners, 0);
+  assert.deepEqual(state.resumes.at(-1).availableTools, ["skill", "view", "sql", "manage_schedule"]);
+  assert.equal(state.resumes.at(-1).skipCustomInstructions, false);
+  assert.deepEqual(state.resumes.at(-1).instructionDirectories, []);
+  assert.equal(state.resumes.at(-1).organizationCustomInstructions, "");
+});
+
+test("missing or mismatched native sources, tools, mediation and history block before any send", async t => {
+  for (const failure of [
+    "missing-instructions", "wrong-content", "duplicate-instructions", "disabled-instructions",
+    "missing-tools", "wrong-tools", "mcp-tools", "owner-bypass", "semantic-pollution", "cold-mismatch", "handler-error", "preflight-error",
+  ]) await t.test(failure, async child => {
+    const { config, state } = await candidateFixture(child);
+    const source = {
+      id: "personal", label: "Personal", sourcePath: join(config.home, "copilot-instructions.md"),
+      content: readFileSync(join(config.home, "copilot-instructions.md"), "utf8"), type: "home", location: "user",
+    };
+    if (failure === "missing-instructions") state.instructionOverride = { sources: [] };
+    if (failure === "wrong-content") state.instructionOverride = { sources: [{ ...source, content: "Mismatched" }] };
+    if (failure === "duplicate-instructions") state.instructionOverride = { sources: [source, source] };
+    if (failure === "disabled-instructions") state.instructionOverride = { sources: [{ ...source, defaultDisabled: true }] };
+    if (failure === "missing-tools") state.metadataOverride = { tools: null };
+    if (failure === "wrong-tools") state.metadataOverride = { tools: [{ name: "bash", description: "Wrong tool" }] };
+    if (failure === "mcp-tools") state.metadataOverride = {
+      tools: ["skill", "view", "sql", "manage_schedule"].map(name => ({ name, description: "Wrong server", mcpServerName: "foreign" })),
+    };
+    if (failure === "owner-bypass") state.ownerBypass = true;
+    if (failure === "semantic-pollution") state.semanticPollution = true;
+    if (failure === "cold-mismatch") state.coldMismatch = true;
+    if (failure === "handler-error") state.handlerError = true;
+    if (failure === "preflight-error") state.preflightFails = true;
+    const report = await runProbe("candidate", config);
+    assert.equal(report.status, "PREMODEL_BLOCKED", JSON.stringify(report));
+    assert.equal(report.model_send_calls, 0);
+    assert.equal(state.sendCalls, 0);
+    assert.equal(report.model_started_at, undefined);
+    assert.equal(typeof report.firsterror, "string");
+    assert.equal(JSON.parse(readFileSync(config.output)).firsterror, report.firsterror);
+    assert.equal(state.owners, 0);
+    if (failure === "handler-error") {
+      assert.ok(report.permissions.some(entry => entry.error));
+      assert.equal(report.error.code, "ENOENT");
+    }
+    if (failure === "preflight-error") {
+      assert.equal(report.firsterror, "Test native preflight RPC failure");
+      assert.deepEqual(report.prefix_before, report.prefix_after);
+    }
+  });
+});
+
+test("candidate send failure aborts and closes while retaining the first model error", async t => {
+  const { config, state } = await candidateFixture(t);
+  state.sendFails = true;
+  const report = await runProbe("candidate", config);
+  assert.equal(report.status, "FAILED");
+  assert.equal(report.firsterror, "Test model timeout");
+  assert.equal(report.model_send_calls, 1);
+  assert.equal(state.aborts, 1);
+  assert.equal(state.owners, 0);
+  assert.ok(report.model_elapsed_seconds >= 0);
 });
