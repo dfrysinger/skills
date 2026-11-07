@@ -251,7 +251,9 @@ export async function runProbe(op, config) {
       }),
       workingDirectory: config.cwd, baseDirectory: config.home,
       useLoggedInUser: false, logLevel: "error",
-      ...(op === "candidate" ? { mode: "copilot-cli" } : {}),
+      ...(op === "candidate" ? {
+        mode: "copilot-cli", gitHubToken: process.env.COPILOT_GITHUB_TOKEN,
+      } : {}),
     });
     await call("client.start", undefined, () => client.start());
     if (typeof client.getStatus === "function") {
@@ -441,7 +443,9 @@ export async function runProbe(op, config) {
       const expected = item.name === "sibling" ? "reject" : "approve-once";
       if ((item.name !== "plan" && requests.length === 0)
           || requests.some(entry => entry.request.path !== item.path || entry.error || entry.decision.kind !== expected)
-          || item.result?.resultType !== (item.name === "sibling" ? "denied" : "success")) {
+          || (item.name === "sibling"
+            ? !["denied", "rejected"].includes(item.result?.resultType)
+            : item.result?.resultType !== "success")) {
         throw new Error(`Native permission traversal failed for ${item.name}; no owner bypass qualifies`);
       }
     }

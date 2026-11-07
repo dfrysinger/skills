@@ -1028,8 +1028,23 @@ def resolve_view(arguments: object, cwd: Path) -> tuple[str, str, bool] | None:
     return requested, str(resolved), resolved.is_relative_to(cwd.resolve())
 
 
-def successful_view_path(view: tuple[str, str, bool], cwd: Path, boundary: str) -> str:
+def _native_diagnostic_goal(goal: Path, run_home: Path, session_id: str) -> Path:
+    measurement.session_uuid(session_id)
+    expected = run_home / "session-state" / session_id / "autopilot-objective.json"
+    if (not goal.is_absolute() or goal != expected or goal.resolve() != expected
+            or not goal.is_file() or any(path.is_symlink() for path in (goal, *goal.parents))):
+        raise ValueError("native diagnostic goal must be the regular exact owned goal file")
+    return goal
+
+
+def successful_view_path(
+    view: tuple[str, str, bool], cwd: Path, boundary: str,
+    native_diagnostic_goal: Path | None = None,
+) -> str:
     requested, resolved, inside = view
+    if native_diagnostic_goal is not None and not inside:
+        if requested == str(native_diagnostic_goal) and resolved == str(native_diagnostic_goal):
+            return str(native_diagnostic_goal)
     if not inside and boundary == "prose":
         from dashboard_cli import invalidate_on_boundary_violation
         try:
@@ -1051,9 +1066,52 @@ def parse_run(
     require_skill: bool | None,
     boundary: str = "prose",
     allowed_tools: set[str] | None = None,
+    native_diagnostic_goal: Path | None = None,
+    native_sdk_completion: dict | None = None,
 ) -> dict:
+    sdk_response = None
+    sdk_completion = None
+    owner_call_ids: set[str] = set()
+    if native_sdk_completion is not None:
+        sdk_response = native_sdk_completion.get("model_result")
+        sdk_completion = native_sdk_completion.get("model_completion_event")
+        message_id = native_sdk_completion.get("model_message_id")
+        if (native_diagnostic_goal is None
+                or native_sdk_completion.get("session_id") != native_diagnostic_goal.parent.name
+                or native_sdk_completion.get("status") != "CANDIDATE_OBSERVED"
+                or type(native_sdk_completion.get("model_send_calls")) is not int
+                or native_sdk_completion.get("model_send_calls") != 1
+                or native_sdk_completion.get("firsterror") is not None
+                or native_sdk_completion.get("shutdown_errors") != []
+                or not isinstance(message_id, str) or not message_id
+                or not isinstance(sdk_response, dict)
+                or sdk_response.get("type") != "assistant.message" or sdk_response.get("agentId")
+                or not isinstance(sdk_response.get("id"), str)
+                or not isinstance(sdk_response.get("data"), dict)
+                or sdk_response["data"].get("originatingMessageId") != message_id
+                or not isinstance(sdk_completion, dict)
+                or sdk_completion.get("type") != "session.idle" or sdk_completion.get("agentId")
+                or not isinstance(sdk_completion.get("id"), str)
+                or not isinstance(sdk_completion.get("data"), dict)
+                or sdk_completion["data"].get("aborted") is True):
+            raise ValueError("SDK parsing requires the completed owned native diagnostic")
+        owner_call_ids = {
+            item["tool_call_id"] for item in native_sdk_completion.get("preflight", [])
+            if isinstance(item.get("tool_call_id"), str)
+        }
+    if native_diagnostic_goal is not None:
+        _native_diagnostic_goal(
+            native_diagnostic_goal, native_diagnostic_goal.parent.parent.parent,
+            native_diagnostic_goal.parent.name,
+        )
+        if boundary != "prose":
+            raise ValueError("native diagnostic uses the prose boundary")
+        allowed_tools = {"skill", "view", "sql", "manage_schedule"}
     messages: list[str] = []
     result_event = None
+    sdk_turn_started = False
+    sdk_message_seen = False
+    sdk_idle = False
     skill_loaded = False
     skill_attempted = False
     pending_skills: set[str] = set()
@@ -1061,6 +1119,7 @@ def parse_run(
     invoked_skills: list[str] = []
     models: set[str] = set()
     viewed_paths: list[str] = []
+    owned_native_reads: list[str] = []
     pending_views: dict[str, tuple[str, str, bool]] = {}
     tool_calls = []
     with log.open("rb") as stream:
@@ -1072,14 +1131,34 @@ def parse_run(
             data = event.get("data", {})
             if not isinstance(data, dict):
                 raise ValueError(f"{event_type} data must be an object")
-            if isinstance(data.get("model"), str):
+            if isinstance(data.get("model"), str) and not (
+                    native_sdk_completion is not None and event.get("agentId")):
                 models.add(data["model"])
-            if event_type == "assistant.message":
+            if event_type == "session.error" and native_sdk_completion is not None and not event.get("agentId"):
+                raise ValueError(f"native SDK session error in {log}")
+            if event_type == "assistant.turn_start" and not event.get("agentId"):
+                sdk_turn_started = True
+                sdk_message_seen = False
+                sdk_idle = False
+            elif event_type == "session.idle" and sdk_completion is not None:
+                if event.get("id") == sdk_completion["id"]:
+                    if event != sdk_completion:
+                        raise ValueError("SDK completion receipt differs from its actual event")
+                    sdk_idle = sdk_turn_started and sdk_message_seen
+            elif event_type == "assistant.message":
                 content = data.get("content")
                 if isinstance(content, str) and content.strip():
-                    messages.append(content)
+                    if sdk_response is None:
+                        messages.append(content)
+                    elif event.get("id") == sdk_response["id"]:
+                        if event != sdk_response:
+                            raise ValueError("SDK response receipt differs from its actual event")
+                        messages.append(content)
+                        sdk_message_seen = sdk_turn_started
             elif event_type == "tool.execution_start":
                 validate_tool_allowlist(data, allowed_tools)
+                if data.get("toolCallId") in owner_call_ids:
+                    continue
                 tool_calls.append(data)
                 arguments = data.get("arguments")
                 if (
@@ -1119,11 +1198,24 @@ def parse_run(
                     and call_id in pending_views
                     and data.get("success") is True
                 ):
-                    viewed_paths.append(successful_view_path(pending_views[call_id], cwd, boundary))
+                    path = successful_view_path(
+                        pending_views[call_id], cwd, boundary, native_diagnostic_goal)
+                    if native_diagnostic_goal is not None and path == str(native_diagnostic_goal):
+                        owned_native_reads.append(path)
+                    else:
+                        viewed_paths.append(path)
             elif event_type == "result":
                 result_event = event
-    if result_event is None or result_event.get("exitCode") != 0:
-        raise ValueError(f"missing successful result event in {log}")
+    if native_sdk_completion is not None:
+        if result_event is not None:
+            raise ValueError(f"unexpected CLI result event in SDK log {log}")
+        if not sdk_idle:
+            raise ValueError(f"missing completed SDK assistant turn in {log}")
+        exit_code = 0
+    else:
+        if result_event is None or result_event.get("exitCode") != 0:
+            raise ValueError(f"missing successful result event in {log}")
+        exit_code = result_event["exitCode"]
     if not messages:
         raise ValueError(f"no assistant.message output in {log}")
     if (boundary == "prose" and models != {expected_model}) or expected_model not in models:
@@ -1139,14 +1231,16 @@ def parse_run(
         "answer": messages[-1],
         "skill_loaded": skill_loaded,
         "models": sorted(models),
-        "result_exit_code": result_event["exitCode"],
+        "result_exit_code": exit_code,
         "viewed_paths": viewed_paths,
         "invoked_skills": invoked_skills,
         "tool_calls": len(tool_calls),
-        "usage": result_event.get("usage"),
+        "usage": result_event.get("usage") if result_event is not None else None,
         "input_tokens": None,
         "output_tokens": None,
         "boundary": boundary,
+        **({"result_source": "sdk_session_idle"} if native_sdk_completion is not None else {}),
+        **({"owned_native_reads": owned_native_reads} if native_diagnostic_goal is not None else {}),
     }
 
 
@@ -1482,10 +1576,22 @@ def run_copilot(
     phase: str = "candidate",
     cli_version: str | None = None,
     personal_instructions: bool = False,
+    native_diagnostic_goal: Path | None = None,
 ) -> list[str]:
     measurement.session_uuid(session_id)
+    if native_diagnostic_goal is not None:
+        if home_mode != "isolated" or not resume or not allow_skill:
+            raise ValueError("native diagnostic requires isolated resumed skill caller")
+        _native_diagnostic_goal(native_diagnostic_goal, run_home, session_id)
+        if not cwd.is_absolute() or cwd.resolve() != cwd:
+            raise ValueError("native diagnostic requires an absolute regular workdir")
+        if any(char in str(path) for path in (cwd, native_diagnostic_goal) for char in "*?[]{}(),\r\n"):
+            raise ValueError("native diagnostic grants require literal paths")
     started_at, started_clock = utc_instant(), time.monotonic()
-    available_tools = "skill,view" if allow_skill else "view"
+    available_tools = (
+        "skill,view,sql,manage_schedule" if native_diagnostic_goal is not None
+        else "skill,view" if allow_skill else "view"
+    )
     command = [
         str(copilot),
         "-C",
@@ -1497,7 +1603,11 @@ def run_copilot(
         "--effort",
         effort,
         f"--available-tools={available_tools}",
-        f"--allow-tool={available_tools}",
+        *([
+            "--allow-tool=skill,sql,manage_schedule",
+            f"--allow-tool=view({cwd}/**)",
+            f"--allow-tool=view({native_diagnostic_goal})",
+        ] if native_diagnostic_goal is not None else [f"--allow-tool={available_tools}"]),
         *([] if personal_instructions else ["--no-custom-instructions"]),
         "--disable-builtin-mcps",
         "--no-color",
@@ -1576,6 +1686,421 @@ def run_copilot(
 
 def evidence_list(manifest: dict) -> str:
     return "\n".join(f"- {item['path']}" for item in manifest["files"])
+
+
+def _native_workflow_probe(operation: str, config: dict) -> dict:
+    output = Path(config["output"])
+    if output.exists() or output.is_symlink():
+        raise ValueError("native probe receipt already exists; retaining first output")
+    helper = Path(__file__).resolve().parent / "native_workflow_probe.mjs"
+    completed = subprocess.run(
+        ["node", str(helper), operation, json.dumps(config, sort_keys=True)],
+        env=personal_instruction_environment(Path(config["home"])),
+        cwd=config["cwd"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=360 if operation == "candidate" else 300, check=False,
+    )
+    output.with_suffix(".stdout.log").write_bytes(completed.stdout)
+    output.with_suffix(".stderr.log").write_bytes(completed.stderr)
+    if completed.returncode != 0 and operation != "candidate":
+        raise ValueError(f"native {operation} exited {completed.returncode}; see {output}")
+    if output.is_symlink() or not output.is_file():
+        raise ValueError(f"native {operation} produced no regular receipt")
+    result = read_json(output)
+    expected = {"setup": "SETUP_OBSERVED", "observe": "OBSERVED"}
+    if operation == "candidate":
+        sends = result.get("model_send_calls")
+        status = result.get("status")
+        if (type(sends) is not int or sends not in (0, 1)
+                or status not in {"CANDIDATE_OBSERVED", "PREMODEL_BLOCKED", "FAILED"}
+                or (status == "PREMODEL_BLOCKED" and sends != 0)
+                or (status == "CANDIDATE_OBSERVED" and (
+                    completed.returncode != 0 or sends != 1
+                    or result.get("firsterror") is not None
+                    or any(result.get("checks", {}).get(key) is not True for key in (
+                        "effective_tools", "instruction_correspondence", "cold_state",
+                        "permission_traversal", "prefix_preserved"))))):
+            raise ValueError("native candidate receipt did not verify conditional model execution")
+    if (result.get("session_id") != config["session_id"]
+            or (operation in expected and result.get("status") != expected[operation])
+            or result.get("shutdown_errors") != []):
+        raise ValueError(result.get("firsterror") or
+                         f"native {operation} did not verify its owner and shutdown")
+    runtime = result.get("runtime_identity", {})
+    if (result.get("cli") != config["cli"] or result.get("sdk") != config["sdk"]
+            or result.get("connection", {}).get("path") != config["cli"]
+            or not re.search(r"\b1\.0\.97(?:\b|-)", str(runtime.get("version", "")))
+            or (operation != "candidate" and result.get("model_calls") != 0)):
+        raise ValueError(result.get("firsterror") or
+                         f"native {operation} did not verify its pinned runtime")
+    return result
+
+
+def _run_native_candidate(config: dict, *, cli_version: str) -> dict:
+    root = Path(config["output"]).parent
+    home = Path(config["home"])
+    started_at, started_clock = utc_instant(), time.monotonic()
+    previous = None
+    outcome = "failed"
+
+    @contextmanager
+    def capture_events():
+        with measurement.host_events(home, config["session_id"]) as content:
+            if previous is not None:
+                measurement.verify_prefix(content, previous)
+            yield content
+
+    try:
+        with measurement.host_events(home, config["session_id"]) as content:
+            previous = measurement.snapshot_events(content)
+        candidate = _native_workflow_probe("candidate", config)
+        if candidate["status"] == "CANDIDATE_OBSERVED":
+            outcome = "completed"
+        return candidate
+    finally:
+        measurement.collect(
+            destination=root / "candidate-raw.measurement.json",
+            session_id=config["session_id"], role="candidate-native-helper", phase="candidate",
+            model="gpt-5.6-sol-fast", effort="high", cli_version=cli_version,
+            log=root / "candidate-raw.jsonl", capture=capture_events, source="host_eventfile",
+            started_at=started_at, started_clock=started_clock, outcome=outcome,
+        )
+
+
+def _native_fixture_state(observation: dict, goal: Path, *, final: bool) -> bool:
+    native_goal = observation.get("goal")
+    if not isinstance(native_goal, dict) or not isinstance(native_goal.get("state"), dict):
+        return False
+    state = native_goal["state"]
+    rows = observation.get("todos", {}).get("rows")
+    schedules = observation.get("schedules", {}).get("entries")
+    return (
+        observation.get("goal_path") == str(goal)
+        and state.get("id") == 17 and type(state.get("id")) is int
+        and state.get("status") == "completed"
+        and observation.get("mode") == "autopilot"
+        and isinstance(rows, list) and len(rows) == 1 and isinstance(rows[0], dict)
+        and rows[0].get("id") == "native-workflow-fixture"
+        and rows[0].get("title") == "Synthetic pending work"
+        and rows[0].get("description") == "Owned diagnostic fixture"
+        and rows[0].get("status") == ("done" if final else "pending")
+        and isinstance(schedules, list)
+        and (schedules == [] if final else (
+            len(schedules) == 1 and isinstance(schedules[0], dict) and schedules[0].get("id") == 1
+            and observation.get("schedule_ids") == [1]))
+    )
+
+
+def _native_diagnostic_calls(
+    log: Path, workdir: Path, sibling: Path, *, owner_call_ids: set[str] | None = None,
+) -> dict:
+    pending, calls = {}, []
+    with log.open("rb") as stream:
+        for event_index, (_, event) in enumerate(measurement.jsonl_records(stream, grammar="telemetry")):
+            if event is None:
+                raise ValueError("diagnostic log record must be an object")
+            data = event.get("data", {})
+            if event.get("type") == "tool.execution_start":
+                validate_tool_allowlist(data, {"skill", "view", "sql", "manage_schedule"})
+                call_id = data.get("toolCallId")
+                if call_id in (owner_call_ids or set()):
+                    continue
+                if not isinstance(call_id, str) or call_id in pending:
+                    raise ValueError("diagnostic tool call identity missing or duplicated")
+                pending[call_id] = {"start": data, "start_index": event_index}
+            elif event.get("type") == "tool.execution_complete":
+                call_id = data.get("toolCallId")
+                if call_id in pending:
+                    calls.append({**pending.pop(call_id), "completion": data,
+                                  "completion_index": event_index})
+    schedules = [
+        item for item in calls if item["start"].get("toolName") == "manage_schedule"
+        and item["completion"].get("success") is True
+    ]
+    actions = [item["start"].get("arguments", {}) for item in schedules]
+    reconciled = any(
+        left.get("action") == "list" and middle.get("action") == "stop"
+        and type(middle.get("id")) is int and middle["id"] == 1
+        and right.get("action") == "list"
+        and schedules[index]["completion_index"] < schedules[stop_index]["start_index"]
+        and schedules[stop_index]["completion_index"] < schedules[end_index]["start_index"]
+        for index, left in enumerate(actions)
+        for stop_index, middle in enumerate(actions[index + 1:], index + 1)
+        for end_index, right in enumerate(actions[stop_index + 1:], stop_index + 1)
+    )
+    updated = any(
+        item["start"].get("toolName") == "sql"
+        and item["completion"].get("success") is True
+        and re.search(r"\bupdate\s+todos\b", item["start"].get("arguments", {}).get("query", ""), re.I)
+        and "native-workflow-fixture" in item["start"]["arguments"]["query"]
+        and re.search(r"\bstatus\s*=\s*['\"]done['\"]", item["start"]["arguments"]["query"], re.I)
+        for item in calls
+    )
+    denied = any(
+        item["start"].get("toolName") == "view"
+        and item["start"].get("arguments", {}).get("path") == str(sibling)
+        and item["completion"].get("success") is False
+        for item in calls
+    )
+    return {"calls": calls, "checks": {
+        "native_sql_update": updated, "schedule_list_stop_relist": reconciled,
+        "all_calls_completed": not pending,
+    }, "observations": {"denied_sibling": denied}}
+
+
+def _run_native_workflow_diagnostic(
+    *, corpus: Path, case_id: str, plugin_dir: Path, copilot: Path,
+    sdk: Path, run_root: Path,
+) -> dict:
+    result = {
+        "status": "FAILED", "checks": {}, "firsterror": None, "cleanup": None,
+        "measurements": None,
+        "accounting": {
+            "known": ["candidate measurement", "native helper elapsed"],
+            "unknown": ["download", "build", "upload", "runner billing", "native setup pricing",
+                        "instruction discovery pricing", "import pricing"],
+            "judges": "not invoked", "local_models": "not invoked",
+        },
+    }
+    owned = False
+    config = None
+    checks = result["checks"]
+    run_root = run_root.absolute()
+    try:
+        if case_id != "native-workflow-caller-diagnostic":
+            raise ValueError("only the fixed synthetic native diagnostic is supported")
+        if run_root.exists() or run_root.is_symlink() or run_root.resolve() != run_root:
+            raise ValueError("diagnostic run root must be new and unaliased; retaining first artifacts")
+        frozen = frozen_case_path(corpus, case_id)
+        if any(run_root.is_relative_to(path.resolve()) for path in
+               (corpus, frozen, plugin_dir, copilot, sdk)):
+            raise ValueError("diagnostic run root overlaps original input")
+        verify_case(corpus, case_id)
+        definition = read_json(frozen / "case.json")
+        if (definition.get("case_id") != case_id or definition.get("target_skill") != "unattended-run"
+                or definition.get("case_type", "prose") != "prose"
+                or len(definition["phases"]) != 1 or definition["phases"][0]["id"] != "candidate"):
+            raise ValueError("diagnostic requires its fixed single-phase prose fixture")
+        phase = definition["phases"][0]
+        restoration = phase.get("session_restore", {})
+        if (restoration.get("skill_context") != "before-target-load"
+                or "personal_instructions_file" not in restoration
+                or not any("synthetic" in label.lower() for label in
+                           [definition.get("authority_kind", ""), *restoration.get("limitations", [])])):
+            raise ValueError("diagnostic requires labeled synthetic before-target-load personal context")
+        for key in ("source_session_id", "cutoff_event_id"):
+            measurement.session_uuid(restoration[key])
+        packet = frozen / phase["id"]
+        history = packet / restoration["history_file"]
+        personal = packet / restoration["personal_instructions_file"]
+        marker_pattern = re.compile(r"\bNATIVE_CONTEXT_[0-9a-f]{32}\b")
+        markers = []
+        with history.open(encoding="utf-8") as stream:
+            for line in stream:
+                record = json.loads(line)
+                if record.get("type") == "message" and record.get("role") == "user":
+                    content = record.get("content", [])
+                    text = content if isinstance(content, str) else "\n".join(
+                        item.get("text", "") for item in content if item.get("type") == "text")
+                    markers.extend(marker_pattern.findall(text))
+        history_text = history.read_text(encoding="utf-8")
+        if len(markers) != 1 or marker_pattern.findall(history_text) != markers:
+            raise ValueError("diagnostic requires one unique prior semantic user marker")
+        marker = markers[0]
+        if any(marker in path.read_text(encoding="utf-8") for path in list_files(frozen)
+               if path != history):
+            raise ValueError("prior marker leaked outside imported history")
+        plan = packet / "plan.md"
+        if not plan.is_file() or "Synthetic native workflow plan" not in plan.read_text():
+            raise ValueError("diagnostic requires its ordinary synthetic plan.md")
+        prompt_template = (frozen / phase["prompt_file"]).read_text(encoding="utf-8")
+        if (prompt_template.count("{NATIVE_GOAL_PATH}") != 1
+                or prompt_template.count("{NATIVE_DENIED_PATH}") != 1):
+            raise ValueError("diagnostic prompt requires one goal and one denied-path coordinate token")
+        copilot, sdk = copilot.absolute(), sdk.absolute()
+        if any(path.is_symlink() or not path.is_file() or path.resolve() != path
+               for path in (copilot, sdk)):
+            raise ValueError("diagnostic runtime paths must be absolute regular originals")
+        cli_identity = copilot_identity(copilot)
+        if (not re.search(r"\b1\.0\.97(?:\b|-)", cli_identity["version"])
+                or digest(sdk) != "d336d72bd0f597d39c1c75732e5eb5b07cd43e65e81b45f90413ee86e69cb406"):
+            raise ValueError("diagnostic requires the pinned version97 CLI/SDK")
+        run_root.mkdir(parents=True)
+        owned = True
+        workdir = run_root / "workdir"
+        run_home = run_root / "candidate-home"
+        pinned_plugin = run_root / "pinned-plugin"
+        source_identity = directory_identity(frozen)
+        snapshot_plugin(plugin_dir, pinned_plugin)
+        target_identity = skill_identity(pinned_plugin, "unattended-run")
+        evidence = copy_packet(packet, workdir, excluded={
+            restoration["history_file"], restoration["personal_instructions_file"],
+        })
+        if {item["path"] for item in evidence["files"]} - {
+            restoration["history_file"], restoration["personal_instructions_file"],
+        } != {"plan.md"}:
+            raise ValueError("diagnostic candidate evidence must contain only ordinary plan.md")
+        write_json(run_root / "identities.json", {
+            "source": source_identity, "case_revision": digest(frozen / "case-manifest.json"),
+            "history_sha256": digest(history),
+            "prior_marker_sha256": hashlib.sha256(marker.encode()).hexdigest(),
+            "plugin": directory_identity(pinned_plugin), "harness": harness_identity(),
+            "target_skill": target_identity,
+            "cli": cli_identity, "sdk": {"path": str(sdk), "sha256": digest(sdk)},
+            "original_goal": None, "source_state": "blocked", "fixture_only_goal_id": 17,
+        })
+        sibling = run_root / "synthetic-denied-sibling.txt"
+        sibling.write_text("Owned synthetic denied sibling.\n", encoding="utf-8")
+        run_home.mkdir()
+        shutil.copyfile(personal, run_home / "copilot-instructions.md")
+        receipts = []
+        receipts.append(discover_personal_instructions(
+            copilot=copilot, plugin_dir=pinned_plugin, cwd=workdir, run_home=run_home,
+            source=personal, prefix=run_root / "instruction-import", timeout_seconds=300))
+
+        def execute_import(command):
+            completed = subprocess.run(
+                command, env=personal_instruction_environment(run_home), cwd=workdir,
+                stdin=subprocess.DEVNULL, text=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, timeout=300, check=False)
+            return completed.returncode, completed.stdout
+
+        from session_restore import import_session
+        session_id = import_session(
+            restoration, history, copilot=str(copilot), workdir=str(workdir),
+            execute=execute_import, receipt_path=run_root / "restoration-receipt.json",
+            cli_identity=cli_identity, plugin_dir=str(pinned_plugin))
+        measurement.session_uuid(session_id)
+        if session_id == restoration["source_session_id"]:
+            raise ValueError("diagnostic import reused source UUID")
+        goal = run_home / "session-state" / session_id / "autopilot-objective.json"
+        config = {
+            "cli": str(copilot), "sdk": str(sdk), "home": str(run_home),
+            "os_home": str(run_root / "candidate-os-home"), "cwd": str(workdir),
+            "session_id": session_id, "output": str(run_root / "setup.json"),
+        }
+        setup = _native_workflow_probe("setup", config)
+        checks["setup_observed"] = _native_fixture_state(setup, goal, final=False)
+        if not checks["setup_observed"]:
+            raise ValueError("native setup state mismatched; no candidate started")
+        _native_diagnostic_goal(goal, run_home, session_id)
+        shutil.copyfile(goal, run_root / "setup-goal.json")
+        receipts.append(discover_personal_instructions(
+            copilot=copilot, plugin_dir=pinned_plugin, cwd=workdir, run_home=run_home,
+            source=personal, prefix=run_root / "instruction-candidate", timeout_seconds=300))
+        prompt = prompt_template.replace("{NATIVE_GOAL_PATH}", str(goal)).replace(
+            "{NATIVE_DENIED_PATH}", str(sibling))
+        prompt_path = run_root / "candidate-prompt.md"
+        prompt_path.write_text(prompt, encoding="utf-8")
+        log = run_root / "candidate-raw.jsonl"
+        identities = {
+            "source": source_identity, "case_revision": digest(frozen / "case-manifest.json"),
+            "history_sha256": digest(history), "prior_marker_sha256": hashlib.sha256(marker.encode()).hexdigest(),
+            "plugin": directory_identity(pinned_plugin), "harness": harness_identity(),
+            "target_skill": target_identity,
+            "cli": cli_identity, "sdk": {"path": str(sdk), "sha256": digest(sdk)},
+            "prompt_sha256": digest(prompt_path), "packet": directory_identity(workdir),
+            "instruction_receipts": [{"path": str(path), "sha256": digest(path)} for path in receipts],
+            "session_id": session_id, "source_session_id": restoration["source_session_id"],
+            "original_goal": None, "source_state": "blocked", "fixture_only_goal_id": 17,
+            "candidate_caller": "public-sdk",
+        }
+        write_json(run_root / "candidate-identities.json", identities)
+        candidate_config = {**config, "output": str(run_root / "candidate.json")}
+        result["candidate_operation"] = {
+            "operation": "candidate", "config": candidate_config,
+            "prompt_sha256": digest(prompt_path), "model": "gpt-5.6-sol-fast", "effort": "high",
+            "model_deadline_max_seconds": 300, "helper_watchdog_seconds": 360,
+        }
+        candidate = _run_native_candidate(candidate_config, cli_version=cli_identity["version"])
+        result["candidate"] = candidate
+        result["accounting"]["candidate_model_send_calls"] = candidate["model_send_calls"]
+        result["accounting"]["candidate_elapsed_scope"] = "native helper including premodel checks"
+        checks["sdk_preflight"] = all(candidate.get("checks", {}).get(key) is True for key in (
+            "effective_tools", "instruction_correspondence", "cold_state",
+            "permission_traversal", "prefix_preserved"))
+        checks["owner_preflight_denial"] = checks["sdk_preflight"] and any(
+            item.get("name") == "sibling" and item.get("path") == str(sibling)
+            and isinstance(item.get("tool_call_id"), str) and item["tool_call_id"]
+            and item.get("result", {}).get("resultType") in {"denied", "rejected"}
+            for item in candidate.get("preflight", [])
+        )
+        if candidate["status"] != "CANDIDATE_OBSERVED":
+            raise ValueError(candidate.get("firsterror") or "native SDK candidate did not complete")
+        if not checks["owner_preflight_denial"]:
+            raise ValueError("native owner preflight rejection not observed")
+        parsed = parse_run(
+            log, skill="unattended-run", expected_model="gpt-5.6-sol-fast",
+            cwd=workdir, require_skill=True, native_diagnostic_goal=goal,
+            native_sdk_completion=candidate)
+        checks["target_skill_loaded"] = parsed["skill_loaded"]
+        checks["prior_context"] = marker in parsed["answer"]
+        checks["goal_read"] = str(goal) in parsed["owned_native_reads"]
+        checks["plan_read"] = "plan.md" in parsed["viewed_paths"]
+        calls = _native_diagnostic_calls(
+            log, workdir, sibling, owner_call_ids={
+                item["tool_call_id"] for item in candidate.get("preflight", [])
+                if isinstance(item.get("tool_call_id"), str)
+            })
+        write_json(run_root / "actual-tool-calls.json", calls["calls"])
+        checks.update(calls["checks"])
+        result["model_observations"] = calls["observations"]
+        result["parsed"] = parsed
+        checks["original_source_unchanged"] = directory_identity(frozen) == source_identity
+    except Exception as error:
+        result["firsterror"] = str(error)
+    finally:
+        if config is not None:
+            try:
+                observation = _native_workflow_probe(
+                    "observe", {**config, "output": str(run_root / "observe.json")})
+                checks["final_native_state"] = _native_fixture_state(
+                    observation, Path(config["home"]) / "session-state" / config["session_id"]
+                    / "autopilot-objective.json", final=True)
+                retained_goal = _native_diagnostic_goal(
+                    Path(config["home"]) / "session-state" / config["session_id"]
+                    / "autopilot-objective.json", Path(config["home"]), config["session_id"])
+                shutil.copyfile(retained_goal, run_root / "observed-goal.json")
+                with measurement.host_events(Path(config["home"]), config["session_id"]) as content:
+                    if content is None:
+                        raise ValueError("owned fixture events unavailable")
+                    with (run_root / "fixture-events.jsonl").open("w", encoding="utf-8") as stream:
+                        for _, event in measurement.jsonl_records(content, grammar="telemetry"):
+                            if event and event.get("type") in {
+                                "tool.execution_start", "tool.execution_complete",
+                                "assistant.message", "session.usage_checkpoint", "session.shutdown",
+                            }:
+                                stream.write(json.dumps(event) + "\n")
+            except Exception as error:
+                result["firsterror"] = result["firsterror"] or str(error)
+            try:
+                cleanup = _native_workflow_probe(
+                    "cleanup", {**config, "output": str(run_root / "cleanup.json")})
+                result["cleanup"] = cleanup
+                cleaned = cleanup.get("cleanup", {})
+                checks["cleanup_empty"] = (
+                    cleanup.get("status") == "CLEANED"
+                    and cleaned.get("todos", {}).get("rows") == []
+                    and cleaned.get("schedules", {}).get("entries") == [])
+            except Exception as error:
+                result["cleanup"] = {"error": str(error)}
+                result["firsterror"] = result["firsterror"] or str(error)
+        if owned:
+            measurement_path = run_root / "candidate-raw.measurement.json"
+            try:
+                checks["original_source_unchanged"] = directory_identity(frozen) == source_identity
+                if measurement_path.is_file():
+                    result["measurements"] = read_json(measurement_path)
+                else:
+                    result["accounting"]["unknown"].append("candidate measurement unavailable")
+            except Exception as error:
+                result["firsterror"] = result["firsterror"] or str(error)
+            if result["firsterror"] is None and checks and all(checks.values()):
+                result["status"] = "DIAGNOSTIC_OBSERVED"
+            elif result["firsterror"] is None:
+                result["firsterror"] = "diagnostic checks not observed: " + ", ".join(
+                    key for key, value in checks.items() if not value)
+            write_json(run_root / "diagnostic-result.json", result)
+    return result
 
 
 def validate_candidate(content: str, phase: dict) -> None:

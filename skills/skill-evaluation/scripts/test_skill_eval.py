@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 from unittest import mock
 import measurement
+import skill_eval
 
 from skill_eval import (
     add_case,
@@ -36,6 +37,45 @@ from skill_eval import (
 
 
 class CopilotInvocationTests(unittest.TestCase):
+    def test_native_grants_are_exact_owned_and_default_is_unchanged(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory).resolve()
+            session_id = str(uuid.uuid4())
+            home = root / "candidate-home"
+            goal = home / "session-state" / session_id / "autopilot-objective.json"
+            goal.parent.mkdir(parents=True)
+            goal.write_text("{}")
+            arguments = dict(
+                copilot=root / "copilot", plugin_dir=root / "plugin", cwd=root,
+                prompt="synthetic", model="fixture", effort="high", log=root / "raw.jsonl",
+                session_id=session_id, resume=True, home_mode="isolated", run_home=home,
+                timeout_seconds=300, allow_skill=True)
+            with (
+                mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "synthetic"}),
+                mock.patch("skill_eval.measurement.collect"),
+                mock.patch("skill_eval.subprocess.run", return_value=subprocess.CompletedProcess(
+                    [], 0, stdout="")) as execute,
+            ):
+                default = run_copilot(**arguments)
+                explicit_default = run_copilot(**arguments, native_diagnostic_goal=None)
+                self.assertEqual(default, explicit_default)
+                native = run_copilot(**arguments, native_diagnostic_goal=goal)
+                self.assertNotIn("--experimental", native)
+                self.assertEqual(
+                    [flag for flag in native if flag.startswith("--allow-tool=")],
+                    ["--allow-tool=skill,sql,manage_schedule",
+                     f"--allow-tool=view({root}/**)", f"--allow-tool=view({goal})"])
+                self.assertIn("--available-tools=skill,view,sql,manage_schedule", native)
+                self.assertEqual(
+                    [flag for flag in default if not flag.startswith(("--allow-tool=", "--available-tools="))],
+                    [flag for flag in native if not flag.startswith(("--allow-tool=", "--available-tools="))])
+                for invalid in (root / "foreign.json", goal.parent / "alias.json"):
+                    invalid.write_text("{}") if invalid.name == "foreign.json" else invalid.symlink_to(goal)
+                    execute.reset_mock()
+                    with self.assertRaises(ValueError):
+                        run_copilot(**arguments, native_diagnostic_goal=invalid)
+                    execute.assert_not_called()
+
     def test_personal_instruction_mode_changes_only_instruction_setup(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -112,6 +152,521 @@ class CopilotInvocationTests(unittest.TestCase):
             finally:
                 os.close(read_fd)
                 os.close(write_fd)
+
+
+class NativeWorkflowDiagnosticTests(unittest.TestCase):
+    def test_recovery_checks_do_not_require_a_model_side_denial(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory).resolve()
+            log = root / "raw.jsonl"
+            operations = [
+                ("sql", {"query": "UPDATE todos SET status='done' WHERE id='native-workflow-fixture'"}),
+                ("manage_schedule", {"action": "list"}),
+                ("manage_schedule", {"action": "stop", "id": 1}),
+                ("manage_schedule", {"action": "list"}),
+            ]
+            for omitted in (None, 0, 2):
+                events = []
+                for index, (name, arguments) in enumerate(operations):
+                    if index == omitted:
+                        continue
+                    events.extend([
+                        {"type": "tool.execution_start", "data": {
+                            "toolName": name, "toolCallId": str(index), "arguments": arguments}},
+                        {"type": "tool.execution_complete", "data": {
+                            "toolCallId": str(index), "success": True}},
+                    ])
+                log.write_text("".join(json.dumps(event) + "\n" for event in events))
+                result = skill_eval._native_diagnostic_calls(log, root, root.parent / "sibling")
+                self.assertEqual(all(result["checks"].values()), omitted is None)
+                self.assertFalse(result["observations"]["denied_sibling"])
+                owned = skill_eval._native_diagnostic_calls(
+                    log, root, root.parent / "sibling", owner_call_ids={"0", "1", "2", "3"})
+                self.assertFalse(owned["checks"]["native_sql_update"])
+                self.assertFalse(owned["checks"]["schedule_list_stop_relist"])
+
+    def test_schedule_relist_requires_each_prior_completion_before_next_start(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory).resolve()
+            log = root / "raw.jsonl"
+            actions = [{"action": "list"}, {"action": "stop", "id": 1}, {"action": "list"}]
+            sequences = [
+                ([(0, True), (0, False), (1, True), (1, False), (2, True), (2, False)], True),
+                ([(0, True), (1, True), (0, False), (1, False), (2, True), (2, False)], False),
+                ([(0, True), (0, False), (1, True), (2, True), (1, False), (2, False)], False),
+            ]
+            for sequence, expected in sequences:
+                with self.subTest(sequence=sequence):
+                    events = [
+                        {"type": "tool.execution_start" if start else "tool.execution_complete",
+                         "data": {"toolName": "manage_schedule", "toolCallId": str(index),
+                                  "arguments": actions[index]} if start else {
+                                      "toolCallId": str(index), "success": True}}
+                        for index, start in sequence
+                    ]
+                    log.write_text("".join(json.dumps(event) + "\n" for event in events))
+                    result = skill_eval._native_diagnostic_calls(log, root, root / "sibling")
+                    self.assertEqual(result["checks"]["schedule_list_stop_relist"], expected)
+                    self.assertTrue(result["checks"]["all_calls_completed"])
+
+    def test_native_candidate_wrapper_uses_real_prefix_and_measurement_capture(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory).resolve()
+            session_id = str(uuid.uuid4())
+            home = root / "candidate-home"
+            events = home / "session-state" / session_id / "events.jsonl"
+            events.parent.mkdir(parents=True)
+            prefix = json.dumps({"type": "user.message", "data": {"content": "Synthetic prior context"}}) + "\n"
+            events.write_text(prefix)
+            config = {
+                "home": str(home), "session_id": session_id,
+                "output": str(root / "candidate.json"),
+            }
+            blocked = {"status": "PREMODEL_BLOCKED", "model_send_calls": 0, "firsterror": "synthetic stop"}
+
+            def candidate(operation, selected):
+                self.assertEqual(operation, "candidate")
+                self.assertEqual(selected, config)
+                with events.open("a") as stream:
+                    stream.write(json.dumps({"type": "session.shutdown", "data": {
+                        "totalNanoAiu": 0, "totalPremiumRequests": 0, "modelMetrics": {}}}) + "\n")
+                return blocked
+
+            with mock.patch("skill_eval._native_workflow_probe", side_effect=candidate) as native:
+                self.assertEqual(skill_eval._run_native_candidate(config, cli_version="fixture"), blocked)
+                native.assert_called_once()
+            record = json.loads((root / "candidate-raw.measurement.json").read_text())
+            self.assertEqual(record["outcome"], "failed")
+            self.assertEqual(record["errors"], [])
+            self.assertEqual(record["credits"], 0)
+            self.assertEqual(record["premium_requests"], 0)
+            self.assertTrue(events.read_text().startswith(prefix))
+
+    def test_sdk_parser_requires_owned_completion_and_actual_completed_turn(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory).resolve()
+            goal = root / "candidate-home/session-state" / str(uuid.uuid4()) / "autopilot-objective.json"
+            goal.parent.mkdir(parents=True)
+            goal.write_text("{}")
+            log = root / "raw.jsonl"
+            events = [
+                {"id": "start", "type": "assistant.turn_start", "data": {"model": "fixture"}},
+                {"id": "message", "type": "assistant.message",
+                 "data": {"content": "answer", "originatingMessageId": "send"}},
+                {"id": "idle", "type": "session.idle", "data": {"mode": "autopilot"}},
+            ]
+            completion = {
+                "session_id": goal.parent.name, "status": "CANDIDATE_OBSERVED",
+                "model_send_calls": 1, "firsterror": None, "shutdown_errors": [],
+                "model_message_id": "send", "model_result": events[1],
+                "model_completion_event": events[2],
+            }
+            arguments = dict(skill="unattended-run", expected_model="fixture", cwd=root,
+                             require_skill=None, native_diagnostic_goal=goal)
+            log.write_text("".join(json.dumps(event) + "\n" for event in events))
+            with self.assertRaisesRegex(ValueError, "missing successful result"):
+                parse_run(log, **arguments)
+            parsed = parse_run(log, **arguments, native_sdk_completion=completion)
+            self.assertEqual(parsed["answer"], "answer")
+            self.assertEqual(parsed["result_source"], "sdk_session_idle")
+            log.write_text("".join(json.dumps(event) + "\n" for event in
+                                   [*events, {"type": "result", "exitCode": 0}]))
+            with self.assertRaisesRegex(ValueError, "unexpected CLI result"):
+                parse_run(log, **arguments, native_sdk_completion=completion)
+            for incomplete in (
+                events[1:], events[:-1], [events[1], events[0], events[2]],
+                [events[2], events[0], events[1]],
+                [events[0], events[1], {"id": "loop-idle", "type": "assistant.idle", "data": {}}],
+            ):
+                log.write_text("".join(json.dumps(event) + "\n" for event in incomplete))
+                with self.assertRaisesRegex(ValueError, "missing completed SDK"):
+                    parse_run(log, **arguments, native_sdk_completion=completion)
+            log.write_text("".join(json.dumps(event) + "\n" for event in events))
+            for delta in ({"status": "PREMODEL_BLOCKED"}, {"model_send_calls": 0},
+                          {"session_id": str(uuid.uuid4())}, {"shutdown_errors": ["error"]},
+                          {"model_message_id": "foreign"},
+                          {"model_completion_event": {**events[2], "data": {"aborted": True}}}):
+                with self.assertRaisesRegex(ValueError, "completed owned native"):
+                    parse_run(log, **arguments, native_sdk_completion={**completion, **delta})
+            altered = {**events[1], "data": {**events[1]["data"], "content": "altered"}}
+            log.write_text("".join(json.dumps(event) + "\n" for event in [events[0], altered, events[2]]))
+            with self.assertRaisesRegex(ValueError, "receipt differs"):
+                parse_run(log, **arguments, native_sdk_completion=completion)
+            child = {"id": "child", "type": "assistant.message", "agentId": "child-agent",
+                     "data": {"content": "child answer", "model": "child-model"}}
+            log.write_text("".join(json.dumps(event) + "\n" for event in [*events[:2], child, events[2]]))
+            self.assertEqual(
+                parse_run(log, **arguments, native_sdk_completion=completion)["answer"], "answer")
+            error = {"id": "error", "type": "session.error", "data": {"message": "native error"}}
+            log.write_text("".join(json.dumps(event) + "\n" for event in [*events, error]))
+            with self.assertRaisesRegex(ValueError, "native SDK session error"):
+                parse_run(log, **arguments, native_sdk_completion=completion)
+            with self.assertRaisesRegex(ValueError, "completed owned native"):
+                parse_run(log, **{**arguments, "native_diagnostic_goal": None},
+                          native_sdk_completion=completion)
+
+    def test_owner_preflight_reads_cannot_satisfy_candidate_actions(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory).resolve()
+            workdir = root / "workdir"
+            workdir.mkdir()
+            goal = root / "candidate-home/session-state" / str(uuid.uuid4()) / "autopilot-objective.json"
+            goal.parent.mkdir(parents=True)
+            goal.write_text("{}")
+            sibling = root / "sibling"
+            log = root / "raw.jsonl"
+
+            def view(call_id, path, success):
+                return [
+                    {"type": "tool.execution_start", "data": {
+                        "toolName": "view", "toolCallId": call_id, "arguments": {"path": str(path)}}},
+                    {"type": "tool.execution_complete", "data": {
+                        "toolCallId": call_id, "success": success}},
+                ]
+
+            message = {"id": "answer", "type": "assistant.message",
+                       "data": {"content": "answer", "originatingMessageId": "send"}}
+            idle = {"id": "idle", "type": "session.idle", "data": {"mode": "autopilot"}}
+            start = {"id": "start", "type": "assistant.turn_start", "data": {"model": "fixture"}}
+            owner_calls = {"owner-goal", "owner-sibling"}
+            completion = {
+                "session_id": goal.parent.name, "status": "CANDIDATE_OBSERVED",
+                "model_send_calls": 1, "firsterror": None, "shutdown_errors": [],
+                "model_message_id": "send", "model_result": message, "model_completion_event": idle,
+                "preflight": [{"tool_call_id": call_id} for call_id in owner_calls],
+            }
+            owner_events = [*view("owner-goal", goal, True), *view("owner-sibling", sibling, False)]
+            arguments = dict(skill="unattended-run", expected_model="fixture", cwd=workdir,
+                             require_skill=None, native_diagnostic_goal=goal, native_sdk_completion=completion)
+            for candidate_reads in (False, True):
+                model_events = ([*view("model-goal", goal, True), *view("model-sibling", sibling, False)]
+                                if candidate_reads else [])
+                events = [*owner_events, start, *model_events, message, idle]
+                log.write_text("".join(json.dumps(event) + "\n" for event in events))
+                parsed = parse_run(log, **arguments)
+                self.assertEqual(parsed["owned_native_reads"], [str(goal)] if candidate_reads else [])
+                self.assertEqual(parsed["tool_calls"], 2 if candidate_reads else 0)
+                calls = skill_eval._native_diagnostic_calls(
+                    log, workdir, sibling, owner_call_ids=owner_calls)
+                self.assertEqual(calls["observations"]["denied_sibling"], candidate_reads)
+
+    def test_candidate_probe_preserves_blocked_receipt_and_rejects_false_completion(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory).resolve()
+            config = {
+                "cli": str(root / "copilot"), "sdk": str(root / "index.js"),
+                "home": str(root / "candidate-home"), "os_home": str(root / "candidate-os-home"),
+                "cwd": str(root), "session_id": str(uuid.uuid4()), "output": str(root / "candidate.json"),
+            }
+            base = {
+                "cli": config["cli"], "sdk": config["sdk"], "session_id": config["session_id"],
+                "connection": {"path": config["cli"]}, "runtime_identity": {"version": "1.0.97-2"},
+                "shutdown_errors": [], "status": "CANDIDATE_OBSERVED", "firsterror": None,
+                "model_send_calls": 1,
+                "checks": {key: True for key in ("effective_tools", "instruction_correspondence",
+                          "cold_state", "permission_traversal", "prefix_preserved")},
+            }
+            cases = [
+                ({}, 0, True),
+                ({"status": "PREMODEL_BLOCKED", "model_send_calls": 0,
+                  "firsterror": "permission traversal absent", "checks": {}}, 1, True),
+                ({"status": "PREMODEL_BLOCKED"}, 1, False),
+                ({"model_send_calls": 0}, 0, False),
+                ({"checks": {}}, 0, False),
+                ({}, 1, False),
+            ]
+            for index, (delta, returncode, accepted) in enumerate(cases):
+                selected = {**config, "output": str(root / f"candidate-{index}.json")}
+                receipt = {**base, **delta}
+
+                def execute(command, **kwargs):
+                    Path(selected["output"]).write_text(json.dumps(receipt))
+                    return subprocess.CompletedProcess(command, returncode, stdout=b"", stderr=b"")
+
+                with (
+                    self.subTest(delta=delta, returncode=returncode),
+                    mock.patch("skill_eval.subprocess.run", side_effect=execute),
+                    mock.patch("skill_eval.personal_instruction_environment", return_value={}),
+                ):
+                    if accepted:
+                        self.assertEqual(skill_eval._native_workflow_probe("candidate", selected), receipt)
+                    else:
+                        with self.assertRaises(ValueError):
+                            skill_eval._native_workflow_probe("candidate", selected)
+
+    def test_exact_goal_parser_exception_keeps_other_outside_reads_closed(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory).resolve()
+            cwd = root / "workdir"
+            cwd.mkdir()
+            goal = root / "candidate-home/session-state" / str(uuid.uuid4()) / "autopilot-objective.json"
+            goal.parent.mkdir(parents=True)
+            goal.write_text("{}")
+            log = root / "raw.jsonl"
+
+            def events(path, success):
+                return [
+                    {"type": "tool.execution_start", "data": {"toolName": "view",
+                     "toolCallId": "view", "arguments": {"path": str(path)}}},
+                    {"type": "tool.execution_complete", "data": {"toolCallId": "view", "success": success}},
+                    {"type": "assistant.message", "data": {"model": "fixture", "content": "answer"}},
+                    {"type": "result", "exitCode": 0},
+                ]
+
+            arguments = dict(skill="unattended-run", expected_model="fixture", cwd=cwd,
+                             require_skill=None, native_diagnostic_goal=goal)
+            log.write_text("".join(json.dumps(item) + "\n" for item in events(goal, True)))
+            parsed = parse_run(log, **arguments)
+            self.assertEqual(parsed["owned_native_reads"], [str(goal)])
+            self.assertEqual(parsed["viewed_paths"], [])
+            sibling = root / "sibling"
+            log.write_text("".join(json.dumps(item) + "\n" for item in events(sibling, False)))
+            self.assertEqual(parse_run(log, **arguments)["owned_native_reads"], [])
+            log.write_text("".join(json.dumps(item) + "\n" for item in events(sibling, True)))
+            with mock.patch("dashboard_cli.invalidate_on_boundary_violation") as invalidate:
+                with self.assertRaisesRegex(ValueError, "escaped evaluation workdir"):
+                    parse_run(log, **arguments)
+                invalidate.assert_called_once_with(sibling)
+
+    def test_fixed_driver_setup_failure_never_runs_candidate_or_judges_and_keeps_first_error(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory).resolve()
+            corpus = root / "corpus"
+            init_corpus(corpus)
+            case_id = "native-workflow-caller-diagnostic"
+            add_case(corpus, case_id, "unattended-run", ["candidate"])
+            case = corpus / "cases" / case_id
+            definition = json.loads((case / "case.json").read_text())
+            definition["authority_kind"] = "synthetic"
+            definition["behavioral_claim"] = "Synthetic caller correspondence only."
+            (case / "criteria.md").write_text("Not judged in the diagnostic.")
+            (case / "judge-reference/fixture.md").write_text("Synthetic unused judge reference.")
+            source = str(uuid.uuid4())
+            definition["phases"][0]["session_restore"] = {
+                "history_file": "history.jsonl", "source_session_id": source,
+                "cutoff_event_id": str(uuid.uuid4()), "skill_context": "before-target-load",
+                "limitations": ["Synthetic diagnostic only."], "personal_instructions_file": "personal.md",
+            }
+            (case / "case.json").write_text(json.dumps(definition))
+            packet = case / "evidence/candidate"
+            (packet / "history.jsonl").write_text(
+                json.dumps({"type": "session", "version": 1, "externalId": source}) + "\n"
+                + json.dumps({"type": "message", "role": "user", "content": [
+                    {"type": "text", "text": "Prior marker NATIVE_CONTEXT_" + "a" * 32}]}) + "\n")
+            (packet / "personal.md").write_text("Synthetic personal instruction.\n")
+            (packet / "plan.md").write_text("# Synthetic native workflow plan\n- pending task\n")
+            (case / "prompts/candidate.md").write_text(
+                "Synthetic operation {NATIVE_GOAL_PATH} {NATIVE_DENIED_PATH}")
+            freeze_case(corpus, case_id, False)
+            plugin = root / "plugin"
+            (plugin / "skills/unattended-run").mkdir(parents=True)
+            (plugin / "skills/unattended-run/SKILL.md").write_text("synthetic")
+            cli, sdk = root / "copilot", root / "index.js"
+            cli.write_text("synthetic")
+            sdk.write_text("synthetic")
+            real_digest = skill_eval.digest
+            revisions = corpus / "frozen" / case_id / "revisions"
+            external_revisions = root / "external-revisions"
+            revisions.rename(external_revisions)
+            revisions.symlink_to(external_revisions, target_is_directory=True)
+            try:
+                verify_case(corpus, case_id)
+                selected = frozen_case_path(corpus, case_id)
+                before = directory_identity(selected)
+                with (
+                    mock.patch("skill_eval.copilot_identity") as identity,
+                    mock.patch("skill_eval._native_workflow_probe") as native,
+                    mock.patch("skill_eval._run_native_candidate") as candidate,
+                ):
+                    result = skill_eval._run_native_workflow_diagnostic(
+                        corpus=corpus, case_id=case_id, plugin_dir=plugin, copilot=cli,
+                        sdk=sdk, run_root=selected / "diagnostic-output")
+                    self.assertIn("overlaps original input", result["firsterror"])
+                    self.assertFalse((selected / "diagnostic-output").exists())
+                    self.assertEqual(directory_identity(selected), before)
+                    identity.assert_not_called()
+                    native.assert_not_called()
+                    candidate.assert_not_called()
+            finally:
+                revisions.unlink()
+                external_revisions.rename(revisions)
+            for source_root in (case, frozen_case_path(corpus, case_id), plugin):
+                run_root = source_root / "diagnostic-output"
+                before = directory_identity(source_root)
+                with (
+                    self.subTest(source_root=source_root),
+                    mock.patch("skill_eval.copilot_identity") as identity,
+                    mock.patch("skill_eval._native_workflow_probe") as native,
+                    mock.patch("skill_eval._run_native_candidate") as candidate,
+                ):
+                    result = skill_eval._run_native_workflow_diagnostic(
+                        corpus=corpus, case_id=case_id, plugin_dir=plugin, copilot=cli,
+                        sdk=sdk, run_root=run_root)
+                    self.assertIn("overlaps original input", result["firsterror"])
+                    self.assertFalse(run_root.exists())
+                    self.assertEqual(directory_identity(source_root), before)
+                    identity.assert_not_called()
+                    native.assert_not_called()
+                    candidate.assert_not_called()
+
+            def pinned_digest(path):
+                return ("d336d72bd0f597d39c1c75732e5eb5b07cd43e65e81b45f90413ee86e69cb406"
+                        if path == sdk else real_digest(path))
+
+            def probe(operation, config):
+                if operation == "setup":
+                    raise ValueError("first setup error")
+                if operation == "observe":
+                    raise ValueError("later observe error")
+                raise ValueError("later cleanup error")
+
+            with (
+                mock.patch("skill_eval.digest", side_effect=pinned_digest),
+                mock.patch("skill_eval.copilot_identity", return_value={"version": "1.0.97", "sha256": "synthetic"}),
+                mock.patch("skill_eval.discover_personal_instructions"),
+                mock.patch("session_restore.import_session", return_value=str(uuid.uuid4())),
+                mock.patch("skill_eval._native_workflow_probe", side_effect=probe) as native,
+                mock.patch("skill_eval._run_native_candidate") as candidate,
+                mock.patch("skill_eval.run_judges") as judges,
+            ):
+                result = skill_eval._run_native_workflow_diagnostic(
+                    corpus=corpus, case_id=case_id, plugin_dir=plugin, copilot=cli,
+                    sdk=sdk, run_root=root / "run")
+                self.assertEqual(result["status"], "FAILED")
+                self.assertEqual(result["firsterror"], "first setup error")
+                self.assertEqual(result["cleanup"]["error"], "later cleanup error")
+                self.assertEqual([call.args[0] for call in native.call_args_list], ["setup", "observe", "cleanup"])
+                candidate.assert_not_called()
+                judges.assert_not_called()
+                retained = (root / "run/diagnostic-result.json").read_bytes()
+                skill_eval._run_native_workflow_diagnostic(
+                    corpus=corpus, case_id=case_id, plugin_dir=plugin, copilot=cli,
+                    sdk=sdk, run_root=root / "run")
+                self.assertEqual((root / "run/diagnostic-result.json").read_bytes(), retained)
+            imported_id = str(uuid.uuid4())
+
+            def discover(**kwargs):
+                receipt = kwargs["prefix"].with_suffix(".json")
+                receipt.write_text("{}")
+                return receipt
+
+            def native_setup(operation, config):
+                if operation == "cleanup":
+                    raise ValueError("cleanup after candidate")
+                goal = Path(config["home"]) / "session-state" / imported_id / "autopilot-objective.json"
+                goal.parent.mkdir(parents=True, exist_ok=True)
+                goal.write_text("{}")
+                return {
+                    "goal_path": str(goal), "goal": {"state": {"id": 17, "status": "completed"}},
+                    "mode": "autopilot", "schedule_ids": [1], "schedules": {"entries": [{"id": 1}]},
+                    "todos": {"rows": [{"id": "native-workflow-fixture", "title": "Synthetic pending work",
+                               "description": "Owned diagnostic fixture", "status": "pending"}]},
+                }
+
+            with (
+                mock.patch("skill_eval.digest", side_effect=pinned_digest),
+                mock.patch("skill_eval.copilot_identity", return_value={"version": "1.0.97"}),
+                mock.patch("skill_eval.discover_personal_instructions", side_effect=discover),
+                mock.patch("session_restore.import_session", return_value=imported_id),
+                mock.patch("skill_eval._native_workflow_probe", side_effect=native_setup) as native,
+                mock.patch("skill_eval._run_native_candidate",
+                           side_effect=ValueError("first candidate error")) as candidate,
+                mock.patch("skill_eval.run_judges") as judges,
+            ):
+                result = skill_eval._run_native_workflow_diagnostic(
+                    corpus=corpus, case_id=case_id, plugin_dir=plugin, copilot=cli,
+                    sdk=sdk, run_root=root / "candidate-failed-run")
+                self.assertEqual(result["firsterror"], "first candidate error")
+                self.assertEqual(result["status"], "FAILED")
+                self.assertEqual([call.args[0] for call in native.call_args_list], ["setup", "observe", "cleanup"])
+                candidate.assert_called_once()
+                judges.assert_not_called()
+            blocked = {
+                "status": "PREMODEL_BLOCKED", "firsterror": "native permission callback absent",
+                "model_send_calls": 0, "checks": {"permission_traversal": False},
+            }
+            with (
+                mock.patch("skill_eval.digest", side_effect=pinned_digest),
+                mock.patch("skill_eval.copilot_identity", return_value={"version": "1.0.97"}),
+                mock.patch("skill_eval.discover_personal_instructions", side_effect=discover),
+                mock.patch("session_restore.import_session", return_value=imported_id),
+                mock.patch("skill_eval._native_workflow_probe", side_effect=native_setup) as native,
+                mock.patch("skill_eval._run_native_candidate", return_value=blocked),
+                mock.patch("skill_eval.run_copilot") as cli_candidate,
+                mock.patch("skill_eval.parse_run") as parser,
+                mock.patch("skill_eval.run_judges") as judges,
+            ):
+                result = skill_eval._run_native_workflow_diagnostic(
+                    corpus=corpus, case_id=case_id, plugin_dir=plugin, copilot=cli,
+                    sdk=sdk, run_root=root / "premodel-blocked-run")
+                self.assertEqual(result["firsterror"], blocked["firsterror"])
+                self.assertEqual(result["candidate"], blocked)
+                self.assertEqual(result["accounting"]["candidate_model_send_calls"], 0)
+                self.assertFalse(result["checks"]["sdk_preflight"])
+                self.assertEqual([call.args[0] for call in native.call_args_list],
+                                 ["setup", "observe", "cleanup"])
+                cli_candidate.assert_not_called()
+                parser.assert_not_called()
+                judges.assert_not_called()
+
+            for scenario in ("missing-skill", "denied-skill", "loaded", "missing-preflight",
+                             "wrong-preflight-path", "failed-preflight"):
+                def observed_candidate(config, **kwargs):
+                    cwd = Path(config["cwd"])
+                    goal = Path(config["home"]) / "session-state" / imported_id / "autopilot-objective.json"
+                    events = [{"id": "start", "type": "assistant.turn_start",
+                               "data": {"model": "gpt-5.6-sol-fast"}}]
+                    if scenario != "missing-skill":
+                        events.extend([
+                            {"type": "tool.execution_start", "data": {
+                                "toolName": "skill", "toolCallId": "load",
+                                "arguments": {"skill": "unattended-run"}}},
+                            {"type": "tool.execution_complete", "data": {
+                                "toolCallId": "load", "success": scenario != "denied-skill"}},
+                        ])
+                    message = {"id": "answer", "type": "assistant.message", "data": {
+                        "content": "NATIVE_CONTEXT_" + "a" * 32, "originatingMessageId": "send"}}
+                    idle = {"id": "idle", "type": "session.idle", "data": {"mode": "autopilot"}}
+                    events.extend([message, idle])
+                    (Path(config["output"]).parent / "candidate-raw.jsonl").write_text(
+                        "".join(json.dumps(event) + "\n" for event in events))
+                    preflight = [{
+                        "name": "sibling", "path": str(cwd.parent / "synthetic-denied-sibling.txt"),
+                        "tool_call_id": "owner-sibling", "result": {"resultType": "rejected"},
+                    }]
+                    if scenario == "missing-preflight":
+                        preflight = []
+                    elif scenario == "wrong-preflight-path":
+                        preflight[0]["path"] = str(cwd / "plan.md")
+                    elif scenario == "failed-preflight":
+                        preflight[0]["result"]["resultType"] = "failure"
+                    return {
+                        "session_id": imported_id, "status": "CANDIDATE_OBSERVED",
+                        "model_send_calls": 1, "firsterror": None, "shutdown_errors": [],
+                        "model_message_id": "send", "model_result": message,
+                        "model_completion_event": idle, "preflight": preflight,
+                        "checks": {key: True for key in ("effective_tools", "instruction_correspondence",
+                                   "cold_state", "permission_traversal", "prefix_preserved")},
+                    }
+
+                with (
+                    self.subTest(scenario=scenario),
+                    mock.patch("skill_eval.digest", side_effect=pinned_digest),
+                    mock.patch("skill_eval.copilot_identity", return_value={"version": "1.0.97"}),
+                    mock.patch("skill_eval.discover_personal_instructions", side_effect=discover),
+                    mock.patch("session_restore.import_session", return_value=imported_id),
+                    mock.patch("skill_eval._native_workflow_probe", side_effect=native_setup),
+                    mock.patch("skill_eval._run_native_candidate", side_effect=observed_candidate),
+                ):
+                    result = skill_eval._run_native_workflow_diagnostic(
+                        corpus=corpus, case_id=case_id, plugin_dir=plugin, copilot=cli,
+                        sdk=sdk, run_root=root / f"observed-{scenario}")
+                    if scenario in {"missing-skill", "denied-skill"}:
+                        self.assertIn("must invoke target skill", result["firsterror"])
+                    elif scenario == "loaded":
+                        self.assertTrue(result["parsed"]["skill_loaded"])
+                    else:
+                        self.assertIn("owner preflight rejection", result["firsterror"])
 
 
 class NativeRunTests(unittest.TestCase):

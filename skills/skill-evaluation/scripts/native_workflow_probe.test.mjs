@@ -28,7 +28,11 @@ export const RuntimeConnection = {
   forStdio(options) { state.connections.push(options); return options; },
 };
 export class CopilotClient {
-  constructor(options) { this.options = options; }
+  constructor(options) {
+    this.options = options;
+    state.explicitAuthMatched = options.gitHubToken === state.expectedGitHubToken;
+    state.loggedInUserEnabled = options.useLoggedInUser;
+  }
   async start() {
     if (state.owners) throw new Error("Overlapping owners");
     state.owners++; state.starts++;
@@ -118,7 +122,7 @@ export class CopilotClient {
               }, { sessionId: id });
               if (state.semanticPollution) state.events.push(emit("tool.execution_complete", { result: "Injected test result" }));
               const denied = args.path.endsWith("synthetic-denied-sibling.txt") || decision.kind === "reject";
-              return { resultType: denied ? "denied" : "success", textResultForLlm: "Test native view" };
+              return { resultType: denied ? (state.denialResultType ?? "rejected") : "success", textResultForLlm: "Test native view" };
             }
             if (name === "sql" && args.query.startsWith("INSERT")) {
               state.rows.push({ id: "native-workflow-fixture", title: "Synthetic pending work",
@@ -384,10 +388,31 @@ test("candidate gates one SDK send and retains unwrapped native events and separ
   assert.equal(state.resumes.at(-1).organizationCustomInstructions, "");
 });
 
+test("candidate forwards existing evaluator auth through SDK without recording its value", async t => {
+  const { config, state, root } = await candidateFixture(t);
+  const prior = process.env.COPILOT_GITHUB_TOKEN;
+  const token = `synthetic-${randomUUID()}`;
+  process.env.COPILOT_GITHUB_TOKEN = token;
+  state.expectedGitHubToken = token;
+  try {
+    const report = await runProbe("candidate", config);
+    assert.equal(report.status, "CANDIDATE_OBSERVED");
+    assert.equal(state.explicitAuthMatched, true);
+    assert.equal(state.loggedInUserEnabled, false);
+    for (const text of [
+      JSON.stringify(report), readFileSync(config.output, "utf8"),
+      readFileSync(join(root, "candidate-raw.jsonl"), "utf8"),
+    ]) assert.equal(text.includes(token), false);
+  } finally {
+    if (prior === undefined) delete process.env.COPILOT_GITHUB_TOKEN;
+    else process.env.COPILOT_GITHUB_TOKEN = prior;
+  }
+});
+
 test("missing or mismatched native sources, tools, mediation and history block before any send", async t => {
   for (const failure of [
     "missing-instructions", "wrong-content", "duplicate-instructions", "disabled-instructions",
-    "missing-tools", "wrong-tools", "mcp-tools", "owner-bypass", "semantic-pollution", "cold-mismatch", "handler-error", "preflight-error",
+    "missing-tools", "wrong-tools", "mcp-tools", "owner-bypass", "semantic-pollution", "cold-mismatch", "handler-error", "preflight-error", "denial-tool-failure",
   ]) await t.test(failure, async child => {
     const { config, state } = await candidateFixture(child);
     const source = {
@@ -408,6 +433,7 @@ test("missing or mismatched native sources, tools, mediation and history block b
     if (failure === "cold-mismatch") state.coldMismatch = true;
     if (failure === "handler-error") state.handlerError = true;
     if (failure === "preflight-error") state.preflightFails = true;
+    if (failure === "denial-tool-failure") state.denialResultType = "failure";
     const report = await runProbe("candidate", config);
     assert.equal(report.status, "PREMODEL_BLOCKED", JSON.stringify(report));
     assert.equal(report.model_send_calls, 0);
