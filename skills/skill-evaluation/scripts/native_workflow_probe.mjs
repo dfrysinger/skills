@@ -509,9 +509,9 @@ export async function runProbe(op, config) {
             error: new Error(`${report.timeout_ms}-millisecond SDK send/completion deadline exceeded`),
           }), report.timeout_ms);
         });
-        void call("session.send", { prompt: renderedPrompt }, () => {
+        void call("session.send", { prompt: renderedPrompt, mode: "immediate" }, () => {
           report.model_send_calls = 1;
-          return session.send({ prompt: renderedPrompt });
+          return session.send({ prompt: renderedPrompt, mode: "immediate" });
         }).then(id => {
           if (typeof id !== "string" || !id) throw new Error("SDK send returned no message ID");
           report.model_message_id = id;
