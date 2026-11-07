@@ -2049,7 +2049,7 @@ def _run_native_workflow_diagnostic(
     except Exception as error:
         result["firsterror"] = str(error)
     finally:
-        if config is not None:
+        if config is not None and checks.get("setup_observed") is True:
             try:
                 observation = _native_workflow_probe(
                     "observe", {**config, "output": str(run_root / "observe.json")})

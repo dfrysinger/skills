@@ -30,19 +30,25 @@ export const RuntimeConnection = {
 export class CopilotClient {
   constructor(options) {
     this.options = options;
+    this.started = false;
     state.explicitAuthMatched = options.gitHubToken === state.expectedGitHubToken;
     state.loggedInUserEnabled = options.useLoggedInUser;
   }
   async start() {
     if (state.owners) throw new Error("Overlapping owners");
-    state.owners++; state.starts++;
+    state.owners++; state.starts++; this.started = true;
   }
   async getStatus() { return { version: "test-double", protocolVersion: 1, token: "excluded" }; }
   async stop() {
+    if (state.stopStalls) {
+      state.stalledStops = (state.stalledStops ?? 0) + 1;
+      return new Promise(() => {});
+    }
     if (state.stopFails) throw new Error("Test shutdown failure");
-    state.owners--; state.stops++; return [];
+    if (this.started) state.owners--;
+    this.started = false; state.stops++; return [];
   }
-  async forceStop() { state.owners = 0; }
+  async forceStop() { state.owners = 0; this.started = false; }
   async resumeSession(id, options) {
     state.resumes.push(options);
     const goalPath = join(this.options.baseDirectory, "session-state", id, "autopilot-objective.json");
@@ -55,7 +61,10 @@ export class CopilotClient {
         state.handlers.push(handler);
         return () => { state.handlers = state.handlers.filter(item => item !== handler); };
       },
-      async abort() { state.aborts++; },
+      async abort() {
+        state.aborts++;
+        if (state.abortStalls) return new Promise(() => {});
+      },
       async send(message) {
         state.sendCalls++; state.sentPrompt = message.prompt;
         const id = randomUUID();
@@ -73,8 +82,12 @@ export class CopilotClient {
       },
       rpc: {
         eventLog: {
-          read: async ({ cursor }) => ({ events: structuredClone(state.events.slice(Number(cursor ?? 0))),
-            cursor: String(state.events.length), hasMore: false, cursorStatus: "ok" }),
+          read: async ({ cursor }) => {
+            state.eventReads = (state.eventReads ?? 0) + 1;
+            if (state.readStalls) return new Promise(() => {});
+            return { events: structuredClone(state.events.slice(Number(cursor ?? 0))),
+              cursor: String(state.events.length), hasMore: false, cursorStatus: "ok" };
+          },
           tail: async () => ({ cursor: String(state.events.length) }),
         },
         instructions: {
@@ -553,8 +566,8 @@ test("exhausted owner budget blocks dispatch without a send", async t => {
   t.mock.method(performance, "now", () => clockCalls++ === 0 ? 0 : 330000);
   const report = await runProbe("candidate", config);
   assert.equal(report.status, "PREMODEL_BLOCKED");
-  assert.equal(report.firsterror, "Owned helper budget exhausted before model dispatch");
-  assert.equal(report.timeout_ms, 0);
+  assert.equal(report.firsterror, "client.start owner deadline exceeded");
+  assert.equal(report.timeout_ms, undefined);
   assert.equal(report.max_timeout_ms, 300000);
   assert.equal(report.model_send_calls, 0);
   assert.equal(report.model_started_at, undefined);
@@ -586,4 +599,35 @@ test("prolonged preflight reduces the model deadline and leaves time for abort a
   assert.equal(state.aborts, 1);
   assert.equal(state.owners, 0);
   assert.equal(state.handlers.length, 0);
+});
+
+test("stalled native operations retain errors and close within their budgets", async t => {
+  for (const [operation, milliseconds] of [["read", 330000], ["abort", 5000], ["stop", 10000]]) {
+    await t.test(operation, async t => {
+      const { config, state } = await candidateFixture(t);
+      state[`${operation}Stalls`] = true;
+      if (operation === "abort") state.sendFails = true;
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      let report;
+      void runProbe("candidate", config).then(value => { report = value; });
+      const entered = () => operation === "read" ? state.eventReads
+        : operation === "abort" ? state.aborts : state.stalledStops;
+      for (let i = 0; i < 100 && !entered() && !report; i++) {
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      assert.ok(entered(), report?.error?.message ?? "Native operation was not reached");
+      t.mock.timers.tick(milliseconds);
+      for (let i = 0; i < 100 && !report; i++) await new Promise(resolve => setImmediate(resolve));
+      assert.ok(report, "Native operation remained pending after its deadline");
+      assert.equal(report.status, operation === "read" ? "PREMODEL_BLOCKED" : "FAILED");
+      assert.equal(report.model_send_calls, operation === "read" ? 0 : 1);
+      assert.equal(state.owners, 0);
+      const name = operation === "read" ? "eventLog.read"
+        : operation === "abort" ? "session.abort" : "client.stop";
+      assert.match(report.calls.find(call => call.name === name && call.error)?.error.message ?? "",
+        /deadline exceeded/);
+      if (operation === "abort") assert.equal(report.error.message, "Test send transport failure");
+      if (operation === "stop") assert.ok(report.calls.some(call => call.name === "client.forceStop"));
+    });
+  }
 });

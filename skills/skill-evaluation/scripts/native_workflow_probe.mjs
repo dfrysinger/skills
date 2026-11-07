@@ -194,12 +194,24 @@ export async function runProbe(op, config) {
   const call = async (name, arguments_, operation) => {
     const entry = { name, ...(arguments_ === undefined ? {} : { arguments: arguments_ }) };
     report.calls.push(entry);
+    const timeout = name === "session.abort" || name === "client.forceStop" ? 5000
+      : name === "client.stop" ? 10000
+        : Math.max(0, 330000 - (performance.now() - started));
+    let timer;
     try {
-      entry.result = await operation();
+      if (!timeout) throw new Error(`${name} owner deadline exceeded`);
+      entry.result = await Promise.race([
+        Promise.resolve().then(operation),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${name} deadline exceeded`)), timeout);
+        }),
+      ]);
       return entry.result;
     } catch (error) {
       entry.error = errorInfo(error);
       throw error;
+    } finally {
+      clearTimeout(timer);
     }
   };
   const execute = async (name, arguments_) => {
