@@ -64,6 +64,22 @@ def semantic_projection(records: list[dict]) -> list[dict]:
     return result
 
 
+def public_import_records(records: list[dict]) -> list[dict]:
+    """Add required importer error metadata without changing source semantics."""
+    projection = semantic_projection(records)
+    encoded = [dict(record) for record in records]
+    for record in encoded:
+        if record["type"] == "tool-result" and not record["success"]:
+            if record.get("error") is None:
+                record["error"] = {"message": record["content"]}
+            elif (not isinstance(record["error"], dict)
+                  or record["error"].get("message") != record["content"]):
+                raise ValueError("Public failed-result error differs from source content")
+    if semantic_projection(encoded) != projection:
+        raise ValueError("Public import encoding changed source semantics")
+    return encoded
+
+
 SNAPSHOT_COLUMNS = {
     "todos": ["id", "title", "description", "status", "created_at", "updated_at"],
     "todo_deps": ["todo_id", "depends_on"],

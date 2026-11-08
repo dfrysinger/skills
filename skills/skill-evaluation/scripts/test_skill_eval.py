@@ -1181,7 +1181,10 @@ class NativeHistoricalContextTests(unittest.TestCase):
     def import_double(self, restoration, history, **kwargs):
         self.order.append("import-exit")
         self.assertEqual(restoration["skill_context"], "recorded-target-context")
-        self.assertEqual([json.loads(line) for line in history.read_text().splitlines()], self.historical["records"])
+        from session_restore import semantic_projection
+        self.assertEqual(
+            semantic_projection([json.loads(line) for line in history.read_text().splitlines()]),
+            semantic_projection(self.historical["records"]))
         home = Path(kwargs["receipt_path"]).parents[1] / "candidate-home"
         self.journal = home / "session-state" / self.session_id / "events.jsonl"
         self.journal.parent.mkdir(parents=True)
@@ -1255,6 +1258,33 @@ class NativeHistoricalContextTests(unittest.TestCase):
                        if request["name"] == "apply_patch")
         self.assertEqual(request["arguments"], patch)
 
+    def test_failed_result_import_encoding_preserves_source_without_mutating_fixture(self):
+        from contextlib import ExitStack
+        original = json.loads(json.dumps(self.historical["records"]))
+        original_import = self.import_double
+
+        def checked_import(restoration, history, **kwargs):
+            records = [json.loads(line) for line in history.read_text().splitlines()]
+            failed = next(record for record in records
+                          if record["type"] == "tool-result" and not record["success"])
+            self.assertEqual(failed.get("error"), {"message": "Synthetic preserved failure"},
+                             "Failed public import result requires the exact source error object")
+            self.assertEqual(failed["content"], "Synthetic preserved failure")
+            self.assertEqual(self.historical["records"], original)
+            return original_import(restoration, history, **kwargs)
+
+        self.import_double = checked_import
+        with ExitStack() as stack:
+            self.patches(stack)
+            result = skill_eval._run_native_context_calibration(**self.arguments())
+        self.assertEqual(result["status"], "CONTEXT_SETUP_OBSERVED", result["firsterror"])
+        self.assertEqual(self.historical["records"], original)
+        from session_restore import public_import_records
+        changed_error = json.loads(json.dumps(original))
+        changed_error[5]["error"] = {"message": "Different failure"}
+        with self.assertRaisesRegex(ValueError, "error differs from source"):
+            public_import_records(changed_error)
+
     def test_changed_role_error_grouping_or_creation_time_blocks_helper(self):
         from contextlib import ExitStack
         for failure in ("role", "error", "request", "time"):
@@ -1284,6 +1314,7 @@ class NativeHistoricalContextTests(unittest.TestCase):
             native, candidate = self.patches(stack)
             result = skill_eval._run_native_context_calibration(**self.arguments(), model_send=True)
         self.assertIn("forbids model sends", result["firsterror"])
+        self.assertTrue(result["claim"].startswith("Historical setup observations only"))
         native.assert_not_called()
         candidate.assert_not_called()
         self.historical["skill_events"][-1]["records_before"] = 3

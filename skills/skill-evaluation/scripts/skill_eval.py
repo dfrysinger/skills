@@ -2690,6 +2690,7 @@ def _run_native_context_calibration(
         fixture = read_owner_json(fixture_file)
         historical = isinstance(fixture, dict) and fixture.get("provenance") == "source-bound-historical"
         if historical:
+            result["claim"] = "Historical setup observations only; behavioral admission and skill improvement unproved"
             if model_send:
                 raise ValueError("Historical context setup forbids model sends")
             fixture = _validate_historical_context_fixture(fixture)
@@ -2746,7 +2747,11 @@ def _run_native_context_calibration(
             records.extend({"type": "message", "id": str(uuid.uuid4()), "timestamp": created_at,
                             "role": message["role"], "content": [{"type": "text", "text": message["content"]}]}
                            for message in fixture["messages"])
-        history.write_text("".join(json.dumps(record) + "\n" for record in records))
+        encoded_records = records
+        if historical:
+            from session_restore import public_import_records
+            encoded_records = public_import_records(records)
+        history.write_text("".join(json.dumps(record) + "\n" for record in encoded_records))
         history.chmod(0o600)
         restoration = {
             "history_file": history.name, "source_session_id": source_id, "cutoff_event_id": cutoff,
