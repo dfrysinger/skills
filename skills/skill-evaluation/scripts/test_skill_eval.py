@@ -669,6 +669,385 @@ class NativeWorkflowDiagnosticTests(unittest.TestCase):
                         self.assertIn("owner preflight rejection", result["firsterror"])
 
 
+class NativeContextCalibrationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(dir=Path.cwd())
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.fixture = self.root / "fixture.json"
+        self.messages = [
+            {"role": "user", "content": "Prior value is prior-only"},
+            {"role": "assistant", "content": "Prior context acknowledged"},
+            {"role": "user", "content": "Latest value is latest-only"},
+            {"role": "assistant", "content": "Update acknowledged"},
+        ]
+        self.expected = {"summary_value": "summary-only", "latest_value": "latest-only"}
+        self.fixture.write_text(json.dumps({
+            "schema_version": 1, "provenance": "synthetic-calibration",
+            "messages": self.messages, "summary": "Summary value is summary-only; latest was superseded",
+            "prompt": "Return summary_value and latest_value as JSON.",
+            "expected": self.expected,
+        }))
+        self.fixture.chmod(0o600)
+        self.plugin = self.root / "plugin"
+        self.plugin.mkdir()
+        (self.plugin / "fixture.txt").write_text("Synthetic pinned plugin input")
+        self.cli = self.root / "copilot"
+        self.cli.write_text("Synthetic never-executed CLI")
+        self.sdk = self.root / "sdk/index.js"
+        self.sdk.parent.mkdir()
+        self.sdk.write_text("Synthetic never-imported SDK")
+        schema = self.sdk.parent / "generated/session-events.d.ts"
+        schema.parent.mkdir()
+        schema.write_text(
+            'export interface CompactionCompleteEvent {\n'
+            'type: "session.compaction_complete";\nid: string;\nparentId: string | null;\n'
+            'timestamp: string;\ndata: CompactionCompleteData;\n}\n'
+            'export interface CompactionCompleteData {\nsuccess: boolean;\nsummaryContent?: string;\n}\n')
+        self.run = self.root / "run"
+        self.session_id = str(uuid.uuid4())
+        self.order = []
+        self.journal = None
+
+    def import_double(self, restoration, history, **kwargs):
+        self.order.append("import-exit")
+        home = Path(kwargs["receipt_path"]).parents[1] / "candidate-home"
+        self.journal = home / "session-state" / self.session_id / "events.jsonl"
+        self.journal.parent.mkdir(parents=True)
+        events = [{"id": str(uuid.uuid4()), "type": "session.start", "parentId": None,
+                   "timestamp": "2026-01-01T00:00:00Z", "data": {"sessionId": self.session_id}}]
+        messages = [json.loads(line) for line in history.read_text().splitlines()][1:]
+        for message in messages:
+            parts = message["content"]
+            self.assertIsInstance(parts, list)
+            self.assertEqual(len(parts), 1)
+            self.assertEqual(set(parts[0]), {"type", "text"})
+            self.assertEqual(parts[0]["type"], "text")
+            self.assertIsInstance(parts[0]["text"], str)
+            self.assertTrue(parts[0]["text"])
+            events.append({
+                "id": str(uuid.uuid4()), "type": message["role"] + ".message", "parentId": events[-1]["id"],
+                "timestamp": "2026-01-01T00:00:00Z", "data": {"content": parts[0]["text"]},
+            })
+        self.journal.write_text("".join(json.dumps(event) + "\n" for event in events))
+        skill_eval.write_json(kwargs["receipt_path"], {
+            "status": "PASS", "session_id": self.session_id, "exit_code": 0,
+            "history_sha256": digest(history),
+        })
+        return self.session_id
+
+    def arguments(self):
+        return dict(fixture_file=self.fixture, plugin_dir=self.plugin, copilot=self.cli,
+                    sdk=self.sdk, run_root=self.run, model="fixture-model", effort="low")
+
+    def candidate_double(self, config, **kwargs):
+        self.order.append("candidate-return")
+        self.assertNotIn("expected", config)
+        self.assertNotIn("expected_file", config)
+        self.assertEqual(list(Path(config["cwd"]).iterdir()), [])
+        self.assertEqual(Path(config["prompt_path"]).read_text(), "Return summary_value and latest_value as JSON.")
+        self.assertEqual(set(json.loads(Path(config["context_fixture_file"]).read_text())),
+                         {"schema_version", "summary_event_id", "summary_sha256", "post_event_ids"})
+        if kwargs["preflight_only"]:
+            return {"status": "PREFLIGHT_OBSERVED", "model_send_calls": 0}
+        message = {"id": "answer", "type": "assistant.message",
+                   "data": {"content": json.dumps(self.expected), "originatingMessageId": "send"}}
+        idle = {"id": "idle", "type": "session.idle", "data": {"aborted": False}}
+        return {"status": "CANDIDATE_OBSERVED", "model_send_calls": 1, "firsterror": None,
+                "shutdown_errors": [], "model_message_id": "send", "model_result": message,
+                "model_completion_event": idle, "candidate_events": [message, idle], "model_event_start_index": 0}
+
+    def probe_double(self, operation, config):
+        self.order.append(operation)
+        staged = (self.run / "owner/journal-staged.jsonl").read_bytes()
+        self.assertEqual(self.journal.read_bytes(), staged)
+        events = [json.loads(line) for line in staged.splitlines()]
+        self.assertEqual(events[3]["type"], "session.compaction_complete")
+        self.assertEqual(events[4]["parentId"], events[3]["id"])
+        self.assertFalse((self.journal.parent / "autopilot-objective.json").exists())
+        return {"status": {"setup": "SETUP_OBSERVED", "observe": "OBSERVED", "cleanup": "CLEANED"}[operation]}
+
+    def patches(self, stack):
+        real_digest = skill_eval.digest
+        stack.enter_context(mock.patch("skill_eval.digest", side_effect=lambda path:
+            "d336d72bd0f597d39c1c75732e5eb5b07cd43e65e81b45f90413ee86e69cb406"
+            if path == self.sdk else real_digest(path)))
+        stack.enter_context(mock.patch("skill_eval.copilot_identity", return_value={"version": "1.0.97"}))
+        stack.enter_context(mock.patch("session_restore.import_session", side_effect=self.import_double))
+        native = stack.enter_context(mock.patch("skill_eval._native_workflow_probe", side_effect=self.probe_double))
+        candidate = stack.enter_context(mock.patch("skill_eval._run_native_candidate", side_effect=self.candidate_double))
+        stack.enter_context(mock.patch("skill_eval.subprocess.run", side_effect=AssertionError("Real process prohibited")))
+        stack.enter_context(mock.patch("skill_eval.run_judges", side_effect=AssertionError("Judge prohibited")))
+        return native, candidate
+
+    def test_coordinator_imports_then_stages_then_helper_then_owner_oracle(self):
+        from contextlib import ExitStack
+        real_oracle = skill_eval._native_context_oracle
+        def oracle(candidate, expected):
+            self.order.append("oracle")
+            return real_oracle(candidate, expected)
+        with ExitStack() as stack:
+            self.patches(stack)
+            stack.enter_context(mock.patch("skill_eval._native_context_oracle", side_effect=oracle))
+            result = skill_eval._run_native_context_calibration(**self.arguments(), model_send=True)
+        self.assertEqual(result["status"], "CALIBRATION_OBSERVED", result["firsterror"])
+        self.assertEqual(self.order, ["import-exit", "setup", "candidate-return", "oracle", "observe", "cleanup"])
+        before = [json.loads(line) for line in (self.run / "owner/journal-before.jsonl").read_bytes().splitlines()]
+        after = [json.loads(line) for line in self.journal.read_bytes().splitlines()]
+        self.assertEqual([event["data"] for event in before], [event["data"] for event in after if event["type"] != "session.compaction_complete"])
+        self.assertEqual([event["id"] for event in before], [event["id"] for event in after if event["type"] != "session.compaction_complete"])
+        retained = (self.run / "context-result.json").read_bytes()
+        again = skill_eval._run_native_context_calibration(**self.arguments())
+        self.assertIn("must be new", again["firsterror"])
+        self.assertEqual((self.run / "context-result.json").read_bytes(), retained)
+
+    def test_synthetic_import_seed_has_current_utc_session_and_message_timestamps(self):
+        from contextlib import ExitStack
+        before = skill_eval.datetime.now(skill_eval.timezone.utc)
+        def import_with_timestamps(restoration, history, **kwargs):
+            records = [json.loads(line) for line in history.read_text().splitlines()]
+            self.assertEqual(len(records), 5)
+            self.assertIn("createdAt", records[0])
+            timestamps = [records[0]["createdAt"]]
+            for record in records[1:]:
+                self.assertIn("timestamp", record)
+                timestamps.append(record["timestamp"])
+            parsed = [skill_eval.datetime.fromisoformat(value) for value in timestamps]
+            after = skill_eval.datetime.now(skill_eval.timezone.utc)
+            for instant in parsed:
+                self.assertIsNotNone(instant.tzinfo)
+                self.assertEqual(instant.utcoffset(), skill_eval.timezone.utc.utcoffset(instant))
+                self.assertLessEqual(before, instant)
+                self.assertLessEqual(instant, after)
+            self.assertEqual(parsed, sorted(parsed))
+            return self.import_double(restoration, history, **kwargs)
+        with ExitStack() as stack:
+            self.patches(stack)
+            importer = stack.enter_context(mock.patch("session_restore.import_session", side_effect=import_with_timestamps))
+            result = skill_eval._run_native_context_calibration(**self.arguments())
+        importer.assert_called_once()
+        self.assertEqual(result["status"], "CONTEXT_SETUP_OBSERVED", result["firsterror"])
+
+    def test_synthetic_import_seed_uses_text_parts_without_changing_fixture_strings(self):
+        from contextlib import ExitStack
+        fixture_before = self.fixture.read_bytes()
+        def import_with_text_parts(restoration, history, **kwargs):
+            records = [json.loads(line) for line in history.read_text().splitlines()][1:]
+            self.assertEqual(
+                [(record["role"], record["content"]) for record in records],
+                [(message["role"], [{"type": "text", "text": message["content"]}])
+                 for message in self.messages])
+            return self.import_double(restoration, history, **kwargs)
+        with ExitStack() as stack:
+            self.patches(stack)
+            importer = stack.enter_context(mock.patch("session_restore.import_session", side_effect=import_with_text_parts))
+            result = skill_eval._run_native_context_calibration(**self.arguments())
+        importer.assert_called_once()
+        self.assertEqual(result["status"], "CONTEXT_SETUP_OBSERVED", result["firsterror"])
+        self.assertEqual(self.fixture.read_bytes(), fixture_before)
+
+    def test_zero_model_default_never_calls_oracle(self):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self.patches(stack)
+            oracle = stack.enter_context(mock.patch("skill_eval._native_context_oracle"))
+            result = skill_eval._run_native_context_calibration(**self.arguments())
+        self.assertEqual(result["status"], "CONTEXT_SETUP_OBSERVED", result["firsterror"])
+        oracle.assert_not_called()
+        self.assertEqual(self.order, ["import-exit", "setup", "candidate-return", "observe", "cleanup"])
+
+    def test_unknown_envelope_order_schema_and_import_exit_refuse_before_helper(self):
+        from contextlib import ExitStack
+        for fault in ("schema", "envelope", "order", "time", "receipt"):
+            with self.subTest(fault=fault), ExitStack() as stack:
+                self.run = self.root / fault
+                native, candidate = self.patches(stack)
+                original = self.import_double
+                def broken(*args, **kwargs):
+                    session_id = original(*args, **kwargs)
+                    if fault == "schema":
+                        (self.sdk.parent / "generated/session-events.d.ts").write_text("Unknown schema")
+                    elif fault == "receipt":
+                        receipt = json.loads(kwargs["receipt_path"].read_text())
+                        receipt["exit_code"] = 1
+                        kwargs["receipt_path"].write_text(json.dumps(receipt))
+                    else:
+                        events = [json.loads(line) for line in self.journal.read_text().splitlines()]
+                        if fault == "envelope":
+                            events[1]["unexpected"] = True
+                        elif fault == "time":
+                            events[1]["timestamp"] = "2025-01-01T00:00:00Z"
+                        else:
+                            events[1]["parentId"] = None
+                        self.journal.write_text("".join(json.dumps(event) + "\n" for event in events))
+                    self.original_invalid_bytes = self.journal.read_bytes()
+                    return session_id
+                stack.enter_context(mock.patch("session_restore.import_session", side_effect=broken))
+                # Restore the synthetic schema after the schema-negative subcase.
+                if fault != "schema":
+                    (self.sdk.parent / "generated/session-events.d.ts").write_text(
+                        'export interface CompactionCompleteEvent {\n'
+                        'type: "session.compaction_complete";\nid: string;\nparentId: string | null;\n'
+                        'timestamp: string;\ndata: CompactionCompleteData;\n}\n'
+                        'export interface CompactionCompleteData {\nsuccess: boolean;\nsummaryContent?: string;\n}\n')
+                result = skill_eval._run_native_context_calibration(**self.arguments())
+                self.assertEqual(result["setup_error_code"], "NATIVE_CONTEXT_SETUP_UNSUPPORTED")
+                self.assertEqual(result["status"], "FAILED")
+                native.assert_not_called()
+                candidate.assert_not_called()
+                self.assertEqual(self.journal.read_bytes(), self.original_invalid_bytes)
+
+    def test_setup_and_candidate_failure_preserve_first_error_without_retry(self):
+        from contextlib import ExitStack
+        for fault in ("setup", "candidate"):
+            with self.subTest(fault=fault), ExitStack() as stack:
+                self.run = self.root / fault
+                native, candidate = self.patches(stack)
+                if fault == "setup":
+                    native.side_effect = ValueError("first setup failure")
+                else:
+                    candidate.side_effect = ValueError("first candidate failure")
+                    native.side_effect = lambda operation, config: (
+                        {"status": "SETUP_OBSERVED"} if operation == "setup"
+                        else (_ for _ in ()).throw(ValueError("later cleanup failure")))
+                result = skill_eval._run_native_context_calibration(**self.arguments())
+                self.assertEqual(result["firsterror"], f"first {fault} failure")
+                if fault == "setup":
+                    candidate.assert_not_called()
+                    self.assertEqual(native.call_count, 1)
+                else:
+                    self.assertEqual(candidate.call_count, 1)
+                    self.assertEqual([call.args[0] for call in native.call_args_list], ["setup", "observe", "cleanup"])
+
+    def test_fixture_extra_keys_and_value_leak_refuse_before_import(self):
+        from contextlib import ExitStack
+        original = json.loads(self.fixture.read_text())
+        for fault in ("extra", "leak"):
+            with self.subTest(fault=fault), ExitStack() as stack:
+                self.patches(stack)
+                importer = stack.enter_context(mock.patch("session_restore.import_session"))
+                invalid = {**original}
+                if fault == "extra":
+                    invalid["state_file"] = "forbidden"
+                else:
+                    invalid["prompt"] += " " + self.expected["summary_value"]
+                self.fixture.write_text(json.dumps(invalid))
+                result = skill_eval._run_native_context_calibration(**self.arguments())
+                self.assertIn("Invalid fixed synthetic", result["firsterror"])
+                self.assertFalse(self.run.exists())
+                importer.assert_not_called()
+
+    def test_oracle_failure_retains_independent_observe_and_cleanup_errors(self):
+        from contextlib import ExitStack
+        timeout = subprocess.TimeoutExpired(["node", "native-probe", "cleanup"], 360)
+        def probe(operation, config):
+            if operation == "setup":
+                return self.probe_double(operation, config)
+            if operation == "observe":
+                raise ValueError("independent observe failure")
+            raise timeout
+        def wrong_answer(config, **kwargs):
+            packet = self.candidate_double(config, **kwargs)
+            packet["model_result"]["data"]["content"] = json.dumps({
+                **self.expected, "summary_value": "wrong"})
+            return packet
+        with ExitStack() as stack:
+            native, candidate = self.patches(stack)
+            native.side_effect = probe
+            candidate.side_effect = wrong_answer
+            result = skill_eval._run_native_context_calibration(**self.arguments(), model_send=True)
+        self.assertEqual(result["firsterror"], "Context recall did not return the tested summary/latest values")
+        self.assertEqual(result["operation_errors"], {
+            "observe": {"type": "ValueError", "message": "independent observe failure"},
+            "cleanup": {"type": "TimeoutExpired", "message": str(timeout)},
+        })
+        self.assertEqual([call.args[0] for call in native.call_args_list], ["setup", "observe", "cleanup"])
+        self.assertEqual(json.loads((self.run / "context-result.json").read_text()), result)
+
+    def test_owner_oracle_rejects_tools_wrong_values_and_bad_root_correlation(self):
+        packet = self.candidate_double_for_oracle()
+        result = skill_eval._native_context_oracle(packet, self.expected)
+        self.assertTrue(result["tested_values_available"])
+        for fault in ("tool", "root-error", "wrong-value", "wrong-id", "aborted", "child", "idle-first"):
+            with self.subTest(fault=fault):
+                invalid = json.loads(json.dumps(packet))
+                if fault == "tool":
+                    invalid["candidate_events"].insert(0, {"type": "tool.execution_start", "data": {}})
+                elif fault == "root-error":
+                    invalid["candidate_events"].append({"type": "session.error", "data": {"message": "native error"}})
+                elif fault == "wrong-value":
+                    invalid["model_result"]["data"]["content"] = "{}"
+                    invalid["candidate_events"][0] = invalid["model_result"]
+                elif fault == "wrong-id":
+                    invalid["model_message_id"] = "other"
+                elif fault == "aborted":
+                    invalid["model_completion_event"]["data"]["aborted"] = True
+                    invalid["candidate_events"][1] = invalid["model_completion_event"]
+                elif fault == "child":
+                    invalid["model_result"]["agentId"] = "child"
+                    invalid["candidate_events"][0] = invalid["model_result"]
+                else:
+                    invalid["candidate_events"].reverse()
+                with self.assertRaises(ValueError):
+                    skill_eval._native_context_oracle(invalid, self.expected)
+        packet["candidate_events"].insert(0, {"type": "tool.execution_start", "data": {"toolCallId": "owner-only"}})
+        packet["model_event_start_index"] = 1
+        self.assertTrue(skill_eval._native_context_oracle(packet, self.expected)["zero_candidate_tools"])
+
+    def test_caller_rejects_extra_helper_config_before_any_process(self):
+        with mock.patch("skill_eval.subprocess.run") as process:
+            with self.assertRaisesRegex(ValueError, "fixed native context coordinator fields"):
+                skill_eval._native_workflow_probe("candidate", {
+                    "profile": "native-context-calibration", "expected_file": str(self.fixture)})
+        process.assert_not_called()
+
+    def test_context_receipt_requires_summary_order_and_initialized_context(self):
+        fields = ["cli", "sdk", "home", "os_home", "cwd", "output", "prompt_path", "event_log",
+                  "plugin_path", "prefix_file", "context_fixture_file"]
+        config = {key: str(self.root / key) for key in fields}
+        config.update(profile="native-context-calibration", session_id=self.session_id,
+                      model="fixture-model", effort="low")
+        base = {
+            "cli": config["cli"], "sdk": config["sdk"], "session_id": self.session_id,
+            "profile": config["profile"], "connection": {"path": config["cli"]},
+            "runtime_identity": {"version": "1.0.97"}, "shutdown_errors": [],
+            "status": "PREFLIGHT_OBSERVED", "model_send_calls": 0, "firsterror": None,
+            "context_initialized": True,
+            "checks": {key: True for key in (
+                "effective_tools", "instruction_correspondence", "cold_state", "permission_traversal",
+                "prefix_preserved", "imported_prefix_correspondence", "context_summary_order")},
+        }
+        for fault in ("none", "summary", "initialized"):
+            with self.subTest(fault=fault):
+                selected = {**config, "output": str(self.root / f"{fault}.json")}
+                receipt = json.loads(json.dumps(base))
+                if fault == "summary":
+                    receipt["checks"]["context_summary_order"] = False
+                if fault == "initialized":
+                    receipt["context_initialized"] = False
+                def execute(command, **kwargs):
+                    Path(selected["output"]).write_text(json.dumps(receipt))
+                    return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+                with (
+                    mock.patch("skill_eval.subprocess.run", side_effect=execute),
+                    mock.patch("skill_eval.personal_instruction_environment", return_value={}),
+                ):
+                    if fault == "none":
+                        self.assertEqual(skill_eval._native_workflow_probe("preflight", selected), receipt)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "conditional model execution"):
+                            skill_eval._native_workflow_probe("preflight", selected)
+
+    def candidate_double_for_oracle(self):
+        message = {"id": "answer", "type": "assistant.message", "data": {
+            "content": json.dumps({**self.expected, "prior_value": "diagnostic-retention"}),
+            "originatingMessageId": "send"}}
+        idle = {"id": "idle", "type": "session.idle", "data": {"aborted": False}}
+        return {"status": "CANDIDATE_OBSERVED", "model_send_calls": 1, "firsterror": None,
+                "shutdown_errors": [], "model_message_id": "send", "model_result": message,
+                "model_completion_event": idle, "candidate_events": [message, idle], "model_event_start_index": 0}
+
+
 class NativeRunTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

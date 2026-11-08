@@ -1708,6 +1708,11 @@ def evidence_list(manifest: dict) -> str:
 
 
 def _native_workflow_probe(operation: str, config: dict) -> dict:
+    if config.get("profile") == "native-context-calibration" and set(config) != {
+        "cli", "sdk", "home", "os_home", "cwd", "session_id", "output", "profile",
+        "prompt_path", "event_log", "plugin_path", "model", "effort", "prefix_file", "context_fixture_file",
+    }:
+        raise ValueError("Expected only the fixed native context coordinator fields")
     output = Path(config["output"])
     if output.exists() or output.is_symlink():
         raise ValueError("native probe receipt already exists; retaining first output")
@@ -1741,7 +1746,10 @@ def _native_workflow_probe(operation: str, config: dict) -> dict:
                         "effective_tools", "instruction_correspondence", "cold_state",
                         "permission_traversal", "prefix_preserved"))
                     or ("profile" in config and result.get("checks", {}).get(
-                        "imported_prefix_correspondence") is not True)))):
+                        "imported_prefix_correspondence") is not True)
+                    or (config.get("profile") == "native-context-calibration" and (
+                        result.get("checks", {}).get("context_summary_order") is not True
+                        or result.get("context_initialized") is not True))))):
             raise ValueError("native candidate receipt did not verify conditional model execution")
     if (result.get("session_id") != config["session_id"]
             or (operation in expected and result.get("status") != expected[operation])
@@ -2298,6 +2306,303 @@ def _run_native_workflow_diagnostic(
                 result["firsterror"] = "diagnostic checks not observed: " + ", ".join(
                     key for key, value in checks.items() if not value)
             write_json(run_root / "diagnostic-result.json", result)
+    return result
+
+
+class NativeContextSetupError(ValueError):
+    code = "NATIVE_CONTEXT_SETUP_UNSUPPORTED"
+
+
+def _stage_native_context(*, home: Path, session_id: str, sdk: Path, owner: Path,
+                          messages: list[dict], summary: str) -> dict:
+    def refuse(message):
+        raise NativeContextSetupError(message)
+
+    schema = sdk.parent / "generated" / "session-events.d.ts"
+    if not schema.is_file() or schema.is_symlink():
+        refuse("Native compaction schema is unavailable")
+    schema_text = schema.read_text()
+    event_schema = re.search(r"export interface CompactionCompleteEvent \{(.*?)\n\}", schema_text, re.S)
+    data_schema = re.search(r"export interface CompactionCompleteData \{(.*?)\n\}", schema_text, re.S)
+    if (event_schema is None or data_schema is None
+            or any(field not in event_schema[1] for field in (
+                'type: "session.compaction_complete";', "id: string;", "parentId: string | null;",
+                "timestamp: string;", "data: CompactionCompleteData;"))
+            or any(field not in data_schema[1] for field in ("success: boolean;", "summaryContent?: string;"))):
+        refuse("Unknown native compaction envelope/schema")
+    journal = home / "session-state" / session_id / "events.jsonl"
+    if (not journal.is_file() or journal.resolve() != journal.absolute()
+            or any(path.is_symlink() for path in (journal, *journal.parents))
+            or journal.stat().st_uid != os.getuid() or journal.stat().st_nlink != 1):
+        refuse("Native journal is not an owned unaliased single-link file")
+    before = journal.read_bytes()
+    try:
+        lines = before.splitlines(keepends=True)
+        events = [json.loads(line) for line in lines]
+    except (ValueError, UnicodeError):
+        refuse("Native journal is not valid JSONL")
+    if not events or not before.endswith(b"\n"):
+        refuse("Unknown native journal framing")
+    previous = None
+    previous_timestamp = None
+    ids = set()
+    required = {"id", "type", "parentId", "timestamp", "data"}
+    for event in events:
+        if (not isinstance(event, dict) or not required <= event.keys()
+                or event.keys() - required - {"ephemeral"}
+                or event.get("ephemeral", False) is not False
+                or not isinstance(event["data"], dict) or not isinstance(event["type"], str)
+                or event["parentId"] != previous):
+            refuse("Unknown native envelope or linked event order")
+        try:
+            measurement.session_uuid(event["id"])
+            timestamp = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+            if timestamp.tzinfo is None or (previous_timestamp is not None and timestamp < previous_timestamp):
+                refuse("Unknown native chronological event order")
+        except (ValueError, TypeError, AttributeError):
+            refuse("Unknown native event identity/timestamp")
+        if event["id"] in ids:
+            refuse("Duplicated native event identity")
+        ids.add(event["id"])
+        previous = event["id"]
+        previous_timestamp = timestamp
+    if events[0]["type"] != "session.start" or events[0]["data"].get("sessionId") != session_id:
+        refuse("Native journal session identity is unknown")
+    conversation = [event for event in events if event["type"] in {"user.message", "assistant.message"}]
+    if (len(conversation) != 4
+            or any(event["type"] != message["role"] + ".message"
+                   or event["data"].get("content") != message["content"]
+                   or event["data"].get("toolRequests") not in (None, [])
+                   for event, message in zip(conversation, messages))
+            or any(event["type"] not in {
+                "session.start", "session.shutdown", "user.message", "assistant.message",
+            } for event in events)):
+        refuse("Unknown generated synthetic pre/post message layout")
+    boundary = events.index(conversation[2])
+    summary_id = str(uuid.uuid4())
+    record = {
+        "id": summary_id, "type": "session.compaction_complete",
+        "parentId": events[boundary - 1]["id"], "timestamp": events[boundary]["timestamp"],
+        "data": {"success": True, "summaryContent": summary},
+    }
+    # Only the first later link changes; generated message identities and data remain intact.
+    linked = {**events[boundary], "parentId": summary_id}
+    encoded = lambda event: (json.dumps(event, ensure_ascii=False) + "\n").encode()
+    after = b"".join(lines[:boundary]) + encoded(record) + encoded(linked) + b"".join(lines[boundary + 1:])
+    prefix = json.loads("[" + ",".join(line.decode() for line in after.splitlines()) + "]")
+    locator = {
+        "schema_version": 1, "summary_event_id": summary_id,
+        "summary_sha256": hashlib.sha256(summary.encode()).hexdigest(),
+        "post_event_ids": [event["id"] for event in conversation[2:]],
+    }
+    for name, content in (
+        ("journal-before.jsonl", before), ("journal-staged.jsonl", after),
+        ("imported-prefix.json", (json.dumps(prefix) + "\n").encode()),
+        ("context-fixture.json", (json.dumps(locator) + "\n").encode()),
+    ):
+        with (owner / name).open("xb") as stream:
+            stream.write(content)
+        (owner / name).chmod(0o600)
+    write_json(owner / "staging.json", {
+        "schema_sha256": digest(schema), "journal_before_sha256": hashlib.sha256(before).hexdigest(),
+        "journal_staged_sha256": hashlib.sha256(after).hexdigest(),
+        "summary_event_id": summary_id, "boundary_event_id": conversation[2]["id"],
+        "claim": "Synthetic source staging only; native reader acceptance requires runtime proof",
+    })
+    if journal.read_bytes() != before:
+        refuse("Native journal changed before sequential writer handoff")
+    journal.write_bytes(after)
+    return locator
+
+
+def _native_context_oracle(candidate: dict, expected: dict) -> dict:
+    events = candidate.get("candidate_events")
+    start = candidate.get("model_event_start_index")
+    if not isinstance(events, list) or type(start) is not int or not 0 <= start < len(events):
+        raise ValueError("Missing candidate dispatch event boundary")
+    events = events[start:]
+    message = candidate.get("model_result", {})
+    idle = candidate.get("model_completion_event", {})
+    if (candidate.get("status") != "CANDIDATE_OBSERVED" or candidate.get("model_send_calls") != 1
+            or candidate.get("firsterror") is not None or candidate.get("shutdown_errors") != []
+            or message not in events or idle not in events
+            or message.get("type") != "assistant.message" or idle.get("type") != "session.idle"
+            or message.get("agentId") or message.get("data", {}).get("parentToolCallId")
+            or message.get("data", {}).get("originatingMessageId") != candidate.get("model_message_id")
+            or not candidate.get("model_message_id") or not message.get("id") or not idle.get("id")
+            or idle.get("agentId") or idle.get("data", {}).get("parentToolCallId")
+            or idle.get("data", {}).get("aborted") not in (None, False)
+            or events.index(message) >= events.index(idle)):
+        raise ValueError(candidate.get("firsterror") or "Missing correlated root final/non-aborted idle")
+    if any(event.get("type") == "session.error" and not event.get("agentId")
+           and not event.get("data", {}).get("parentToolCallId") for event in events):
+        raise ValueError("Context recall retained a root session error")
+    if any(event.get("type", "").startswith(("tool.", "skill."))
+           or event.get("data", {}).get("toolRequests") for event in events):
+        raise ValueError("Context recall used candidate tools")
+    try:
+        answer = json.loads(message["data"]["content"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("Context recall is not a JSON object") from error
+    if not isinstance(answer, dict) or any(answer.get(key) != value for key, value in expected.items()):
+        raise ValueError("Context recall did not return the tested summary/latest values")
+    return {"tested_values_available": True, "zero_candidate_tools": True,
+            "pre_summary_retention": "diagnostic only", "full_text_or_authority_equivalence": "not claimed"}
+
+
+def _run_native_context_calibration(
+    *, fixture_file: Path, plugin_dir: Path, copilot: Path, sdk: Path, run_root: Path,
+    model: str, effort: str, model_send: bool = False,
+) -> dict:
+    from native_workflow import read_owner_json
+    from session_restore import import_session
+
+    result = {"status": "FAILED", "firsterror": None, "setup_error_code": None,
+              "checks": {}, "cleanup": None, "model_send": model_send,
+              "operation_errors": {},
+              "claim": "Synthetic source capability only; historical replay remains unproved"}
+    config = None
+    owned = False
+    run_root = run_root.absolute()
+    try:
+        inputs = [path.absolute() for path in (fixture_file, plugin_dir, copilot, sdk)]
+        if (run_root.exists() or run_root.is_symlink() or run_root.resolve() != run_root
+                or any(run_root.is_relative_to(path.resolve()) or path.resolve().is_relative_to(run_root)
+                       for path in inputs)):
+            raise ValueError("Context run root must be new, unaliased and disjoint from original inputs")
+        if (fixture_file.resolve() != fixture_file.absolute() or not fixture_file.is_file()
+                or any(path.is_symlink() for path in (fixture_file, *fixture_file.parents))
+                or fixture_file.stat().st_uid != os.getuid() or fixture_file.stat().st_nlink != 1
+                or fixture_file.stat().st_mode & 0o077):
+            raise ValueError("Context fixture requires an owner-only unaliased single-link file")
+        fixture = read_owner_json(fixture_file)
+        if (not isinstance(fixture, dict) or set(fixture) != {
+                "schema_version", "provenance", "messages", "summary", "prompt", "expected"}
+                or fixture["schema_version"] != 1 or fixture["provenance"] != "synthetic-calibration"
+                or not isinstance(fixture["messages"], list) or len(fixture["messages"]) != 4
+                or any(not isinstance(message, dict) or set(message) != {"role", "content"}
+                       or message["role"] != role or not isinstance(message["content"], str)
+                       or not message["content"].strip()
+                       for message, role in zip(fixture["messages"], ["user", "assistant", "user", "assistant"]))
+                or not isinstance(fixture["summary"], str) or not fixture["summary"].strip()
+                or not isinstance(fixture["prompt"], str) or not fixture["prompt"].strip()
+                or not isinstance(fixture["expected"], dict)
+                or set(fixture["expected"]) != {"summary_value", "latest_value"}
+                or any(not isinstance(value, str) or not value.strip()
+                       or value in fixture["prompt"] for value in fixture["expected"].values())
+                or fixture["expected"]["summary_value"] not in fixture["summary"]
+                or any(fixture["expected"]["summary_value"] in message["content"] for message in fixture["messages"])
+                or fixture["expected"]["latest_value"] not in fixture["messages"][2]["content"]
+                or fixture["expected"]["latest_value"] in fixture["summary"]):
+            raise ValueError("Invalid fixed synthetic context fixture or expected-value prompt leak")
+        if not isinstance(model_send, bool) or not model.strip() or effort not in {"low", "medium", "high"}:
+            raise ValueError("Invalid context execution selection")
+        copilot, sdk = copilot.absolute(), sdk.absolute()
+        if any(path.resolve() != path or not path.is_file() or path.is_symlink() for path in (copilot, sdk)):
+            raise ValueError("Context runtime paths require regular absolute originals")
+        cli_identity = copilot_identity(copilot)
+        if (not re.search(r"\b1\.0\.97(?:\b|-)", cli_identity["version"])
+                or digest(sdk) != "d336d72bd0f597d39c1c75732e5eb5b07cd43e65e81b45f90413ee86e69cb406"):
+            raise ValueError("Context calibration requires pinned version97 CLI/SDK")
+        run_root.mkdir(parents=True, mode=0o700)
+        owned = True
+        owner = run_root / "owner"
+        workdir = run_root / "workdir"
+        home = run_root / "candidate-home"
+        os_home = run_root / "candidate-os-home"
+        for path in (owner, workdir, home, os_home):
+            path.mkdir(mode=0o700)
+        pinned_plugin = run_root / "pinned-plugin"
+        snapshot_plugin(plugin_dir, pinned_plugin)
+        personal = home / "copilot-instructions.md"
+        personal.write_text("This is an isolated synthetic context calibration.\n")
+        personal.chmod(0o600)
+        source_id, cutoff = str(uuid.uuid4()), str(uuid.uuid4())
+        history = owner / "synthetic-history.jsonl"
+        created_at = utc_instant()
+        records = [{"type": "session", "version": 1, "externalId": source_id, "createdAt": created_at}]
+        records.extend({"type": "message", "id": str(uuid.uuid4()), "timestamp": created_at,
+                        "role": message["role"], "content": [{"type": "text", "text": message["content"]}]}
+                       for message in fixture["messages"])
+        history.write_text("".join(json.dumps(record) + "\n" for record in records))
+        history.chmod(0o600)
+        restoration = {
+            "history_file": history.name, "source_session_id": source_id, "cutoff_event_id": cutoff,
+            "skill_context": "before-target-load", "limitations": ["Synthetic native calibration only"],
+        }
+        def execute_import(command):
+            completed = subprocess.run(
+                command, env=personal_instruction_environment(home), cwd=workdir,
+                stdin=subprocess.DEVNULL, text=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, timeout=300, check=False)
+            (owner / "import.stderr.log").write_text(completed.stderr)
+            return completed.returncode, completed.stdout
+
+        session_id = import_session(
+            restoration, history, copilot=str(copilot), workdir=str(workdir), execute=execute_import,
+            receipt_path=owner / "restoration-receipt.json", cli_identity=cli_identity,
+            plugin_dir=str(pinned_plugin))
+        measurement.session_uuid(session_id)
+        receipt = read_owner_json(owner / "restoration-receipt.json")
+        if (session_id == source_id or receipt.get("status") != "PASS"
+                or receipt.get("session_id") != session_id or receipt.get("exit_code") != 0
+                or receipt.get("history_sha256") != digest(history)):
+            raise NativeContextSetupError("No accepted isolated importer exit receipt")
+        result["locator"] = _stage_native_context(
+            home=home, session_id=session_id, sdk=sdk, owner=owner,
+            messages=fixture["messages"], summary=fixture["summary"])
+        for name, value in (("expected.json", fixture["expected"]),):
+            write_json(owner / name, value)
+            (owner / name).chmod(0o600)
+        prompt_path = owner / "candidate-prompt.md"
+        prompt_path.write_text(fixture["prompt"])
+        prompt_path.chmod(0o600)
+        config = {
+            "cli": str(copilot), "sdk": str(sdk), "home": str(home), "os_home": str(os_home),
+            "cwd": str(workdir), "session_id": session_id, "output": str(owner / "setup.json"),
+            "profile": "native-context-calibration", "context_fixture_file": str(owner / "context-fixture.json"),
+            "prefix_file": str(owner / "imported-prefix.json"), "prompt_path": str(prompt_path),
+            "event_log": str(owner / "candidate-raw.jsonl"), "plugin_path": str(pinned_plugin),
+            "model": model, "effort": effort,
+        }
+        write_json(owner / "identities.json", {
+            "fixture_sha256": digest(fixture_file), "harness": harness_identity(),
+            "cli": cli_identity, "sdk_sha256": digest(sdk), "plugin": directory_identity(pinned_plugin),
+            "prompt_sha256": digest(prompt_path), "session_id": session_id,
+            "staged_journal_sha256": digest(owner / "journal-staged.jsonl"),
+        })
+        result["setup"] = _native_workflow_probe("setup", config)
+        result["checks"]["setup_observed"] = result["setup"].get("status") == "SETUP_OBSERVED"
+        if not result["checks"]["setup_observed"]:
+            raise ValueError("Context setup was not observed")
+        candidate = _run_native_candidate(
+            {**config, "output": str(owner / "candidate.json")},
+            cli_version=cli_identity["version"], preflight_only=not model_send)
+        result["candidate"] = candidate
+        if model_send:
+            result["oracle"] = _native_context_oracle(candidate, fixture["expected"])
+        elif candidate.get("status") != "PREFLIGHT_OBSERVED" or candidate.get("model_send_calls") != 0:
+            raise ValueError(candidate.get("firsterror") or "Context zero-model preflight did not complete")
+    except Exception as error:
+        result["firsterror"] = str(error)
+        if isinstance(error, NativeContextSetupError):
+            result["setup_error_code"] = error.code
+    finally:
+        if config is not None and result["checks"].get("setup_observed") is True:
+            for operation in ("observe", "cleanup"):
+                try:
+                    result[operation] = _native_workflow_probe(
+                        operation, {**config, "output": str(Path(config["output"]).parent / f"{operation}.json")})
+                    if operation == "cleanup" and result[operation].get("status") != "CLEANED":
+                        raise ValueError("Context cleanup not verified")
+                except Exception as error:
+                    result["operation_errors"][operation] = {
+                        "type": type(error).__name__, "message": str(error)}
+                    result["firsterror"] = result["firsterror"] or str(error)
+        if owned:
+            if result["firsterror"] is None:
+                result["status"] = "CALIBRATION_OBSERVED" if model_send else "CONTEXT_SETUP_OBSERVED"
+            write_json(run_root / "context-result.json", result)
     return result
 
 

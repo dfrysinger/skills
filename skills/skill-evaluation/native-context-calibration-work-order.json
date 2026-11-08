@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "design_revision": 2,
+  "design_status": "DESIGN_ACCEPTED_SOURCE_ONLY",
+  "runtime_gate": "PENDING_SEPARATE_ADMISSION",
+  "model_gate": "PENDING_FROZEN_METHOD_ZERO_MODEL_SETUP_AND_PRESENTATION",
+  "accepted_work_order_sha256": "ca72deb02b44da65da9b84f5e4554601ebade097238042370b882a240f57c3f3",
+  "publication": "Audience-scoped copy of the accepted synthetic calibration work order. Private decision histories, fixture answers and local evidence coordinates are omitted. The accepted original remains unchanged.",
+  "lane": "critical",
+  "objective": "Determine whether the existing isolated native runtime consumes a supplied synthetic native compaction summary and later messages as usable context.",
+  "claim": "Synthetic source capability only. This is not historical replay, exhaustive text recall, full summary equality or authority equivalence.",
+  "non_goals": [
+    "No historical case publication, import adapter, control/treatment or skill change.",
+    "No original or live session writes, parent objective effects, reminders or production mutation.",
+    "No new runner, service, provider, persistence schema, permissions, locks or general history editor.",
+    "No behavioral judges, model calls or native runtime execution in the source-only stage."
+  ],
+  "scope": {
+    "coordinator": "A fixed branch beside the existing native workflow diagnostic in skill_eval.py.",
+    "helper": "The existing native_workflow_probe.mjs lifecycle with profile=native-context-calibration.",
+    "tests": "Directly affected Python and Node pure unit tests with mocked native producer seams.",
+    "unchanged": "session_restore.py, historical contracts, cases and skills. The native_workflow.py historical phase validator does not participate in this separate fixed diagnostic."
+  },
+  "integration_contract": {
+    "inputs": "The Python coordinator owns a frozen synthetic semantic seed, summary, prompt and expected values. The helper receives only common connection, prefix, prompt, model and output coordinates plus context_fixture_file.",
+    "locator": "context_fixture_file is an absolute owner-only locator containing schema version, summary event ID, summary content digest and ordered post-event IDs. It contains no expected answers.",
+    "configuration": "Both coordinator and helper reject extra context-profile keys. Expected-value files and task-state descriptors are not helper configuration.",
+    "insertion": "session_restore.import_session creates an isolated namespace and its importer exits. Python verifies the accepted exit receipt, generated native envelope, schema and linked event order, then stages exactly one session.compaction_complete record between synthetic pre/post message groups.",
+    "preservation": "The coordinator retains exact journal bytes before and after staging. Generated message identities, roles and data remain intact. Only the first following event's parent link changes to include the summary.",
+    "unsupported": "Unknown schema, namespace, envelope or message ordering produces a typed setup refusal rather than guessed native records.",
+    "writer_handoff": "Python completes insertion before any helper producer starts. It never edits the journal while the helper or native runtime is active.",
+    "profile": "The context profile uses isolated interactive mode, the existing SDK resume flags, bounded permission handler, event capture and shutdown. It does not require or create a goal, todos or reminders.",
+    "observations": "The helper captures durable summary identity/order, available initialized context metadata, activity, goal/mode/lists, original correlated root final/idle events and tool events. Unsupported metadata remains explicit.",
+    "oracle": "After the helper returns, Python checks tested summary/latest values and zero candidate tools from the dispatch boundary. Expected values remain outside candidate roots and native runtime configuration.",
+    "retention": "Earlier-context retention is diagnostic unless an evidenced deletion rule establishes a stronger expectation."
+  },
+  "check_contract": [
+    {
+      "id": "valid-isolated-seed",
+      "pass": "Existing importer creates the correct owned namespace and exits before staging and helper startup.",
+      "negative": "Invalid layout, wrong identity, path alias or unaccepted exit receipt prevents helper startup."
+    },
+    {
+      "id": "native-summary-and-order",
+      "pass": "A single bound native summary and generated post-message ordering correspond to retained bytes and available initialized context observations.",
+      "negative": "Unknown envelope/order, changed summary digest, omitted post identities or uninitialized decisive context prevents model dispatch."
+    },
+    {
+      "id": "actual-context-consumption",
+      "pass": "One separately admitted tiny model send returns the tested information through correlated root final/non-aborted idle, without candidate tools.",
+      "negative": "Wrong values, tool-assisted recall, missing correlation, abort or errors retain the first outcome without an unchanged retry."
+    },
+    {
+      "id": "retained-source-and-cleanup",
+      "pass": "Retain frozen input identities, original calls/events/output, independent cold state and verified owned shutdown/cleanup.",
+      "negative": "Unknown effects or failed cleanup keep runtime readiness open."
+    }
+  ],
+  "stage_order": [
+    "Implement source and run focused pure mocked diagnostics.",
+    "Separately admit and execute actual zero-model setup through the existing runtime and private Actions evaluator.",
+    "Freeze source, fixture and conditional-model method. Obtain both operational R1-R5 READY grades and present the method before one tiny model calibration.",
+    "Interpret only the tested source capability. Reconcile historical restoration separately before authentic controls."
+  ],
+  "rollback": "Retain the first source/call/output failure. Stop only the exact owned producer, clean only resolved owned paths and verify cleanup. Original and live assets remain untouched.",
+  "accounting": "Source tests are diagnostics, not runtime proof. Later execution records SDK/CLI identity, helper duration, packaging/transfers, job duration, model requests and unknown billing. No financial ceiling or paid judge is introduced."
+}

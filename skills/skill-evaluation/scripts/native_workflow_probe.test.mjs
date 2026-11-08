@@ -60,6 +60,7 @@ export class CopilotClient {
     if (current && state.coldMismatch && state.starts > 1) current.id = 18;
     const session = {
       sessionId: id,
+      getEvents: async () => structuredClone(state.events),
       on(handler) {
         state.handlers.push(handler);
         return () => { state.handlers = state.handlers.filter(item => item !== handler); };
@@ -84,6 +85,13 @@ export class CopilotClient {
         return id;
       },
       rpc: {
+        metadata: {
+          getContextAttribution: async () => state.contextAttribution === undefined
+            ? { contextAttribution: { successfulCompactionCount: 1, entries: [] } } : state.contextAttribution,
+          getContextHeaviestMessages: async () => ({ messages: state.events.map(event => ({ id: event.id })) }),
+          activity: async () => ({ isProcessing: false }),
+          isProcessing: async () => ({ processing: false }),
+        },
         eventLog: {
           read: async ({ cursor }) => {
             state.eventReads = (state.eventReads ?? 0) + 1;
@@ -387,6 +395,119 @@ function nativeProfile() {
     unknowns: ["Descriptions and original deadlines are unknown; empty descriptions are execution defaults"],
   };
 }
+
+async function contextFixture(t) {
+  const owned = fixture(t);
+  const { config, root } = owned;
+  for (const home of [config.home, config.os_home]) chmodSync(home, 0o700);
+  const plugin = join(root, "context-plugin");
+  mkdirSync(plugin);
+  writeFileSync(join(config.home, "copilot-instructions.md"), "Synthetic personal context");
+  const events = [
+    { id: randomUUID(), type: "user.message", data: { content: "Synthetic prior context" } },
+    { id: randomUUID(), type: "session.compaction_complete",
+      data: { success: true, summaryContent: "Synthetic summary sentinel" } },
+    { id: randomUUID(), type: "user.message", data: { content: "Synthetic later update" } },
+    { id: randomUUID(), type: "assistant.message", data: { content: "Acknowledged update" } },
+  ];
+  const selected = { ...config, profile: "native-context-calibration",
+    prompt_path: join(root, "context-prompt.md"), event_log: join(root, "context-raw.jsonl"),
+    plugin_path: plugin, prefix_file: join(root, "context-prefix.json"),
+    context_fixture_file: join(root, "context-fixture.json"), model: "fixture-model", effort: "low" };
+  writeFileSync(selected.prompt_path, "Return the tested context fields as JSON.", { mode: 0o600 });
+  writeFileSync(selected.prefix_file, JSON.stringify(events), { mode: 0o600 });
+  writeFileSync(selected.context_fixture_file, JSON.stringify({
+    schema_version: 1, summary_event_id: events[1].id,
+    summary_sha256: createHash("sha256").update(events[1].data.summaryContent).digest("hex"),
+    post_event_ids: events.slice(2).map(event => event.id),
+  }), { mode: 0o600 });
+  const { state } = await import(pathToFileURL(config.sdk).href);
+  state.events = events;
+  return { ...owned, config: selected, state };
+}
+
+test("goal-free context profile has exact keys while incumbent missing-goal refusal remains", async t => {
+  const { config, root, goalPath, state } = await contextFixture(t);
+  for (const op of ["setup", "observe", "cleanup", "candidate", "preflight"]) {
+    assert.equal(validateConfig(op, config), goalPath);
+  }
+  for (const extra of ["expected", "expected_file", "state_file", "goal_file", "candidate_permissions"]) {
+    assert.throws(() => validateConfig("candidate", { ...config, [extra]: "forbidden" }), /fixed coordinator/);
+  }
+  const locator = JSON.parse(readFileSync(config.context_fixture_file));
+  writeFileSync(config.context_fixture_file, JSON.stringify({ ...locator, expected: "forbidden" }));
+  assert.throws(() => validateConfig("setup", config), /fixed context locator/);
+  writeFileSync(config.context_fixture_file, JSON.stringify(locator));
+  const setup = await runProbe("setup", config);
+  assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
+  assert.equal(state.starts, 2);
+  assert.equal(state.stops, 2);
+  assert.equal(state.owners, 0);
+  assert.equal(state.sendCalls, 0);
+  assert.equal(setup.modern_defaults, undefined);
+  assert.equal(setup.goal.state, null);
+  assert.equal(setup.mode, "interactive");
+  assert.ok(!setup.calls.some(call => /writeAutopilot|schedule.stop/.test(call.name)));
+  assert.ok(setup.calls.filter(call => call.name.startsWith("tools.execute"))
+    .every(call => call.name === "tools.execute:sql" && call.arguments.query === "SELECT todo_id,depends_on FROM todo_deps"));
+  const preflight = await runProbe("preflight", { ...config, output: join(root, "preflight.json") });
+  assert.equal(preflight.status, "PREFLIGHT_OBSERVED", preflight.error?.message);
+  assert.equal(preflight.model_send_calls, 0);
+  assert.ok(preflight.preflight.every(item => item.name === "sibling" && item.result.resultType === "rejected"));
+  assert.ok(Object.values(preflight.checks).every(value => value === true));
+  const clean = await runProbe("cleanup", { ...config, output: join(root, "cleanup.json") });
+  assert.equal(clean.status, "CLEANED", clean.error?.message);
+  assert.equal(clean.cleanup.dependencies_empty, true);
+  assert.ok(!clean.calls.some(call => /mode.set|writeAutopilot|schedule.stop/.test(call.name)));
+  assert.ok(clean.calls.filter(call => call.name.startsWith("tools.execute"))
+    .every(call => call.name === "tools.execute:sql" && call.arguments.query === "SELECT todo_id,depends_on FROM todo_deps"));
+  assert.deepEqual(state.rows, []);
+  assert.deepEqual(state.entries, []);
+  const plain = Object.fromEntries(["cli", "sdk", "home", "os_home", "cwd", "session_id", "output"]
+    .map(key => [key, config[key]]));
+  assert.throws(() => validateConfig("observe", plain), /ENOENT/);
+  const incumbent = await profileFixture(t);
+  assert.throws(() => validateConfig("observe", incumbent.config), /ENOENT/);
+});
+
+test("context profile blocks mismatched summary/order, dirty dependencies and uninitialized metadata before send", async t => {
+  for (const fault of ["summary", "order", "dependencies", "uninitialized"]) {
+    await t.test(fault, async t => {
+      const { config, root, state } = await contextFixture(t);
+      if (fault === "summary") state.events[1].data.summaryContent = "Different summary";
+      if (fault === "order") state.events.push(state.events.splice(1, 1)[0]);
+      if (fault === "dependencies") state.dependencies.push({ todo_id: "unknown", depends_on: "unknown-parent" });
+      if (fault === "uninitialized") state.contextAttribution = { contextAttribution: null };
+      const report = await runProbe("candidate", { ...config, output: join(root, "candidate.json") });
+      assert.equal(report.status, "PREMODEL_BLOCKED");
+      assert.equal(state.sendCalls, 0);
+      assert.equal(state.owners, 0);
+      assert.match(report.firsterror, fault === "uninitialized" ? /uninitialized/
+        : fault === "dependencies" ? /isolated idle/ : /identity\/digest\/order/);
+    });
+  }
+});
+
+test("context profile retains correlated root/idle and candidate tool observations without fixture values in prompt", async t => {
+  const { config, root, state } = await contextFixture(t);
+  state.sendHook = (id, emit) => {
+    emit("tool.execution_start", { toolName: "view", toolCallId: "candidate-tool" });
+    emit("tool.execution_complete", { toolCallId: "candidate-tool", success: false });
+    emit("assistant.message", { content: '{"summary_value":"recalled","latest_value":"updated"}', originatingMessageId: id });
+    emit("session.idle", { mode: "interactive", aborted: false });
+    return id;
+  };
+  const report = await runProbe("candidate", { ...config, output: join(root, "candidate.json") });
+  assert.equal(report.status, "CANDIDATE_OBSERVED", report.firsterror);
+  assert.equal(report.model_result.data.originatingMessageId, report.model_message_id);
+  assert.equal(report.model_completion_event.data.aborted, false);
+  assert.equal(report.model_event_start_index, 0);
+  assert.equal(report.candidate_events.filter(event => event.type.startsWith("tool.")).length, 2);
+  assert.equal(state.sendCalls, 1);
+  assert.equal(state.owners, 0);
+  assert.equal(state.sentPrompt, "Return the tested context fields as JSON.");
+  assert.ok(!state.sentPrompt.includes("Synthetic summary sentinel"));
+});
 
 async function profileFixture(t) {
   const owned = fixture(t);
