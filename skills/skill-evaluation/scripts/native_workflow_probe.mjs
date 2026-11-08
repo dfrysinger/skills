@@ -13,6 +13,9 @@ import { isDeepStrictEqual } from "node:util";
 const fields = ["cli", "sdk", "home", "os_home", "cwd", "session_id", "output"];
 const phaseFields = [...fields, "profile", "state_file", "prompt_path", "event_log",
   "plugin_path", "evidence_paths", "denied_path", "model", "effort", "prefix_file"];
+const contextFields = [...fields, "profile", "prompt_path", "event_log", "plugin_path",
+  "model", "effort", "prefix_file", "context_fixture_file"];
+const contextProfile = config => config?.profile === "native-context-calibration";
 const conversational = events => events.filter(event =>
   /^(user\.message|assistant\.message|tool\.result|tool\.execution_complete)$/.test(event.type));
 const objective = "Synthetic native workflow diagnostic. Not a historical task.";
@@ -165,10 +168,32 @@ function profileState(config) {
   return state;
 }
 
+function contextFixture(config) {
+  const path = config.context_fixture_file;
+  requirePath(path, "file");
+  const stat = lstatSync(path);
+  if ((stat.mode & 0o077) || stat.uid !== userInfo().uid || stat.nlink !== 1
+      || within(path, config.cwd) || within(path, config.home) || within(path, config.plugin_path)) {
+    throw new Error("Context locator must be owner-only outside candidate roots");
+  }
+  const fixture = parseDataJson(readFileSync(path, "utf8"));
+  if (!fixture || !isDeepStrictEqual(Object.keys(fixture).sort(),
+    ["schema_version", "summary_event_id", "summary_sha256", "post_event_ids"].sort())
+      || fixture.schema_version !== 1 || typeof fixture.summary_event_id !== "string"
+      || !/^[0-9a-f-]{36}$/.test(fixture.summary_event_id)
+      || !/^[0-9a-f]{64}$/.test(fixture.summary_sha256)
+      || !Array.isArray(fixture.post_event_ids) || fixture.post_event_ids.length !== 2
+      || fixture.post_event_ids.some(id => typeof id !== "string" || !/^[0-9a-f-]{36}$/.test(id))
+      || new Set([fixture.summary_event_id, ...fixture.post_event_ids]).size !== 3) {
+    throw new Error("Invalid fixed context locator");
+  }
+  return fixture;
+}
+
 export function validateConfig(op, config) {
   if (!["setup", "observe", "cleanup", "candidate", "preflight"].includes(op)) throw new Error("Unknown operation");
   const selected = config?.profile !== undefined;
-  const keys = selected ? [
+  const keys = contextProfile(config) ? contextFields : selected ? [
     ...phaseFields, ...(Object.hasOwn(config, "candidate_permissions") ? ["candidate_permissions"] : []),
   ] : fields;
   if (!config || typeof config !== "object" || Array.isArray(config)
@@ -202,9 +227,35 @@ export function validateConfig(op, config) {
   requirePath(sessionPath, "directory");
   if (lstatSync(sessionPath).uid !== userInfo().uid) throw new Error("Expected an owned imported namespace");
   const goalPath = join(sessionPath, "autopilot-objective.json");
-  if ((op !== "setup" && op !== "cleanup") || pathExists(goalPath)) requirePath(goalPath, "file");
+  if ((!contextProfile(config) && op !== "setup" && op !== "cleanup") || pathExists(goalPath)) requirePath(goalPath, "file");
   if (op === "setup" && pathExists(goalPath)) throw new Error("Setup requires an absent native goal");
   validateOutput(config);
+  if (contextProfile(config)) {
+    if (pathExists(goalPath)) throw new Error("Context calibration requires an absent native goal");
+    const roots = [config.home, config.os_home, config.cwd, config.plugin_path];
+    requirePath(config.plugin_path, "directory");
+    if (roots.some((root, i) => roots.some((other, j) => i !== j && within(root, other)))) {
+      throw new Error("Context roots must be disjoint");
+    }
+    for (const key of ["prefix_file", "prompt_path"]) {
+      requirePath(config[key], "file");
+      const stat = lstatSync(config[key]);
+      if ((stat.mode & 0o077) || stat.uid !== userInfo().uid || stat.nlink !== 1
+          || roots.some(root => within(config[key], root))) {
+        throw new Error("Context inputs must be owner-only outside candidate roots");
+      }
+    }
+    for (const key of ["event_log", "output"]) {
+      if (typeof config[key] !== "string" || !isAbsolute(config[key]) || resolve(config[key]) !== config[key]
+          || roots.some(root => within(config[key], root))) throw new Error("Invalid context output path");
+      requirePath(dirname(config[key]), "directory");
+    }
+    if (new Set(["prefix_file", "prompt_path", "context_fixture_file", "event_log", "output"]
+      .map(key => config[key])).size !== 5 || typeof config.model !== "string" || !config.model.trim()
+        || !["low", "medium", "high"].includes(config.effort)) throw new Error("Invalid context coordinates/model");
+    contextFixture(config);
+    return goalPath;
+  }
   if (selected) {
     permissionProfile(config);
     if (config.profile !== "p01-scheduled-audit") throw new Error("Unsupported native profile");
@@ -537,6 +588,48 @@ export async function runProbe(op, config) {
       () => session.rpc.tools.initializeAndValidate());
   };
   const observe = async (nativeSql = true) => {
+    if (contextProfile(config)) {
+      const state = {
+        goal: await call("autopilotObjective.getState", undefined, () => session.rpc.autopilotObjective.getState()),
+        mode: await call("mode.get", undefined, () => session.rpc.mode.get()),
+        todos: await call("plan.readSqlTodos", undefined, () => session.rpc.plan.readSqlTodos()),
+        schedules: await call("schedule.list", undefined, () => session.rpc.schedule.list()),
+        context: {}, context_gaps: [],
+      };
+      state.dependencies = await execute("sql", {
+        description: "Verify no owned context dependencies", query: "SELECT todo_id,depends_on FROM todo_deps",
+      });
+      state.dependencies_empty = state.dependencies.toolTelemetry?.metrics?.rowsReturned === 0;
+      state.events = await call("session.getEvents", undefined, () => session.getEvents());
+      const fixture = contextFixture(config);
+      const summaryIndex = state.events.findIndex(event => event.id === fixture.summary_event_id);
+      const summary = state.events[summaryIndex];
+      const post = state.events.filter(event => fixture.post_event_ids.includes(event.id));
+      if (summaryIndex < 0 || summary.type !== "session.compaction_complete" || summary.data?.success !== true
+          || typeof summary.data.summaryContent !== "string"
+          || createHash("sha256").update(summary.data.summaryContent).digest("hex") !== fixture.summary_sha256
+          || !isDeepStrictEqual(post.map(event => event.id), fixture.post_event_ids)
+          || post.some(event => state.events.indexOf(event) <= summaryIndex)) {
+        throw new Error("Context summary identity/digest/order differs from owner locator");
+      }
+      for (const name of ["getContextAttribution", "getContextHeaviestMessages", "activity", "isProcessing"]) {
+        try {
+          const args = name === "getContextHeaviestMessages" ? { limit: 20 } : undefined;
+          state.context[name] = await call(`metadata.${name}`, args,
+            () => session.rpc.metadata[name](...(args ? [args] : [])));
+        } catch (error) { state.context_gaps.push({ name, error: errorInfo(error) }); }
+      }
+      const attribution = state.context.getContextAttribution?.contextAttribution;
+      state.context_initialized = attribution != null && typeof attribution === "object" && !Array.isArray(attribution);
+      if (pathExists(report.goal_path) || state.goal?.state !== null || state.mode !== "interactive"
+          || !Array.isArray(state.todos?.rows) || state.todos.rows.length
+          || !Array.isArray(state.schedules?.entries) || state.schedules.entries.length
+          || !state.dependencies_empty
+          || state.context.isProcessing?.processing !== false) {
+        throw new Error("Context calibration is not isolated idle goal-free interactive state");
+      }
+      return state;
+    }
     requirePath(report.goal_path, "file");
     const state = {
       goal: await call("autopilotObjective.getState", undefined,
@@ -569,6 +662,11 @@ export async function runProbe(op, config) {
     return state;
   };
   const cleanup = async () => {
+    if (contextProfile(config)) {
+      const state = await observe(false);
+      return report.cleanup = { errors: [], todos: state.todos, schedules: state.schedules,
+        dependencies_empty: state.dependencies_empty, goal: state.goal, mode: state.mode, context: state.context };
+    }
     const result = { errors: [] };
     report.cleanup = result;
     try {
@@ -694,6 +792,12 @@ export async function runProbe(op, config) {
         || report.model_configuration.reasoningEffort !== (selected ? config.effort : "high")) {
       throw new Error("Native model configuration mismatch");
     }
+    if (contextProfile(config)) {
+      Object.assign(report, await observe(false));
+      if (!report.context_initialized) throw new Error("Native context remains uninitialized");
+      report.checks.cold_state = true;
+      report.checks.context_summary_order = true;
+    } else {
     Object.assign(report, await observe(false));
     report.schedule_ids = report.schedules.entries.map(entry => entry.id);
     const file = report.goal_file;
@@ -715,13 +819,15 @@ export async function runProbe(op, config) {
         || !Number.isFinite(Date.parse(file.current.createdAt)) || !Number.isFinite(Date.parse(file.current.updatedAt))
         || !matchesFixtureState(report, file))) throw new Error("Candidate cold native fixture mismatch");
     report.checks.cold_state = true;
+    }
     report.preflight = [];
     try {
       for (const [name, path] of [
-        ...(selected ? config.evidence_paths.map((path, index) => [`evidence-${index}`, path])
+        ...(contextProfile(config) ? [] : selected ? config.evidence_paths.map((path, index) => [`evidence-${index}`, path])
           : [["plan", join(config.cwd, "plan.md")]]),
-        ["goal", report.goal_path],
-        ["sibling", selected ? config.denied_path : join(dirname(config.cwd), "synthetic-denied-sibling.txt")],
+        ...(!contextProfile(config) ? [["goal", report.goal_path]] : []),
+        ["sibling", contextProfile(config) ? config.context_fixture_file
+          : selected ? config.denied_path : join(dirname(config.cwd), "synthetic-denied-sibling.txt")],
       ]) {
         requirePath(path, "file");
         const toolCallId = `native-probe-${name}-${randomUUID()}`;
@@ -890,6 +996,7 @@ export async function runProbe(op, config) {
       }
     };
     const stopCompletion = session.on(consume);
+    if (contextProfile(config)) report.model_event_start_index = candidateEvents.length;
     report.model_started_at = new Date().toISOString();
     const modelStarted = performance.now();
     report.model_timing_source = "Owned SDK send through correlated native session.idle, not provider HTTP timing";
@@ -955,7 +1062,7 @@ export async function runProbe(op, config) {
     validateOutput(config);
     receipt = openSync(config.output, "wx", 0o600);
     report.goal_path = validateConfig(op, config);
-    if (selected) {
+    if (selected && !contextProfile(config)) {
       projection = profileState(config);
       report.profile = config.profile;
       report.provenance = projection.provenance;
@@ -974,6 +1081,16 @@ export async function runProbe(op, config) {
         scheduleMapping = JSON.parse(readFileSync(mappingPath, "utf8"));
         report.schedule_mapping = scheduleMapping;
       }
+    }
+    if (contextProfile(config)) {
+      report.profile = config.profile;
+      report.provenance = "synthetic-calibration";
+      delete report.modern_defaults;
+      report.limits = [
+        "Synthetic source capability only, not historical replay or full summary/authority equivalence",
+        "Context metadata has no full text; sentinel recall tests only specific information availability",
+        "Pre-summary retention is diagnostic without an evidenced deletion rule",
+      ];
     }
     report.cli = config.cli;
     report.sdk = config.sdk;
@@ -1005,9 +1122,30 @@ export async function runProbe(op, config) {
       report.connection.workingDirectory = config.cwd;
       report.connection.baseDirectory = config.home;
     }
+    if (contextProfile(config) && !isCandidate) candidateOptions = {
+      ...options, availableTools: candidateTools(config), model: config.model, reasoningEffort: config.effort,
+      pluginDirectories: [config.plugin_path], disabledMcpServers: ["github-mcp-server", "playwright"],
+      skipCustomInstructions: false, instructionDirectories: [], organizationCustomInstructions: "",
+      onPermissionRequest: candidatePermissionHandler(config, report.goal_path, config.plugin_path, []),
+    };
     sdk = await import(pathToFileURL(config.sdk).href);
     await connect();
-    if (isCandidate) {
+    if (contextProfile(config) && !isCandidate) {
+      if (op === "setup") {
+        await call("mode.set", { mode: "interactive" }, () => session.rpc.mode.set({ mode: "interactive" }));
+        report.before = await observe(false);
+        await stop();
+        if (report.error) throw new Error("Context warm producer shutdown failed");
+        await connect();
+      }
+      if (op === "cleanup") {
+        await cleanup();
+        report.status = "CLEANED";
+      } else {
+        Object.assign(report, await observe(false));
+        report.status = op === "setup" ? "SETUP_OBSERVED" : "OBSERVED";
+      }
+    } else if (isCandidate) {
       await candidate();
     } else if (op === "setup") {
       report.before = {
@@ -1165,6 +1303,7 @@ export async function runProbe(op, config) {
       report.observed_usage_events = usage.length;
       report.observed_api_call_ids = [...new Set(usage.map(event => event.data?.apiCallId).filter(Boolean))];
       report.observed_model_calls = null;
+      if (contextProfile(config)) report.candidate_events = candidateEvents;
       try { unsubscribe?.(); } catch (error) { fail(error); }
       try { if (eventFile !== undefined) closeSync(eventFile); } catch (error) { fail(error); }
       if (report.error) report.status = report.model_send_calls ? "FAILED" : "PREMODEL_BLOCKED";
