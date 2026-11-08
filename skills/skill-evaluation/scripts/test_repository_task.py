@@ -126,7 +126,7 @@ class RepositoryTaskTests(unittest.TestCase):
         with (
             mock.patch("repository_task.execute_repository", return_value={
                 "execution_status": "PASS", "behavioral_verdict": None, "failure_kind": None,
-            }),
+            }) as execute,
             mock.patch("skill_eval.run_judges"),
             mock.patch("skill_eval.result_from_run", return_value="PASS"),
         ):
@@ -140,6 +140,97 @@ class RepositoryTaskTests(unittest.TestCase):
         self.assertIn("Historical behavior/mechanism validation only", report)
         self.assertIn("not that historical text", report)
         self.assertIn("does not isolate a skill change", report)
+        self.assertEqual(execute.call_args.kwargs["copilot"], Path("/unused-copilot"))
+
+    def test_selected_cli_is_used_only_for_restored_repository_execution(self):
+        cli = Path(self.temp.name) / "selected-copilot"
+        cli.write_text("synthetic CLI fixture\n")
+        session_id = str(uuid.uuid4())
+        for restored in (False, True):
+            with self.subTest(restored=restored):
+                name = "restored" if restored else "legacy"
+                case = self.make_case(name)
+                if restored:
+                    definition = evaluator.read_json(case / "case.json")
+                    definition["phases"][0]["session_restore"] = {
+                        "history_file": "history.jsonl",
+                        "source_session_id": "original-session",
+                        "cutoff_event_id": "trigger-event",
+                        "skill_context": "before-target-load",
+                        "limitations": ["Synthetic CLI-routing fixture."],
+                    }
+                    definition["repository_task"]["candidate_permissions"] = {
+                        "write_paths": ["code.py"],
+                        "shell_commands": ["python3 check.py"],
+                    }
+                    evaluator.write_json(case / "case.json", definition)
+                    (case / "evidence/candidate/history.jsonl").write_text(
+                        '{"type":"session","version":1,"externalId":"original-session"}\n')
+                frozen = evaluator.freeze_case(self.root, name, False)
+                run = self.root / (name + "-run")
+                run.mkdir()
+                admission = run / "admission.json"
+                admission.write_text("{}")
+                observed = {}
+
+                class FakeContainer:
+                    def __init__(self, image, mounts, artifacts, **kwargs):
+                        observed["mounts"] = mounts
+                        self.artifacts = artifacts
+                        self.created = True
+                        self.stopped = False
+                        artifacts.mkdir(parents=True)
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args):
+                        self.stop()
+
+                    def stop(self):
+                        self.stopped = True
+
+                    def usage_events(self, identifier):
+                        return nullcontext(None)
+
+                    def execute(self, command, label, **kwargs):
+                        observed[label] = command["argv"]
+                        log = self.artifacts / (label + ".log")
+                        if label == "cli-version":
+                            log.write_text("synthetic CLI version\n")
+                        elif label == "session-import":
+                            log.write_text(json.dumps({
+                                "ok": True, "code": "session_imported",
+                                "sessionId": session_id,
+                            }))
+                        else:
+                            log.write_text("No model invoked by this diagnostic.\n")
+                            raise ValueError("routing observation complete")
+                        return {"exit_code": 0, "log": log.name}
+
+                with (
+                    mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "synthetic-only"}),
+                    mock.patch("repository_task.image_identity", return_value={"id": self.image}),
+                    mock.patch("repository_task.require_admission", return_value=admission),
+                    mock.patch("repository_task.Container", FakeContainer),
+                ):
+                    repository.execute_repository(
+                        self.root, name, frozen, run, Path("/unused-plugin"),
+                        "fixture-model", "high", 60, "baseline", copilot=cli)
+                executable = "/evaluator-cli/copilot" if restored else "copilot"
+                self.assertEqual(observed["cli-version"][0], executable)
+                self.assertEqual(observed["trajectory"][0], executable)
+                cli_mounts = [item for item in observed["mounts"]
+                              if item[1] == "/evaluator-cli/copilot"]
+                self.assertEqual(cli_mounts, [(cli, executable, False)] if restored else [])
+                if restored:
+                    self.assertEqual(observed["session-import"][0], executable)
+                    self.assertIn(f"--resume={session_id}", observed["trajectory"])
+                    self.assertIn("--allow-tool=write(/workspace/repo/code.py)",
+                                  observed["trajectory"])
+                    self.assertIn("--allow-tool=shell(python3 check.py)",
+                                  observed["trajectory"])
+                    self.assertNotIn("--allow-all-tools", observed["trajectory"])
 
     def test_restored_permission_profiles_reject_escape_and_command_expansion(self):
         from session_restore import permission_rules

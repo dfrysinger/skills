@@ -2679,7 +2679,7 @@ def _run_case(
         from repository_task import artifact_files, execute_repository
         result = execute_repository(
             root, case_id, frozen, run_root, pinned_plugin, model, effort, timeout_seconds, arm,
-            timeline=timeline, treatment=treatment,
+            timeline=timeline, treatment=treatment, copilot=copilot,
         )
         if result["execution_status"] != "INVALID":
             artifacts = [

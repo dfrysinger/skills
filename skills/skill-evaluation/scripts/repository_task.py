@@ -809,6 +809,7 @@ def execute_repository(
     root: Path, case_id: str, frozen: Path, run_root: Path, plugin: Path,
     model: str, effort: str, timeout_seconds: int, arm: str,
     *, timeline: measurement.Timeline | None = None, treatment: dict | None = None,
+    copilot: Path | None = None,
 ) -> dict:
     from skill_eval import parse_run, validate_candidate
 
@@ -889,6 +890,12 @@ def execute_repository(
             mounts = [(repository, "/workspace/repo", True), (evidence, "/evidence", False)]
             if restoration:
                 mounts.append((frozen / phase["id"], "/restoration", False))
+            guest_cli = "copilot"
+            if restoration and copilot is not None:
+                if not copilot.is_file():
+                    raise InfrastructureError("selected candidate CLI is unavailable")
+                mounts.append((copilot, "/evaluator-cli/copilot", False))
+                guest_cli = "/evaluator-cli/copilot"
             if arm == "skill" and runner_kind == "direct-copilot":
                 mounts.append((plugin, "/plugin", False))
             if runner_kind != "direct-copilot":
@@ -903,13 +910,16 @@ def execute_repository(
             try:
                 with container:
                     identity = container.execute(
-                        {"argv": ["copilot", "--version"], "timeout_seconds": 30}, "cli-version")
+                        {"argv": [guest_cli, "--version"], "timeout_seconds": 30}, "cli-version")
                     if identity["exit_code"] != 0:
                         raise InfrastructureError("candidate CLI unavailable in execution image")
                     result["candidate_cli"] = {
                         "version": (run_root / "candidate" / identity["log"]).read_text().strip(),
                         "image_id": image["id"],
                     }
+                    if restoration and copilot is not None:
+                        result["candidate_cli"].update(
+                            source="caller-selected-readonly-mount", sha256=digest(copilot))
                     stage = "candidate_setup"
                     for index, command in enumerate(task["candidate_setup"]):
                         record = container.execute(command, f"setup-{index}")
@@ -934,7 +944,7 @@ def execute_repository(
 
                         session_id = import_session(
                             restoration, frozen / phase["id"] / restoration["history_file"],
-                            copilot="copilot", workdir="/workspace/repo", execute=execute_import,
+                            copilot=guest_cli, workdir="/workspace/repo", execute=execute_import,
                             import_path=f"/restoration/{restoration['history_file']}",
                             receipt_path=run_root / "restoration-receipt.json",
                             cli_identity=result["candidate_cli"],
@@ -957,6 +967,8 @@ def execute_repository(
                         if runner_kind == "direct-copilot"
                         else treatment_descriptor["runner"]["command"]
                     )
+                    if runner_kind == "direct-copilot":
+                        command[0] = guest_cli
                     invoked_at, invoked_clock = measurement.instant(), time.monotonic()
                     outcome = "failed"
                     observed_session_ids: set[str] = set()
