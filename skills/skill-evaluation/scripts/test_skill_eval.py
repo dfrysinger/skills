@@ -1236,6 +1236,25 @@ class NativeHistoricalContextTests(unittest.TestCase):
         self.assertEqual(result["locator"]["tool_call_ids"], {"call-one": "native-one", "call-two": "native-two"})
         self.assertEqual(len(result["locator"]["correspondence"]), 7)
 
+    def test_freeform_tool_arguments_are_preserved_through_staging(self):
+        from contextlib import ExitStack
+        patch = "*** Begin Patch\n*** Add File: synthetic.txt\n+sample\n*** End Patch"
+        self.historical["records"][3].update(name="apply_patch", arguments=patch)
+        self.fixture.write_text(json.dumps(self.historical))
+
+        def mutate(events):
+            events[2]["data"]["toolRequests"][0].update(name="apply_patch", arguments=patch)
+
+        self.mutate_import = mutate
+        with ExitStack() as stack:
+            self.patches(stack)
+            result = skill_eval._run_native_context_calibration(**self.arguments())
+        self.assertEqual(result["status"], "CONTEXT_SETUP_OBSERVED", result["firsterror"])
+        staged = json.loads((self.run / "owner" / "imported-prefix.json").read_text())
+        request = next(request for event in staged for request in event["data"].get("toolRequests", [])
+                       if request["name"] == "apply_patch")
+        self.assertEqual(request["arguments"], patch)
+
     def test_changed_role_error_grouping_or_creation_time_blocks_helper(self):
         from contextlib import ExitStack
         for failure in ("role", "error", "request", "time"):

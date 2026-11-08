@@ -41,7 +41,8 @@ def semantic_projection(records: list[dict]) -> list[dict]:
             projected = {"type": kind, "role": record["role"],
                          "content": "".join(part["text"] for part in parts)}
         elif kind == "tool-call":
-            if not isinstance(record.get("name"), str) or not isinstance(record.get("arguments"), dict):
+            if (not isinstance(record.get("name"), str)
+                    or not isinstance(record.get("arguments"), (dict, str))):
                 raise ValueError("Invalid public tool request")
             calls.add(record["id"])
             projected = {"type": kind, "id": record["id"], "name": record["name"],
