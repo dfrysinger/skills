@@ -1159,7 +1159,8 @@ class NativeHistoricalContextTests(unittest.TestCase):
             })
         self.historical = {
             "schema_version": 2, "provenance": "source-bound-historical", "records": records,
-            "source_mapping": [{"event_id": f"synthetic-group-{index}", "native_type": kind, "record_indices": indices}
+            "source_mapping": [{"event_id": f"synthetic-group-{index}", "native_type": kind,
+                                "record_indices": indices, "timestamp": timestamp}
                                for index, (kind, indices) in enumerate([
                                    ("user.message", [1]), ("assistant.message", [2, 3, 4]),
                                    ("tool.execution_complete", [5]), ("tool.execution_complete", [6]),
@@ -1188,8 +1189,10 @@ class NativeHistoricalContextTests(unittest.TestCase):
         home = Path(kwargs["receipt_path"]).parents[1] / "candidate-home"
         self.journal = home / "session-state" / self.session_id / "events.jsonl"
         self.journal.parent.mkdir(parents=True)
+        imported_at = "2002-01-01T00:00:00Z"
         events = [{"id": str(uuid.uuid4()), "type": "session.start", "parentId": None,
-                   "timestamp": self.historical["records"][0]["createdAt"], "data": {"sessionId": self.session_id}}]
+                   "timestamp": imported_at, "data": {"sessionId": self.session_id,
+                   "startTime": self.historical["records"][0]["createdAt"]}}]
         native_data = [
             {"content": "Synthetic request"},
             {"content": "Synthetic tool group", "toolRequests": [
@@ -1201,8 +1204,15 @@ class NativeHistoricalContextTests(unittest.TestCase):
         ]
         for group, data in zip(self.historical["source_mapping"], native_data):
             events.append({"id": str(uuid.uuid4()), "type": group["native_type"], "parentId": events[-1]["id"],
-                           "timestamp": self.historical["summary_timestamp"], "data": data})
+                           "timestamp": imported_at, "data": data})
+            for request in data.get("toolRequests", []):
+                events.append({"id": str(uuid.uuid4()), "type": "tool.execution_start",
+                               "parentId": events[-1]["id"], "timestamp": imported_at,
+                               "data": {"toolCallId": request["toolCallId"], "toolName": request["name"],
+                                        "arguments": request["arguments"]}})
         self.mutate_import(events)
+        for previous, event in zip(events, events[1:]):
+            event["parentId"] = previous["id"]
         self.journal.write_text("".join(json.dumps(event) + "\n" for event in events))
         skill_eval.write_json(kwargs["receipt_path"], {
             "status": "PASS", "session_id": self.session_id, "exit_code": 0, "history_sha256": digest(history)})
@@ -1247,6 +1257,8 @@ class NativeHistoricalContextTests(unittest.TestCase):
 
         def mutate(events):
             events[2]["data"]["toolRequests"][0].update(name="apply_patch", arguments=patch)
+            next(event for event in events if event["type"] == "tool.execution_start")["data"].update(
+                toolName="apply_patch", arguments=patch)
 
         self.mutate_import = mutate
         with ExitStack() as stack:
@@ -1269,7 +1281,7 @@ class NativeHistoricalContextTests(unittest.TestCase):
                           if record["type"] == "tool-result" and not record["success"])
             self.assertEqual(failed.get("error"), {"message": "Synthetic preserved failure"},
                              "Failed public import result requires the exact source error object")
-            self.assertEqual(failed["content"], "Synthetic preserved failure")
+            self.assertNotIn("content", failed)
             self.assertEqual(self.historical["records"], original)
             return original_import(restoration, history, **kwargs)
 
@@ -1285,6 +1297,69 @@ class NativeHistoricalContextTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "error differs from source"):
             public_import_records(changed_error)
 
+    def test_import_scaffold_is_preserved_without_inventing_source_timestamps(self):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self.patches(stack)
+            result = skill_eval._run_native_context_calibration(**self.arguments())
+        self.assertEqual(result["status"], "CONTEXT_SETUP_OBSERVED", result["firsterror"])
+        staged = json.loads((self.run / "owner/imported-prefix.json").read_text())
+        starts = [event for event in staged if event["type"] == "tool.execution_start"]
+        self.assertEqual(len(starts), 2)
+        self.assertTrue(all(event["timestamp"] == "2002-01-01T00:00:00Z" for event in starts))
+        self.assertEqual(staged[0]["timestamp"], "2002-01-01T00:00:00Z")
+        self.assertEqual(staged[0]["data"]["startTime"], self.historical["records"][0]["createdAt"])
+        correspondence = result["locator"]["correspondence"]
+        self.assertTrue(all(item["source_timestamp"] == "2001-01-01T00:00:00Z"
+                            and item["imported_timestamp"] == "2002-01-01T00:00:00Z"
+                            for item in correspondence))
+        source_ids = {item["native_event_id"] for item in correspondence}
+        self.assertTrue(all(event["timestamp"] == "2001-01-01T00:00:00Z"
+                            for event in staged if event["id"] in source_ids))
+
+    def test_missing_changed_or_child_import_starts_refuse_before_helper(self):
+        from contextlib import ExitStack
+        for failure in ("missing", "arguments", "child", "duplicate", "reordered"):
+            with self.subTest(failure=failure):
+                self.run = self.root / f"run-start-{failure}"
+                def mutate(events):
+                    event = next(event for event in events if event["type"] == "tool.execution_start")
+                    if failure == "missing":
+                        events.remove(event)
+                    elif failure == "arguments":
+                        event["data"]["arguments"] = {"path": "different.txt"}
+                    elif failure == "child":
+                        event["data"]["agentId"] = "synthetic-child"
+                    elif failure == "duplicate":
+                        events.append({**event, "id": str(uuid.uuid4())})
+                    else:
+                        events.remove(event)
+                        result_index = next(index for index, result in enumerate(events)
+                                            if result["type"] == "tool.execution_complete")
+                        events.insert(result_index + 1, event)
+                self.mutate_import = mutate
+                with ExitStack() as stack:
+                    native, candidate = self.patches(stack)
+                    result = skill_eval._run_native_context_calibration(**self.arguments())
+                self.assertEqual(result["status"], "FAILED")
+                self.assertIn("tool start", result["firsterror"])
+                native.assert_not_called()
+                candidate.assert_not_called()
+
+    def test_missing_source_timestamp_refuses_before_import(self):
+        from contextlib import ExitStack
+        del self.historical["source_mapping"][0]["timestamp"]
+        self.fixture.write_text(json.dumps(self.historical))
+        with ExitStack() as stack:
+            native, candidate = self.patches(stack)
+            imported = stack.enter_context(mock.patch("session_restore.import_session"))
+            result = skill_eval._run_native_context_calibration(**self.arguments())
+        self.assertEqual(result["status"], "FAILED")
+        self.assertIn("source grouping", result["firsterror"])
+        imported.assert_not_called()
+        native.assert_not_called()
+        candidate.assert_not_called()
+
     def test_changed_role_error_grouping_or_creation_time_blocks_helper(self):
         from contextlib import ExitStack
         for failure in ("role", "error", "request", "time"):
@@ -1294,11 +1369,12 @@ class NativeHistoricalContextTests(unittest.TestCase):
                     if failure == "role":
                         events[2]["type"] = "user.message"
                     elif failure == "error":
-                        events[3]["data"]["success"] = True
+                        next(event for event in events
+                             if event["type"] == "tool.execution_complete")["data"]["success"] = True
                     elif failure == "request":
                         events[2]["data"]["toolRequests"].reverse()
                     else:
-                        events[0]["timestamp"] = "2000-01-01T00:00:00Z"
+                        events[0]["data"]["startTime"] = "2000-01-01T00:00:00Z"
                 self.mutate_import = mutate
                 with ExitStack() as stack:
                     native, candidate = self.patches(stack)

@@ -49,13 +49,17 @@ def semantic_projection(records: list[dict]) -> list[dict]:
                          "arguments": record["arguments"]}
         elif kind == "tool-result":
             call_id = record.get("toolCallId")
+            content = record.get("content")
+            if record.get("success") is False and content is None:
+                error = record.get("error")
+                content = error.get("message") if isinstance(error, dict) else None
             if (call_id not in calls or call_id in completed
                     or type(record.get("success")) is not bool
-                    or not isinstance(record.get("content"), str)):
+                    or not isinstance(content, str)):
                 raise ValueError("Invalid, reordered or duplicate public tool result")
             completed.add(call_id)
             projected = {"type": kind, "toolCallId": call_id, "success": record["success"],
-                         "content": record["content"]}
+                         "content": content}
         else:
             raise ValueError("Unsupported public semantic record")
         result.append(projected)
@@ -70,11 +74,15 @@ def public_import_records(records: list[dict]) -> list[dict]:
     encoded = [dict(record) for record in records]
     for record in encoded:
         if record["type"] == "tool-result" and not record["success"]:
+            content = record.get("content")
+            if content is None:
+                content = record["error"]["message"]
             if record.get("error") is None:
-                record["error"] = {"message": record["content"]}
+                record["error"] = {"message": content}
             elif (not isinstance(record["error"], dict)
-                  or record["error"].get("message") != record["content"]):
+                  or record["error"].get("message") != content):
                 raise ValueError("Public failed-result error differs from source content")
+            record.pop("content", None)
     if semantic_projection(encoded) != projection:
         raise ValueError("Public import encoding changed source semantics")
     return encoded

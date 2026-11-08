@@ -2333,18 +2333,19 @@ def _historical_native_layout(events: list[dict], historical: dict, schema_text:
     indices = [index for group in groups for index in group["record_indices"]]
     if indices != list(range(1, len(records))):
         raise NativeContextSetupError("Historical source grouping is missing, duplicate or reordered")
-    native = [event for event in events if event["type"] != "session.shutdown"][1:]
-    if (len(native) != len(groups) or events[0]["timestamp"] != records[0]["createdAt"]
+    native = [event for event in events
+              if event["type"] not in {"session.shutdown", "tool.execution_start"}][1:]
+    if (len(native) != len(groups) or events[0]["data"].get("startTime") != records[0]["createdAt"]
             or any(event["type"] not in {"session.start", "session.shutdown", "user.message",
-                                        "assistant.message", "tool.execution_complete"} for event in events)):
+                                        "assistant.message", "tool.execution_start",
+                                        "tool.execution_complete"} for event in events)):
         raise NativeContextSetupError("Unknown historical imported root layout/creation timestamp")
     correspondence, call_ids, boundaries = [], {}, {}
     for event, group in zip(native, groups):
         expected = [projection[index - 1] for index in group["record_indices"]]
         data = event["data"]
         if (event["type"] != group["native_type"] or data.get("parentToolCallId")
-                or data.get("agentId")
-                or ("timestamp" in group and event["timestamp"] != group["timestamp"])):
+                or data.get("agentId")):
             raise NativeContextSetupError("Historical actor/type differs from source binding")
         if event["type"] in {"user.message", "assistant.message"}:
             messages = [item for item in expected if item["type"] == "message"]
@@ -2378,7 +2379,32 @@ def _historical_native_layout(events: list[dict], historical: dict, schema_text:
         boundary = group["record_indices"][-1]
         boundaries[boundary] = events.index(event) + 1
         correspondence.extend({"source_record_id": records[index]["id"], "record_index": index,
-                               "native_event_id": event["id"]} for index in group["record_indices"])
+                               "native_event_id": event["id"],
+                               "source_timestamp": group["timestamp"],
+                               "imported_timestamp": event["timestamp"]}
+                              for index in group["record_indices"])
+    requests, started, completed = {}, set(), set()
+    for event in events:
+        data = event["data"]
+        if event["type"] == "assistant.message":
+            for request in data.get("toolRequests") or []:
+                requests[request["toolCallId"]] = request
+        elif event["type"] == "tool.execution_start":
+            call_id = data.get("toolCallId")
+            request = requests.get(call_id)
+            if (request is None or call_id in started or call_id in completed
+                    or data.get("toolName") != request["name"]
+                    or data.get("arguments") != request["arguments"]
+                    or data.get("agentId") or data.get("parentToolCallId")):
+                raise NativeContextSetupError("Changed, duplicate or non-root imported tool start")
+            started.add(call_id)
+        elif event["type"] == "tool.execution_complete":
+            call_id = data.get("toolCallId")
+            if call_id not in started or call_id in completed:
+                raise NativeContextSetupError("Missing or reordered imported tool start")
+            completed.add(call_id)
+    if started != completed or started != set(call_ids.values()):
+        raise NativeContextSetupError("Incomplete imported tool-start correspondence")
     skill_schema = re.search(r"export interface SkillInvokedEvent \{(.*?)\n\}", schema_text, re.S)
     skill_data = re.search(r"export interface SkillInvokedData \{(.*?)\n\}", schema_text, re.S)
     if (skill_schema is None or skill_data is None or 'type: "skill.invoked";' not in skill_schema[1]
@@ -2478,6 +2504,8 @@ def _stage_native_context(*, home: Path, session_id: str, sdk: Path, owner: Path
             "data": {"success": True, "summaryContent": summary},
         }
         insertions[1].append(record)
+        source_timestamps = {item["native_event_id"]: item["source_timestamp"]
+                             for item in correspondence}
         staged, chunks, previous = [], [], None
         encoded = lambda event: (json.dumps(event, ensure_ascii=False) + "\n").encode()
         for index, event in enumerate(events):
@@ -2486,7 +2514,9 @@ def _stage_native_context(*, home: Path, session_id: str, sdk: Path, owner: Path
                 chunks.append(encoded(added))
                 staged.append(added)
                 previous = added["id"]
-            linked = event if event["parentId"] == previous else {**event, "parentId": previous}
+            source_timestamp = source_timestamps.get(event["id"], event["timestamp"])
+            linked = event if (event["parentId"] == previous and event["timestamp"] == source_timestamp) else {
+                **event, "parentId": previous, "timestamp": source_timestamp}
             chunks.append(lines[index] if linked is event else encoded(linked))
             staged.append(linked)
             previous = linked["id"]
@@ -2496,8 +2526,11 @@ def _stage_native_context(*, home: Path, session_id: str, sdk: Path, owner: Path
             staged.append(added)
             previous = added["id"]
         try:
-            timestamps = [datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
-                          for event in staged]
+            timestamps = [datetime.fromisoformat(
+                historical["records"][0]["createdAt"].replace("Z", "+00:00"))]
+            timestamps.extend(datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+                              for event in staged if event["type"] not in {
+                                  "session.start", "tool.execution_start", "session.shutdown"})
             if any(value.tzinfo is None for value in timestamps) or timestamps != sorted(timestamps):
                 refuse("Historical staged event chronology differs from the source boundary")
         except (ValueError, TypeError, AttributeError):
@@ -2523,6 +2556,9 @@ def _stage_native_context(*, home: Path, session_id: str, sdk: Path, owner: Path
         write_json(owner / "staging.json", {
             "schema_sha256": digest(schema), "journal_before_sha256": hashlib.sha256(before).hexdigest(),
             "journal_staged_sha256": hashlib.sha256(after).hexdigest(),
+            "time_domains": "Source creation/semantic events and retained import-occurrence scaffold validated separately",
+            "import_scaffold_ids": [event["id"] for event in events
+                                    if event["type"] in {"session.start", "tool.execution_start", "session.shutdown"}],
             "claim": "Source-bound staging only; historical native consumption is unproved",
         })
         if journal.read_bytes() != before:
@@ -2601,7 +2637,8 @@ def _validate_historical_context_fixture(fixture: dict) -> dict:
             or any(record.get("id") == restoration["cutoff_event_id"] for record in fixture["records"])):
         raise ValueError("Historical source/cutoff/recorded context binding differs")
     for group in fixture["source_mapping"]:
-        if (not isinstance(group, dict) or not {"record_indices", "native_type", "event_id"} <= group.keys()
+        if (not isinstance(group, dict) or not {"record_indices", "native_type", "event_id", "timestamp"} <= group.keys()
+                or not isinstance(group["timestamp"], str) or not group["timestamp"]
                 or not isinstance(group["record_indices"], list) or not group["record_indices"]
                 or any(type(index) is not int for index in group["record_indices"])):
             raise ValueError("Invalid historical source grouping")
