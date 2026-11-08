@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { chmodSync, linkSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { chmodSync, linkSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { candidatePermissionHandler, matchesFixtureState, matchesProfileState,
+import { candidatePermissionHandler, editableFixtureCheck, matchesFixtureState, matchesProfileState,
   runProbe, validateConfig, validateProfile } from "./native_workflow_probe.mjs";
 
 // This SDK double exercises control flow only, never native interoperability.
@@ -125,10 +126,14 @@ export class CopilotClient {
         },
         tools: {
           getCurrentMetadata: async () => state.metadataOverride ?? ({
-            tools: ["skill", "view", "sql", "manage_schedule"].map(name => ({ name, description: "Native test double" })),
+            tools: options.availableTools.map(name => ({ name, description: "Native test double" })),
           }),
           initializeAndValidate: async () => ({}),
           execute: async ({ name, arguments: args, toolCallId }) => {
+            const hooked = await state.toolExecuteHook?.({
+              name, args, toolCallId, permission: options.onPermissionRequest, sessionId: id,
+            });
+            if (hooked !== undefined) return hooked;
             if (name === "view") {
               if (state.preflightFails) throw new Error("Test native preflight RPC failure");
               const decision = state.ownerBypass ? { kind: "approve-once" } : options.onPermissionRequest({
@@ -409,6 +414,45 @@ async function profileFixture(t) {
   return { ...owned, config: selected, profile, state };
 }
 
+async function editableProfileFixture(t) {
+  const owned = await profileFixture(t);
+  const { config, state } = owned;
+  config.candidate_permissions = { write_paths: ["target.txt"], shell_commands: ["python3 -I check.py"] };
+  writeFileSync(join(config.cwd, "target.txt"), "pending\n");
+  writeFileSync(join(config.cwd, "check.py"), editableFixtureCheck);
+  state.toolExecuteHook = ({ name, args, toolCallId, permission, sessionId }) => {
+    if (!["apply_patch", "bash"].includes(name)) return undefined;
+    const patch = typeof args === "string" ? args : args.patch ?? args.input;
+    const fileName = name === "apply_patch" ? patch.match(/\*\*\* Update File: ([^\n]+)/)[1] : undefined;
+    const request = name === "apply_patch"
+      ? { kind: "write", fileName, diff: patch, intention: "Owned test patch", canOfferSessionApproval: false, toolCallId }
+      : { kind: "shell", fullCommandText: args.command, intention: "Owned test check", canOfferSessionApproval: false,
+        commands: [{ identifier: "python3", readOnly: false }], hasWriteFileRedirection: false,
+        possiblePaths: args.command === "python3 -I check.py" ? ["check.py"] : [], possibleUrls: [], toolCallId };
+    if (!state.uncorrelatedPermission && permission(request, { sessionId }).kind === "reject") {
+      return { resultType: "rejected", textResultForLlm: "Owned test refusal" };
+    }
+    if (name === "apply_patch") {
+      if (!state.missingPatchEffect) {
+        writeFileSync(fileName, patch.split("\n").filter(line => line.startsWith("+")).map(line => line.slice(1)).join("\n") + "\n");
+      }
+      if (state.editableStateMutation) state.rows[0].status = "done";
+      if (state.editablePrefixMutation) state.events.push({
+        id: randomUUID(), type: "assistant.message", data: { content: "Unexpected owner message" },
+      });
+      return { resultType: "success", textResultForLlm: "Owned test patch" };
+    }
+    const result = spawnSync("python3", ["-I", "check.py"], {
+      cwd: config.cwd, encoding: "utf8", env: { PATH: process.env.PATH },
+    });
+    return { resultType: result.status === 0 ? "success" : "failure",
+      textResultForLlm: result.stdout,
+      structuredContent: { stdout: result.stdout, stderr: result.stderr,
+        exitCode: state.unrelatedCheckFailure && result.status === 1 ? 137 : result.status } };
+  };
+  return owned;
+}
+
 test("profile cold hydration preserves goal/rows/dependencies and explicitly maps schedule lifecycle", async t => {
   const { config, profile, state, root } = await profileFixture(t);
   const setup = await runProbe("setup", config);
@@ -556,6 +600,228 @@ test("candidate permission handler approves only canonical owned reads and three
   const broken = { kind: "read", intention: "Test error", toolCallId: "broken", get path() { throw new Error("Test handler error"); } };
   assert.equal(handler(broken, invocation).kind, "reject");
   assert.equal(receipts.at(-1).error.message, "Test handler error");
+});
+
+test("literal grants approve typed writes and shell only without widening default permissions", t => {
+  const { config, root, goalPath } = fixture(t);
+  const target = join(config.cwd, "target.txt");
+  const check = join(config.cwd, "check.py");
+  writeFileSync(target, "pending\n");
+  writeFileSync(check, "Owned fixed check");
+  const permissions = { write_paths: ["target.txt", "new.txt"], shell_commands: ["python3 -I check.py"] };
+  const receipts = [];
+  const handler = candidatePermissionHandler({ ...config, candidate_permissions: permissions }, goalPath, root, receipts);
+  const invocation = { sessionId: config.session_id };
+  const write = { kind: "write", intention: "Patch data", fileName: target, diff: "Data diff",
+    canOfferSessionApproval: true, toolCallId: "write", fileEdits: [
+      { before: { path: target, content: "pending\n" }, after: { path: target, content: "ready\n" } },
+    ] };
+  const shell = { kind: "shell", intention: "Check data", fullCommandText: "python3 -I check.py",
+    commands: [{ identifier: "python3", readOnly: false }], canOfferSessionApproval: true,
+    hasWriteFileRedirection: false, possiblePaths: ["check.py"], possibleUrls: [], toolCallId: "shell",
+    resolvedWorkingDirectory: config.cwd, resolvedPaths: { "check.py": check } };
+  assert.equal(handler(write, invocation).kind, "approve-once");
+  assert.equal(handler(shell, invocation).kind, "approve-once");
+  assert.equal(handler({ ...write, fileName: join(config.cwd, "new.txt"), fileEdits: [
+    { after: { path: join(config.cwd, "new.txt"), content: "new data" } },
+  ] }, invocation).kind, "approve-once");
+  for (const request of [
+    { ...write, fileName: check }, { ...write, resolvedPath: check }, { ...write, fileEdits: [] },
+    { ...write, fileEdits: [{ before: { path: target, content: "" }, after: { path: check, content: "" } }] },
+    { ...write, managedApprovalRequired: true }, { ...write, requestSandboxBypass: true },
+    { ...shell, fullCommandText: "python3 check.py" }, { ...shell, hasWriteFileRedirection: true },
+    { ...shell, possibleUrls: [{ url: "https://example.invalid" }] },
+    { ...shell, requestSandboxPermissive: true }, { ...shell, resolvedWorkingDirectory: root },
+    { ...shell, resolvedPaths: { "check.py": target } }, { ...shell, command: "python3 -I check.py" },
+  ]) assert.equal(handler(request, invocation).kind, "reject");
+  assert.equal(handler(write, { sessionId: randomUUID() }).kind, "reject");
+  const defaults = candidatePermissionHandler(config, goalPath, root, []);
+  assert.equal(defaults(write, invocation).kind, "reject");
+  assert.equal(defaults(shell, invocation).kind, "reject");
+  linkSync(target, join(root, "hard-linked-data"));
+  assert.equal(handler(write, invocation).kind, "reject");
+});
+
+test("cold observation retains edited fixture bytes and confirmed absence", async t => {
+  const { config, root } = await editableProfileFixture(t);
+  config.evidence_paths.push(join(config.cwd, "target.txt"), join(config.cwd, "check.py"));
+  const setup = await runProbe("setup", config);
+  assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
+  const target = join(config.cwd, "target.txt");
+  writeFileSync(target, "ready\n");
+  const observed = await runProbe("observe", { ...config, output: join(root, "edited-observation.json") });
+  assert.equal(observed.status, "OBSERVED", observed.error?.message);
+  assert.deepEqual(observed.editable_fixture, {
+    path: "target.txt", exists: true, mode: lstatSync(target).mode & 0o777,
+    sha256: createHash("sha256").update("ready\n").digest("hex"),
+    content_base64: Buffer.from("ready\n").toString("base64"),
+  });
+  const checker = join(config.cwd, "check.py");
+  assert.deepEqual(observed.editable_checker, {
+    path: "check.py", exists: true, mode: lstatSync(checker).mode & 0o777,
+    sha256: createHash("sha256").update(editableFixtureCheck).digest("hex"),
+    expected_sha256: createHash("sha256").update(editableFixtureCheck).digest("hex"),
+    matches_frozen_fixture: true,
+  });
+  rmSync(target);
+  const absent = await runProbe("observe", { ...config, output: join(root, "absent-observation.json") });
+  assert.equal(absent.status, "OBSERVED", absent.error?.message);
+  assert.deepEqual(absent.editable_fixture, { path: "target.txt", exists: false });
+  assert.throws(() => validateConfig("candidate", config), /ENOENT/);
+  assert.throws(() => validateConfig("preflight", config), /ENOENT/);
+  for (const op of ["observe", "cleanup"]) {
+    assert.throws(() => validateConfig(op, {
+      ...config, evidence_paths: [join(root, "missing-evidence")],
+    }), /Invalid trusted phase coordinates/);
+    assert.throws(() => validateConfig(op, {
+      ...config, evidence_paths: [`${config.cwd}/./missing-evidence`],
+    }), /absolute normalized path/);
+  }
+  const cleaned = await runProbe("cleanup", { ...config, output: join(root, "absent-cleanup.json") });
+  assert.equal(cleaned.status, "CLEANED", cleaned.error?.message);
+  assert.deepEqual(cleaned.cleanup.todos.rows, []);
+  assert.deepEqual(cleaned.cleanup.schedules.entries, []);
+  assert.equal(cleaned.cleanup.dependencies_empty, true);
+});
+
+test("cold observation rejects a changed or missing fixed checker", async t => {
+  for (const changed of [true, false]) {
+    const { config, root } = await editableProfileFixture(t);
+    config.evidence_paths.push(join(config.cwd, "target.txt"), join(config.cwd, "check.py"));
+    const setup = await runProbe("setup", config);
+    assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
+    const checker = join(config.cwd, "check.py");
+    if (changed) writeFileSync(checker, "Altered checker\n");
+    else rmSync(checker);
+    const observed = await runProbe("observe", { ...config, output: join(root, "checker-observation.json") });
+    assert.equal(observed.status, "ERROR");
+    assert.equal(observed.editable_checker.exists, changed);
+    assert.equal(observed.editable_checker.matches_frozen_fixture, false);
+    assert.match(observed.error.message, /Fixed fixture checker/);
+    const cleaned = await runProbe("cleanup", { ...config, output: join(root, "checker-cleanup.json") });
+    assert.equal(cleaned.status, "CLEANED", cleaned.error?.message);
+  }
+});
+
+test("observed SDK bash shell metadata preserves the exact command grant", t => {
+  const { config, root, goalPath } = fixture(t);
+  const handler = candidatePermissionHandler({ ...config,
+    candidate_permissions: { write_paths: [], shell_commands: ["python3 -I check.py"] },
+  }, goalPath, root, []);
+  const invocation = { sessionId: config.session_id };
+  const request = { kind: "shell", toolCallId: "observed-shell", fullCommandText: "python3 -I check.py",
+    shellType: "bash", intention: "Check owned fixture data",
+    commands: [{ identifier: "python3 -I check.py", readOnly: false }],
+    commandSegments: [{ identifier: "python3", fullCommandText: "python3 -I check.py" }],
+    possiblePaths: [], canOfferSessionApproval: false, possibleUrls: [], hasWriteFileRedirection: false };
+  assert.equal(handler(request, invocation).kind, "approve-once");
+  for (const shellType of ["powershell", null, 1]) {
+    assert.equal(handler({ ...request, shellType }, invocation).kind, "reject");
+  }
+  assert.equal(handler({ ...request, fullCommandText: "python3 -V" }, invocation).kind, "reject");
+  assert.equal(candidatePermissionHandler(config, goalPath, root, [])(request, invocation).kind, "reject");
+});
+
+test("owner permission profiles reuse literal validation before the SDK starts", async t => {
+  const { config, root, state } = await profileFixture(t);
+  for (const candidate_permissions of [
+    null, {}, { write_paths: ["../outside"], shell_commands: [] },
+    { write_paths: ["*.txt"], shell_commands: [] },
+    { write_paths: [], shell_commands: ["copilot '--yolo'"] },
+    { write_paths: [], shell_commands: ["python3 '"] },
+  ]) {
+    const report = await runProbe("setup", { ...config, candidate_permissions, output: join(root, `${randomUUID()}.json`) });
+    assert.equal(report.status, "ERROR");
+    assert.equal(state.starts, 0);
+  }
+});
+
+test("selected literal grants reach SDK metadata without changing default profile selection", async t => {
+  const { config, root, state } = await profileFixture(t);
+  assert.equal((await runProbe("setup", config)).status, "SETUP_OBSERVED");
+  for (const candidate_permissions of [
+    { write_paths: [], shell_commands: [] },
+    { write_paths: ["target.txt"], shell_commands: [] },
+    { write_paths: [], shell_commands: ["python3 -I check.py"] },
+  ]) {
+    const report = await runProbe("preflight", { ...config, candidate_permissions,
+      output: join(root, `${randomUUID()}.json`), event_log: join(root, `${randomUUID()}.jsonl`) });
+    assert.equal(report.status, "PREFLIGHT_OBSERVED", report.error?.message);
+    assert.deepEqual(state.resumes.at(-1).availableTools, ["skill", "view", "sql", "manage_schedule",
+      ...(candidate_permissions.write_paths.length ? ["apply_patch"] : []),
+      ...(candidate_permissions.shell_commands.length ? ["bash"] : [])]);
+    assert.equal(state.sendCalls, 0);
+  }
+});
+
+test("editable preflight verifies actual file/check decisions and restores before any inference", async t => {
+  const { config, root, state, profile } = await editableProfileFixture(t);
+  chmodSync(join(config.cwd, "check.py"), 0o444);
+  assert.equal((await runProbe("setup", config)).status, "SETUP_OBSERVED");
+  const report = await runProbe("preflight", { ...config, output: join(root, "editable-preflight.json") });
+  assert.equal(report.status, "PREFLIGHT_OBSERVED", report.error?.message);
+  assert.equal(report.checks.editable_permission_traversal, true);
+  assert.equal(report.editable_preflight.length, 6);
+  assert.equal(report.editable_restored, true);
+  assert.equal(readFileSync(join(config.cwd, "target.txt"), "utf8"), "pending\n");
+  assert.equal(readFileSync(join(config.cwd, "check.py"), "utf8"), editableFixtureCheck);
+  assert.equal(lstatSync(join(config.cwd, "check.py")).mode & 0o777, 0o444);
+  assert.equal(state.sendCalls, 0);
+  assert.deepEqual(state.rows, profile.todos);
+  assert.deepEqual(state.resumes.at(-1).availableTools, ["skill", "view", "sql", "manage_schedule", "apply_patch", "bash"]);
+});
+
+test("editable preflight accepts observed freeform patch metadata but rejects null JSON tool schemas", async t => {
+  for (const nullTool of ["apply_patch", "view", "bash"]) {
+    await t.test(nullTool, async t => {
+      const { config, root, state } = await editableProfileFixture(t);
+      assert.equal((await runProbe("setup", config)).status, "SETUP_OBSERVED");
+      state.metadataOverride = { tools: ["skill", "view", "sql", "manage_schedule", "apply_patch", "bash"]
+        .map(name => ({ name, description: "Native test double",
+          input_schema: name === "apply_patch" || name === nullTool ? null : { type: "object" } })) };
+      const report = await runProbe("preflight", { ...config, output: join(root, "freeform-metadata.json") });
+      assert.equal(report.status, nullTool === "apply_patch" ? "PREFLIGHT_OBSERVED" : "PREMODEL_BLOCKED",
+        report.error?.message);
+      if (nullTool === "apply_patch") {
+        assert.equal(typeof report.calls.find(call => call.name === "tools.execute:apply_patch").arguments.arguments,
+          "string");
+        assert.equal(report.checks.editable_permission_traversal, true);
+        assert.equal(report.editable_restored, true);
+      } else {
+        assert.match(report.firsterror, /Effective native tool metadata/);
+        assert.equal(report.editable_preflight, undefined);
+      }
+      assert.equal(readFileSync(join(config.cwd, "target.txt"), "utf8"), "pending\n");
+      assert.equal(state.sendCalls, 0);
+    });
+  }
+});
+
+test("editable preflight rejects missing mediation, unrelated failure, native mutation and prefix pollution", async t => {
+  for (const fault of ["uncorrelatedPermission", "unrelatedCheckFailure", "editableStateMutation", "editablePrefixMutation"]) {
+    await t.test(fault, async t => {
+      const { config, root, state } = await editableProfileFixture(t);
+      assert.equal((await runProbe("setup", config)).status, "SETUP_OBSERVED");
+      state[fault] = true;
+      const report = await runProbe("preflight", { ...config, output: join(root, "blocked-editable.json") });
+      assert.equal(report.status, "PREMODEL_BLOCKED");
+      assert.equal(report.editable_restored, true);
+      assert.equal(state.sendCalls, 0);
+      assert.equal(readFileSync(join(config.cwd, "target.txt"), "utf8"), "pending\n");
+      assert.equal(readFileSync(join(config.cwd, "check.py"), "utf8"), editableFixtureCheck);
+    });
+  }
+});
+
+test("metadata and successful patch result without its effect do not qualify editable preflight", async t => {
+  const { config, root, state } = await editableProfileFixture(t);
+  assert.equal((await runProbe("setup", config)).status, "SETUP_OBSERVED");
+  state.missingPatchEffect = true;
+  const report = await runProbe("preflight", { ...config, output: join(root, "missing-effect.json") });
+  assert.equal(report.status, "PREMODEL_BLOCKED");
+  assert.match(report.firsterror, /patch effect is missing/);
+  assert.equal(report.editable_restored, true);
+  assert.equal(state.sendCalls, 0);
 });
 
 test("candidate gates one SDK send and retains unwrapped native events and separate timing", async t => {

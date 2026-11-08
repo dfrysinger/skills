@@ -1124,7 +1124,8 @@ def parse_run(
         )
         if boundary != "prose":
             raise ValueError("native diagnostic uses the prose boundary")
-        allowed_tools = {"skill", "view", "sql", "manage_schedule"}
+        if native_workflow_goal is None or allowed_tools is None:
+            allowed_tools = {"skill", "view", "sql", "manage_schedule"}
     messages: list[str] = []
     result_event = None
     sdk_turn_started = False
@@ -1801,7 +1802,7 @@ def _run_native_workflow_phase(
     model: str, effort: str, cli_version: str, entry_skill: str,
     preflight_only: bool = False,
 ) -> tuple[list[str], dict | None]:
-    from native_workflow import bind_model, phase_inputs, protect_owner_copy, render_coordinates
+    from native_workflow import bind_model, candidate_tools, phase_inputs, protect_owner_copy, render_coordinates
     state, coordinates, files = phase_inputs(phase, packet)
     bind_model(state, model, effort)
     measurement.session_uuid(session_id)
@@ -1839,8 +1840,12 @@ def _run_native_workflow_phase(
         "denied_path": str(sibling), "model": model, "effort": effort,
         "prefix_file": str(owner / "imported-prefix.json"),
     }
+    if "candidate_permissions" in phase["native_workflow"]:
+        config["candidate_permissions"] = phase["native_workflow"]["candidate_permissions"]
+    selected_tools = set(candidate_tools(config.get("candidate_permissions")))
     candidate = None
     first_error = None
+    observation_error = None
     cleanup_error = None
     setup_complete = False
     candidate_started = False
@@ -1865,17 +1870,16 @@ def _run_native_workflow_phase(
         parsed = None if preflight_only else parse_run(
             Path(config["event_log"]), skill=entry_skill,
             expected_model=model, cwd=workdir, require_skill=None,
-            native_workflow_goal=goal, native_sdk_completion=candidate, expected_effort=effort)
+            native_workflow_goal=goal, native_sdk_completion=candidate, expected_effort=effort,
+            allowed_tools=selected_tools)
         if not preflight_only:
-            calls = _native_candidate_calls(Path(config["event_log"]), owner_call_ids={
+            calls = _native_candidate_calls(Path(config["event_log"]), allowed_tools=selected_tools, owner_call_ids={
                 item["tool_call_id"] for item in candidate.get("preflight", [])
                 if isinstance(item.get("tool_call_id"), str)
             } | set(candidate.get("owner_tool_call_ids", [])))
             write_json(owner / "actual-candidate-calls.json", calls)
             if not calls["all_calls_completed"]:
                 raise ValueError("native candidate tool calls did not complete")
-        _native_workflow_probe("observe", {**config, "output": str(owner / "observe.json")})
-        shutil.copyfile(goal, owner / "observed-goal.json")
     except Exception as error:
         first_error = error
         raise
@@ -1892,6 +1896,12 @@ def _run_native_workflow_phase(
             setup_complete = (retained_receipt(setup_receipt) or {}).get("status") == "SETUP_OBSERVED"
         if candidate is None:
             candidate = retained_receipt(owner / "candidate.json")
+        if setup_complete:
+            try:
+                _native_workflow_probe("observe", {**config, "output": str(owner / "observe.json")})
+                shutil.copyfile(goal, owner / "observed-goal.json")
+            except Exception as error:
+                observation_error = error
         owned_checkpoint = goal.parent / "native-profile-mapping.json"
         if setup_complete or owned_checkpoint.is_file():
             try:
@@ -1904,17 +1914,21 @@ def _run_native_workflow_phase(
                 cleanup_error = error
         write_json(owner / "phase-result.json", {
             "schema_version": 1,
-            "status": "FAILED" if first_error or cleanup_error else (
+            "status": "FAILED" if first_error or observation_error or cleanup_error else (
                 "PREPARATION_ONLY" if preflight_only else "NATIVE_EXECUTION_OBSERVED"),
             "profile": state["profile"], "provenance": state["provenance"],
             "model_send_calls": candidate.get("model_send_calls") if candidate else (
                 None if candidate_started and not preflight_only else 0),
-            "judge_calls": 0, "firsterror": str(first_error or cleanup_error) if first_error or cleanup_error else None,
+            "judge_calls": 0, "firsterror": str(first_error or observation_error or cleanup_error)
+            if first_error or observation_error or cleanup_error else None,
+            "observation_error": str(observation_error) if observation_error else None,
             "cleanup_error": str(cleanup_error) if cleanup_error else None,
             "owner_files_excluded": [phase["native_workflow"][key] for key in ("state_file", "coordinates_file")],
             "unknowns": state["unknowns"],
             "history_correspondence_scope": "Candidate owner versus the retained public import projection; frozen source digest and semantic conversion belong to the existing restoration receipt",
         })
+        if observation_error and first_error is None:
+            raise ValueError(f"native observation failed: {observation_error}") from observation_error
         if cleanup_error and first_error is None:
             raise ValueError(f"native cleanup failed: {cleanup_error}") from cleanup_error
     return ["node", str(Path(__file__).parent / "native_workflow_probe.mjs"),
@@ -1965,7 +1979,9 @@ def _native_fixture_state(observation: dict, goal: Path, *, final: bool) -> bool
     )
 
 
-def _native_candidate_calls(log: Path, *, owner_call_ids: set[str] | None = None) -> dict:
+def _native_candidate_calls(
+    log: Path, *, owner_call_ids: set[str] | None = None, allowed_tools: set[str] | None = None,
+) -> dict:
     pending, calls = {}, []
     with log.open("rb") as stream:
         for event_index, (_, event) in enumerate(measurement.jsonl_records(stream, grammar="telemetry")):
@@ -1973,7 +1989,8 @@ def _native_candidate_calls(log: Path, *, owner_call_ids: set[str] | None = None
                 raise ValueError("diagnostic log record must be an object")
             data = event.get("data", {})
             if event.get("type") == "tool.execution_start":
-                validate_tool_allowlist(data, {"skill", "view", "sql", "manage_schedule"})
+                validate_tool_allowlist(
+                    data, allowed_tools if allowed_tools is not None else {"skill", "view", "sql", "manage_schedule"})
                 call_id = data.get("toolCallId")
                 if call_id in (owner_call_ids or set()):
                     continue
