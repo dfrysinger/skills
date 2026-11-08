@@ -8,7 +8,7 @@ import re
 import stat
 from pathlib import Path
 
-from session_restore import relative_path
+from session_restore import permission_rules, relative_path
 
 
 PROFILE = "p01-scheduled-audit"
@@ -111,9 +111,14 @@ def read_owner_json(path: Path):
 
 def phase_inputs(phase: dict, packet: Path):
     native = phase["native_workflow"]
-    _object(native, {"profile", "state_file", "coordinates_file"}, "native_workflow")
+    fields = {"profile", "state_file", "coordinates_file"}
+    if isinstance(native, dict) and "candidate_permissions" in native:
+        fields.add("candidate_permissions")
+    _object(native, fields, "native_workflow")
     if native["profile"] != PROFILE:
         raise ValueError("unsupported native_workflow profile")
+    if "candidate_permissions" in native:
+        permission_rules(native["candidate_permissions"])
     paths = [owner_file(packet, native[key]) for key in ("state_file", "coordinates_file")]
     if paths[0] == paths[1]:
         raise ValueError("native owner files must be distinct")
@@ -131,6 +136,17 @@ def phase_inputs(phase: dict, packet: Path):
         if item in excluded:
             raise ValueError("owner input cannot be candidate evidence")
     return state, coordinates, paths
+
+
+def candidate_tools(permissions=None):
+    tools = ["skill", "view", "sql", "manage_schedule"]
+    if permissions is not None:
+        permission_rules(permissions)
+        if permissions["write_paths"]:
+            tools.append("apply_patch")
+        if permissions["shell_commands"]:
+            tools.append("bash")
+    return tools
 
 
 def validate_native_workflow(definition: dict, root: Path, *, frozen=False):

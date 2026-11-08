@@ -76,6 +76,7 @@ class NativeWorkflowTests(unittest.TestCase):
         self.imported = str(uuid.uuid4())
         self.operations = []
         self.candidate_error = None
+        self.observation_error = None
         self.cleanup_error = None
 
     def tearDown(self):
@@ -112,6 +113,36 @@ class NativeWorkflowTests(unittest.TestCase):
         self.assertIn(b"Evaluation execution coordinates and limitations:", rendered)
         self.assertIn(str(goal).encode(), rendered)
         self.assertNotIn(b"recover", rendered)
+
+    def test_optional_permissions_are_validated_and_reach_the_sdk_and_event_consumers(self):
+        permissions = {"write_paths": ["target.txt"], "shell_commands": ["python3 -I check.py"]}
+        self.phase["native_workflow"]["candidate_permissions"] = permissions
+        (self.packet / "target.txt").write_text("pending\n")
+        (self.packet / "check.py").write_text("print('Fixture checker')\n")
+        self.coordinates["evidence_paths"].extend(["target.txt", "check.py"])
+        skill_eval.write_json(self.packet / "coordinates.json", self.coordinates)
+        skill_eval.write_json(self.case / "case.json", self.definition)
+        self.expected_permissions = permissions
+        self.freeze()
+        result = self.run_native()
+        calls = skill_eval.read_json(result / f"{self.phase['id']}-native-owner" / "actual-candidate-calls.json")
+        self.assertEqual([item["start"]["toolName"] for item in calls["calls"]], ["view", "apply_patch", "bash"])
+        phase_result = skill_eval.read_json(result / f"{self.phase['id']}-native-owner" / "phase-result.json")
+        self.assertEqual(phase_result["status"], "NATIVE_EXECUTION_OBSERVED")
+
+    def test_invalid_optional_permissions_are_rejected_before_freezing_or_sdk_invocation(self):
+        for permissions in [
+            None, {}, {"write_paths": ["../outside"], "shell_commands": []},
+            {"write_paths": ["*.txt"], "shell_commands": []},
+            {"write_paths": [], "shell_commands": ["copilot '--yolo'"]},
+            {"write_paths": [], "shell_commands": ["python3 '"]},
+            {"write_paths": [], "shell_commands": ["python3 -I check.py"], "grant": True},
+        ]:
+            with self.subTest(permissions=permissions):
+                self.phase["native_workflow"]["candidate_permissions"] = permissions
+                with self.assertRaises(ValueError):
+                    native_workflow.phase_inputs(self.phase, self.packet)
+        self.assertEqual(self.operations, [])
 
     def test_freeze_verification_checks_profile_and_preserves_recorded_skill_history(self):
         self.freeze()
@@ -155,6 +186,8 @@ class NativeWorkflowTests(unittest.TestCase):
             result = {"status": "CLEANED", "cleanup": {
                 "todos": {"rows": []}, "schedules": {"entries": []}, "dependencies_empty": True}}
         else:
+            if self.observation_error:
+                raise ValueError(self.observation_error)
             result = {"status": "OBSERVED", "goal_path": str(goal)}
         skill_eval.write_json(Path(config["output"]), result)
         return result
@@ -162,6 +195,10 @@ class NativeWorkflowTests(unittest.TestCase):
     def _candidate(self, config, *, cli_version, preflight_only=False):
         self.assertEqual(config["model"], "fixture-model")
         self.assertEqual(config["effort"], "medium")
+        if hasattr(self, "expected_permissions"):
+            self.assertEqual(config["candidate_permissions"], self.expected_permissions)
+        else:
+            self.assertNotIn("candidate_permissions", config)
         self.assertEqual(Path(config["state_file"]).stat().st_mode & 0o777, 0o600)
         self.assertEqual(Path(config["state_file"]).with_name("coordinates.json").stat().st_mode & 0o777, 0o600)
         for name in ("home", "os_home"):
@@ -188,6 +225,12 @@ class NativeWorkflowTests(unittest.TestCase):
                 {"type": "tool.execution_complete", "data": {"toolCallId": "candidate", "success": True}},
                 answer, idle,
             ])
+            for tool_name in ("apply_patch", "bash") if hasattr(self, "expected_permissions") else ():
+                events[-2:-2] = [
+                    {"type": "tool.execution_start", "data": {
+                        "toolName": tool_name, "toolCallId": tool_name, "arguments": {}}},
+                    {"type": "tool.execution_complete", "data": {"toolCallId": tool_name, "success": True}},
+                ]
         Path(config["event_log"]).write_text("".join(json.dumps(event) + "\n" for event in events))
         result = {
             "status": "PREFLIGHT_OBSERVED" if preflight_only else "CANDIDATE_OBSERVED",
@@ -267,14 +310,29 @@ class NativeWorkflowTests(unittest.TestCase):
     def test_candidate_error_cleans_owned_profile_and_preserves_first_error_over_cleanup(self):
         self.freeze()
         self.candidate_error = "first candidate error"
+        self.observation_error = "second observation error"
         self.cleanup_error = "second cleanup error"
         with self.assertRaisesRegex(ValueError, "first candidate error"):
             self.run_native()
         owner = next((self.root / "runs").glob("*/example-case/*-native-owner"))
         result = skill_eval.read_json(owner / "phase-result.json")
         self.assertEqual(result["firsterror"], "first candidate error")
+        self.assertEqual(result["observation_error"], "second observation error")
         self.assertEqual(result["cleanup_error"], "second cleanup error")
-        self.assertEqual(self.operations, ["setup", "cleanup"])
+        self.assertEqual(self.operations, ["setup", "observe", "cleanup"])
+
+    def test_observation_error_still_cleans_and_cannot_be_reported_as_success(self):
+        self.freeze()
+        self.observation_error = "cold observation error"
+        with self.assertRaisesRegex(ValueError, "cold observation error"):
+            self.run_native()
+        owner = next((self.root / "runs").glob("*/example-case/*-native-owner"))
+        result = skill_eval.read_json(owner / "phase-result.json")
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["firsterror"], "cold observation error")
+        self.assertEqual(result["observation_error"], "cold observation error")
+        self.assertEqual(result["cleanup_error"], None)
+        self.assertEqual(self.operations, ["setup", "observe", "cleanup"])
 
     def test_interrupted_owned_setup_preserves_first_error_and_cleans_with_empty_receipt(self):
         self.freeze()
@@ -315,7 +373,7 @@ class NativeWorkflowTests(unittest.TestCase):
         owner = next((self.root / "runs").glob("*/example-case/*-native-owner"))
         result = skill_eval.read_json(owner / "phase-result.json")
         self.assertEqual(result["firsterror"], str(first))
-        self.assertEqual(self.operations, ["setup", "cleanup"])
+        self.assertEqual(self.operations, ["setup", "observe", "cleanup"])
 
     def test_source_measurement_uses_descriptor_and_existing_role_aggregation(self):
         events = self.base / "session-state" / self.imported / "events.jsonl"
