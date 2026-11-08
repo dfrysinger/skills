@@ -669,6 +669,83 @@ class NativeWorkflowDiagnosticTests(unittest.TestCase):
                         self.assertIn("owner preflight rejection", result["firsterror"])
 
 
+def historical_snapshot_fixture():
+    return {
+        "schemas": {
+            "todos": "CREATE TABLE todos (id TEXT PRIMARY KEY,title TEXT NOT NULL,description TEXT,"
+                     "status TEXT DEFAULT 'pending' CHECK(status IN ('pending','in_progress','done','blocked')),"
+                     "created_at TEXT DEFAULT (datetime('now')),updated_at TEXT DEFAULT (datetime('now')))",
+            "todo_deps": "CREATE TABLE todo_deps (todo_id TEXT NOT NULL,depends_on TEXT NOT NULL,"
+                         "PRIMARY KEY(todo_id,depends_on),FOREIGN KEY(todo_id) REFERENCES todos(id),"
+                         "FOREIGN KEY(depends_on) REFERENCES todos(id))",
+            "live_proof_receipts": "CREATE TABLE IF NOT EXISTS live_proof_receipts (claim_id TEXT PRIMARY KEY,"
+                                   "status TEXT NOT NULL,scenario TEXT NOT NULL,artifact_path TEXT NOT NULL,"
+                                   "candidate_identity TEXT,running_identity TEXT,updated_at TEXT DEFAULT CURRENT_TIMESTAMP)",
+        },
+        "rows": {
+            "todos": [
+                {"id": "one", "title": "Synthetic 'quoted' title", "description": None, "status": "done",
+                 "created_at": "2001-01-01 01:02:03", "updated_at": None},
+                {"id": "two", "title": "Synthetic task", "description": "", "status": "blocked",
+                 "created_at": None, "updated_at": "2001-01-02 01:02:03"},
+            ],
+            "todo_deps": [{"todo_id": "two", "depends_on": "one"}],
+            "live_proof_receipts": [{"claim_id": "synthetic", "status": "BLOCKED", "scenario": "Synthetic only",
+                                     "artifact_path": "synthetic.json", "candidate_identity": None,
+                                     "running_identity": None, "updated_at": "2001-01-01 01:02:03"}],
+        },
+        "queries": [{"query": query, "expected_text": "Synthetic SQL text", "expected_rows": count}
+                    for query, count in [
+                        ("SELECT * FROM todos ORDER BY rowid", 2),
+                        ("SELECT * FROM todo_deps ORDER BY rowid", 1),
+                        ("SELECT * FROM live_proof_receipts ORDER BY rowid", 1),
+                        ("SELECT id FROM todos WHERE status='pending'", 0)]],
+    }
+
+
+class HistoricalSnapshotTests(unittest.TestCase):
+    def test_explicit_nulls_quotes_timestamps_and_order_roundtrip(self):
+        from contextlib import closing
+        import sqlite3
+        from session_restore import compile_task_snapshot
+        source = historical_snapshot_fixture()
+        compiled = compile_task_snapshot(source)
+        with closing(sqlite3.connect(":memory:")) as database:
+            database.execute("PRAGMA foreign_keys=ON")
+            for schema in source["schemas"].values():
+                database.execute(schema)
+            database.executescript(compiled["transaction"])
+            self.assertEqual(database.execute("SELECT title,description,created_at,updated_at FROM todos ORDER BY rowid").fetchall(),
+                             [("Synthetic 'quoted' title", None, "2001-01-01 01:02:03", None),
+                              ("Synthetic task", "", None, "2001-01-02 01:02:03")])
+            for query in compiled["comparisons"]:
+                self.assertEqual(database.execute(query).fetchall(), [])
+            database.execute("UPDATE todos SET updated_at='changed' WHERE id='one'")
+            self.assertTrue(database.execute(compiled["comparisons"][0]).fetchall())
+
+    def test_refuses_missing_columns_bad_keys_checks_foreign_keys_and_writing_queries(self):
+        from session_restore import compile_task_snapshot
+        import copy
+        for failure in ("column", "key", "check", "foreign", "write", "count"):
+            with self.subTest(failure=failure):
+                source = copy.deepcopy(historical_snapshot_fixture())
+                if failure == "column":
+                    del source["rows"]["todos"][0]["created_at"]
+                elif failure == "key":
+                    source["schemas"]["todos"] = source["schemas"]["todos"].replace(" PRIMARY KEY", "")
+                elif failure == "check":
+                    source["schemas"]["todos"] = source["schemas"]["todos"].replace(
+                        " CHECK(status IN ('pending','in_progress','done','blocked'))", "")
+                elif failure == "foreign":
+                    source["rows"]["todo_deps"][0]["depends_on"] = "missing"
+                elif failure == "write":
+                    source["queries"][0]["query"] = "WITH x AS (SELECT 1) DELETE FROM todos"
+                else:
+                    source["queries"][0]["expected_rows"] = 999
+                with self.assertRaises(ValueError):
+                    compile_task_snapshot(source)
+
+
 class NativeContextCalibrationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=Path.cwd())
@@ -1046,6 +1123,196 @@ class NativeContextCalibrationTests(unittest.TestCase):
         return {"status": "CANDIDATE_OBSERVED", "model_send_calls": 1, "firsterror": None,
                 "shutdown_errors": [], "model_message_id": "send", "model_result": message,
                 "model_completion_event": idle, "candidate_events": [message, idle], "model_event_start_index": 0}
+
+
+class NativeHistoricalContextTests(unittest.TestCase):
+    arguments = NativeContextCalibrationTests.arguments
+    patches = NativeContextCalibrationTests.patches
+
+    def setUp(self):
+        NativeContextCalibrationTests.setUp(self)
+        timestamp = "2001-01-01T00:00:00Z"
+        records = [{"type": "session", "version": 1, "externalId": "synthetic-source", "createdAt": timestamp},
+                   {"type": "message", "id": "user", "role": "user",
+                    "content": [{"type": "text", "text": "Synthetic request"}]},
+                   {"type": "message", "id": "assistant", "role": "assistant",
+                    "content": [{"type": "text", "text": "Synthetic tool group"}]},
+                   {"type": "tool-call", "id": "call-one", "name": "view", "arguments": {"path": "synthetic.txt"}},
+                   {"type": "tool-call", "id": "call-two", "name": "sql", "arguments": {"query": "SELECT 1"}},
+                   {"type": "tool-result", "id": "result-one", "toolCallId": "call-one",
+                    "success": False, "content": "Synthetic preserved failure"},
+                   {"type": "tool-result", "id": "result-two", "toolCallId": "call-two",
+                    "success": True, "content": "Synthetic result"},
+                   {"type": "message", "id": "final", "role": "assistant",
+                    "content": [{"type": "text", "text": "Synthetic final"}]}]
+        skills = []
+        for index in range(8):
+            content = f"Synthetic historical body {index}"
+            skills.append({
+                "actor_scope": "child" if index == 6 else "root",
+                "position": "post-compaction" if index == 7 else "pre-compaction",
+                "source_event": {"type": "skill.invoked", "id": f"synthetic-skill-{index}",
+                                 "timestamp": timestamp, "data": {"name": f"synthetic-{index}",
+                                 "content": content, "path": f"synthetic/{index}/SKILL.md", "allowedTools": []}},
+                "body_sha256": hashlib.sha256(content.encode()).hexdigest(),
+                **({"records_before": 5} if index == 7 else {}),
+            })
+        self.historical = {
+            "schema_version": 2, "provenance": "source-bound-historical", "records": records,
+            "source_mapping": [{"event_id": f"synthetic-group-{index}", "native_type": kind, "record_indices": indices}
+                               for index, (kind, indices) in enumerate([
+                                   ("user.message", [1]), ("assistant.message", [2, 3, 4]),
+                                   ("tool.execution_complete", [5]), ("tool.execution_complete", [6]),
+                                   ("assistant.message", [7])])],
+            "summary": "Synthetic native summary", "summary_timestamp": timestamp,
+            "skill_events": skills, "snapshot": historical_snapshot_fixture(),
+            "required_tools": ["skill", "view", "sql", "manage_schedule", "bash", "apply_patch", "rg", "task", "task_complete"],
+            "limitations": ["Synthetic fixtures only; no native consumption claimed"],
+            "restoration": {"source_session_id": "synthetic-source", "cutoff_event_id": "excluded-trigger",
+                            "skill_context": "recorded-target-context"},
+            "personal_instructions": "Synthetic historical personal instructions",
+            "candidate_permissions": {"write_paths": [], "shell_commands": []},
+        }
+        self.fixture.write_text(json.dumps(self.historical))
+        with (self.sdk.parent / "generated/session-events.d.ts").open("a") as stream:
+            stream.write('export interface SkillInvokedEvent {\ntype: "skill.invoked";\n}\n'
+                         'export interface SkillInvokedData {\nname: string;\npath: string;\ncontent: string;\n}\n')
+
+    def import_double(self, restoration, history, **kwargs):
+        self.order.append("import-exit")
+        self.assertEqual(restoration["skill_context"], "recorded-target-context")
+        self.assertEqual([json.loads(line) for line in history.read_text().splitlines()], self.historical["records"])
+        home = Path(kwargs["receipt_path"]).parents[1] / "candidate-home"
+        self.journal = home / "session-state" / self.session_id / "events.jsonl"
+        self.journal.parent.mkdir(parents=True)
+        events = [{"id": str(uuid.uuid4()), "type": "session.start", "parentId": None,
+                   "timestamp": self.historical["records"][0]["createdAt"], "data": {"sessionId": self.session_id}}]
+        native_data = [
+            {"content": "Synthetic request"},
+            {"content": "Synthetic tool group", "toolRequests": [
+                {"toolCallId": "native-one", "name": "view", "arguments": {"path": "synthetic.txt"}},
+                {"toolCallId": "native-two", "name": "sql", "arguments": {"query": "SELECT 1"}}]},
+            {"toolCallId": "native-one", "success": False, "error": {"message": "Synthetic preserved failure"}},
+            {"toolCallId": "native-two", "success": True, "result": {"content": "Synthetic result"}},
+            {"content": "Synthetic final"},
+        ]
+        for group, data in zip(self.historical["source_mapping"], native_data):
+            events.append({"id": str(uuid.uuid4()), "type": group["native_type"], "parentId": events[-1]["id"],
+                           "timestamp": self.historical["summary_timestamp"], "data": data})
+        self.mutate_import(events)
+        self.journal.write_text("".join(json.dumps(event) + "\n" for event in events))
+        skill_eval.write_json(kwargs["receipt_path"], {
+            "status": "PASS", "session_id": self.session_id, "exit_code": 0, "history_sha256": digest(history)})
+        return self.session_id
+
+    def mutate_import(self, events):
+        pass
+
+    def probe_double(self, operation, config):
+        self.order.append(operation)
+        self.assertEqual(config["profile"], "native-historical-context")
+        staged = json.loads(Path(config["prefix_file"]).read_text())
+        self.assertEqual([item["data"]["name"] for item in staged if item["type"] == "skill.invoked"],
+                         [f"synthetic-{index}" for index in [0, 1, 2, 3, 4, 5, 7]])
+        later = next(index for index, item in enumerate(staged) if item["data"].get("name") == "synthetic-7")
+        self.assertEqual(staged[later - 1]["data"]["error"]["message"], "Synthetic preserved failure")
+        self.assertEqual(staged[later + 1]["data"]["result"]["content"], "Synthetic result")
+        for previous, event in zip(staged, staged[1:]):
+            self.assertEqual(event["parentId"], previous["id"])
+        return {"status": {"setup": "SETUP_OBSERVED", "observe": "OBSERVED", "cleanup": "CLEANED"}[operation]}
+
+    def candidate_double(self, config, **kwargs):
+        self.assertTrue(kwargs["preflight_only"])
+        self.order.append("preflight")
+        return {"status": "PREFLIGHT_OBSERVED", "model_send_calls": 0}
+
+    def test_source_bound_staging_is_before_sdk_and_keeps_child_out_and_error_intact(self):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self.patches(stack)
+            result = skill_eval._run_native_context_calibration(**self.arguments())
+        self.assertEqual(result["status"], "CONTEXT_SETUP_OBSERVED", result["firsterror"])
+        self.assertEqual(self.order, ["import-exit", "setup", "preflight", "observe", "cleanup"])
+        self.assertEqual(result["locator"]["tool_call_ids"], {"call-one": "native-one", "call-two": "native-two"})
+        self.assertEqual(len(result["locator"]["correspondence"]), 7)
+
+    def test_changed_role_error_grouping_or_creation_time_blocks_helper(self):
+        from contextlib import ExitStack
+        for failure in ("role", "error", "request", "time"):
+            with self.subTest(failure=failure):
+                self.run = self.root / f"run-{failure}"
+                def mutate(events):
+                    if failure == "role":
+                        events[2]["type"] = "user.message"
+                    elif failure == "error":
+                        events[3]["data"]["success"] = True
+                    elif failure == "request":
+                        events[2]["data"]["toolRequests"].reverse()
+                    else:
+                        events[0]["timestamp"] = "2000-01-01T00:00:00Z"
+                self.mutate_import = mutate
+                with ExitStack() as stack:
+                    native, candidate = self.patches(stack)
+                    result = skill_eval._run_native_context_calibration(**self.arguments())
+                self.assertEqual(result["status"], "FAILED")
+                self.assertEqual(result["setup_error_code"], "NATIVE_CONTEXT_SETUP_UNSUPPORTED")
+                native.assert_not_called()
+                candidate.assert_not_called()
+
+    def test_historical_send_and_ambiguous_boundary_refuse(self):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            native, candidate = self.patches(stack)
+            result = skill_eval._run_native_context_calibration(**self.arguments(), model_send=True)
+        self.assertIn("forbids model sends", result["firsterror"])
+        native.assert_not_called()
+        candidate.assert_not_called()
+        self.historical["skill_events"][-1]["records_before"] = 3
+        self.fixture.write_text(json.dumps(self.historical))
+        with ExitStack() as stack:
+            native, candidate = self.patches(stack)
+            result = skill_eval._run_native_context_calibration(**self.arguments())
+        self.assertIn("boundary", result["firsterror"])
+        native.assert_not_called()
+
+    def test_child_actor_or_duplicate_source_group_cannot_be_flattened(self):
+        from contextlib import ExitStack
+        import copy
+        original = copy.deepcopy(self.historical)
+        for failure in ("child", "group"):
+            with self.subTest(failure=failure):
+                self.historical = copy.deepcopy(original)
+                if failure == "child":
+                    self.historical["skill_events"][6]["actor_scope"] = "root"
+                else:
+                    self.historical["source_mapping"][1]["record_indices"].append(4)
+                self.fixture.write_text(json.dumps(self.historical))
+                with ExitStack() as stack:
+                    native, candidate = self.patches(stack)
+                    imported = stack.enter_context(mock.patch("session_restore.import_session"))
+                    result = skill_eval._run_native_context_calibration(**self.arguments())
+                self.assertEqual(result["status"], "FAILED")
+                imported.assert_not_called()
+                native.assert_not_called()
+                candidate.assert_not_called()
+
+    def test_setup_failure_retains_first_error_and_owned_shutdown_receipt(self):
+        from contextlib import ExitStack
+        def failed_setup(operation, config):
+            skill_eval.write_json(Path(config["output"]), {
+                "status": "ERROR", "error": {"message": "Synthetic first setup error"},
+                "shutdown_errors": [{"message": "Synthetic later shutdown error"}], "model_calls": 0,
+            })
+            raise ValueError("Synthetic first setup error")
+        with ExitStack() as stack:
+            _, candidate = self.patches(stack)
+            native = stack.enter_context(mock.patch("skill_eval._native_workflow_probe", side_effect=failed_setup))
+            result = skill_eval._run_native_context_calibration(**self.arguments())
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["firsterror"], "Synthetic first setup error")
+        self.assertEqual(result["setup"]["shutdown_errors"][0]["message"], "Synthetic later shutdown error")
+        self.assertEqual(native.call_count, 1)
+        candidate.assert_not_called()
 
 
 class NativeRunTests(unittest.TestCase):

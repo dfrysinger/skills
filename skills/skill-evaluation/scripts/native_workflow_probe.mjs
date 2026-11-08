@@ -15,7 +15,8 @@ const phaseFields = [...fields, "profile", "state_file", "prompt_path", "event_l
   "plugin_path", "evidence_paths", "denied_path", "model", "effort", "prefix_file"];
 const contextFields = [...fields, "profile", "prompt_path", "event_log", "plugin_path",
   "model", "effort", "prefix_file", "context_fixture_file"];
-const contextProfile = config => config?.profile === "native-context-calibration";
+const historicalProfile = config => config?.profile === "native-historical-context";
+const contextProfile = config => historicalProfile(config) || config?.profile === "native-context-calibration";
 const conversational = events => events.filter(event =>
   /^(user\.message|assistant\.message|tool\.result|tool\.execution_complete)$/.test(event.type));
 const objective = "Synthetic native workflow diagnostic. Not a historical task.";
@@ -49,6 +50,7 @@ function permissionProfile(config) {
 }
 
 function candidateTools(config) {
+  if (historicalProfile(config)) return contextFixture(config).required_tools;
   return ["skill", "view", "sql", "manage_schedule",
     ...(config.candidate_permissions?.write_paths.length ? ["apply_patch"] : []),
     ...(config.candidate_permissions?.shell_commands.length ? ["bash"] : [])];
@@ -177,6 +179,31 @@ function contextFixture(config) {
     throw new Error("Context locator must be owner-only outside candidate roots");
   }
   const fixture = parseDataJson(readFileSync(path, "utf8"));
+  if (historicalProfile(config)) {
+    const keys = ["schema_version", "summary_event_id", "summary_sha256", "post_event_ids",
+      "root_skills", "correspondence", "tool_call_ids", "snapshot", "required_tools", "limitations"];
+    if (!fixture || !isDeepStrictEqual(Object.keys(fixture).sort(), keys.sort())
+        || fixture.schema_version !== 2 || !Array.isArray(fixture.root_skills)
+        || fixture.root_skills.length !== 7 || !Array.isArray(fixture.correspondence)
+        || !fixture.correspondence.length || !Array.isArray(fixture.post_event_ids)
+        || !fixture.post_event_ids.length || !Array.isArray(fixture.required_tools)
+        || !isDeepStrictEqual([...fixture.required_tools].sort(),
+          ["skill", "view", "sql", "manage_schedule", "bash", "apply_patch", "rg", "task", "task_complete"].sort())
+        || !Array.isArray(fixture.limitations) || !fixture.limitations.length
+        || !/^[0-9a-f-]{36}$/.test(fixture.summary_event_id)
+        || !/^[0-9a-f]{64}$/.test(fixture.summary_sha256)
+        || new Set(fixture.root_skills.map(item => item.native_event_id)).size !== 7) {
+      throw new Error("Invalid historical context locator");
+    }
+    const compiled = JSON.parse(execFileSync("python3", ["-I", "-c",
+      "import json,sys; sys.path.insert(0,sys.argv[1]); from session_restore import compile_task_snapshot; print(json.dumps(compile_task_snapshot(json.load(sys.stdin))))",
+      dirname(fileURLToPath(import.meta.url))], {
+      input: JSON.stringify(fixture.snapshot?.source), env: { PATH: process.env.PATH },
+      stdio: ["pipe", "pipe", "pipe"], maxBuffer: 8 * 1024 * 1024,
+    }));
+    if (!isDeepStrictEqual(compiled, fixture.snapshot)) throw new Error("Historical snapshot compilation differs");
+    return fixture;
+  }
   if (!fixture || !isDeepStrictEqual(Object.keys(fixture).sort(),
     ["schema_version", "summary_event_id", "summary_sha256", "post_event_ids"].sort())
       || fixture.schema_version !== 1 || typeof fixture.summary_event_id !== "string"
@@ -193,7 +220,8 @@ function contextFixture(config) {
 export function validateConfig(op, config) {
   if (!["setup", "observe", "cleanup", "candidate", "preflight"].includes(op)) throw new Error("Unknown operation");
   const selected = config?.profile !== undefined;
-  const keys = contextProfile(config) ? contextFields : selected ? [
+  const keys = contextProfile(config) ? [...contextFields,
+    ...(historicalProfile(config) ? ["candidate_permissions"] : [])] : selected ? [
     ...phaseFields, ...(Object.hasOwn(config, "candidate_permissions") ? ["candidate_permissions"] : []),
   ] : fields;
   if (!config || typeof config !== "object" || Array.isArray(config)
@@ -231,6 +259,10 @@ export function validateConfig(op, config) {
   if (op === "setup" && pathExists(goalPath)) throw new Error("Setup requires an absent native goal");
   validateOutput(config);
   if (contextProfile(config)) {
+    if (historicalProfile(config)) {
+      if (op === "candidate") throw new Error("Historical setup forbids model sends");
+      permissionProfile(config);
+    }
     if (pathExists(goalPath)) throw new Error("Context calibration requires an absent native goal");
     const roots = [config.home, config.os_home, config.cwd, config.plugin_path];
     requirePath(config.plugin_path, "directory");
@@ -587,7 +619,147 @@ export async function runProbe(op, config) {
     await call("tools.initializeAndValidate", undefined,
       () => session.rpc.tools.initializeAndValidate());
   };
+  const zeroRows = async (query, description) => {
+    const result = await execute("sql", { query, description });
+    if (result.toolTelemetry?.metrics?.rowsReturned !== 0) {
+      throw new Error(`${description}: mismatch or unavailable SQL row telemetry`);
+    }
+    return result;
+  };
+  const readEvents = async (cursor) => {
+    const events = [];
+    let more;
+    do {
+      const batch = await call("eventLog.read", { cursor, max: 1000, includeEphemeral: false },
+        () => session.rpc.eventLog.read({ cursor, max: 1000, includeEphemeral: false }));
+      if (!Array.isArray(batch?.events) || typeof batch.cursor !== "string"
+          || typeof batch.hasMore !== "boolean" || batch.cursorStatus !== "ok"
+          || (batch.hasMore && batch.cursor === cursor)
+          || batch.events.some(event => typeof event?.type !== "string" || typeof event.id !== "string"
+            || !event.data || typeof event.data !== "object")) throw new Error("Unknown native event cursor or batch");
+      events.push(...batch.events);
+      cursor = batch.cursor;
+      more = batch.hasMore;
+    } while (more);
+    return events;
+  };
+  const historicalSchema = async (snapshot, includeReceipts) => {
+    const tables = includeReceipts ? Object.keys(snapshot.schemas) : ["todos", "todo_deps"];
+    const normalize = value => value.toLowerCase().replace(/\s+/g, "");
+    for (const table of tables) {
+      await zeroRows(`SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name=${quoteSql(table)} AND lower(replace(replace(replace(replace(sql,' ',''),char(10),''),char(13),''),char(9),''))=${quoteSql(normalize(snapshot.schemas[table]))})`,
+        `Verify source ${table} schema including keys and constraints`);
+    }
+    await zeroRows("SELECT 1 FROM pragma_foreign_keys WHERE foreign_keys <> 1",
+      "Verify native foreign key enforcement");
+  };
+  const installHistoricalSnapshot = async () => {
+    const fixture = contextFixture(config);
+    const before = {
+      goal: await call("autopilotObjective.getState", undefined, () => session.rpc.autopilotObjective.getState()),
+      todos: await call("plan.readSqlTodos", undefined, () => session.rpc.plan.readSqlTodos()),
+      schedules: await call("schedule.list", undefined, () => session.rpc.schedule.list()),
+    };
+    report.before = before;
+    if (before.goal?.state !== null || !Array.isArray(before.todos?.rows) || before.todos.rows.length
+        || !Array.isArray(before.schedules?.entries) || before.schedules.entries.length) {
+      throw new Error("Historical snapshot requires an empty goal-free dormant namespace");
+    }
+    await historicalSchema(fixture.snapshot, false);
+    await zeroRows("SELECT * FROM todo_deps", "Verify empty native dependencies");
+    await zeroRows("SELECT name FROM sqlite_master WHERE name='live_proof_receipts'",
+      "Verify absent source receipt table");
+    await execute("sql", { description: "Create source receipt schema",
+      query: fixture.snapshot.source.schemas.live_proof_receipts });
+    await historicalSchema(fixture.snapshot, true);
+    await execute("sql", { description: "Install explicit source task snapshot",
+      query: fixture.snapshot.transaction });
+    await call("mode.set", { mode: "autopilot" }, () => session.rpc.mode.set({ mode: "autopilot" }));
+  };
+  const observeHistorical = async () => {
+    const fixture = contextFixture(config);
+    const state = {
+      goal: await call("autopilotObjective.getState", undefined, () => session.rpc.autopilotObjective.getState()),
+      mode: await call("mode.get", undefined, () => session.rpc.mode.get()),
+      todos: await call("plan.readSqlTodos", undefined, () => session.rpc.plan.readSqlTodos()),
+      schedules: await call("schedule.list", undefined, () => session.rpc.schedule.list()),
+      context: {}, snapshot_checks: [], source_query_readbacks: [],
+    };
+    if (pathExists(report.goal_path) || state.goal?.state !== null || state.mode !== "autopilot"
+        || !Array.isArray(state.todos?.rows) || state.todos.rows.length !== fixture.snapshot.row_counts.todos
+        || !Array.isArray(state.schedules?.entries) || state.schedules.entries.length) {
+      throw new Error("Historical mode/task/goal/scheduler readback differs");
+    }
+    await historicalSchema(fixture.snapshot, true);
+    for (const query of fixture.snapshot.comparisons) {
+      state.snapshot_checks.push(await zeroRows(query, "Compare explicit source rows and insertion order"));
+    }
+    await zeroRows("PRAGMA foreign_key_check", "Verify native snapshot foreign keys");
+    for (const query of fixture.snapshot.queries) {
+      const result = await execute("sql", { description: "Read exact source task query", query: query.query });
+      state.source_query_readbacks.push(result);
+      if (result.textResultForLlm !== query.expected_text
+          || result.toolTelemetry?.metrics?.rowsReturned !== query.expected_rows) {
+        throw new Error("Exact source task query content/row count differs");
+      }
+    }
+    state.events = await call("session.getEvents", undefined, () => session.getEvents());
+    const prefix = parseDataJson(readFileSync(config.prefix_file, "utf8"));
+    const ids = new Set(prefix.map(event => event.id));
+    const observed = state.events.filter(event => ids.has(event.id));
+    if (!isDeepStrictEqual(observed, prefix)) throw new Error("Historical native root projection changed");
+    const summaryIndex = prefix.findIndex(event => event.id === fixture.summary_event_id);
+    const summary = prefix[summaryIndex];
+    if (summary?.type !== "session.compaction_complete" || summary.data?.success !== true
+        || createHash("sha256").update(summary.data.summaryContent).digest("hex") !== fixture.summary_sha256
+        || fixture.root_skills.slice(0, 6).some(item =>
+          prefix.findIndex(event => event.id === item.native_event_id) >= summaryIndex)
+        || prefix.findIndex(event => event.id === fixture.root_skills[6].native_event_id) <= summaryIndex) {
+      throw new Error("Historical summary/root skill role/order differs");
+    }
+    const checkInvoked = async label => {
+      const invoked = await call(`skills.getInvoked:${label}`, undefined, () => session.rpc.skills.getInvoked());
+      if (!Array.isArray(invoked?.skills) || invoked.skills.length !== 7
+          || invoked.skills.some((skill, index) => {
+            const expected = fixture.root_skills[index];
+            return skill.name !== expected.name || skill.path !== expected.native_path
+              || typeof skill.content !== "string"
+              || createHash("sha256").update(skill.content).digest("hex") !== expected.body_sha256;
+          })) throw new Error("Historical loaded root skill body/order differs or reader shape is unsupported");
+      return invoked;
+    };
+    state.invoked_before_reload = await checkInvoked("before-reload");
+    state.ensure_loaded = await call("skills.ensureLoaded", undefined, () => session.rpc.skills.ensureLoaded());
+    state.catalog = await call("skills.list", undefined, () => session.rpc.skills.list());
+    if (!Array.isArray(state.catalog?.skills) || fixture.root_skills.some(expected =>
+      !state.catalog.skills.some(skill => skill.name === expected.name))) {
+      throw new Error("Historical staged skill catalog is not visible");
+    }
+    state.reload = await call("skills.reload", undefined, () => session.rpc.skills.reload());
+    state.invoked_after_reload = await checkInvoked("after-reload");
+    state.tools = await call("tools.getCurrentMetadata", undefined, () => session.rpc.tools.getCurrentMetadata());
+    if (!Array.isArray(state.tools?.tools) || !isDeepStrictEqual(
+      state.tools.tools.map(tool => tool.name).sort(), [...fixture.required_tools].sort())) {
+      throw new Error("Historical root tools are unavailable under the selected runtime");
+    }
+    state.event_log = await readEvents();
+    if (!isDeepStrictEqual(state.event_log.filter(event => ids.has(event.id)), prefix)) {
+      throw new Error("Historical event log projection is incomplete or changed");
+    }
+    for (const name of ["getContextAttribution", "getContextHeaviestMessages", "activity", "isProcessing"]) {
+      const args = name === "getContextHeaviestMessages" ? { limit: 20 } : undefined;
+      state.context[name] = await call(`metadata.${name}`, args,
+        () => session.rpc.metadata[name](...(args ? [args] : [])));
+    }
+    state.context_initialized = state.context.getContextAttribution?.contextAttribution != null
+      && typeof state.context.getContextAttribution.contextAttribution === "object";
+    if (!state.context_initialized || state.context.isProcessing?.processing !== false) {
+      throw new Error("Historical context reader is uninitialized or processing");
+    }
+    return state;
+  };
   const observe = async (nativeSql = true) => {
+    if (historicalProfile(config)) return observeHistorical();
     if (contextProfile(config)) {
       const state = {
         goal: await call("autopilotObjective.getState", undefined, () => session.rpc.autopilotObjective.getState()),
@@ -665,7 +837,8 @@ export async function runProbe(op, config) {
     if (contextProfile(config)) {
       const state = await observe(false);
       return report.cleanup = { errors: [], todos: state.todos, schedules: state.schedules,
-        dependencies_empty: state.dependencies_empty, goal: state.goal, mode: state.mode, context: state.context };
+        dependencies_empty: state.dependencies_empty, goal: state.goal, mode: state.mode, context: state.context,
+        ...(historicalProfile(config) ? { residual_namespace_preserved: true } : {}) };
     }
     const result = { errors: [] };
     report.cleanup = result;
@@ -729,23 +902,6 @@ export async function runProbe(op, config) {
   };
   const candidate = async () => {
     const hash = content => createHash("sha256").update(content).digest("hex");
-    const readEvents = async (cursor) => {
-      const events = [];
-      let more;
-      do {
-        const batch = await call("eventLog.read", { cursor, max: 1000, includeEphemeral: false },
-          () => session.rpc.eventLog.read({ cursor, max: 1000, includeEphemeral: false }));
-        if (!Array.isArray(batch?.events) || typeof batch.cursor !== "string"
-            || typeof batch.hasMore !== "boolean" || batch.cursorStatus !== "ok"
-            || (batch.hasMore && batch.cursor === cursor)
-            || batch.events.some(event => typeof event?.type !== "string" || typeof event.id !== "string"
-              || !event.data || typeof event.data !== "object")) throw new Error("Unknown native event cursor or batch");
-        events.push(...batch.events);
-        cursor = batch.cursor;
-        more = batch.hasMore;
-      } while (more);
-      return events;
-    };
     report.prefix_before = await readEvents();
     if (selected) {
       const imported = JSON.parse(readFileSync(config.prefix_file, "utf8"));
@@ -1058,6 +1214,10 @@ export async function runProbe(op, config) {
         "Public send/native idle correlation and full caller completion require Actions proof",
         "Model deadline uses the remaining 330-second owner budget, capped at 300 seconds, reserving 30 seconds under the 360-second helper watchdog",
       ];
+      if (historicalProfile(config)) {
+        report.provenance = "source-bound-historical";
+        report.limits = contextFixture(config).limitations;
+      }
     }
     validateOutput(config);
     receipt = openSync(config.output, "wx", 0o600);
@@ -1132,8 +1292,13 @@ export async function runProbe(op, config) {
     await connect();
     if (contextProfile(config) && !isCandidate) {
       if (op === "setup") {
-        await call("mode.set", { mode: "interactive" }, () => session.rpc.mode.set({ mode: "interactive" }));
-        report.before = await observe(false);
+        if (historicalProfile(config)) {
+          await installHistoricalSnapshot();
+          report.warm = await observe(false);
+        } else {
+          await call("mode.set", { mode: "interactive" }, () => session.rpc.mode.set({ mode: "interactive" }));
+          report.before = await observe(false);
+        }
         await stop();
         if (report.error) throw new Error("Context warm producer shutdown failed");
         await connect();

@@ -5,6 +5,65 @@ a reproducible evaluation case. Capture first, select evidence second. Do not
 construct the candidate packet while searching, because later corrections can
 leak into an earlier blind phase.
 
+## Source-bound native context setup
+
+The existing `_run_native_context_calibration` coordinator accepts an owner-only
+historical fixture with `schema_version: 2` and
+`provenance: "source-bound-historical"`. This selects the
+`native-historical-context` helper profile. It prepares context only and refuses
+`model_send=True` and the helper's `candidate` operation. A successful setup
+receipt does not admit a historical behavioral run.
+
+The fixture contains:
+
+- `records`: the public semantic header and root messages, requests and results.
+  The header's `createdAt` is the original creation timestamp.
+- `source_mapping`: ordered source event groups with `event_id`, `native_type`
+  and `record_indices`. Indices include the header at zero; each conversation
+  record appears exactly once. One assistant group may contain its message and
+  several tool requests.
+- `summary` and `summary_timestamp`: separate native summary content and time,
+  never an invented user or assistant turn.
+- `skill_events`: recorded `source_event`, `actor_scope`, `position` and
+  `body_sha256`. Six root events precede the summary. One root event has
+  `position: "post-compaction"` and `records_before` equal to the last record
+  index of its preceding source group. Child events remain provenance only.
+  Optional `relocated_path` changes only the staged path, not the loaded body.
+- `snapshot`: `schemas`, explicit `rows`, and four `queries`. Table names are
+  `todos`, `todo_deps` and `live_proof_receipts`. Every row supplies every column,
+  including NULLs and timestamps. Each query supplies `query`, `expected_text`
+  and `expected_rows`; the text binds the source SQL tool's
+  `textResultForLlm`, not a newly rendered answer.
+- `restoration`: `source_session_id`, excluded `cutoff_event_id` and
+  `skill_context: "recorded-target-context"`.
+- `required_tools`: `skill`, `view`, `sql`, `manage_schedule`, `bash`,
+  `apply_patch`, `rg`, `task` and `task_complete`.
+- `personal_instructions`, `candidate_permissions` and nonempty `limitations`.
+  Permissions use the existing literal write-path and shell-command contract.
+
+The public importer exits before the native stager writes any events. The
+stager compares the generated root groups, maps source calls to native call
+IDs, preserves failed results and their error messages, and inserts only
+source-bound summary and skill events. It refuses unknown layouts or ambiguous
+insertion boundaries.
+
+The connected helper checks empty state and actual table schemas, creates the
+source receipt table, and installs one transaction through the existing SQL
+tool. It selects autopilot mode without creating a goal or schedules. Warm and
+cold checks compare explicit rows and insertion order, all four source queries,
+summary and root event identity, loaded skill bodies before and after definition
+reload, catalog visibility, tool metadata and initialized context readers.
+The existing zero-send preflight retains normal permission checks.
+
+Retain the input hashes, importer receipt, staged journal, source-to-native
+mapping, helper calls, first error and shutdown results outside candidate
+evidence. Cleanup stops only the owned producer and leaves the isolated
+historical namespace available for inspection. Memory SQL checks and mocked
+SDK tests establish source contracts only. Native schema and reader
+compatibility, required-operation permissions, source counts and behavioral
+environment fit still need their own acceptance evidence. Do not infer goals,
+timers, unknown effort, other tables or live filesystem availability.
+
 ## 1. Define the event boundary
 
 Write the question the case tests, the actor whose session is authoritative,

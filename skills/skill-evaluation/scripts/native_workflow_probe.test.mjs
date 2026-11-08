@@ -108,6 +108,16 @@ export class CopilotClient {
               sourcePath: path, content: readFileSync(path, "utf8"), type: "home", location: "user" }] };
           },
         },
+        skills: {
+          getInvoked: async () => ({ skills: structuredClone(state.invokedSkills ?? []) }),
+          ensureLoaded: async () => ({ loaded: true }),
+          list: async () => ({ skills: structuredClone(state.invokedSkills ?? []) }),
+          reload: async () => {
+            state.reloads = (state.reloads ?? 0) + 1;
+            if (state.refreshLoadedBodies) state.invokedSkills[0].content = "Unexpected fresh body";
+            return {};
+          },
+        },
         model: { getCurrent: async () => state.modelOverride ?? ({ modelId: options.model, reasoningEffort: options.reasoningEffort }) },
         autopilotObjective: { getState: async () => ({ state: current && {
           id: current.id, objective: current.objective, status: current.status,
@@ -425,6 +435,105 @@ async function contextFixture(t) {
   state.events = events;
   return { ...owned, config: selected, state };
 }
+
+async function historicalContextFixture(t) {
+  const owned = await contextFixture(t);
+  const { config, state } = owned;
+  config.profile = "native-historical-context";
+  config.candidate_permissions = { write_paths: [], shell_commands: [] };
+  const compiled = spawnSync("python3", ["-c",
+    "import json; from test_skill_eval import historical_snapshot_fixture; from session_restore import compile_task_snapshot; print(json.dumps(compile_task_snapshot(historical_snapshot_fixture())))"],
+    { cwd: resolve("skills/skill-evaluation/scripts"), encoding: "utf8", env: { PATH: process.env.PATH } });
+  assert.equal(compiled.status, 0, compiled.stderr);
+  const snapshot = JSON.parse(compiled.stdout);
+  const skills = Array.from({ length: 7 }, (_, index) => ({
+    id: randomUUID(), type: "skill.invoked", data: {
+      name: `synthetic-${index}`, content: `Synthetic retained body ${index}`, path: `synthetic/${index}/SKILL.md`,
+    },
+  }));
+  const original = state.events;
+  state.events = [
+    { id: randomUUID(), type: "session.start", data: { sessionId: config.session_id } },
+    ...skills.slice(0, 6), original[1], original[2], skills[6], original[3],
+  ];
+  state.invokedSkills = skills.map(event => event.data);
+  writeFileSync(config.prefix_file, JSON.stringify(state.events));
+  writeFileSync(config.context_fixture_file, JSON.stringify({
+    schema_version: 2, summary_event_id: original[1].id,
+    summary_sha256: createHash("sha256").update(original[1].data.summaryContent).digest("hex"),
+    post_event_ids: original.slice(2).map(event => event.id),
+    root_skills: skills.map(event => ({
+      source_event_id: randomUUID(), native_event_id: event.id, name: event.data.name,
+      body_sha256: createHash("sha256").update(event.data.content).digest("hex"),
+      source_path: event.data.path, native_path: event.data.path,
+    })),
+    correspondence: [{ source_record_id: "synthetic-user", record_index: 1, native_event_id: original[2].id }],
+    tool_call_ids: {}, snapshot,
+    required_tools: ["skill", "view", "sql", "manage_schedule", "bash", "apply_patch", "rg", "task", "task_complete"],
+    limitations: ["Synthetic mocked consumer only. Original goal, timers, effort and other tables are unavailable."],
+  }));
+  state.toolExecuteHook = ({ name, args }) => {
+    if (name !== "sql") return undefined;
+    if (args.query === snapshot.transaction) {
+      state.rows = structuredClone(snapshot.source.rows.todos);
+      state.transactions = (state.transactions ?? 0) + 1;
+    }
+    const source = snapshot.queries.find(item => item.query === args.query);
+    const mismatch = state.schemaMismatch && args.description.includes("schema")
+      || state.coldMismatch && state.starts > 1 && args.description.includes("insertion order");
+    return { resultType: "success", textResultForLlm: state.queryMismatch ? "Changed" : source?.expected_text ?? "",
+      toolTelemetry: { metrics: { rowsReturned: mismatch ? 1 : source?.expected_rows ?? 0 } } };
+  };
+  return { ...owned, snapshot };
+}
+
+test("historical context installs snapshot through connected SQL and checks warm/cold without sending", async t => {
+  const { config, state, root, snapshot } = await historicalContextFixture(t);
+  const setup = await runProbe("setup", config);
+  assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
+  assert.equal(state.starts, 2);
+  assert.equal(state.transactions, 1);
+  assert.equal(state.reloads, 2);
+  assert.equal(state.sendCalls, 0);
+  assert.equal(state.owners, 0);
+  assert.equal(state.mode, "autopilot");
+  assert.deepEqual(state.rows, snapshot.source.rows.todos);
+  assert.equal(setup.warm.source_query_readbacks.length, 4);
+  assert.equal(setup.source_query_readbacks.length, 4);
+  assert.ok(state.resumes.every(options => options.continuePendingWork === false
+    && options.suppressResumeEvent === true && options.allowTranscriptRecovery === false));
+  const preflight = await runProbe("preflight", { ...config, output: join(root, "historical-preflight.json") });
+  assert.equal(preflight.status, "PREFLIGHT_OBSERVED", preflight.error?.message);
+  assert.equal(preflight.model_send_calls, 0);
+  assert.equal(state.sendCalls, 0);
+  const cleanup = await runProbe("cleanup", { ...config, output: join(root, "historical-cleanup.json") });
+  assert.equal(cleanup.status, "CLEANED", cleanup.error?.message);
+  assert.equal(cleanup.cleanup.residual_namespace_preserved, true);
+  assert.deepEqual(state.rows, snapshot.source.rows.todos);
+  assert.throws(() => validateConfig("candidate", config), /forbids model sends/);
+});
+
+test("historical context refuses schema/query/cold/loaded-body mismatches with original error and no send", async t => {
+  for (const failure of ["schemaMismatch", "queryMismatch", "coldMismatch", "refreshLoadedBodies"]) {
+    await t.test(failure, async t => {
+      const { config, state } = await historicalContextFixture(t);
+      state[failure] = true;
+      const report = await runProbe("setup", config);
+      assert.equal(report.status, "ERROR");
+      assert.match(report.error?.message ?? "", {
+        schemaMismatch: /schema.*mismatch/,
+        queryMismatch: /Exact source task query/,
+        coldMismatch: /insertion order.*mismatch/,
+        refreshLoadedBodies: /loaded root skill body\/order/,
+      }[failure]);
+      assert.equal(state.sendCalls, 0);
+      assert.equal(state.owners, 0);
+      assert.deepEqual(report.shutdown_errors, []);
+      if (failure === "schemaMismatch") assert.equal(state.transactions, undefined);
+      if (failure === "coldMismatch") assert.equal(state.starts, 2);
+    });
+  }
+});
 
 test("goal-free context profile has exact keys while incumbent missing-goal refusal remains", async t => {
   const { config, root, goalPath, state } = await contextFixture(t);

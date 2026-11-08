@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import shlex
+import sqlite3
 import subprocess
 import uuid
 from pathlib import Path, PurePosixPath
@@ -13,6 +14,161 @@ from pathlib import Path, PurePosixPath
 
 FIELDS = {"history_file", "source_session_id", "cutoff_event_id", "skill_context", "limitations"}
 OPTIONAL_FIELDS = {"personal_instructions_file"}
+
+
+def semantic_projection(records: list[dict]) -> list[dict]:
+    """Validate and project public root records without importing a native session."""
+    if (not isinstance(records, list) or not records
+            or records[0].get("type") != "session" or records[0].get("version") != 1
+            or not isinstance(records[0].get("externalId"), str)
+            or not isinstance(records[0].get("createdAt"), str)):
+        raise ValueError("Invalid public semantic session header")
+    result, ids, calls, completed = [], set(), set(), set()
+    for record in records[1:]:
+        if (not isinstance(record, dict) or not isinstance(record.get("id"), str)
+                or record["id"] in ids or record.get("agentId")
+                or record.get("parentToolCallId")):
+            raise ValueError("Invalid, duplicate or non-root semantic record")
+        ids.add(record["id"])
+        kind = record.get("type")
+        if kind == "message":
+            parts = record.get("content")
+            if (record.get("role") not in {"user", "assistant"} or not isinstance(parts, list)
+                    or any(not isinstance(part, dict) or set(part) != {"type", "text"}
+                           or part["type"] != "text" or not isinstance(part["text"], str)
+                           for part in parts)):
+                raise ValueError("Unsupported public message content")
+            projected = {"type": kind, "role": record["role"],
+                         "content": "".join(part["text"] for part in parts)}
+        elif kind == "tool-call":
+            if not isinstance(record.get("name"), str) or not isinstance(record.get("arguments"), dict):
+                raise ValueError("Invalid public tool request")
+            calls.add(record["id"])
+            projected = {"type": kind, "id": record["id"], "name": record["name"],
+                         "arguments": record["arguments"]}
+        elif kind == "tool-result":
+            call_id = record.get("toolCallId")
+            if (call_id not in calls or call_id in completed
+                    or type(record.get("success")) is not bool
+                    or not isinstance(record.get("content"), str)):
+                raise ValueError("Invalid, reordered or duplicate public tool result")
+            completed.add(call_id)
+            projected = {"type": kind, "toolCallId": call_id, "success": record["success"],
+                         "content": record["content"]}
+        else:
+            raise ValueError("Unsupported public semantic record")
+        result.append(projected)
+    if calls != completed:
+        raise ValueError("Incomplete public tool request/result correspondence")
+    return result
+
+
+SNAPSHOT_COLUMNS = {
+    "todos": ["id", "title", "description", "status", "created_at", "updated_at"],
+    "todo_deps": ["todo_id", "depends_on"],
+    "live_proof_receipts": ["claim_id", "status", "scenario", "artifact_path",
+                            "candidate_identity", "running_identity", "updated_at"],
+}
+
+
+def compile_task_snapshot(snapshot: dict) -> dict:
+    """Compile explicit source rows; an in-memory check is not native consumption."""
+    if (not isinstance(snapshot, dict) or set(snapshot) != {"schemas", "rows", "queries"}
+            or set(snapshot["schemas"]) != set(SNAPSHOT_COLUMNS)
+            or set(snapshot["rows"]) != set(SNAPSHOT_COLUMNS)
+            or not isinstance(snapshot["queries"], list) or len(snapshot["queries"]) != 4):
+        raise ValueError("Invalid historical task snapshot shape")
+    def quote(value):
+        if value is None:
+            return "NULL"
+        if not isinstance(value, str) or "\0" in value:
+            raise ValueError("Snapshot values must be explicit text or NULL")
+        return "'" + value.replace("'", "''") + "'"
+
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.execute("PRAGMA foreign_keys=ON")
+        for table, columns in SNAPSHOT_COLUMNS.items():
+            schema = snapshot["schemas"][table]
+            if not isinstance(schema, str) or not re.match(
+                    rf"^\s*CREATE TABLE (?:IF NOT EXISTS )?{table}\s*\(", schema, re.I):
+                raise ValueError("Snapshot schema must create only its declared table")
+            connection.execute(schema)
+            info = connection.execute(f"PRAGMA table_info({table})").fetchall()
+            if [row[1] for row in info] != columns or any(row[2].upper() != "TEXT" for row in info):
+                raise ValueError("Snapshot columns/types differ from the source contract")
+            primary = [row[1] for row in sorted(info, key=lambda row: row[5]) if row[5]]
+            expected_primary = columns if table == "todo_deps" else columns[:1]
+            if primary != expected_primary:
+                raise ValueError("Snapshot primary keys differ from the source contract")
+            required = {"todos": {"title"}, "todo_deps": set(columns),
+                        "live_proof_receipts": {"status", "scenario", "artifact_path"}}[table]
+            if {row[1] for row in info if row[3]} != required:
+                raise ValueError("Snapshot NOT NULL constraints differ from source")
+        foreign = connection.execute("PRAGMA foreign_key_list(todo_deps)").fetchall()
+        if ({(row[2], row[3], row[4]) for row in foreign}
+                != {("todos", "todo_id", "id"), ("todos", "depends_on", "id")}
+                or len(foreign) != 2):
+            raise ValueError("Snapshot foreign keys differ from source")
+        try:
+            connection.execute("INSERT INTO todos(id,title,status) VALUES('check','check','invalid')")
+        except sqlite3.IntegrityError:
+            pass
+        else:
+            raise ValueError("Snapshot status CHECK is missing")
+        transaction = ["BEGIN;"]
+        comparisons = []
+        counts = {}
+        for table, columns in SNAPSHOT_COLUMNS.items():
+            rows = snapshot["rows"][table]
+            if not isinstance(rows, list) or not rows:
+                raise ValueError("Historical snapshot tables must have explicit rows")
+            values = []
+            for ordinal, row in enumerate(rows, 1):
+                if not isinstance(row, dict) or set(row) != set(columns):
+                    raise ValueError("Snapshot row omits or adds columns")
+                encoded = ",".join(quote(row[column]) for column in columns)
+                statement = f"INSERT INTO {table} ({','.join(columns)}) VALUES ({encoded});"
+                connection.execute(statement)
+                transaction.append(statement)
+                values.append(f"({ordinal},{encoded})")
+            counts[table] = len(rows)
+            fields = "ordinal," + ",".join(columns)
+            actual = "rowid," + ",".join(columns)
+            comparisons.append(
+                f"WITH expected({fields}) AS (VALUES {','.join(values)}), "
+                f"missing AS (SELECT * FROM expected EXCEPT SELECT {actual} FROM {table}), "
+                f"extra AS (SELECT {actual} FROM {table} EXCEPT SELECT * FROM expected) "
+                "SELECT * FROM missing UNION ALL SELECT * FROM extra")
+        if connection.execute("PRAGMA foreign_key_check").fetchall():
+            raise ValueError("Snapshot foreign key violations")
+        for query in snapshot["queries"]:
+            if (not isinstance(query, dict) or set(query) != {"query", "expected_text", "expected_rows"}
+                    or not isinstance(query["query"], str)
+                    or not re.match(r"^\s*(SELECT|WITH)\b", query["query"], re.I)
+                    or not isinstance(query["expected_text"], str)
+                    or type(query["expected_rows"]) is not int or query["expected_rows"] < 0):
+                raise ValueError("Invalid source query readback")
+            connection.set_authorizer(lambda action, *args:
+                sqlite3.SQLITE_OK if action in {
+                    sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION,
+                    sqlite3.SQLITE_RECURSIVE,
+                } else sqlite3.SQLITE_DENY)
+            try:
+                if len(connection.execute(query["query"]).fetchall()) != query["expected_rows"]:
+                    raise ValueError("Source query row count differs from snapshot")
+            finally:
+                connection.set_authorizer(None)
+        schemas = dict(connection.execute(
+            "SELECT name,sql FROM sqlite_master WHERE type='table'").fetchall())
+        transaction.append("COMMIT;")
+        return {"schemas": schemas, "transaction": "\n".join(transaction),
+                "comparisons": comparisons, "row_counts": counts, "queries": snapshot["queries"],
+                "source": snapshot}
+    except sqlite3.Error as error:
+        raise ValueError(f"Invalid historical snapshot SQL: {error}") from error
+    finally:
+        connection.close()
 
 
 def relative_path(value: object) -> str:

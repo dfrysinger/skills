@@ -1708,10 +1708,16 @@ def evidence_list(manifest: dict) -> str:
 
 
 def _native_workflow_probe(operation: str, config: dict) -> dict:
-    if config.get("profile") == "native-context-calibration" and set(config) != {
+    context_profile = config.get("profile") in {"native-context-calibration", "native-historical-context"}
+    context_keys = {
         "cli", "sdk", "home", "os_home", "cwd", "session_id", "output", "profile",
         "prompt_path", "event_log", "plugin_path", "model", "effort", "prefix_file", "context_fixture_file",
-    }:
+    }
+    if config.get("profile") == "native-historical-context":
+        context_keys.add("candidate_permissions")
+        if operation == "candidate":
+            raise ValueError("Historical context setup cannot send a model request")
+    if context_profile and set(config) != context_keys:
         raise ValueError("Expected only the fixed native context coordinator fields")
     output = Path(config["output"])
     if output.exists() or output.is_symlink():
@@ -1726,6 +1732,11 @@ def _native_workflow_probe(operation: str, config: dict) -> dict:
     output.with_suffix(".stdout.log").write_bytes(completed.stdout)
     output.with_suffix(".stderr.log").write_bytes(completed.stderr)
     if completed.returncode != 0 and operation not in {"candidate", "preflight"}:
+        if config.get("profile") == "native-historical-context" and output.is_file() and not output.is_symlink():
+            failed = read_json(output)
+            error = failed.get("firsterror") or failed.get("error", {}).get("message")
+            if error:
+                raise ValueError(error)
         raise ValueError(f"native {operation} exited {completed.returncode}; see {output}")
     if output.is_symlink() or not output.is_file():
         raise ValueError(f"native {operation} produced no regular receipt")
@@ -1747,7 +1758,7 @@ def _native_workflow_probe(operation: str, config: dict) -> dict:
                         "permission_traversal", "prefix_preserved"))
                     or ("profile" in config and result.get("checks", {}).get(
                         "imported_prefix_correspondence") is not True)
-                    or (config.get("profile") == "native-context-calibration" and (
+                    or (context_profile and (
                         result.get("checks", {}).get("context_summary_order") is not True
                         or result.get("context_initialized") is not True))))):
             raise ValueError("native candidate receipt did not verify conditional model execution")
@@ -2313,8 +2324,98 @@ class NativeContextSetupError(ValueError):
     code = "NATIVE_CONTEXT_SETUP_UNSUPPORTED"
 
 
+def _historical_native_layout(events: list[dict], historical: dict, schema_text: str) -> tuple:
+    from session_restore import semantic_projection
+
+    records = historical["records"]
+    projection = semantic_projection(records)
+    groups = historical["source_mapping"]
+    indices = [index for group in groups for index in group["record_indices"]]
+    if indices != list(range(1, len(records))):
+        raise NativeContextSetupError("Historical source grouping is missing, duplicate or reordered")
+    native = [event for event in events if event["type"] != "session.shutdown"][1:]
+    if (len(native) != len(groups) or events[0]["timestamp"] != records[0]["createdAt"]
+            or any(event["type"] not in {"session.start", "session.shutdown", "user.message",
+                                        "assistant.message", "tool.execution_complete"} for event in events)):
+        raise NativeContextSetupError("Unknown historical imported root layout/creation timestamp")
+    correspondence, call_ids, boundaries = [], {}, {}
+    for event, group in zip(native, groups):
+        expected = [projection[index - 1] for index in group["record_indices"]]
+        data = event["data"]
+        if (event["type"] != group["native_type"] or data.get("parentToolCallId")
+                or data.get("agentId")
+                or ("timestamp" in group and event["timestamp"] != group["timestamp"])):
+            raise NativeContextSetupError("Historical actor/type differs from source binding")
+        if event["type"] in {"user.message", "assistant.message"}:
+            messages = [item for item in expected if item["type"] == "message"]
+            requests = [item for item in expected if item["type"] == "tool-call"]
+            actual = data.get("toolRequests") or []
+            if (len(messages) > 1 or len(messages) + len(requests) != len(expected)
+                    or (messages and expected[0] is not messages[0])
+                    or any(item["role"] + ".message" != event["type"] for item in messages)
+                    or data.get("content", "") != (messages[0]["content"] if messages else "")
+                    or not isinstance(actual, list) or len(actual) != len(requests)):
+                raise NativeContextSetupError("Historical message/request grouping differs from source")
+            for source, request in zip(requests, actual):
+                tool_id = request.get("toolCallId")
+                if (request.get("name") != source["name"] or request.get("arguments") != source["arguments"]
+                        or not isinstance(tool_id, str) or tool_id in call_ids.values()):
+                    raise NativeContextSetupError("Changed or ambiguous historical tool request")
+                call_ids[source["id"]] = tool_id
+        elif event["type"] == "tool.execution_complete":
+            if len(expected) != 1 or expected[0]["type"] != "tool-result":
+                raise NativeContextSetupError("Historical result grouping differs from source")
+            source = expected[0]
+            result = data.get("result")
+            content = result.get("content") if isinstance(result, dict) else None
+            if not source["success"]:
+                content = data.get("error", {}).get("message") if isinstance(data.get("error"), dict) else None
+            if (data.get("toolCallId") != call_ids.get(source["toolCallId"])
+                    or data.get("success") is not source["success"] or content != source["content"]):
+                raise NativeContextSetupError("Historical result/status/error differs from source")
+        else:
+            raise NativeContextSetupError("Unsupported historical source role")
+        boundary = group["record_indices"][-1]
+        boundaries[boundary] = events.index(event) + 1
+        correspondence.extend({"source_record_id": records[index]["id"], "record_index": index,
+                               "native_event_id": event["id"]} for index in group["record_indices"])
+    skill_schema = re.search(r"export interface SkillInvokedEvent \{(.*?)\n\}", schema_text, re.S)
+    skill_data = re.search(r"export interface SkillInvokedData \{(.*?)\n\}", schema_text, re.S)
+    if (skill_schema is None or skill_data is None or 'type: "skill.invoked";' not in skill_schema[1]
+            or any(field not in skill_data[1] for field in ("name: string;", "path: string;", "content: string;"))):
+        raise NativeContextSetupError("Unknown native skill invocation schema")
+    insertions = {1: []}
+    root = []
+    for item in historical["skill_events"]:
+        if item["actor_scope"] == "child":
+            continue
+        source = item["source_event"]
+        data = source["data"]
+        if (source["type"] != "skill.invoked" or not isinstance(data.get("content"), str)
+                or hashlib.sha256(data["content"].encode()).hexdigest() != item["body_sha256"]
+                or not isinstance(data.get("name"), str) or not isinstance(data.get("path"), str)):
+            raise NativeContextSetupError("Historical root skill body/role binding differs")
+        position = item["position"]
+        boundary = 1 if position == "pre-compaction" else boundaries.get(item.get("records_before"))
+        if boundary is None or (position == "post-compaction" and boundary <= 1):
+            raise NativeContextSetupError("Historical skill boundary is missing or ambiguous")
+        staged = {key: source[key] for key in ("type", "timestamp", "data")}
+        staged.update(id=str(uuid.uuid4()), parentId=None)
+        if item.get("relocated_path") is not None:
+            staged["data"] = {**data, "path": item["relocated_path"]}
+        insertions.setdefault(boundary, []).append(staged)
+        root.append({"source_event_id": source["id"], "native_event_id": staged["id"],
+                     "name": data["name"], "body_sha256": item["body_sha256"],
+                     "source_path": data["path"], "native_path": staged["data"]["path"]})
+    if (len(root) != 7 or len(insertions[1]) != 6
+            or len({item["source_event_id"] for item in root}) != 7):
+        raise NativeContextSetupError("Historical context requires six prior and one later root skill")
+    return insertions, correspondence, root, call_ids
+
+
 def _stage_native_context(*, home: Path, session_id: str, sdk: Path, owner: Path,
-                          messages: list[dict], summary: str) -> dict:
+                          messages: list[dict] | None = None, summary: str,
+                          historical: dict | None = None) -> dict:
     def refuse(message):
         raise NativeContextSetupError(message)
 
@@ -2368,6 +2469,66 @@ def _stage_native_context(*, home: Path, session_id: str, sdk: Path, owner: Path
         previous_timestamp = timestamp
     if events[0]["type"] != "session.start" or events[0]["data"].get("sessionId") != session_id:
         refuse("Native journal session identity is unknown")
+    if historical is not None:
+        insertions, correspondence, skills, call_ids = _historical_native_layout(events, historical, schema_text)
+        summary_id = str(uuid.uuid4())
+        record = {
+            "id": summary_id, "type": "session.compaction_complete", "parentId": None,
+            "timestamp": historical["summary_timestamp"],
+            "data": {"success": True, "summaryContent": summary},
+        }
+        insertions[1].append(record)
+        staged, chunks, previous = [], [], None
+        encoded = lambda event: (json.dumps(event, ensure_ascii=False) + "\n").encode()
+        for index, event in enumerate(events):
+            for added in insertions.get(index, []):
+                added = {**added, "parentId": previous}
+                chunks.append(encoded(added))
+                staged.append(added)
+                previous = added["id"]
+            linked = event if event["parentId"] == previous else {**event, "parentId": previous}
+            chunks.append(lines[index] if linked is event else encoded(linked))
+            staged.append(linked)
+            previous = linked["id"]
+        for added in insertions.get(len(events), []):
+            added = {**added, "parentId": previous}
+            chunks.append(encoded(added))
+            staged.append(added)
+            previous = added["id"]
+        try:
+            timestamps = [datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+                          for event in staged]
+            if any(value.tzinfo is None for value in timestamps) or timestamps != sorted(timestamps):
+                refuse("Historical staged event chronology differs from the source boundary")
+        except (ValueError, TypeError, AttributeError):
+            refuse("Historical staged timestamp is unsupported")
+        after = b"".join(chunks)
+        locator = {
+            "schema_version": 2, "summary_event_id": summary_id,
+            "summary_sha256": hashlib.sha256(summary.encode()).hexdigest(),
+            "post_event_ids": [item["native_event_id"] for item in correspondence
+                               if historical["records"][item["record_index"]]["type"] == "message"],
+            "root_skills": skills, "correspondence": correspondence, "tool_call_ids": call_ids,
+            "snapshot": historical["snapshot"], "required_tools": historical["required_tools"],
+            "limitations": historical["limitations"],
+        }
+        for name, content in (
+            ("journal-before.jsonl", before), ("journal-staged.jsonl", after),
+            ("imported-prefix.json", (json.dumps(staged) + "\n").encode()),
+            ("context-fixture.json", (json.dumps(locator) + "\n").encode()),
+        ):
+            with (owner / name).open("xb") as stream:
+                stream.write(content)
+            (owner / name).chmod(0o600)
+        write_json(owner / "staging.json", {
+            "schema_sha256": digest(schema), "journal_before_sha256": hashlib.sha256(before).hexdigest(),
+            "journal_staged_sha256": hashlib.sha256(after).hexdigest(),
+            "claim": "Source-bound staging only; historical native consumption is unproved",
+        })
+        if journal.read_bytes() != before:
+            refuse("Native journal changed before sequential writer handoff")
+        journal.write_bytes(after)
+        return locator
     conversation = [event for event in events if event["type"] in {"user.message", "assistant.message"}]
     if (len(conversation) != 4
             or any(event["type"] != message["role"] + ".message"
@@ -2413,6 +2574,57 @@ def _stage_native_context(*, home: Path, session_id: str, sdk: Path, owner: Path
         refuse("Native journal changed before sequential writer handoff")
     journal.write_bytes(after)
     return locator
+
+
+def _validate_historical_context_fixture(fixture: dict) -> dict:
+    from session_restore import compile_task_snapshot, semantic_projection, permission_rules
+
+    keys = {"schema_version", "provenance", "records", "source_mapping", "summary",
+            "summary_timestamp", "skill_events", "snapshot", "required_tools", "limitations",
+            "restoration", "personal_instructions", "candidate_permissions"}
+    if (not isinstance(fixture, dict) or set(fixture) != keys or fixture["schema_version"] != 2
+            or fixture["provenance"] != "source-bound-historical"
+            or any(not isinstance(fixture[key], str) or not fixture[key].strip()
+                   for key in ("summary", "summary_timestamp", "personal_instructions"))
+            or not isinstance(fixture["limitations"], list) or not fixture["limitations"]
+            or any(not isinstance(value, str) or not value.strip() for value in fixture["limitations"])
+            or not isinstance(fixture["source_mapping"], list)
+            or not isinstance(fixture["skill_events"], list)):
+        raise ValueError("Invalid source-bound historical context fixture")
+    semantic_projection(fixture["records"])
+    restoration = fixture["restoration"]
+    if (not isinstance(restoration, dict) or set(restoration) != {
+            "source_session_id", "cutoff_event_id", "skill_context"}
+            or restoration["skill_context"] != "recorded-target-context"
+            or restoration["source_session_id"] != fixture["records"][0]["externalId"]
+            or any(not isinstance(value, str) or not value for value in restoration.values())
+            or any(record.get("id") == restoration["cutoff_event_id"] for record in fixture["records"])):
+        raise ValueError("Historical source/cutoff/recorded context binding differs")
+    for group in fixture["source_mapping"]:
+        if (not isinstance(group, dict) or not {"record_indices", "native_type", "event_id"} <= group.keys()
+                or not isinstance(group["record_indices"], list) or not group["record_indices"]
+                or any(type(index) is not int for index in group["record_indices"])):
+            raise ValueError("Invalid historical source grouping")
+    if [index for group in fixture["source_mapping"] for index in group["record_indices"]] != list(
+            range(1, len(fixture["records"]))):
+        raise ValueError("Historical source grouping must cover each root record once in order")
+    root = []
+    for item in fixture["skill_events"]:
+        if (not isinstance(item, dict) or not {"source_event", "actor_scope", "position", "body_sha256"} <= item.keys()
+                or item["actor_scope"] not in {"root", "child"}
+                or item["position"] not in {"pre-compaction", "post-compaction"}
+                or not isinstance(item["source_event"], dict)):
+            raise ValueError("Invalid historical skill actor binding")
+        if item["actor_scope"] == "root":
+            root.append(item)
+    if [item["position"] for item in root] != ["pre-compaction"] * 6 + ["post-compaction"]:
+        raise ValueError("Historical context requires six prior and one later root skills")
+    allowed = {"skill", "view", "sql", "manage_schedule", "bash", "apply_patch", "rg", "task", "task_complete"}
+    if (not isinstance(fixture["required_tools"], list)
+            or set(fixture["required_tools"]) != allowed or len(fixture["required_tools"]) != len(allowed)):
+        raise ValueError("Historical root tool contract is incomplete")
+    permission_rules(fixture["candidate_permissions"])
+    return {**fixture, "snapshot": compile_task_snapshot(fixture["snapshot"])}
 
 
 def _native_context_oracle(candidate: dict, expected: dict) -> dict:
@@ -2476,7 +2688,12 @@ def _run_native_context_calibration(
                 or fixture_file.stat().st_mode & 0o077):
             raise ValueError("Context fixture requires an owner-only unaliased single-link file")
         fixture = read_owner_json(fixture_file)
-        if (not isinstance(fixture, dict) or set(fixture) != {
+        historical = isinstance(fixture, dict) and fixture.get("provenance") == "source-bound-historical"
+        if historical:
+            if model_send:
+                raise ValueError("Historical context setup forbids model sends")
+            fixture = _validate_historical_context_fixture(fixture)
+        elif (not isinstance(fixture, dict) or set(fixture) != {
                 "schema_version", "provenance", "messages", "summary", "prompt", "expected"}
                 or fixture["schema_version"] != 1 or fixture["provenance"] != "synthetic-calibration"
                 or not isinstance(fixture["messages"], list) or len(fixture["messages"]) != 4
@@ -2515,20 +2732,26 @@ def _run_native_context_calibration(
         pinned_plugin = run_root / "pinned-plugin"
         snapshot_plugin(plugin_dir, pinned_plugin)
         personal = home / "copilot-instructions.md"
-        personal.write_text("This is an isolated synthetic context calibration.\n")
+        personal.write_text(fixture["personal_instructions"] if historical
+                            else "This is an isolated synthetic context calibration.\n")
         personal.chmod(0o600)
         source_id, cutoff = str(uuid.uuid4()), str(uuid.uuid4())
         history = owner / "synthetic-history.jsonl"
         created_at = utc_instant()
-        records = [{"type": "session", "version": 1, "externalId": source_id, "createdAt": created_at}]
-        records.extend({"type": "message", "id": str(uuid.uuid4()), "timestamp": created_at,
-                        "role": message["role"], "content": [{"type": "text", "text": message["content"]}]}
-                       for message in fixture["messages"])
+        if historical:
+            records = fixture["records"]
+            source_id, cutoff = fixture["restoration"]["source_session_id"], fixture["restoration"]["cutoff_event_id"]
+        else:
+            records = [{"type": "session", "version": 1, "externalId": source_id, "createdAt": created_at}]
+            records.extend({"type": "message", "id": str(uuid.uuid4()), "timestamp": created_at,
+                            "role": message["role"], "content": [{"type": "text", "text": message["content"]}]}
+                           for message in fixture["messages"])
         history.write_text("".join(json.dumps(record) + "\n" for record in records))
         history.chmod(0o600)
         restoration = {
             "history_file": history.name, "source_session_id": source_id, "cutoff_event_id": cutoff,
-            "skill_context": "before-target-load", "limitations": ["Synthetic native calibration only"],
+            "skill_context": "recorded-target-context" if historical else "before-target-load",
+            "limitations": fixture["limitations"] if historical else ["Synthetic native calibration only"],
         }
         def execute_import(command):
             completed = subprocess.run(
@@ -2550,21 +2773,25 @@ def _run_native_context_calibration(
             raise NativeContextSetupError("No accepted isolated importer exit receipt")
         result["locator"] = _stage_native_context(
             home=home, session_id=session_id, sdk=sdk, owner=owner,
-            messages=fixture["messages"], summary=fixture["summary"])
-        for name, value in (("expected.json", fixture["expected"]),):
+            messages=None if historical else fixture["messages"], summary=fixture["summary"],
+            historical=fixture if historical else None)
+        for name, value in (() if historical else (("expected.json", fixture["expected"]),)):
             write_json(owner / name, value)
             (owner / name).chmod(0o600)
         prompt_path = owner / "candidate-prompt.md"
-        prompt_path.write_text(fixture["prompt"])
+        prompt_path.write_text("Historical context setup only. No model send." if historical else fixture["prompt"])
         prompt_path.chmod(0o600)
         config = {
             "cli": str(copilot), "sdk": str(sdk), "home": str(home), "os_home": str(os_home),
             "cwd": str(workdir), "session_id": session_id, "output": str(owner / "setup.json"),
-            "profile": "native-context-calibration", "context_fixture_file": str(owner / "context-fixture.json"),
+            "profile": "native-historical-context" if historical else "native-context-calibration",
+            "context_fixture_file": str(owner / "context-fixture.json"),
             "prefix_file": str(owner / "imported-prefix.json"), "prompt_path": str(prompt_path),
             "event_log": str(owner / "candidate-raw.jsonl"), "plugin_path": str(pinned_plugin),
             "model": model, "effort": effort,
         }
+        if historical:
+            config["candidate_permissions"] = fixture["candidate_permissions"]
         write_json(owner / "identities.json", {
             "fixture_sha256": digest(fixture_file), "harness": harness_identity(),
             "cli": cli_identity, "sdk_sha256": digest(sdk), "plugin": directory_identity(pinned_plugin),
@@ -2588,6 +2815,10 @@ def _run_native_context_calibration(
         if isinstance(error, NativeContextSetupError):
             result["setup_error_code"] = error.code
     finally:
+        if config is not None and config["profile"] == "native-historical-context":
+            setup_output = Path(config["output"])
+            if setup_output.is_file() and not setup_output.is_symlink():
+                result["setup"] = read_owner_json(setup_output)
         if config is not None and result["checks"].get("setup_observed") is True:
             for operation in ("observe", "cleanup"):
                 try:
@@ -2602,6 +2833,8 @@ def _run_native_context_calibration(
         if owned:
             if result["firsterror"] is None:
                 result["status"] = "CALIBRATION_OBSERVED" if model_send else "CONTEXT_SETUP_OBSERVED"
+            if config is not None and config["profile"] == "native-historical-context":
+                result["claim"] = "Historical setup observations only; behavioral admission and skill improvement unproved"
             write_json(run_root / "context-result.json", result)
     return result
 
