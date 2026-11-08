@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { candidatePermissionHandler, matchesFixtureState, runProbe, validateConfig } from "./native_workflow_probe.mjs";
+import { candidatePermissionHandler, matchesFixtureState, matchesProfileState,
+  runProbe, validateConfig, validateProfile } from "./native_workflow_probe.mjs";
 
 // This SDK double exercises control flow only, never native interoperability.
 const sdkDouble = `
@@ -14,7 +15,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 export const state = {
-  rows: [], entries: [], nextId: 1, owners: 0, starts: 0, stops: 0,
+  rows: [], dependencies: [], entries: [], nextId: 1, owners: 0, starts: 0, stops: 0,
   mode: "interactive", connections: [], resumes: [], deleteFails: false,
   events: [], handlers: [], sendCalls: 0, aborts: 0,
 };
@@ -37,6 +38,7 @@ export class CopilotClient {
   async start() {
     if (state.owners) throw new Error("Overlapping owners");
     state.owners++; state.starts++; this.started = true;
+    state.startHook?.();
   }
   async getStatus() { return { version: "test-double", protocolVersion: 1, token: "excluded" }; }
   async stop() {
@@ -97,7 +99,7 @@ export class CopilotClient {
               sourcePath: path, content: readFileSync(path, "utf8"), type: "home", location: "user" }] };
           },
         },
-        model: { getCurrent: async () => ({ modelId: options.model, reasoningEffort: options.reasoningEffort }) },
+        model: { getCurrent: async () => state.modelOverride ?? ({ modelId: options.model, reasoningEffort: options.reasoningEffort }) },
         autopilotObjective: { getState: async () => ({ state: current && {
           id: current.id, objective: current.objective, status: current.status,
           turnCount: current.turnCount, creditCountNanoAiu: current.creditCountNanoAiu,
@@ -138,13 +140,29 @@ export class CopilotClient {
               return { resultType: denied ? (state.denialResultType ?? "rejected") : "success", textResultForLlm: "Test native view" };
             }
             if (name === "sql" && args.query.startsWith("INSERT")) {
-              state.rows.push({ id: "native-workflow-fixture", title: "Synthetic pending work",
-                description: "Owned diagnostic fixture", status: "pending" });
+              const values = [...args.query.matchAll(/'((?:''|[^'])*)'/g)].map(match => match[1].replaceAll("''", "'"));
+              if (args.query.startsWith("INSERT INTO todo_deps")) {
+                state.dependencies.push({ todo_id: values[0], depends_on: values[1] });
+              } else {
+                state.rows.push(Object.fromEntries(["id", "title", "description", "status"].map((key, i) => [key, values[i]])));
+              }
             } else if (name === "sql" && args.query.startsWith("DELETE")) {
               if (state.deleteFails) return { resultType: "failure" };
-              state.rows = state.rows.filter(row => row.id !== "native-workflow-fixture");
+              if (args.query === "DELETE FROM todo_deps") state.dependencies = [];
+              else if (args.query === "DELETE FROM todos") state.rows = [];
+              else state.rows = state.rows.filter(row => row.id !== "native-workflow-fixture");
+            } else if (name === "sql" && args.query.startsWith("WITH expected")) {
+              const values = [...args.query.split("), missing")[0].matchAll(/'((?:''|[^'])*)'/g)]
+                .map(match => match[1].replaceAll("''", "'"));
+              const expected = [];
+              for (let i = 0; i < values.length; i += 2) expected.push({ todo_id: values[i], depends_on: values[i + 1] });
+              const matches = JSON.stringify(expected) === JSON.stringify(state.dependencies) && !state.dependencyMismatch;
+              return { resultType: "success", toolTelemetry: { metrics: { rowsReturned: matches ? 0 : 1 } } };
+            } else if (name === "sql" && args.query === "SELECT todo_id,depends_on FROM todo_deps") {
+              return { resultType: "success", toolTelemetry: { metrics: { rowsReturned: state.dependencies.length } } };
             } else if (name === "manage_schedule") {
-              state.entries.push({ id: state.nextId++, intervalMs: 14400000,
+              const ms = Number(args.interval.slice(0, -1)) * {s:1000,m:60000,h:3600000,d:86400000}[args.interval.at(-1)];
+              state.entries.push({ id: state.nextId++, intervalMs: ms,
                 recurring: true, prompt: args.prompt, nextRunAt: new Date().toISOString() });
             }
             return { resultType: "success", textResultForLlm: "test double" };
@@ -305,6 +323,20 @@ test("a mismatched cold checkpoint retains observed state and cleans the fixture
   assert.equal(state.owners, 0);
 });
 
+test("expired setup retains its first error and reserves time to clear owned resources", async t => {
+  const { config, state } = await profileFixture(t);
+  let clock = 0;
+  t.mock.method(performance, "now", () => clock);
+  state.startHook = () => { if (state.starts === 2) clock = 330001; };
+  const report = await runProbe("setup", config);
+  assert.equal(report.status, "ERROR");
+  assert.match(report.error.message, /owner deadline exceeded/);
+  assert.deepEqual(report.cleanup.todos.rows, []);
+  assert.deepEqual(report.cleanup.schedules.entries, []);
+  assert.equal(report.cleanup_error, undefined);
+  assert.equal(state.owners, 0);
+});
+
 test("shutdown failure forces owner termination and fails setup before handoff", async t => {
   const { config } = fixture(t);
   const { state } = await import(pathToFileURL(config.sdk).href);
@@ -332,6 +364,163 @@ async function candidateFixture(t) {
   state.events.push({ id: "test-prior-id", type: "user.message", data: { content: "Prior-only test marker" } });
   return { ...owned, state, config: { ...config, output: join(root, "candidate.json") } };
 }
+
+function nativeProfile() {
+  return {
+    schema_version: 1, profile: "p01-scheduled-audit", provenance: "synthetic-calibration",
+    goal: { id: 8, objective: "Synthetic audit objective", status: "active" },
+    mode: "autopilot", model: "fixture-model", effort: "medium",
+    todos: [
+      { id: "a'quoted", title: "Audit current state", description: "", status: "pending" },
+      { id: "b", title: "Preserve unfinished work", description: "", status: "blocked" },
+    ],
+    dependencies: [{ todo_id: "b", depends_on: "a'quoted" }],
+    schedules: [
+      { id: 41, interval: "2h", prompt: "Stopped synthetic wake", status: "stopped" },
+      { id: 90, interval: "3h", prompt: "Active synthetic wake", status: "active" },
+    ],
+    unknowns: ["Descriptions and original deadlines are unknown; empty descriptions are execution defaults"],
+  };
+}
+
+async function profileFixture(t) {
+  const owned = fixture(t);
+  const { config, root } = owned;
+  for (const home of [config.home, config.os_home]) chmodSync(home, 0o700);
+  mkdirSync(join(root, "profile-plugin"));
+  writeFileSync(join(root, "source-prompt.md"), "Original words {NATIVE_GOAL_PATH}\r\n");
+  writeFileSync(join(root, "denied.txt"), "Owned sibling");
+  writeFileSync(join(config.cwd, "charter.md"), "Synthetic source charter");
+  writeFileSync(join(config.home, "copilot-instructions.md"), "Synthetic personal instructions");
+  const profile = nativeProfile();
+  const stateFile = join(root, "source-state.json");
+  writeFileSync(stateFile, JSON.stringify(profile), { mode: 0o600 });
+  const selected = {
+    ...config, profile: "p01-scheduled-audit", state_file: stateFile,
+    prompt_path: join(root, "source-prompt.md"), event_log: join(root, "source-raw.jsonl"),
+    plugin_path: join(root, "profile-plugin"), evidence_paths: [join(config.cwd, "charter.md")],
+    denied_path: join(root, "denied.txt"), model: profile.model, effort: profile.effort,
+  };
+  const { state } = await import(pathToFileURL(config.sdk).href);
+  const prior = { id: "source-history", type: "user.message", data: { content: "Remembered old skill" } };
+  state.events.push(prior);
+  selected.prefix_file = join(root, "imported-prefix.json");
+  writeFileSync(selected.prefix_file, JSON.stringify([prior]), { mode: 0o600 });
+  return { ...owned, config: selected, profile, state };
+}
+
+test("profile cold hydration preserves goal/rows/dependencies and explicitly maps schedule lifecycle", async t => {
+  const { config, profile, state, root } = await profileFixture(t);
+  const setup = await runProbe("setup", config);
+  assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
+  assert.deepEqual(state.rows, profile.todos);
+  assert.deepEqual(state.dependencies, profile.dependencies);
+  assert.deepEqual(setup.schedule_mapping, [{ source_id: 41, native_id: 1 }, { source_id: 90, native_id: 2 }]);
+  assert.ok(matchesProfileState(setup, profile, setup.schedule_mapping));
+  assert.equal(setup.goal_file.current.id, 8);
+  assert.equal(setup.goal_file.nextId, 9);
+  const wrong = structuredClone(setup);
+  wrong.schedules.entries[0].prompt = "different";
+  assert.equal(matchesProfileState(wrong, profile, setup.schedule_mapping), false);
+  const cleanup = await runProbe("cleanup", { ...config, output: join(root, "cleanup.json") });
+  assert.equal(cleanup.status, "CLEANED", cleanup.error?.message);
+  assert.deepEqual(state.rows, []);
+  assert.deepEqual(state.dependencies, []);
+  assert.deepEqual(state.entries, []);
+  assert.equal(cleanup.cleanup.dependencies_empty, true);
+  assert.equal(state.owners, 0);
+});
+
+test("trusted profile preflight checks authentic coordinates/model without sending or altering rows/timer", async t => {
+  const { config, profile, state, root } = await profileFixture(t);
+  assert.equal((await runProbe("setup", config)).status, "SETUP_OBSERVED");
+  const report = await runProbe("preflight", { ...config, output: join(root, "preflight.json") });
+  assert.equal(report.status, "PREFLIGHT_OBSERVED", report.error?.message);
+  assert.equal(report.model_send_calls, 0);
+  assert.equal(state.sendCalls, 0);
+  assert.equal(report.model_result, undefined);
+  assert.equal(report.model_completion_event, undefined);
+  assert.deepEqual(state.rows, profile.todos);
+  assert.equal(state.entries.length, 1);
+  assert.ok(Object.values(report.checks).every(value => value === true));
+  assert.deepEqual(report.model_configuration, { modelId: "fixture-model", reasoningEffort: "medium" });
+  assert.ok(report.preflight.some(item => item.name === "sibling" && item.result.resultType === "rejected"));
+  assert.equal(state.owners, 0);
+});
+
+test("profile candidate sends supplied bytes once without imposing synthetic marker/row/timer outcomes", async t => {
+  const { config, profile, state, root } = await profileFixture(t);
+  assert.equal((await runProbe("setup", config)).status, "SETUP_OBSERVED");
+  const report = await runProbe("candidate", { ...config, output: join(root, "candidate.json") });
+  assert.equal(report.status, "CANDIDATE_OBSERVED", report.error?.message);
+  assert.equal(state.sendCalls, 1);
+  assert.equal(state.sentPrompt, "Original words {NATIVE_GOAL_PATH}\r\n");
+  assert.deepEqual(state.rows, profile.todos);
+  assert.equal(state.entries.length, 1);
+  assert.deepEqual(state.resumes.at(-1).model, "fixture-model");
+  assert.deepEqual(state.resumes.at(-1).reasoningEffort, "medium");
+});
+
+test("profile data, model, owner-file and coordinate refusals occur before SDK start", async t => {
+  const { config, root, state } = await profileFixture(t);
+  for (const change of [
+    { model: "wrong-model" }, { effort: "high" }, { profile: "other" },
+    { evidence_paths: [config.state_file] }, { denied_path: config.evidence_paths[0] },
+    { event_log: config.state_file }, { plugin_path: config.cwd },
+    { home: config.os_home },
+  ]) {
+    const report = await runProbe("setup", { ...config, ...change, output: join(root, `${randomUUID()}.json`) });
+    assert.equal(report.status, "ERROR");
+    assert.equal(report.calls.length, 0);
+  }
+  for (const field of ["query", "code", "home", "session_id", "grants"]) {
+    assert.throws(() => validateProfile({ ...nativeProfile(), [field]: "not data" }), /Invalid/);
+  }
+  chmodSync(config.state_file, 0o644);
+  assert.throws(() => validateConfig("setup", config), /owner-only/);
+  chmodSync(config.state_file, 0o600);
+  linkSync(config.state_file, join(root, "state-alias.json"));
+  assert.throws(() => validateConfig("setup", config), /single-link/);
+  assert.equal(state.starts, 0);
+});
+
+test("profile partial setup and cold dependency errors clean every owned row/schedule", async t => {
+  for (const failure of ["schedule", "dependencies"]) {
+    await t.test(failure, async t => {
+      const { config, state } = await profileFixture(t);
+      if (failure === "schedule") state.nextId = 0;
+      else state.dependencyMismatch = true;
+      const report = await runProbe("setup", config);
+      assert.equal(report.status, "ERROR");
+      assert.ok(report.error);
+      assert.deepEqual(state.rows, []);
+      assert.deepEqual(state.dependencies, []);
+      // An invalid ID cannot be passed to schedule.stop, and is retained as cleanup failure.
+      if (failure === "dependencies") assert.deepEqual(state.entries, []);
+      else assert.ok(report.cleanup.errors.length);
+      assert.equal(state.owners, 0);
+    });
+  }
+});
+
+test("profile owner detects prefix and actual model mismatches before any send", async t => {
+  for (const failure of ["prefix", "model"]) {
+    await t.test(failure, async t => {
+      const { config, state, root } = await profileFixture(t);
+      assert.equal((await runProbe("setup", config)).status, "SETUP_OBSERVED");
+      if (failure === "prefix") state.events.push({
+        id: "extra", type: "user.message", data: { content: "Not the imported prefix" },
+      });
+      else state.modelOverride = { modelId: "fixture-model", reasoningEffort: "high" };
+      const report = await runProbe("preflight", { ...config, output: join(root, "preflight.json") });
+      assert.equal(report.status, "PREMODEL_BLOCKED");
+      assert.equal(report.model_send_calls, 0);
+      assert.equal(state.sendCalls, 0);
+      assert.match(report.firsterror, failure === "prefix" ? /prefix differs/ : /model configuration/);
+      assert.equal(state.owners, 0);
+    });
+  }
+});
 
 test("candidate permission handler approves only canonical owned reads and three native names", t => {
   const { config, root, goalPath } = fixture(t);

@@ -811,6 +811,8 @@ def freeze_case(root: Path, case_id: str, replace: bool) -> Path:
             raise ValueError("phase ID judge-reference is reserved")
     from session_restore import validate_restoration
     validate_restoration(definition, case_dir)
+    from native_workflow import validate_native_workflow
+    validate_native_workflow(definition, case_dir)
 
     frozen_root = root / "frozen"
     case_root = frozen_root / case_id
@@ -995,6 +997,8 @@ def verify_case(root: Path, case_id: str) -> int:
     definition = read_json(target / "case.json")
     from session_restore import validate_restoration
     validate_restoration(definition, target, frozen=True)
+    from native_workflow import validate_native_workflow
+    validate_native_workflow(definition, target, frozen=True)
     case_type = definition.get("case_type", "prose")
     if case_type not in {"prose", "repository-task"}:
         raise ValueError(f"unsupported case type: {case_type}")
@@ -1068,7 +1072,20 @@ def parse_run(
     allowed_tools: set[str] | None = None,
     native_diagnostic_goal: Path | None = None,
     native_sdk_completion: dict | None = None,
+    native_workflow_goal: Path | None = None,
+    expected_effort: str | None = None,
 ) -> dict:
+    if native_workflow_goal is not None:
+        if native_diagnostic_goal is not None or native_sdk_completion is None:
+            raise ValueError("native workflow parsing requires its SDK completion and one owned goal")
+        source = native_sdk_completion.get("source_projection", {})
+        current = native_sdk_completion.get("model_configuration", {})
+        if (native_sdk_completion.get("profile") != "p01-scheduled-audit"
+                or expected_effort is None
+                or (source.get("model"), source.get("effort")) != (expected_model, expected_effort)
+                or (current.get("modelId"), current.get("reasoningEffort")) != (expected_model, expected_effort)):
+            raise ValueError("native workflow parsing requires the descriptor-bound model/effort")
+        native_diagnostic_goal = native_workflow_goal
     sdk_response = None
     sdk_completion = None
     owner_call_ids: set[str] = set()
@@ -1099,6 +1116,7 @@ def parse_run(
             item["tool_call_id"] for item in native_sdk_completion.get("preflight", [])
             if isinstance(item.get("tool_call_id"), str)
         }
+        owner_call_ids.update(native_sdk_completion.get("owner_tool_call_ids", []))
     if native_diagnostic_goal is not None:
         _native_diagnostic_goal(
             native_diagnostic_goal, native_diagnostic_goal.parent.parent.parent,
@@ -1697,28 +1715,32 @@ def _native_workflow_probe(operation: str, config: dict) -> dict:
         ["node", str(helper), operation, json.dumps(config, sort_keys=True)],
         env=personal_instruction_environment(Path(config["home"])),
         cwd=config["cwd"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, timeout=360 if operation == "candidate" else 300, check=False,
+        stderr=subprocess.PIPE, timeout=390 if operation == "setup" else 360, check=False,
     )
     output.with_suffix(".stdout.log").write_bytes(completed.stdout)
     output.with_suffix(".stderr.log").write_bytes(completed.stderr)
-    if completed.returncode != 0 and operation != "candidate":
+    if completed.returncode != 0 and operation not in {"candidate", "preflight"}:
         raise ValueError(f"native {operation} exited {completed.returncode}; see {output}")
     if output.is_symlink() or not output.is_file():
         raise ValueError(f"native {operation} produced no regular receipt")
     result = read_json(output)
     expected = {"setup": "SETUP_OBSERVED", "observe": "OBSERVED"}
-    if operation == "candidate":
+    if operation in {"candidate", "preflight"}:
         sends = result.get("model_send_calls")
         status = result.get("status")
         if (type(sends) is not int or sends not in (0, 1)
-                or status not in {"CANDIDATE_OBSERVED", "PREMODEL_BLOCKED", "FAILED"}
+                or status not in {"CANDIDATE_OBSERVED", "PREMODEL_BLOCKED", "FAILED", "PREFLIGHT_OBSERVED"}
+                or (operation == "preflight" and (sends != 0 or status == "CANDIDATE_OBSERVED"))
+                or (operation == "candidate" and status == "PREFLIGHT_OBSERVED")
                 or (status == "PREMODEL_BLOCKED" and sends != 0)
-                or (status == "CANDIDATE_OBSERVED" and (
-                    completed.returncode != 0 or sends != 1
+                or (status in {"CANDIDATE_OBSERVED", "PREFLIGHT_OBSERVED"} and (
+                    completed.returncode != 0 or sends != (1 if operation == "candidate" else 0)
                     or result.get("firsterror") is not None
                     or any(result.get("checks", {}).get(key) is not True for key in (
                         "effective_tools", "instruction_correspondence", "cold_state",
-                        "permission_traversal", "prefix_preserved"))))):
+                        "permission_traversal", "prefix_preserved"))
+                    or ("profile" in config and result.get("checks", {}).get(
+                        "imported_prefix_correspondence") is not True)))):
             raise ValueError("native candidate receipt did not verify conditional model execution")
     if (result.get("session_id") != config["session_id"]
             or (operation in expected and result.get("status") != expected[operation])
@@ -1729,13 +1751,15 @@ def _native_workflow_probe(operation: str, config: dict) -> dict:
     if (result.get("cli") != config["cli"] or result.get("sdk") != config["sdk"]
             or result.get("connection", {}).get("path") != config["cli"]
             or not re.search(r"\b1\.0\.97(?:\b|-)", str(runtime.get("version", "")))
-            or (operation != "candidate" and result.get("model_calls") != 0)):
+            or (operation not in {"candidate", "preflight"} and result.get("model_calls") != 0)):
         raise ValueError(result.get("firsterror") or
                          f"native {operation} did not verify its pinned runtime")
+    if "profile" in config and result.get("profile") != config["profile"]:
+        raise ValueError(f"native {operation} did not verify the selected profile")
     return result
 
 
-def _run_native_candidate(config: dict, *, cli_version: str) -> dict:
+def _run_native_candidate(config: dict, *, cli_version: str, preflight_only: bool = False) -> dict:
     root = Path(config["output"]).parent
     home = Path(config["home"])
     started_at, started_clock = utc_instant(), time.monotonic()
@@ -1752,18 +1776,169 @@ def _run_native_candidate(config: dict, *, cli_version: str) -> dict:
     try:
         with measurement.host_events(home, config["session_id"]) as content:
             previous = measurement.snapshot_events(content)
-        candidate = _native_workflow_probe("candidate", config)
-        if candidate["status"] == "CANDIDATE_OBSERVED":
+        candidate = _native_workflow_probe("preflight" if preflight_only else "candidate", config)
+        if candidate["status"] in {"CANDIDATE_OBSERVED", "PREFLIGHT_OBSERVED"}:
             outcome = "completed"
         return candidate
     finally:
         measurement.collect(
-            destination=root / "candidate-raw.measurement.json",
-            session_id=config["session_id"], role="candidate-native-helper", phase="candidate",
-            model="gpt-5.6-sol-fast", effort="high", cli_version=cli_version,
-            log=root / "candidate-raw.jsonl", capture=capture_events, source="host_eventfile",
+            destination=(Path(config["prompt_path"]).parent / "measurements" / (
+                Path(config["prompt_path"]).name.removesuffix("-prompt.md") + "-native.json")
+                if "profile" in config else root / "candidate-raw.measurement.json"),
+            session_id=config["session_id"], role="candidate" if "profile" in config else "candidate-native-helper",
+            subrole="candidate" if "profile" in config else "candidate-native-helper",
+            phase=Path(config.get("prompt_path", "candidate-prompt.md")).name.removesuffix("-prompt.md"),
+            model=config.get("model", "gpt-5.6-sol-fast"), effort=config.get("effort", "high"), cli_version=cli_version,
+            log=Path(config.get("event_log", root / "candidate-raw.jsonl")),
+            capture=capture_events, source="host_eventfile",
             started_at=started_at, started_clock=started_clock, outcome=outcome,
         )
+
+
+def _run_native_workflow_phase(
+    *, phase: dict, packet: Path, copilot: Path, sdk: Path, run_root: Path,
+    run_home: Path, workdir: Path, plugin_dir: Path, session_id: str,
+    model: str, effort: str, cli_version: str, entry_skill: str,
+    preflight_only: bool = False,
+) -> tuple[list[str], dict | None]:
+    from native_workflow import bind_model, phase_inputs, protect_owner_copy, render_coordinates
+    state, coordinates, files = phase_inputs(phase, packet)
+    bind_model(state, model, effort)
+    measurement.session_uuid(session_id)
+    if session_id == phase["session_restore"]["source_session_id"]:
+        raise ValueError("native import must not reuse the source namespace")
+    phase_id = phase["id"]
+    owner = run_root / f"{phase_id}-native-owner"
+    owner.mkdir(mode=0o700)
+    for source, name in zip(files, ("state.json", "coordinates.json")):
+        protect_owner_copy(source, owner / name)
+    with measurement.host_events(run_home, session_id) as content:
+        if content is None:
+            raise ValueError("native phase requires the retained public import eventfile")
+        imported_events = [event for _, event in measurement.jsonl_records(content, grammar="telemetry")]
+    write_json(owner / "imported-prefix.json", imported_events)
+    (owner / "imported-prefix.json").chmod(0o600)
+    for path in (run_home, run_root / "candidate-os-home"):
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.chmod(0o700)
+    sibling = owner / "denied-sibling.txt"
+    sibling.write_text("Owned permission-boundary diagnostic file.\n", encoding="utf-8")
+    sibling.chmod(0o600)
+    goal = run_home / "session-state" / session_id / "autopilot-objective.json"
+    prompt_path = run_root / f"{phase_id}-prompt.md"
+    original = prompt_path.read_bytes()
+    prompt_path.write_bytes(render_coordinates(original, coordinates, workdir, goal))
+    config = {
+        "cli": str(copilot.absolute()), "sdk": str(sdk.absolute()),
+        "home": str(run_home.absolute()), "os_home": str((run_root / "candidate-os-home").absolute()),
+        "cwd": str(workdir.absolute()), "session_id": session_id,
+        "output": str(owner / "setup.json"), "profile": phase["native_workflow"]["profile"],
+        "state_file": str(owner / "state.json"), "prompt_path": str(prompt_path),
+        "event_log": str(run_root / f"{phase_id}-raw.jsonl"), "plugin_path": str(plugin_dir),
+        "evidence_paths": [str(workdir / item) for item in coordinates["evidence_paths"]],
+        "denied_path": str(sibling), "model": model, "effort": effort,
+        "prefix_file": str(owner / "imported-prefix.json"),
+    }
+    candidate = None
+    first_error = None
+    cleanup_error = None
+    setup_complete = False
+    candidate_started = False
+    try:
+        setup = _native_workflow_probe("setup", config)
+        setup_complete = True
+        mapping = setup.get("schedule_mapping")
+        if (not isinstance(mapping, list) or len(mapping) != len(state["schedules"])
+                or any(not isinstance(item, dict) or set(item) != {"source_id", "native_id"}
+                       or item["source_id"] != entry["id"]
+                       or type(item["native_id"]) is not int or item["native_id"] < 1
+                       for item, entry in zip(mapping, state["schedules"]))
+                or len({item["native_id"] for item in mapping}) != len(mapping)):
+            raise ValueError("native setup lacks the validated schedule coordinate mapping")
+        prompt_path.write_bytes(render_coordinates(original, coordinates, workdir, goal, mapping))
+        candidate_started = True
+        candidate = _run_native_candidate(
+            {**config, "output": str(owner / "candidate.json")},
+            cli_version=cli_version, preflight_only=preflight_only)
+        if candidate["status"] != ("PREFLIGHT_OBSERVED" if preflight_only else "CANDIDATE_OBSERVED"):
+            raise ValueError(candidate.get("firsterror") or "native candidate-owner checks failed")
+        parsed = None if preflight_only else parse_run(
+            Path(config["event_log"]), skill=entry_skill,
+            expected_model=model, cwd=workdir, require_skill=None,
+            native_workflow_goal=goal, native_sdk_completion=candidate, expected_effort=effort)
+        if not preflight_only:
+            calls = _native_candidate_calls(Path(config["event_log"]), owner_call_ids={
+                item["tool_call_id"] for item in candidate.get("preflight", [])
+                if isinstance(item.get("tool_call_id"), str)
+            } | set(candidate.get("owner_tool_call_ids", [])))
+            write_json(owner / "actual-candidate-calls.json", calls)
+            if not calls["all_calls_completed"]:
+                raise ValueError("native candidate tool calls did not complete")
+        _native_workflow_probe("observe", {**config, "output": str(owner / "observe.json")})
+        shutil.copyfile(goal, owner / "observed-goal.json")
+    except Exception as error:
+        first_error = error
+        raise
+    finally:
+        def retained_receipt(path):
+            try:
+                value = read_json(path)
+                return value if isinstance(value, dict) else None
+            except (OSError, ValueError):
+                return None
+
+        setup_receipt = Path(config["output"])
+        if not setup_complete:
+            setup_complete = (retained_receipt(setup_receipt) or {}).get("status") == "SETUP_OBSERVED"
+        if candidate is None:
+            candidate = retained_receipt(owner / "candidate.json")
+        owned_checkpoint = goal.parent / "native-profile-mapping.json"
+        if setup_complete or owned_checkpoint.is_file():
+            try:
+                cleaned = _native_workflow_probe("cleanup", {**config, "output": str(owner / "cleanup.json")})
+                if (cleaned.get("status") != "CLEANED"
+                        or cleaned.get("cleanup", {}).get("todos", {}).get("rows") != []
+                        or cleaned.get("cleanup", {}).get("schedules", {}).get("entries") != []):
+                    raise ValueError("native profile cleanup did not verify empty owned lists")
+            except Exception as error:
+                cleanup_error = error
+        write_json(owner / "phase-result.json", {
+            "schema_version": 1,
+            "status": "FAILED" if first_error or cleanup_error else (
+                "PREPARATION_ONLY" if preflight_only else "NATIVE_EXECUTION_OBSERVED"),
+            "profile": state["profile"], "provenance": state["provenance"],
+            "model_send_calls": candidate.get("model_send_calls") if candidate else (
+                None if candidate_started and not preflight_only else 0),
+            "judge_calls": 0, "firsterror": str(first_error or cleanup_error) if first_error or cleanup_error else None,
+            "cleanup_error": str(cleanup_error) if cleanup_error else None,
+            "owner_files_excluded": [phase["native_workflow"][key] for key in ("state_file", "coordinates_file")],
+            "unknowns": state["unknowns"],
+            "history_correspondence_scope": "Candidate owner versus the retained public import projection; frozen source digest and semantic conversion belong to the existing restoration receipt",
+        })
+        if cleanup_error and first_error is None:
+            raise ValueError(f"native cleanup failed: {cleanup_error}") from cleanup_error
+    return ["node", str(Path(__file__).parent / "native_workflow_probe.mjs"),
+            "preflight" if preflight_only else "candidate",
+            json.dumps({**config, "output": str(owner / "candidate.json")}, sort_keys=True)], parsed
+
+
+def _validate_native_selection(definition, frozen, sdk, model, effort, home_mode, preflight_only):
+    from native_workflow import bind_model, phase_inputs
+    selected = any("native_workflow" in phase for phase in definition["phases"])
+    if type(preflight_only) is not bool or (preflight_only and (not selected or sdk is None)):
+        raise ValueError("native preflight requires a native profile and SDK")
+    if selected:
+        if sdk is None or home_mode != "isolated":
+            raise ValueError("native workflow requires --native-workflow-sdk and isolated homes")
+        path = sdk.absolute()
+        if (not path.is_file() or path.resolve() != path
+                or any(part.is_symlink() for part in (path, *path.parents))
+                or not str(path).endswith("/index.js")):
+            raise ValueError("native workflow SDK must be an unaliased bundled index.js")
+        for phase in definition["phases"]:
+            state, _, _ = phase_inputs(phase, frozen / phase["id"])
+            bind_model(state, model, effort)
+    return selected
 
 
 def _native_fixture_state(observation: dict, goal: Path, *, final: bool) -> bool:
@@ -1790,9 +1965,7 @@ def _native_fixture_state(observation: dict, goal: Path, *, final: bool) -> bool
     )
 
 
-def _native_diagnostic_calls(
-    log: Path, workdir: Path, sibling: Path, *, owner_call_ids: set[str] | None = None,
-) -> dict:
+def _native_candidate_calls(log: Path, *, owner_call_ids: set[str] | None = None) -> dict:
     pending, calls = {}, []
     with log.open("rb") as stream:
         for event_index, (_, event) in enumerate(measurement.jsonl_records(stream, grammar="telemetry")):
@@ -1812,6 +1985,14 @@ def _native_diagnostic_calls(
                 if call_id in pending:
                     calls.append({**pending.pop(call_id), "completion": data,
                                   "completion_index": event_index})
+    return {"calls": calls, "all_calls_completed": not pending}
+
+
+def _native_diagnostic_calls(
+    log: Path, workdir: Path, sibling: Path, *, owner_call_ids: set[str] | None = None,
+) -> dict:
+    parsed = _native_candidate_calls(log, owner_call_ids=owner_call_ids)
+    calls = parsed["calls"]
     schedules = [
         item for item in calls if item["start"].get("toolName") == "manage_schedule"
         and item["completion"].get("success") is True
@@ -1843,7 +2024,7 @@ def _native_diagnostic_calls(
     )
     return {"calls": calls, "checks": {
         "native_sql_update": updated, "schedule_list_stop_relist": reconciled,
-        "all_calls_completed": not pending,
+        "all_calls_completed": parsed["all_calls_completed"],
     }, "observations": {"denied_sibling": denied}}
 
 
@@ -2319,6 +2500,8 @@ def _run_case(
     treatment_admission: bool,
     expected_revision: str | None = None,
     quality_review: bool = False,
+    native_workflow_sdk: Path | None = None,
+    native_preflight_only: bool = False,
     dashboard_snapshot_id: str | None = None,
     run_root: Path,
     timeline: measurement.Timeline,
@@ -2331,6 +2514,8 @@ def _run_case(
     if expected_revision is not None and digest(frozen / "case-manifest.json") != expected_revision:
         raise ValueError("frozen case changed during suite; refusing a different-byte retry")
     definition = read_json(frozen / "case.json")
+    native_case = _validate_native_selection(
+        definition, frozen, native_workflow_sdk, model, effort, home_mode, native_preflight_only)
     restoration_scope = (
         "**Scope:** Historical behavior/mechanism validation only. "
         "Recorded skill text remains in history. Current skill/plugin identities "
@@ -2541,8 +2726,12 @@ def _run_case(
         return run_root
     session_id = str(uuid.uuid4())
     phase_outputs = []
-    runtime = resources.enter_context(tempfile.TemporaryDirectory(prefix="skill-evaluation-"))
-    runtime_root = Path(runtime)
+    if native_case:
+        runtime_root = run_root.absolute() / "native-workdirs"
+        runtime_root.mkdir(mode=0o700)
+    else:
+        runtime = resources.enter_context(tempfile.TemporaryDirectory(prefix="skill-evaluation-"))
+        runtime_root = Path(runtime)
     restored_case = "session_restore" in definition["phases"][0]
     if restored_case and home_mode != "isolated":
         raise ValueError("session restoration requires an isolated candidate home")
@@ -2570,6 +2759,15 @@ def _run_case(
         } if restored_case else None
         if personal_source is not None:
             excluded.add(initial_restoration["personal_instructions_file"])
+        if "native_workflow" in phase:
+            from native_workflow import phase_inputs
+            _, _, owner_files = phase_inputs(phase, frozen / phase_id)
+            owner_digests = {digest(path) for path in owner_files}
+            if personal_source is not None:
+                owner_digests.add(digest(personal_source))
+            excluded.update(
+                record["path"] for record in read_json(frozen / phase_id / "bundle-manifest.json")["files"]
+                if record["sha256"] in owner_digests)
         manifest = copy_packet(
             frozen / phase_id, workdir,
             excluded=excluded,
@@ -2581,15 +2779,21 @@ def _run_case(
             f"Case revision: {case_revision}\n"
         )
         prompt_path = run_root / f"{phase_id}-prompt.md"
-        prompt_path.write_text(prompt, encoding="utf-8")
+        if native_case:
+            prompt_path.write_bytes((frozen / phase["prompt_file"]).read_bytes())
+        else:
+            prompt_path.write_text(prompt, encoding="utf-8")
         log = run_root / f"{phase_id}-raw.jsonl"
         instruction_receipts = []
         try:
             candidate_plugin = workdir / "target-plugin"
-            if candidate_plugin.exists():
+            if native_case:
+                candidate_plugin = pinned_plugin
+            elif candidate_plugin.exists():
                 candidate_plugin = Path(tempfile.mkdtemp(
                     prefix="candidate-plugin-", dir=workdir)) / "target-plugin"
-            snapshot_plugin(pinned_plugin, candidate_plugin)
+            if not native_case:
+                snapshot_plugin(pinned_plugin, candidate_plugin)
             if directory_identity(candidate_plugin) != plugin_identity:
                 raise ValueError("candidate plugin changed while being staged")
             if personal_source is not None and restoration:
@@ -2635,32 +2839,53 @@ def _run_case(
                     timeout_seconds=timeout_seconds,
                 ))
             timeline.switch("candidate")
-            command = run_copilot(
-                copilot=copilot,
-                plugin_dir=candidate_plugin,
-                cwd=workdir,
-                prompt=prompt,
-                model=model,
-                effort=effort,
-                log=log,
-                session_id=session_id,
-                resume=bool(phase.get("resume")) or restoration is not None,
-                home_mode=home_mode,
-                run_home=run_root / "candidate-home",
-                timeout_seconds=timeout_seconds,
-                allow_skill=True,
-                measurement_path=run_root / "measurements" / f"candidate-{phase_id}.json",
-                role="candidate", phase=phase_id,
-                cli_version=read_json(run_root / "copilot-identity.json").get("version"),
-                personal_instructions=personal_source is not None,
-            )
-            run_result = parse_run(
-                log,
-                skill=treatment["descriptor"]["entry_skill"],
-                expected_model=model,
-                cwd=workdir,
-                require_skill=None if phase.get("resume") or restored_case else True,
-            )
+            if native_case:
+                command, run_result = _run_native_workflow_phase(
+                    phase=phase, packet=frozen / phase_id, copilot=copilot,
+                    sdk=native_workflow_sdk, run_root=run_root.absolute(),
+                    run_home=run_home.absolute(), workdir=workdir,
+                    plugin_dir=candidate_plugin.absolute(), session_id=session_id,
+                    model=model, effort=effort,
+                    cli_version=read_json(run_root / "copilot-identity.json").get("version"),
+                    entry_skill=treatment["descriptor"]["entry_skill"],
+                    preflight_only=native_preflight_only)
+                if native_preflight_only:
+                    write_json(run_root / "preparation-result.json", {
+                        "schema_version": 1, "status": "PREPARATION_ONLY",
+                        "case_id": case_id, "case_revision": case_revision,
+                        "model_send_calls": 0, "judge_calls": 0,
+                        "phase_result": f"{phase_id}-native-owner/phase-result.json",
+                        "prompt_sha256": digest(prompt_path),
+                    })
+                    remove_tree(workdir, runtime_root)
+                    return run_root
+            else:
+                command = run_copilot(
+                    copilot=copilot,
+                    plugin_dir=candidate_plugin,
+                    cwd=workdir,
+                    prompt=prompt,
+                    model=model,
+                    effort=effort,
+                    log=log,
+                    session_id=session_id,
+                    resume=bool(phase.get("resume")) or restoration is not None,
+                    home_mode=home_mode,
+                    run_home=run_root / "candidate-home",
+                    timeout_seconds=timeout_seconds,
+                    allow_skill=True,
+                    measurement_path=run_root / "measurements" / f"candidate-{phase_id}.json",
+                    role="candidate", phase=phase_id,
+                    cli_version=read_json(run_root / "copilot-identity.json").get("version"),
+                    personal_instructions=personal_source is not None,
+                )
+                run_result = parse_run(
+                    log,
+                    skill=treatment["descriptor"]["entry_skill"],
+                    expected_model=model,
+                    cwd=workdir,
+                    require_skill=None if phase.get("resume") or restored_case else True,
+                )
             content = run_result["answer"]
             validate_candidate(content, phase)
             suffix = "json" if phase.get("output_format") == "json" else "md"
@@ -2700,11 +2925,13 @@ def _run_case(
             "invoked_skills": run_result["invoked_skills"],
             "result_exit_code": run_result["result_exit_code"],
             "viewed_paths": run_result["viewed_paths"],
-            "command": command_record(command, digest(prompt_path)),
+            "command": command if native_case else command_record(command, digest(prompt_path)),
             "prompt_sha256": digest(prompt_path),
             "raw_log_sha256": digest(log),
             "output_sha256": digest(output_path),
         }
+        if native_case:
+            receipt["result_source"] = run_result["result_source"]
         if personal_source is not None:
             receipt.update(
                 instruction_mode="personal-only",
@@ -2729,7 +2956,11 @@ def _run_case(
             path for phase_id, output, receipt in phase_outputs
             for path in ((output, receipt, run_root / f"{phase_id}-raw.jsonl")
                          if restored_case else (output, receipt))
-        ],
+        ] + ([path for phase in definition["phases"]
+              for path in list_files(run_root / f"{phase['id']}-native-owner")
+              if path.name in {"setup.json", "candidate.json", "observe.json", "observed-goal.json",
+                               "phase-result.json", "cleanup.json",
+                               "actual-candidate-calls.json"}] if native_case else []),
     )
 
     verdicts = [judgment["verdict"] for judgment in judgments]
@@ -2831,12 +3062,17 @@ def run_case(
     suite_owner: dict | None = None,
     dashboard_snapshot_id: str | None = None,
     run_goal: str | None = None,
+    native_workflow_sdk: Path | None = None,
+    native_preflight_only: bool = False,
 ) -> Path:
     timeline = measurement.Timeline()
     ensure_case_id(case_id)
     verify_case(root, case_id)
     case_revision = digest(frozen_case_path(root, case_id) / "case-manifest.json")
     definition = read_json(frozen_case_path(root, case_id) / "case.json")
+    _validate_native_selection(
+        definition, frozen_case_path(root, case_id), native_workflow_sdk,
+        model, effort, home_mode, native_preflight_only)
     treatment, compatibility = resolve_treatment(
         definition,
         arm,
@@ -2980,6 +3216,7 @@ def run_case(
             treatment=treatment, compatibility=compatibility,
             treatment_admission=treatment_admission,
             expected_revision=expected_revision, quality_review=quality_review,
+            native_workflow_sdk=native_workflow_sdk, native_preflight_only=native_preflight_only,
             dashboard_snapshot_id=dashboard_snapshot_id,
             run_root=run_root, timeline=timeline, resources=resources,
         )
@@ -3114,6 +3351,7 @@ def run_case(
                     (run_root / "REPORT.md").is_file()
                     or (run_root / "execution-result.json").is_file()
                     or (run_root / "repository-result.json").is_file()
+                    or (run_root / "preparation-result.json").is_file()
                 )
                 if terminal:
                     print(
@@ -3134,6 +3372,14 @@ def run_case(
 
 
 def result_from_run(run_root: Path, *, behavioral_only: bool = False) -> str:
+    preparation = run_root / "preparation-result.json"
+    if preparation.is_file() and not behavioral_only:
+        result = read_json(preparation)
+        if (result.get("status") != "PREPARATION_ONLY"
+                or type(result.get("model_send_calls")) is not int or result["model_send_calls"] != 0
+                or type(result.get("judge_calls")) is not int or result["judge_calls"] != 0):
+            raise ValueError("invalid preparation-only result")
+        return "PREPARATION_ONLY"
     execution = run_root / "execution-result.json"
     if execution.is_file() and not behavioral_only:
         return read_json(execution)["execution_status"]
@@ -3167,6 +3413,8 @@ def _run_suite_impl(
     sandcastle_adapter_dir: Path | None = None,
     dashboard_snapshot_id: str | None = None,
     run_goal: str | None = None,
+    native_workflow_sdk: Path | None = None,
+    native_preflight_only: bool = False,
     suite_root: Path | None = None,
     lease: RunLease | None = None,
 ) -> tuple[Path, bool]:
@@ -3274,6 +3522,7 @@ def _run_suite_impl(
                 quality_review=quality_review,
                 dashboard_snapshot_id=dashboard_snapshot_id,
                 run_goal=run_goal,
+                native_workflow_sdk=native_workflow_sdk, native_preflight_only=native_preflight_only,
                 suite_owner={"suite_path": str(suite_root.relative_to(root)),
                              "case_id": case_id, "attempt": attempt_number,
                              "max_attempts": max_attempts},
@@ -3306,7 +3555,7 @@ def _run_suite_impl(
                         attempt["execution_status"] = execution["execution_status"]
                         attempt["behavioral_verdict"] = execution["behavioral_verdict"]
                     attempts_by_case[case_id].append(attempt)
-                    if attempt["result"] != "PASS" or (
+                    if attempt["result"] not in ({"PREPARATION_ONLY"} if native_preflight_only else {"PASS"}) or (
                         "behavioral_verdict" in attempt and attempt["behavioral_verdict"] != "PASS"
                     ):
                         next_pending.append(case_id)
@@ -3379,7 +3628,7 @@ def _run_suite_impl(
     results.sort(key=lambda item: item["case_id"])
     failures.sort(key=lambda item: item["case_id"])
     passed = not failures and all(
-        item["result"] == "PASS"
+        item["result"] == ("PREPARATION_ONLY" if native_preflight_only else "PASS")
         and (item["case_type"] != "repository-task" or item["behavioral_verdict"] == "PASS")
         for item in results
     )
@@ -3404,7 +3653,7 @@ def _run_suite_impl(
         suite_root / "suite-result.json",
         {
             "schema_version": 1,
-            "result": "PASS" if passed else "FAIL",
+            "result": ("PREPARATION_ONLY" if native_preflight_only else "PASS") if passed else "FAIL",
             "started_at": started_at,
             "completed_at": completed_at,
             "duration_seconds": duration_seconds,
@@ -3441,7 +3690,7 @@ def _run_suite_impl(
     report = [
         "# Skill evaluation suite",
         "",
-        f"**Result: {'PASS' if passed else 'FAIL'}**",
+        f"**Result: {('PREPARATION_ONLY' if native_preflight_only else 'PASS') if passed else 'FAIL'}**",
         "",
         f"- Cases requested: {len(selected)}",
         f"- Cases completed: "
@@ -3519,6 +3768,8 @@ def run_suite(
     sandcastle_adapter_dir: Path | None = None,
     dashboard_snapshot_id: str | None = None,
     run_goal: str | None = None,
+    native_workflow_sdk: Path | None = None,
+    native_preflight_only: bool = False,
 ) -> tuple[Path, bool]:
     if workers <= 0:
         raise ValueError("workers must be positive")
@@ -3533,6 +3784,13 @@ def run_suite(
     unknown = sorted(set(selected) - set(corpus["cases"]))
     if unknown:
         raise ValueError(f"unknown suite cases: {unknown}")
+    if native_workflow_sdk is not None or native_preflight_only:
+        for case_id in selected:
+            verify_case(root, case_id)
+            frozen = frozen_case_path(root, case_id)
+            _validate_native_selection(
+                read_json(frozen / "case.json"), frozen, native_workflow_sdk,
+                model, effort, home_mode, native_preflight_only)
     from project_dashboard import (
         project_run_binding,
         validate_run_start,
@@ -3559,6 +3817,7 @@ def run_suite(
             sandcastle_adapter_dir=sandcastle_adapter_dir,
             dashboard_snapshot_id=dashboard_snapshot_id,
             run_goal=run_goal,
+            native_workflow_sdk=native_workflow_sdk, native_preflight_only=native_preflight_only,
         )
 
     suite_root = root / "suite-runs" / f"{utc_stamp()}-{uuid.uuid4().hex[:8]}"
@@ -3621,6 +3880,7 @@ def run_suite(
             sandcastle_adapter_dir=sandcastle_adapter_dir,
             dashboard_snapshot_id=dashboard_snapshot_id,
             run_goal=run_goal,
+            native_workflow_sdk=native_workflow_sdk, native_preflight_only=native_preflight_only,
             suite_root=suite_root,
             lease=lease,
         )
@@ -3729,6 +3989,10 @@ def parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--model", default="gpt-5.6-sol")
     run.add_argument("--effort", default="high")
+    run.add_argument("--native-workflow-sdk", type=Path,
+                     help="Verified SDK index.js for declared native workflow phases")
+    run.add_argument("--native-preflight-only", action="store_true",
+                     help="Check native preparation without a model send or judges")
     run.add_argument(
         "--home-mode", choices=("existing", "isolated"), default="existing"
     )
@@ -3751,6 +4015,10 @@ def parser() -> argparse.ArgumentParser:
     )
     suite.add_argument("--model", default="gpt-5.6-sol")
     suite.add_argument("--effort", default="high")
+    suite.add_argument("--native-workflow-sdk", type=Path,
+                       help="Verified SDK index.js for declared native workflow phases")
+    suite.add_argument("--native-preflight-only", action="store_true",
+                       help="Check native preparation without a model send or judges")
     suite.add_argument(
         "--home-mode", choices=("existing", "isolated"), default="existing"
     )
@@ -3829,6 +4097,9 @@ def main(argv: list[str] | None = None) -> int:
                     quality_review=args.quality_review,
                     dashboard_snapshot_id=args.dashboard_snapshot,
                     run_goal=args.run_goal,
+                    native_workflow_sdk=args.native_workflow_sdk.expanduser().absolute()
+                    if args.native_workflow_sdk else None,
+                    native_preflight_only=args.native_preflight_only,
                 )
             print(run_path)
             repository_result = run_path / "repository-result.json"
@@ -3858,6 +4129,9 @@ def main(argv: list[str] | None = None) -> int:
                 quality_review=args.quality_review,
                 dashboard_snapshot_id=args.dashboard_snapshot,
                 run_goal=args.run_goal,
+                native_workflow_sdk=args.native_workflow_sdk.expanduser().absolute()
+                if args.native_workflow_sdk else None,
+                native_preflight_only=args.native_preflight_only,
             )
             print(suite_root)
             if not passed:
