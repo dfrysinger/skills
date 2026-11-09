@@ -491,6 +491,8 @@ test("historical context installs snapshot through connected SQL and checks warm
   const { config, state, root, snapshot } = await historicalContextFixture(t);
   const setup = await runProbe("setup", config);
   assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
+  assert.equal(setup.provenance, "source-bound-historical");
+  assert.deepEqual(setup.limits, JSON.parse(readFileSync(config.context_fixture_file, "utf8")).limitations);
   assert.equal(state.starts, 2);
   assert.equal(state.transactions, 1);
   assert.equal(state.reloads, 2);

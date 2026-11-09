@@ -1244,9 +1244,9 @@ export async function runProbe(op, config) {
     }
     if (contextProfile(config)) {
       report.profile = config.profile;
-      report.provenance = "synthetic-calibration";
+      report.provenance = historicalProfile(config) ? "source-bound-historical" : "synthetic-calibration";
       delete report.modern_defaults;
-      report.limits = [
+      report.limits = historicalProfile(config) ? contextFixture(config).limitations : [
         "Synthetic source capability only, not historical replay or full summary/authority equivalence",
         "Context metadata has no full text; sentinel recall tests only specific information availability",
         "Pre-summary retention is diagnostic without an evidenced deletion rule",
