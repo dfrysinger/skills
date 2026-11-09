@@ -16,6 +16,7 @@ const phaseFields = [...fields, "profile", "state_file", "prompt_path", "event_l
 const contextFields = [...fields, "profile", "prompt_path", "event_log", "plugin_path",
   "model", "effort", "prefix_file", "context_fixture_file"];
 const historicalProfile = config => config?.profile === "native-historical-context";
+const continuationProfile = config => historicalProfile(config) && Object.hasOwn(config, "continuation_file");
 const contextProfile = config => historicalProfile(config) || config?.profile === "native-context-calibration";
 const conversational = events => events.filter(event =>
   /^(user\.message|assistant\.message|tool\.result|tool\.execution_complete)$/.test(event.type));
@@ -370,12 +371,52 @@ export function validateRecordedNativeEvents(fixture, events) {
   };
 }
 
+export function continuationEntry(config) {
+  requirePath(config.continuation_file, "file");
+  return JSON.parse(execFileSync("python3", ["-B", "-I", "-c",
+    "import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);from native_workflow import continuation_entry;print(json.dumps(continuation_entry(Path(sys.argv[2]),json.loads(sys.argv[3]))))",
+    dirname(fileURLToPath(import.meta.url)), config.continuation_file, JSON.stringify(config)],
+  { encoding: "utf8", env: {
+    PATH: process.env.PATH ?? "",
+    ...(process.env.GITHUB_WORKFLOW_SHA ? { GITHUB_WORKFLOW_SHA: process.env.GITHUB_WORKFLOW_SHA } : {}),
+    ...(process.env.GITHUB_WORKSPACE ? { GITHUB_WORKSPACE: process.env.GITHUB_WORKSPACE } : {}),
+  } }));
+}
+
+export function continuationCorrespondence(before, after, events, messageId, raw) {
+  if (after.length < before.length || before.some((event, index) => !isDeepStrictEqual(event, after[index]))) {
+    throw new Error("Historical continuation mutated its native journal prefix");
+  }
+  const root = event => !event.agentId && !event.data?.parentToolCallId;
+  const users = after.slice(before.length).filter(event => root(event) && event.type === "user.message");
+  if (users.length !== 1 || users[0].data?.content !== raw
+      || users[0].data?.messageId !== messageId || users[0].data?.isAutopilotContinuation
+      || users[0].data?.source || users[0].data?.attachments?.length
+      || typeof users[0].data?.interactionId !== "string" || !users[0].data.interactionId) {
+    throw new Error("Historical continuation requires exactly one unsubstituted root raw user event");
+  }
+  const primary = events.filter(event => root(event) && event.type === "system.message"
+    && event.data?.interactionId === users[0].data.interactionId);
+  if (!primary.length || primary.some(event => typeof event.data?.content !== "string"
+      || !event.data.content.includes("You are the GitHub Copilot CLI, a terminal assistant built by GitHub.")
+      || !event.data.content.includes("You are an interactive tool that helps users with software engineering tasks.")
+      || event.data.content.includes("You are running in non-interactive mode"))) {
+    throw new Error("Fresh correlated primary system prompt did not verify interactive CLI identity");
+  }
+  return { prefix_preserved: true, exactly_once: true, interactive_identity: true,
+    primary_system_messages: primary, interaction_id: users[0].data.interactionId };
+}
+
 export function validateConfig(op, config) {
   if (!["setup", "observe", "cleanup", "candidate", "preflight"].includes(op)) throw new Error("Unknown operation");
+  if (continuationProfile(config) && !["candidate", "observe", "cleanup"].includes(op)) {
+    throw new Error("Continuation cannot replace source setup or zero-send preflight");
+  }
   const selected = config?.profile !== undefined;
   const keys = contextProfile(config) ? [...contextFields,
     ...(historicalProfile(config) ? ["candidate_permissions",
-      ...(Object.hasOwn(config, "skill_directories") ? ["skill_directories"] : [])] : [])] : selected ? [
+      ...(Object.hasOwn(config, "skill_directories") ? ["skill_directories"] : []),
+      ...(continuationProfile(config) ? ["continuation_file"] : [])] : [])] : selected ? [
     ...phaseFields, ...(Object.hasOwn(config, "candidate_permissions") ? ["candidate_permissions"] : []),
   ] : fields;
   if (!config || typeof config !== "object" || Array.isArray(config)
@@ -416,13 +457,17 @@ export function validateConfig(op, config) {
   validateOutput(config);
   if (contextProfile(config)) {
     if (historicalProfile(config)) {
-      if (op === "candidate") throw new Error("Historical setup forbids model sends");
-      permissionProfile(config);
+      if (op === "candidate" && !continuationProfile(config)) throw new Error("Historical setup forbids model sends");
+      if (!continuationProfile(config)) permissionProfile(config);
     }
     const fixture = contextFixture(config);
-    if (fixture.schema_version === 3 && fixture.completed_objective) {
+    if (continuationProfile(config) && fixture.schema_version !== 3) {
+      throw new Error("Continuation requires recorded schema3 input");
+    }
+    if (fixture.schema_version === 3 && fixture.completed_objective
+        && !(continuationProfile(config) && ["observe", "cleanup"].includes(op))) {
       completedObjectiveReadback(goalPath, fixture);
-    } else if (pathExists(goalPath)) {
+    } else if (pathExists(goalPath) && !(continuationProfile(config) && ["observe", "cleanup"].includes(op))) {
       throw new Error(op === "setup" ? "Setup requires an absent native goal"
         : "Context calibration requires an absent native goal");
     }
@@ -656,7 +701,10 @@ export async function runProbe(op, config) {
   const started = performance.now();
   let ownerDeadline = started + 330000;
   const isCandidate = op === "candidate" || op === "preflight";
-  const historicalZeroSend = historicalProfile(config) && op !== "candidate";
+  const continuation = continuationProfile(config);
+  const historicalZeroSend = historicalProfile(config) && (op !== "candidate" || continuation);
+  let entry;
+  let pendingOutcome;
   const selected = config?.profile !== undefined;
   let projection;
   let scheduleMapping;
@@ -761,6 +809,11 @@ export async function runProbe(op, config) {
           COPILOT_DISABLE_KEYTAR: "1", COPILOT_OTEL_ENABLED: "false",
           ...(historicalProfile(config) && contextFixture(config).schema_version === 3
             ? { COPILOT_STRIP_REASONING_ON_RESUME: "false" } : {}),
+          ...(continuation ? {
+            PATH: entry.executable_path, LANG: entry.locale, LC_ALL: entry.locale,
+            ...(process.env.COPILOT_GITHUB_TOKEN
+              ? { COPILOT_GITHUB_TOKEN: process.env.COPILOT_GITHUB_TOKEN } : {}),
+          } : {}),
         },
       }),
       workingDirectory: config.cwd, baseDirectory: config.home,
@@ -1059,6 +1112,19 @@ export async function runProbe(op, config) {
     return state;
   };
   const cleanup = async () => {
+    if (continuation) {
+      const state = report.final_state ?? await continuationState();
+      const result = report.cleanup = { errors: [], residual_namespace_preserved: true,
+        mutable_state_not_restored: true, final_state: state, stopped_schedule_ids: [] };
+      for (const entry of state.schedules.entries) {
+        if (!Number.isInteger(entry.id) || entry.id < 1) throw new Error("Invalid owned continuation schedule");
+        await call("schedule.stop", { id: entry.id }, () => session.rpc.schedule.stop({ id: entry.id }));
+        result.stopped_schedule_ids.push(entry.id);
+      }
+      result.after_schedules = await call("schedule.list", undefined, () => session.rpc.schedule.list());
+      if (result.after_schedules.entries.length) throw new Error("Owned continuation timers remain active");
+      return result;
+    }
     if (contextProfile(config)) {
       const state = await observe(false);
       return report.cleanup = { errors: [], todos: state.todos, schedules: state.schedules,
@@ -1126,6 +1192,20 @@ export async function runProbe(op, config) {
     }
     return result;
   };
+  const continuationState = async () => ({
+    goal: await call("autopilotObjective.getState", undefined, () => session.rpc.autopilotObjective.getState()),
+    mode: await call("mode.get", undefined, () => session.rpc.mode.get()),
+    permissions: await call("permissions.getMode", undefined, () => session.rpc.permissions.getMode()),
+    todos: await call("plan.readSqlTodos", undefined, () => session.rpc.plan.readSqlTodos()),
+    schedules: await call("schedule.list", undefined, () => session.rpc.schedule.list()),
+    skills: await call("skills.getInvoked", undefined, () => session.rpc.skills.getInvoked()),
+    model: await call("model.getCurrent", undefined, () => session.rpc.model.getCurrent()),
+    tools: await call("tools.getCurrentMetadata", undefined, () => session.rpc.tools.getCurrentMetadata()),
+    context: await call("metadata.getContextAttribution", undefined, () => session.rpc.metadata.getContextAttribution()),
+    activity: await call("metadata.activity", undefined, () => session.rpc.metadata.activity()),
+    processing: await call("metadata.isProcessing", undefined, () => session.rpc.metadata.isProcessing()),
+    native_store: pathExists(report.goal_path) ? parseDataJson(readFileSync(report.goal_path, "utf8")) : null,
+  });
   const candidate = async () => {
     const hash = content => createHash("sha256").update(content).digest("hex");
     report.prefix_before = await readEvents();
@@ -1139,6 +1219,58 @@ export async function runProbe(op, config) {
     }
     const tail = await call("eventLog.tail", undefined, () => session.rpc.eventLog.tail());
     if (typeof tail?.cursor !== "string") throw new Error("Missing native event tail cursor");
+    if (continuation) {
+      const fixture = contextFixture(config);
+      const identityPath = join(dirname(config.context_fixture_file), "identities.json");
+      requirePath(identityPath, "file");
+      const stat = lstatSync(identityPath);
+      const identity = parseDataJson(readFileSync(identityPath, "utf8"));
+      if (stat.uid !== userInfo().uid || stat.nlink !== 1 || (stat.mode & 0o077)
+          || identity.session_id !== config.session_id || fixture.source_binding.source_session_id === config.session_id
+          || typeof fixture.source_binding.source_session_id !== "string") {
+        throw new Error("Continuation namespace differs from the isolated setup writer");
+      }
+      report.before_continuation = await observe(false);
+      report.bound_raw_trigger = parseDataJson(readFileSync(fixture.trigger_file, "utf8")).content;
+      const deferred = parseDataJson(readFileSync(fixture.trigger_file, "utf8"));
+      report.frozen_inputs = Object.fromEntries([
+        config.context_fixture_file, config.prefix_file, config.prompt_path, identityPath, fixture.canonical_file,
+        fixture.trigger_file, resolve(dirname(fixture.trigger_file), deferred.source_event_path),
+        ...(fixture.completed_objective ? [fixture.completed_objective.path] : []),
+        join(config.home, "copilot-instructions.md"),
+        ...Object.keys(entry.binding.source).map(name => join(dirname(fileURLToPath(import.meta.url)), name)),
+        ...entry.observed_package.files.map(file => join(entry.package_root, file.path)),
+      ].map(path => [path, hash(readFileSync(path))]));
+      if (readFileSync(report.prompt_path, "utf8") !== report.bound_raw_trigger) {
+        throw new Error("Continuation prompt differs from the bound original raw event");
+      }
+      const updated = await call("options.update", {
+        runningInInteractiveMode: true, sessionCapabilities: entry.session_capabilities,
+      }, () => session.rpc.options.update({
+        runningInInteractiveMode: true, sessionCapabilities: entry.session_capabilities,
+      }));
+      if (updated?.success !== true) throw new Error("Native interactive options update failed");
+      const mode = await call("permissions.setMode", { mode: "allow-all" },
+        () => session.rpc.permissions.setMode({ mode: "allow-all" }));
+      const configured = await call("permissions.configure", { paths: { unrestricted: true }, urls: { unrestricted: true } },
+        () => session.rpc.permissions.configure({ paths: { unrestricted: true }, urls: { unrestricted: true } }));
+      const actual = await call("permissions.getMode", undefined, () => session.rpc.permissions.getMode());
+      if (mode?.success !== true || mode.mode !== "allow-all" || configured?.success !== true || actual?.mode !== "allow-all") {
+        throw new Error("Native permission policy did not admit normal allow-all configuration");
+      }
+      const model = await call("model.getCurrent", undefined, () => session.rpc.model.getCurrent());
+      if (model?.modelId !== config.model || model.reasoningEffort !== config.effort) {
+        throw new Error("Historical continuation changed selected model or effort");
+      }
+      if (entry.purpose === "setup-canary") {
+        const path = resolve(config.cwd, entry.canary_checks.file.path);
+        if (!within(path, config.cwd)) throw new Error("Canary file escaped the owned workdir");
+        report.canary_file_before_sha256 = pathExists(path) ? hash(readFileSync(path)) : null;
+        if (report.canary_file_before_sha256 === entry.canary_checks.file.sha256) {
+          throw new Error("Canary file must demonstrate a new candidate effect");
+        }
+      }
+    } else {
     const sources = await call("instructions.getSources", undefined, () => session.rpc.instructions.getSources());
     report.instructions = sources;
     const personalPath = join(config.home, "copilot-instructions.md");
@@ -1367,10 +1499,12 @@ export async function runProbe(op, config) {
       report.status = "PREFLIGHT_OBSERVED";
       return;
     }
+    }
     if (typeof session.send !== "function" || typeof session.abort !== "function") {
       throw new Error("Missing public SDK send or abort surface");
     }
     const renderedPrompt = readFileSync(report.prompt_path, "utf8");
+    if (continuation && report.pending_input?.length) throw new Error("Native input request preceded original submission");
     report.prompt_sha256 = hash(renderedPrompt);
     report.timeout_ms = Math.max(0, Math.floor(Math.min(report.max_timeout_ms, 330000 - (performance.now() - started))));
     if (!report.timeout_ms) throw new Error("Owned helper budget exhausted before model dispatch");
@@ -1380,6 +1514,9 @@ export async function runProbe(op, config) {
     let active = true;
     let resolveOutcome;
     const outcome = new Promise(resolve => { resolveOutcome = resolve; });
+    if (continuation) pendingOutcome = () => {
+      if (messageId !== undefined) resolveOutcome({ pending: true });
+    };
     const consume = event => {
       if (!active || event.agentId || event.data?.parentToolCallId) return;
       if (event.type === "session.error") {
@@ -1422,6 +1559,7 @@ export async function runProbe(op, config) {
           report.model_message_id = id;
           if (!active) return;
           messageId = id;
+          if (continuation && report.pending_input?.length) resolveOutcome({ pending: true });
           for (const event of buffered) consume(event);
           buffered.length = 0;
         }).catch(error => resolveOutcome({ error }));
@@ -1429,18 +1567,60 @@ export async function runProbe(op, config) {
         if (terminal.error) throw terminal.error;
         report.model_result = terminal.message;
         report.model_completion_event = terminal.idle;
+        if (terminal.pending) {
+          report.pending_input_observed = true;
+          await call("session.abort", undefined, () => session.abort());
+        }
       } catch (error) {
         fail(error);
         throw error;
       } finally {
         active = false;
+        pendingOutcome = undefined;
         clearTimeout(deadlineTimer);
         try { stopCompletion(); } catch (error) { fail(error); }
         report.model_completed_at = new Date().toISOString();
         report.model_elapsed_seconds = (performance.now() - modelStarted) / 1000;
       }
       if (report.error) throw new Error("Candidate event capture failed");
-      report.status = "CANDIDATE_OBSERVED";
+      if (continuation) {
+        for (const [path, expected] of Object.entries(report.frozen_inputs)) {
+          requirePath(path, "file");
+          if (hash(readFileSync(path)) !== expected) throw new Error("Frozen continuation source input changed");
+        }
+        if (continuationEntry(config).observed_package.sha256 !== entry.observed_package.sha256) {
+          throw new Error("Frozen continuation input package changed");
+        }
+        report.prefix_after = await readEvents();
+        const correspondence = continuationCorrespondence(
+          report.prefix_before, report.prefix_after, candidateEvents.slice(report.model_event_start_index),
+          report.model_message_id, report.bound_raw_trigger);
+        Object.assign(report.checks, correspondence);
+        report.primary_system_messages = correspondence.primary_system_messages;
+        delete report.checks.primary_system_messages;
+        report.final_state = await continuationState();
+        report.tool_effects = candidateEvents.slice(report.model_event_start_index)
+          .filter(event => /^tool\./.test(event.type));
+        if (entry.purpose === "setup-canary" && !report.pending_input_observed) {
+          const events = candidateEvents.slice(report.model_event_start_index);
+          const witness = (name, key, value) => {
+            const starts = events.filter(event => event.type === "tool.execution_start"
+              && !event.agentId && event.data?.toolName === name && event.data?.arguments?.[key] === value);
+            return events.find(event => event.type === "tool.execution_complete" && !event.agentId
+              && event.data?.success === true && starts.some(start => start.data.toolCallId === event.data.toolCallId));
+          };
+          const shell = witness("bash", "command", entry.canary_checks.shell.command);
+          const sql = witness("sql", "query", entry.canary_checks.sql.query);
+          const file = resolve(config.cwd, entry.canary_checks.file.path);
+          requirePath(file, "file");
+          report.checks.operation_witnesses = hash(readFileSync(file)) === entry.canary_checks.file.sha256
+            && shell?.data?.shellExecution?.exitCode === 0
+            && typeof sql?.data?.result?.content === "string" && sql.data.result.content.length > 0
+            && sql?.data?.toolTelemetry?.metrics?.rowsReturned > 0;
+          if (!report.checks.operation_witnesses) throw new Error("Canary lacks actual file, shell exit or SQL result witnesses");
+        }
+      }
+      report.status = report.pending_input_observed ? "HUMAN_INPUT_PENDING" : "CANDIDATE_OBSERVED";
     } catch (error) {
       fail(error);
       try { await call("session.abort", undefined, () => session.abort()); } catch (abortError) { fail(abortError); }
@@ -1472,6 +1652,11 @@ export async function runProbe(op, config) {
     validateOutput(config);
     receipt = openSync(config.output, "wx", 0o600);
     report.goal_path = validateConfig(op, config);
+    if (continuation) {
+      entry = continuationEntry(config);
+      report.continuation_entry = entry;
+      report.max_timeout_ms = entry.timeout_ms;
+    }
     if (historicalProfile(config) && op === "setup"
         && (config.candidate_permissions.write_paths.length || config.candidate_permissions.shell_commands.length)) {
       if (!isDeepStrictEqual(config.candidate_permissions,
@@ -1521,6 +1706,16 @@ export async function runProbe(op, config) {
         "Pre-summary retention is diagnostic without an evidenced deletion rule",
       ];
     }
+    if (continuation) {
+      report.full_available_collection_equivalence = false;
+      report.behavioral_baseline_ready = false;
+      if (entry.purpose === "setup-canary") report.provenance = "synthetic-continuation-canary";
+      report.limits.push(
+        "Primary prompt observation is passive, not a pre-provider barrier",
+        "Remaining CLI defaults and full available collection equivalence remain unproved",
+        "Owner verifies exact workflow source after execution; selected commit is bound here",
+        "Normal native allow-all preserves managed policy; package checks are not a filesystem sandbox");
+    }
     report.cli = config.cli;
     report.sdk = config.sdk;
     report.connection = { path: config.cli, args: [], useLoggedInUser: false };
@@ -1548,6 +1743,28 @@ export async function runProbe(op, config) {
           return decision;
         },
       };
+      if (continuation) {
+        const recordPending = (kind, request) => {
+          (report.pending_input ??= []).push({ kind, request });
+          pendingOutcome?.();
+          return new Promise(() => {});
+        };
+        candidateOptions = {
+          ...options, model: config.model, reasoningEffort: config.effort,
+          enableManagedSettings: true, enableFileChangeTracking: true,
+          enableOnDemandInstructionDiscovery: true,
+          pluginDirectories: [report.plugin_path],
+          disabledMcpServers: ["github-mcp-server", "playwright"],
+          skipCustomInstructions: false, instructionDirectories: [], organizationCustomInstructions: "",
+          ...(config.skill_directories ? { skillDirectories: config.skill_directories } : {}),
+          systemMessage: { mode: "customize", sections: {
+            preamble: { action: "replace", content: entry.cli_preamble },
+          } },
+          onUserInputRequest: request => recordPending("user-input", request),
+          onElicitationRequest: request => recordPending("elicitation", request),
+        };
+        delete candidateOptions.availableTools;
+      }
       report.connection.mode = "copilot-cli";
       report.connection.workingDirectory = config.cwd;
       report.connection.baseDirectory = config.home;
@@ -1561,7 +1778,15 @@ export async function runProbe(op, config) {
     };
     sdk = await import(pathToFileURL(config.sdk).href);
     await connect();
-    if (contextProfile(config) && !isCandidate) {
+    if (continuation && !isCandidate) {
+      if (op === "cleanup") {
+        await cleanup();
+        report.status = "CLEANED";
+      } else {
+        report.final_state = await continuationState();
+        report.status = "OBSERVED";
+      }
+    } else if (contextProfile(config) && !isCandidate) {
       if (op === "setup") {
         if (historicalProfile(config)) {
           await installHistoricalSnapshot();
@@ -1716,6 +1941,12 @@ export async function runProbe(op, config) {
   } catch (error) {
     fail(error);
   } finally {
+    if (continuation && isCandidate && report.model_send_calls && session) {
+      try {
+        report.final_state ??= await continuationState();
+        await cleanup();
+      } catch (error) { fail(error); }
+    }
     try {
       await stop();
     } catch (error) {
@@ -1744,6 +1975,15 @@ export async function runProbe(op, config) {
       try { if (eventFile !== undefined) closeSync(eventFile); } catch (error) { fail(error); }
       if (report.error) report.status = report.model_send_calls ? "FAILED" : "PREMODEL_BLOCKED";
       report.firsterror = report.error?.message ?? null;
+      if (continuation && entry?.purpose === "setup-canary" && report.status === "CANDIDATE_OBSERVED"
+          && report.shutdown_errors.length === 0) {
+        report.continuation_receipt = {
+          status: "CONTINUATION_CANARY_OBSERVED", configuration_sha256: entry.configuration_sha256,
+          interactive_identity: report.checks.interactive_identity,
+          operation_witnesses: report.checks.operation_witnesses,
+          exactly_once: report.checks.exactly_once, shutdown_errors: [],
+        };
+      }
     } else if (report.error) report.status = "ERROR";
     report.elapsed_seconds = (performance.now() - started) / 1000;
     if (receipt !== undefined) {

@@ -16,8 +16,8 @@ plugin snapshot.
 ## Recorded native context preparation
 
 The existing `_run_native_context_calibration` producer accepts an owner-only
-historical fixture with `schema_version: 3`. This is model-free preparation,
-not a behavioral run. It creates an empty namespace through the existing
+historical fixture with `schema_version: 3`. Without explicit continuation,
+this is model-free preparation, not a behavioral run. It creates an empty namespace through the existing
 importer using a session-header-only transport with the operational title
 `owned-recorded-context`, then stages the materialized recorded projection as
 native events. The title is not a source-original title claim. Import acceptance
@@ -79,6 +79,94 @@ post-resume projection still require model-free native observation. Internal
 approval indices and source annotations are retained separately, not presented
 as reconstructed authorization history. An assisted permission mode requires
 the corresponding authentic authority evidence before an operation that uses it.
+
+## Continue a recorded native session
+
+The same producer accepts `continuation_file: Path | None = None`. Set
+`model_send=True`, `source_preparation_only=False` and omit `calibration_root`
+to continue schema3 input. Setup closes its writer before the candidate resumes
+the same fresh UUID. The candidate sends the bound raw human event once, without
+reimporting, changing the session mode, reactivating an objective or invoking a
+skill on the owner's behalf. Model and effort must match the recorded selection.
+
+The continuation file is an owned, owner-only, unaliased single-link JSON file:
+
+```json
+{
+  "schema_version": 1,
+  "purpose": "setup-canary",
+  "running_in_interactive_mode": true,
+  "session_capabilities": [
+    "tui-hints", "plan-mode", "memory", "cli-documentation", "ask-user",
+    "interactive-mode", "system-notifications", "elicitation", "session-store"
+  ],
+  "cli_preamble": "You are the GitHub Copilot CLI, a terminal assistant built by GitHub.",
+  "executable_path": "/usr/local/bin:/usr/bin:/bin",
+  "locale": "C.UTF-8",
+  "timeout_ms": 180000,
+  "package_root": "/owned/input",
+  "workflow_commit": "<selected workflow's 40-character commit>",
+  "workflow_sha256": "<expected workflow source SHA256>",
+  "canary_receipt": null,
+  "canary_checks": {
+    "file": {"path": "result.txt", "sha256": "<expected file SHA256>"},
+    "shell": {"command": "<exact authored shell command>"},
+    "sql": {"query": "<exact authored SELECT query>"}
+  }
+}
+```
+
+`package_root` contains only `evaluator/`, `plugins/` and `owner/`.
+Owner inputs are `context-fixture.json`, `completed-objective.json`,
+`recorded-context.json`, `source-event.json`, `continuation.json` and optional
+`calibration-evidence/`. Keep the fresh run directory outside this package.
+Repository checkouts, symlinks, judge/criteria files and later diagnoses are
+refused. These checks are not a filesystem sandbox or a complete content audit.
+The owner must omit private inputs from the job. The selected workflow commit
+must match `GITHUB_WORKFLOW_SHA` when available. Retain and verify its exact
+source through the existing authenticated read after the candidate stops.
+The owner must verify `workflow_sha256` before admitting its result or using
+the compact canary receipt. Common configuration binds those source bytes,
+not unrelated changes elsewhere in the workflow repository.
+
+The synthetic `setup-canary` purpose needs minimal prior context, an ordinary
+bound source event, and an authored file/shell/SQL request. It does not need
+the historical transcript or a target-skill invocation. A successful result
+requires an actual changed file with the expected hash, a matching successful
+shell event with native `shellExecution.exitCode=0`, and a matching successful
+SQL event with nonempty result content and positive native row telemetry.
+No retry is automatic.
+
+The producer returns `candidate`, `observe`, `cleanup` and, for a successful
+canary, a compact `continuation_receipt`. For `purpose="historical"`, set
+`canary_checks=null` and embed that exact receipt in `canary_receipt`.
+Admission binds evaluator and helper bytes, CLI/SDK hashes, plugin and personal
+instructions and personal skill collections, model/effort, interactive options,
+PATH, locale, timeout and workflow source hash.
+Fresh UUIDs and the different tiny/historical task inputs are not common settings.
+Missing, mismatched and noninteractive receipts refuse before historical send.
+
+Continuation uses native interactive options and preamble-only customization,
+not an identity-group transform. Native permission RPCs must successfully select
+`allow-all`, configure unrestricted paths/URLs and report that mode. Managed
+policy remains enabled; there is no `approveAll` callback. The explicit child
+environment retains reasoning and the normal inference authentication channel,
+without `COPILOT_PLAN_THEN_AUTOPILOT` or retained authentication values.
+
+The candidate retains fresh primary system events, including content blocks,
+correlated to the new user's interaction. Interactive identity is checked after
+dispatch. This passive observation is not a pre-provider barrier. Wrong primary
+identity, a changed prefix, duplicate/substituted user input or changed frozen
+inputs invalidate the attempt as setup/fidelity evidence, not a skill result.
+Ordinary completion requires a correlated root assistant response and idle.
+A real input callback instead yields `HUMAN_INPUT_PENDING`; no answer or
+automatic continuation is supplied. The owner freezes its interpretation.
+
+After model actions, tools, skill loads and task/objective edits are retained as
+behavior. Final native state and tool effects are recorded before owned shutdown
+and separate cleanup observation. Cleanup does not reinstall the source snapshot.
+`CANDIDATE_OBSERVED` and canary success do not establish full discovery, all CLI
+defaults, complete historical state or a behavioral baseline.
 
 ## Prepare a case
 

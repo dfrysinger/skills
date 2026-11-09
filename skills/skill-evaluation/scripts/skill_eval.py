@@ -1715,9 +1715,11 @@ def _native_workflow_probe(operation: str, config: dict, *, consumer: dict | Non
     }
     if config.get("profile") == "native-historical-context":
         context_keys.add("candidate_permissions")
+        if "continuation_file" in config:
+            context_keys.add("continuation_file")
         if "skill_directories" in config:
             context_keys.add("skill_directories")
-        if operation == "candidate":
+        if operation == "candidate" and "continuation_file" not in config:
             raise ValueError("Historical context setup cannot send a model request")
     if context_profile and set(config) != context_keys:
         raise ValueError("Expected only the fixed native context coordinator fields")
@@ -1725,7 +1727,8 @@ def _native_workflow_probe(operation: str, config: dict, *, consumer: dict | Non
     pinned_release = None
     if consumer is not None:
         if (config.get("profile") != "native-historical-context"
-                or operation not in {"setup", "observe", "cleanup"}
+                or operation not in ({"setup", "observe", "cleanup", "candidate"}
+                                     if "continuation_file" in config else {"setup", "observe", "cleanup"})
                 or not isinstance(consumer, dict)
                 or set(consumer) != {"cli_version", "cli_sha256", "sdk_sha256"}
                 or not isinstance(consumer["cli_version"], str) or not consumer["cli_version"]
@@ -1763,7 +1766,19 @@ def _native_workflow_probe(operation: str, config: dict, *, consumer: dict | Non
     result = read_json(output)
     expected = {"setup": "SETUP_OBSERVED", "observe": "OBSERVED"}
     historical_preflight = operation == "preflight" and config.get("profile") == "native-historical-context"
-    if operation in {"candidate", "preflight"}:
+    continuation = operation == "candidate" and "continuation_file" in config
+    if continuation:
+        sends, status = result.get("model_send_calls"), result.get("status")
+        if (type(sends) is not int or sends not in (0, 1)
+                or status not in {"CANDIDATE_OBSERVED", "HUMAN_INPUT_PENDING", "PREMODEL_BLOCKED", "FAILED"}
+                or (status == "PREMODEL_BLOCKED" and sends != 0)
+                or (status in {"CANDIDATE_OBSERVED", "HUMAN_INPUT_PENDING"} and (
+                    completed.returncode != 0 or sends != 1 or result.get("firsterror") is not None
+                    or any(result.get("checks", {}).get(key) is not True for key in (
+                        "interactive_identity", "exactly_once", "prefix_preserved",
+                        "imported_prefix_correspondence"))))):
+            raise ValueError("native historical continuation receipt did not verify dispatch correspondence")
+    elif operation in {"candidate", "preflight"}:
         sends = result.get("model_send_calls")
         status = result.get("status")
         if (type(sends) is not int or sends not in (0, 1)
@@ -1839,7 +1854,9 @@ def _native_workflow_probe(operation: str, config: dict, *, consumer: dict | Non
     return result
 
 
-def _run_native_candidate(config: dict, *, cli_version: str, preflight_only: bool = False) -> dict:
+def _run_native_candidate(
+    config: dict, *, cli_version: str, preflight_only: bool = False, consumer: dict | None = None,
+) -> dict:
     root = Path(config["output"]).parent
     home = Path(config["home"])
     started_at, started_clock = utc_instant(), time.monotonic()
@@ -1856,7 +1873,9 @@ def _run_native_candidate(config: dict, *, cli_version: str, preflight_only: boo
     try:
         with measurement.host_events(home, config["session_id"]) as content:
             previous = measurement.snapshot_events(content)
-        candidate = _native_workflow_probe("preflight" if preflight_only else "candidate", config)
+        candidate = _native_workflow_probe(
+            "preflight" if preflight_only else "candidate", config,
+            **({"consumer": consumer} if consumer is not None else {}))
         if candidate["status"] in {"CANDIDATE_OBSERVED", "PREFLIGHT_OBSERVED"}:
             outcome = "completed"
         return candidate
@@ -2988,6 +3007,7 @@ def _run_native_context_calibration(
     *, fixture_file: Path, plugin_dir: Path, copilot: Path, sdk: Path, run_root: Path,
     model: str, effort: str, model_send: bool = False, personal_skill_dir: Path | None = None,
     source_preparation_only: bool = False, calibration_root: Path | None = None,
+    continuation_file: Path | None = None,
 ) -> dict:
     from native_workflow import read_owner_json
     from session_restore import import_session
@@ -3002,6 +3022,10 @@ def _run_native_context_calibration(
     run_root = run_root.absolute()
     try:
         inputs = [path.absolute() for path in (fixture_file, plugin_dir, copilot, sdk)]
+        if continuation_file is not None:
+            if not model_send or source_preparation_only or calibration_root is not None:
+                raise ValueError("Historical continuation requires explicit model send, not source preparation")
+            inputs.append(continuation_file.absolute())
         if type(source_preparation_only) is not bool or (
                 source_preparation_only != (calibration_root is not None)):
             raise ValueError("Pristine preparation requires an explicit separate calibration root")
@@ -3043,10 +3067,12 @@ def _run_native_context_calibration(
             raise ValueError("Personal skill discovery requires an unaliased historical definition directory")
         if historical:
             result["claim"] = "Historical setup observations only; behavioral admission and skill improvement unproved"
-            if model_send:
+            if model_send and continuation_file is None:
                 raise ValueError("Historical context setup forbids model sends")
             fixture = _validate_historical_context_fixture(fixture, root=fixture_file.parent)
-        elif (not isinstance(fixture, dict) or set(fixture) != {
+        if continuation_file is not None and (not historical or fixture["schema_version"] != 3):
+            raise ValueError("Historical continuation requires recorded schema3 input")
+        if not historical and (not isinstance(fixture, dict) or set(fixture) != {
                 "schema_version", "provenance", "messages", "summary", "prompt", "expected"}
                 or fixture["schema_version"] != 1 or fixture["provenance"] != "synthetic-calibration"
                 or not isinstance(fixture["messages"], list) or len(fixture["messages"]) != 4
@@ -3178,16 +3204,24 @@ def _run_native_context_calibration(
             **({"personal_skills": directory_identity(pinned_personal)}
                if pinned_personal is not None else {}),
         })
+        if continuation_file is not None:
+            (owner / "identities.json").chmod(0o600)
         result["setup"] = _native_workflow_probe("setup", config, **probe_kwargs)
         result["checks"]["setup_observed"] = result["setup"].get("status") == "SETUP_OBSERVED"
         if not result["checks"]["setup_observed"]:
             raise ValueError("Context setup was not observed")
         if not source_preparation_only:
+            if continuation_file is not None:
+                config = {**config, "continuation_file": str(continuation_file.absolute())}
             candidate = _run_native_candidate(
                 {**config, "output": str(owner / "candidate.json")},
-                cli_version=cli_identity["version"], preflight_only=not model_send)
+                cli_version=cli_identity["version"], preflight_only=not model_send,
+                **({"consumer": fixture["consumer"]} if continuation_file is not None else {}))
             result["candidate"] = candidate
-            if model_send:
+            if continuation_file is not None:
+                if candidate.get("status") not in {"CANDIDATE_OBSERVED", "HUMAN_INPUT_PENDING"}:
+                    raise ValueError(candidate.get("firsterror") or "Historical continuation did not complete")
+            elif model_send:
                 result["oracle"] = _native_context_oracle(candidate, fixture["expected"])
             elif candidate.get("status") != "PREFLIGHT_OBSERVED" or candidate.get("model_send_calls") != 0:
                 raise ValueError(candidate.get("firsterror") or "Context zero-model preflight did not complete")
@@ -3214,11 +3248,19 @@ def _run_native_context_calibration(
                     result["firsterror"] = result["firsterror"] or str(error)
         if owned:
             if result["firsterror"] is None:
-                result["status"] = "CALIBRATION_OBSERVED" if model_send else "CONTEXT_SETUP_OBSERVED"
+                result["status"] = (result.get("candidate", {}).get("status")
+                                    if continuation_file is not None else
+                                    "CALIBRATION_OBSERVED" if model_send else "CONTEXT_SETUP_OBSERVED")
+                if continuation_file is not None:
+                    result["continuation_receipt"] = result["candidate"].get("continuation_receipt")
             if config is not None and config["profile"] == "native-historical-context":
                 result["claim"] = "Historical setup observations only; behavioral admission and skill improvement unproved"
             if source_preparation_only:
                 result["claim"] = "Historical source preparation only; model consumption and behavioral admission unproved"
+            if continuation_file is not None:
+                result["claim"] = ("Synthetic continuation capability observation; historical reproduction and skill efficacy unproved"
+                                   if result.get("candidate", {}).get("continuation_entry", {}).get("purpose") == "setup-canary"
+                                   else "Historical continuation observation; complete baseline fidelity and skill efficacy unproved")
             write_json(run_root / "context-result.json", result)
     return result
 

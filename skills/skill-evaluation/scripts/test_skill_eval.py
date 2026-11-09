@@ -2016,6 +2016,70 @@ class NativeRecordedContextTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "consumer|pinned runtime"):
                         skill_eval._native_workflow_probe("setup", config, consumer=consumer)
 
+    def test_continuation_keeps_one_import_and_passes_consumer_to_candidate_and_mutable_readback(self):
+        from contextlib import ExitStack
+        continuation = self.root / "continuation.json"
+        continuation.write_text("{}")
+        observed_configs = []
+        def candidate(config, **kwargs):
+            self.order.append("continuation")
+            observed_configs.append(config)
+            self.assertFalse(kwargs["preflight_only"])
+            self.assertEqual(kwargs["consumer"], self.recorded["consumer"])
+            self.assertEqual(config["session_id"], self.session_id)
+            self.assertEqual(Path(config["prompt_path"]).read_text(), self.recorded["trigger"]["content"])
+            return {"status": "CANDIDATE_OBSERVED", "model_send_calls": 1,
+                    "continuation_receipt": {"status": "CONTINUATION_CANARY_OBSERVED"}}
+        with ExitStack() as stack:
+            native, candidate_mock = self.patches(stack)
+            candidate_mock.side_effect = candidate
+            oracle = stack.enter_context(mock.patch("skill_eval._native_context_oracle"))
+            result = skill_eval._run_native_context_calibration(
+                **self.arguments(), model_send=True, continuation_file=continuation)
+        self.assertEqual(result["status"], "CANDIDATE_OBSERVED", result["firsterror"])
+        self.assertEqual(self.order, ["import-exit", "setup", "continuation", "observe", "cleanup"])
+        self.assertNotIn("continuation_file", native.call_args_list[0].args[1])
+        self.assertEqual(observed_configs[0]["continuation_file"], str(continuation))
+        for call in native.call_args_list[1:]:
+            self.assertEqual(call.args[1]["continuation_file"], str(continuation))
+        oracle.assert_not_called()
+        self.assertEqual(result["continuation_receipt"]["status"], "CONTINUATION_CANARY_OBSERVED")
+
+    def test_continuation_cannot_activate_a_source_preparation_or_zero_send_route(self):
+        from contextlib import ExitStack
+        for kwargs in ({"model_send": False}, {"model_send": True, "source_preparation_only": True}):
+            with self.subTest(kwargs=kwargs), ExitStack() as stack:
+                native, candidate = self.patches(stack)
+                result = skill_eval._run_native_context_calibration(
+                    **self.arguments(), continuation_file=self.root / "continuation.json", **kwargs)
+                self.assertIn("requires explicit model send", result["firsterror"])
+                native.assert_not_called()
+                candidate.assert_not_called()
+                self.assertEqual(self.order, [])
+
+    def test_continuation_candidate_receipt_keeps_exact_103_pins_and_requires_new_correspondence(self):
+        for variant in ("valid", "wrong97", "missing-correspondence"):
+            with self.subTest(variant=variant):
+                config, receipt, consumer = self.runtime_receipt_fixture("setup", f"continuation-{variant}")
+                config["continuation_file"] = str(self.root / "continuation.json")
+                receipt.update(status="CANDIDATE_OBSERVED", model_send_calls=1, firsterror=None,
+                               checks={key: True for key in ("interactive_identity", "exactly_once",
+                                       "prefix_preserved", "imported_prefix_correspondence")})
+                if variant == "wrong97":
+                    receipt["runtime_identity"]["version"] = "1.0.97"
+                if variant == "missing-correspondence":
+                    del receipt["checks"]["exactly_once"]
+                def execute(command, **kwargs):
+                    Path(config["output"]).write_text(json.dumps(receipt))
+                    return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+                with (mock.patch("skill_eval.subprocess.run", side_effect=execute),
+                      mock.patch("skill_eval.personal_instruction_environment", return_value={})):
+                    if variant == "valid":
+                        self.assertEqual(skill_eval._native_workflow_probe("candidate", config, consumer=consumer), receipt)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "pinned runtime|correspondence"):
+                            skill_eval._native_workflow_probe("candidate", config, consumer=consumer)
+
     def candidate_double(self, config, **kwargs):
         self.order.append("preflight")
         self.assertTrue(kwargs["preflight_only"])

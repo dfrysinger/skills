@@ -8,7 +8,8 @@ import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { candidatePermissionHandler, editableFixtureCheck, matchesFixtureState, matchesProfileState,
-  runProbe, validateConfig, validateProfile, validateRecordedNativeEvents } from "./native_workflow_probe.mjs";
+  continuationCorrespondence, continuationEntry, runProbe, validateConfig,
+  validateProfile, validateRecordedNativeEvents } from "./native_workflow_probe.mjs";
 
 // This SDK double exercises control flow only, never native interoperability.
 const sdkDouble = `
@@ -86,7 +87,17 @@ export class CopilotClient {
         return id;
       },
       rpc: {
-        permissions: { getMode: async () => ({ mode: state.permissionMode ?? "manual" }) },
+        options: { update: async args => {
+          state.optionUpdates = args; return { success: !state.optionsDenied };
+        } },
+        permissions: {
+          getMode: async () => ({ mode: state.permissionMode ?? "manual" }),
+          setMode: async ({ mode }) => {
+            if (!state.policyDenied) state.permissionMode = mode;
+            return { success: !state.policyDenied, mode: state.permissionMode };
+          },
+          configure: async args => { state.permissionConfiguration = args; return { success: !state.policyDenied }; },
+        },
         metadata: {
           getContextAttribution: async () => state.contextAttribution === undefined
             ? { contextAttribution: { successfulCompactionCount: 1, entries: [] } } : state.contextAttribution,
@@ -599,6 +610,204 @@ async function completedRecordedContextFixture(t) {
   locator.completed_objective = descriptor;
   writeFileSync(config.context_fixture_file, JSON.stringify(locator));
   return { ...owned, store, source, goal, descriptor };
+}
+
+async function continuationFixture(t) {
+  const owned = await completedRecordedContextFixture(t);
+  const { config, root, state } = owned;
+  writeFileSync(join(config.plugin_path, "generic.txt"), "Synthetic pinned plugin\n");
+  const setup = await runProbe("setup", config);
+  assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
+  state.resumes = [];
+  state.connections = [];
+  config.output = join(root, "continuation-candidate.json");
+  const packageRoot = `${root}-input`;
+  t.after(() => rmSync(packageRoot, { recursive: true, force: true }));
+  for (const name of ["evaluator", "plugins", "owner"]) mkdirSync(join(packageRoot, name), { recursive: true });
+  writeFileSync(join(packageRoot, "evaluator", "generic.py"), "pass\n");
+  config.continuation_file = join(packageRoot, "owner", "continuation.json");
+  writeFileSync(join(root, "identities.json"), JSON.stringify({ session_id: config.session_id }), { mode: 0o600 });
+  const input = {
+    schema_version: 1, purpose: "setup-canary", running_in_interactive_mode: true,
+    session_capabilities: ["tui-hints", "plan-mode", "memory", "cli-documentation", "ask-user",
+      "interactive-mode", "system-notifications", "elicitation", "session-store"],
+    cli_preamble: "You are the GitHub Copilot CLI, a terminal assistant built by GitHub.",
+    executable_path: process.env.PATH, locale: "C.UTF-8", timeout_ms: 10000,
+    package_root: packageRoot, workflow_commit: "a".repeat(40), workflow_sha256: "b".repeat(64),
+    canary_receipt: null,
+    canary_checks: {
+      file: { path: "result.txt", sha256: createHash("sha256").update("Synthetic result\n").digest("hex") },
+      shell: { command: "printf synthetic" }, sql: { query: "SELECT 7 AS canary" },
+    },
+  };
+  const save = () => writeFileSync(config.continuation_file, JSON.stringify(input), { mode: 0o600 });
+  save();
+  state.metadataOverride = { tools: null };
+  state.sendHook = (id, emit) => {
+    const persist = (type, data) => state.events.push(emit(type, data));
+    persist("user.message", { content: "Synthetic trigger", messageId: id, interactionId: id });
+    emit("system.message", {
+      interactionId: id, content: input.cli_preamble
+        + "\nYou are an interactive tool that helps users with software engineering tasks.",
+      contentBlocks: [{ type: "text", text: "Synthetic primary content block" }],
+    }, { ephemeral: true });
+    writeFileSync(join(config.cwd, "result.txt"), "Synthetic result\n");
+    persist("tool.execution_start", { toolName: "bash", toolCallId: "shell", arguments: input.canary_checks.shell });
+    persist("tool.execution_complete", { toolCallId: "shell", success: true, shellExecution: { exitCode: 0 } });
+    persist("tool.execution_start", { toolName: "sql", toolCallId: "sql", arguments: input.canary_checks.sql });
+    persist("tool.execution_complete", { toolCallId: "sql", success: true,
+      result: { content: "canary\n7" }, toolTelemetry: { metrics: { rowsReturned: 1 } } });
+    state.rows.push({ id: "candidate-edit", status: "done" });
+    state.invokedSkills.push({ name: "candidate-loaded", content: "Synthetic new invocation" });
+    state.entries.push({ id: 25, prompt: "Synthetic owned timer" });
+    persist("assistant.message", { content: "Synthetic completion", originatingMessageId: id });
+    persist("session.idle", { aborted: false });
+    return id;
+  };
+  return { ...owned, input, save };
+}
+
+test("continuation resumes once with interactive options, normal permissions and real effect witnesses", async t => {
+  const { config, state, root, goal, store } = await continuationFixture(t);
+  const previousFlag = process.env.COPILOT_PLAN_THEN_AUTOPILOT;
+  process.env.COPILOT_PLAN_THEN_AUTOPILOT = "1";
+  t.after(() => {
+    if (previousFlag === undefined) delete process.env.COPILOT_PLAN_THEN_AUTOPILOT;
+    else process.env.COPILOT_PLAN_THEN_AUTOPILOT = previousFlag;
+  });
+  const result = await runProbe("candidate", config);
+  assert.equal(result.status, "CANDIDATE_OBSERVED", result.error?.message);
+  assert.equal(state.sendCalls, 1);
+  assert.equal(state.resumes.length, 1);
+  assert.equal(state.sentPrompt, "Synthetic trigger");
+  assert.equal(state.optionUpdates.runningInInteractiveMode, true);
+  assert.equal(state.optionUpdates.sessionCapabilities.length, 9);
+  assert.deepEqual(state.permissionConfiguration, { paths: { unrestricted: true }, urls: { unrestricted: true } });
+  assert.equal(state.permissionMode, "allow-all");
+  assert.equal(state.resumes[0].onPermissionRequest, undefined);
+  assert.equal(result.calls.some(call => call.name === "mode.set"), false);
+  assert.equal(result.calls.some(call => /autopilotObjective\.(create|complete)/.test(call.name)), false);
+  assert.deepEqual(Object.keys(state.resumes[0].systemMessage.sections), ["preamble"]);
+  assert.equal(state.connections[0].env.COPILOT_PLAN_THEN_AUTOPILOT, undefined);
+  assert.equal(state.connections[0].env.COPILOT_STRIP_REASONING_ON_RESUME, "false");
+  assert.equal(state.connections[0].env.LANG, "C.UTF-8");
+  assert.equal(result.continuation_receipt.status, "CONTINUATION_CANARY_OBSERVED");
+  assert.equal(result.final_state.todos.rows.at(-1).id, "candidate-edit");
+  assert.equal(result.final_state.skills.skills.at(-1).name, "candidate-loaded");
+  assert.equal(result.final_state.schedules.entries.at(-1).id, 25);
+  assert.deepEqual(result.cleanup.stopped_schedule_ids, [25]);
+  assert.deepEqual(state.entries, []);
+  assert.equal(result.primary_system_messages[0].data.contentBlocks.length, 1);
+  assert.equal(result.behavioral_baseline_ready, false);
+  const changed = structuredClone(store);
+  changed.current.turnCount++;
+  writeFileSync(goal, JSON.stringify(changed));
+  const cleanup = await runProbe("cleanup", { ...config, output: join(root, "continuation-cleanup.json") });
+  assert.equal(cleanup.status, "CLEANED", cleanup.error?.message);
+  assert.equal(cleanup.cleanup.final_state.native_store.current.turnCount, changed.current.turnCount);
+  assert.equal(cleanup.cleanup.mutable_state_not_restored, true);
+  assert.equal(state.sendCalls, 1);
+});
+
+for (const scenario of ["wrong-mode", "wrong-capabilities", "changed-preamble", "missing-receipt", "bad-mode-receipt", "wrong-source-receipt",
+  "hidden-input", "namespace", "altered-trigger", "managed-denial"]) {
+  test(`continuation refuses ${scenario} before any model send`, async t => {
+    const { config, input, state, root, save } = await continuationFixture(t);
+    if (scenario === "wrong-mode") input.running_in_interactive_mode = false;
+    if (scenario === "wrong-capabilities") input.session_capabilities.pop();
+    if (scenario === "changed-preamble") input.cli_preamble = "Synthetic substituted identity";
+    if (scenario.includes("receipt")) {
+      input.purpose = "historical";
+      input.canary_checks = null;
+      input.canary_receipt = scenario === "missing-receipt" ? null : {
+        status: "CONTINUATION_CANARY_OBSERVED", configuration_sha256: "0".repeat(64),
+        interactive_identity: scenario !== "bad-mode-receipt", operation_witnesses: true,
+        exactly_once: true, shutdown_errors: [],
+      };
+    }
+    if (scenario === "hidden-input") writeFileSync(join(input.package_root, "owner", "later-diagnosis.json"), "{}");
+    if (scenario === "namespace") writeFileSync(join(root, "identities.json"), JSON.stringify({ session_id: randomUUID() }));
+    if (scenario === "altered-trigger") writeFileSync(config.prompt_path, "Substituted user content");
+    if (scenario === "managed-denial") state.policyDenied = true;
+    save();
+    const result = await runProbe("candidate", config);
+    assert.equal(result.status, "PREMODEL_BLOCKED", result.error?.message);
+    const reason = {
+      "wrong-mode": /interactive continuation configuration/,
+      "wrong-capabilities": /interactive continuation configuration/,
+      "changed-preamble": /interactive continuation configuration/,
+      "missing-receipt": /canary receipt requires exactly/,
+      "bad-mode-receipt": /canary receipt/,
+      "wrong-source-receipt": /canary receipt/,
+      "hidden-input": /Hidden evaluation input/,
+      "namespace": /namespace differs/,
+      "altered-trigger": /bound original raw event/,
+      "managed-denial": /permission policy/,
+    }[scenario];
+    assert.match(result.error.message, reason);
+    assert.equal(state.sendCalls, 0);
+    assert.equal(result.model_send_calls, 0);
+  });
+}
+
+test("continuation admission binds a successful canary to source/runtime/configuration, not input UUIDs", async t => {
+  const first = await continuationFixture(t);
+  const positive = await runProbe("candidate", first.config);
+  assert.equal(positive.status, "CANDIDATE_OBSERVED", positive.error?.message);
+  const second = await continuationFixture(t);
+  second.input.purpose = "historical";
+  second.input.canary_checks = null;
+  second.input.canary_receipt = positive.continuation_receipt;
+  second.input.workflow_commit = "c".repeat(40);
+  second.save();
+  assert.equal(continuationEntry(second.config).configuration_sha256,
+    positive.continuation_receipt.configuration_sha256);
+  second.input.locale = "en_US.UTF-8";
+  second.save();
+  assert.throws(() => continuationEntry(second.config), /canary receipt/);
+});
+
+test("continuation records actual pending input without supplying a human answer", async t => {
+  const { config, state, input } = await continuationFixture(t);
+  state.sendHook = (id, emit) => {
+    state.events.push(emit("user.message", { content: "Synthetic trigger", messageId: id, interactionId: id }));
+    emit("system.message", { interactionId: id, content: input.cli_preamble
+      + "\nYou are an interactive tool that helps users with software engineering tasks." });
+    const response = state.resumes[0].onUserInputRequest({ question: "Synthetic human question" });
+    assert.equal(typeof response.then, "function");
+    return id;
+  };
+  const result = await runProbe("candidate", config);
+  assert.equal(result.status, "HUMAN_INPUT_PENDING", result.error?.message);
+  assert.equal(result.pending_input[0].request.question, "Synthetic human question");
+  assert.equal(result.model_result, undefined);
+  assert.equal(result.continuation_receipt, undefined);
+  assert.equal(state.sendCalls, 1);
+  assert.equal(state.aborts, 1);
+});
+
+for (const mutation of ["none", "duplicate", "substituted", "prefix", "child-prompt", "old-interaction", "headless"]) {
+  test(`continuation journal correspondence: ${mutation}`, () => {
+    const before = [{ id: "prior", type: "user.message", data: { content: "Synthetic prior" } }];
+    const user = { id: "fresh", type: "user.message",
+      data: { content: "Synthetic raw", messageId: "sent", interactionId: "interaction" } };
+    const after = structuredClone([...before, user, { id: "tool", type: "tool.execution_complete", data: { success: true } }]);
+    const events = [{ id: "system", type: "system.message", data: {
+      interactionId: "interaction", content: "You are the GitHub Copilot CLI, a terminal assistant built by GitHub."
+        + "\nYou are an interactive tool that helps users with software engineering tasks.",
+    } }];
+    if (mutation === "duplicate") after.push(user);
+    if (mutation === "substituted") after[1].data.content = "Different content";
+    if (mutation === "prefix") after[0].data.content = "Changed prefix";
+    if (mutation === "child-prompt") events[0].agentId = "child";
+    if (mutation === "old-interaction") events[0].data.interactionId = "prior";
+    if (mutation === "headless") events[0].data.content += "\nYou are running in non-interactive mode";
+    if (mutation === "none") {
+      assert.equal(continuationCorrespondence(before, after, events, "sent", "Synthetic raw").exactly_once, true);
+    } else {
+      assert.throws(() => continuationCorrespondence(before, after, events, "sent", "Synthetic raw"));
+    }
+  });
 }
 
 test("recorded completed store is preserved through warm/cold setup, observe and cleanup without sends", async t => {
