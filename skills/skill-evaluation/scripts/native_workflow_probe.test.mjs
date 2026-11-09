@@ -88,9 +88,11 @@ export class CopilotClient {
         metadata: {
           getContextAttribution: async () => state.contextAttribution === undefined
             ? { contextAttribution: { successfulCompactionCount: 1, entries: [] } } : state.contextAttribution,
-          getContextHeaviestMessages: async () => ({ messages: state.events.map(event => ({ id: event.id })) }),
-          activity: async () => ({ isProcessing: false }),
-          isProcessing: async () => ({ processing: false }),
+          getContextHeaviestMessages: async () => state.heaviestMessages ?? ({
+            totalTokens: 0, messages: state.events.map(event => ({ id: event.id })),
+          }),
+          activity: async () => state.activityOverride ?? ({ abortable: false, hasActiveWork: false }),
+          isProcessing: async () => state.processingOverride ?? ({ processing: false }),
         },
         eventLog: {
           read: async ({ cursor }) => {
@@ -149,6 +151,11 @@ export class CopilotClient {
             tools: options.availableTools.map(name => ({ name, description: "Native test double" })),
           }),
           initializeAndValidate: async () => ({}),
+          getBuiltinDescriptors: async args => {
+            state.descriptorRequests = [...(state.descriptorRequests ?? []), args];
+            if (state.descriptorFails) throw new Error("Test unsupported descriptor RPC");
+            return state.descriptorsOverride ?? { tools: [{ name: "apply_patch", inputSchema: null }] };
+          },
           execute: async ({ name, arguments: args, toolCallId }) => {
             const hooked = await state.toolExecuteHook?.({
               name, args, toolCallId, permission: options.onPermissionRequest, sessionId: id,
@@ -547,7 +554,7 @@ test("historical personal discovery refuses empty or foreign roots before SDK st
   assert.equal(state.starts, 0);
 });
 
-test("historical setup records uninitialized metadata while preflight requires an initialized set", async t => {
+test("historical setup records uninitialized metadata and verifies an available initialized preflight set", async t => {
   const { config, state, root } = await historicalContextFixture(t);
   state.metadataOverride = { tools: null };
   const setup = await runProbe("setup", config);
@@ -562,23 +569,105 @@ test("historical setup records uninitialized metadata while preflight requires a
   assert.equal(state.sendCalls, 0);
 });
 
-test("historical preflight blocks null, missing and changed tool metadata without sending", async t => {
-  for (const failure of ["null", "missing", "changed"]) {
+test("historical preflight blocks malformed, missing and changed initialized metadata without sending", async t => {
+  for (const failure of ["malformed", "missing", "changed"]) {
     await t.test(failure, async t => {
       const { config, state, root } = await historicalContextFixture(t);
       const fixture = JSON.parse(readFileSync(config.context_fixture_file, "utf8"));
       state.metadataOverride = { tools: null };
       const setup = await runProbe("setup", config);
       assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
-      const tools = fixture.required_tools.map(name => ({ name }));
+      const tools = fixture.required_tools.map(name => ({ name, description: `Tool ${name}` }));
       if (failure === "missing") tools.pop();
       if (failure === "changed") tools[0].name = "not-historical";
-      state.metadataOverride = { tools: failure === "null" ? null : tools };
+      state.metadataOverride = { tools: failure === "malformed" ? "not-an-array" : tools };
       const preflight = await runProbe("preflight", { ...config, output: join(root, "blocked-metadata.json") });
       assert.equal(preflight.status, "PREMODEL_BLOCKED");
       assert.equal(preflight.firsterror, "Effective native tool metadata does not match the selected grants");
       assert.deepEqual(preflight.effective_tools, state.metadataOverride);
       assert.equal(state.sendCalls, 0);
+    });
+  }
+});
+
+test("historical lazy caches retain preparation while real fixture operations remain required", async t => {
+  const owned = await historicalContextFixture(t);
+  const { config, state, root } = owned;
+  config.candidate_permissions = { write_paths: ["target.txt"], shell_commands: ["python3 -I check.py"] };
+  state.metadataOverride = { tools: null };
+  state.contextAttribution = { contextAttribution: null };
+  state.heaviestMessages = { totalTokens: 0, messages: [] };
+  installEditableToolHook(owned);
+  const setup = await runProbe("setup", config);
+  assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
+  assert.equal(setup.context_initialized, false);
+  const preflight = await runProbe("preflight", { ...config, output: join(root, "lazy-preflight.json") });
+  assert.equal(preflight.status, "PREFLIGHT_OBSERVED", preflight.firsterror);
+  assert.equal(preflight.checks.effective_tools, null);
+  assert.equal(preflight.context_initialized, false);
+  assert.equal(preflight.editable_preflight.length, 6);
+  assert.equal(preflight.editable_restored, true);
+  assert.equal(preflight.checks.editable_permission_traversal, true);
+  assert.deepEqual(state.descriptorRequests, [{}]);
+  for (const op of ["observe", "cleanup"]) {
+    const report = await runProbe(op, { ...config, output: join(root, `${op}-lazy.json`) });
+    assert.equal(report.status, op === "cleanup" ? "CLEANED" : "OBSERVED", report.error?.message);
+  }
+  assert.equal(readFileSync(join(config.cwd, "target.txt"), "utf8"), "pending\n");
+  assert.equal(state.sendCalls, 0);
+});
+
+test("historical preparation refuses malformed and non-idle readers despite nullable caches", async t => {
+  for (const fault of ["attribution", "messages", "active", "processing"]) {
+    await t.test(fault, async t => {
+      const { config, state } = await historicalContextFixture(t);
+      state.metadataOverride = { tools: null };
+      state.contextAttribution = { contextAttribution: fault === "attribution" ? [] : null };
+      state.heaviestMessages = { totalTokens: 0, messages: fault === "messages" ? null : [] };
+      if (fault === "active") state.activityOverride = { abortable: false, hasActiveWork: true };
+      if (fault === "processing") state.processingOverride = { processing: true };
+      const setup = await runProbe("setup", config);
+      assert.equal(setup.status, "ERROR");
+      assert.match(setup.error.message, /Historical context reader/);
+      assert.equal(state.sendCalls, 0);
+      assert.equal(state.owners, 0);
+    });
+  }
+});
+
+test("historical nullable preflight uses descriptor shape but requires actual operation evidence", async t => {
+  for (const fault of ["object-shape", "descriptor-rpc", "descriptor-shape", "uncorrelatedPermission",
+    "missingPatchEffect", "editableStateMutation"]) {
+    await t.test(fault, async t => {
+      const owned = await historicalContextFixture(t);
+      const { config, state, root } = owned;
+      config.candidate_permissions = { write_paths: ["target.txt"], shell_commands: ["python3 -I check.py"] };
+      state.metadataOverride = { tools: null };
+      state.contextAttribution = { contextAttribution: null };
+      state.heaviestMessages = { totalTokens: 0, messages: [] };
+      installEditableToolHook(owned);
+      if (fault === "object-shape") state.descriptorsOverride = { tools: [{
+        name: "apply_patch", inputSchema: {
+          type: "object", required: ["input"], properties: { input: { type: "string" } },
+        },
+      }] };
+      else if (fault === "descriptor-rpc") state.descriptorFails = true;
+      else if (fault === "descriptor-shape") state.descriptorsOverride = { tools: [{ name: "apply_patch" }] };
+      else state[fault] = true;
+      assert.equal((await runProbe("setup", config)).status, "SETUP_OBSERVED");
+      const report = await runProbe("preflight", { ...config, output: join(root, `${fault}.json`) });
+      assert.equal(report.status, fault === "object-shape" ? "PREFLIGHT_OBSERVED" : "PREMODEL_BLOCKED",
+        report.firsterror ?? "Expected nullable preflight disposition");
+      if (fault === "object-shape") {
+        assert.equal(typeof report.calls.find(call => call.name === "tools.execute:apply_patch")
+          .arguments.arguments.input, "string");
+        assert.equal(report.checks.editable_permission_traversal, true);
+      }
+      assert.deepEqual(state.descriptorRequests, [{}]);
+      assert.equal(readFileSync(join(config.cwd, "target.txt"), "utf8"), "pending\n");
+      assert.equal(readFileSync(join(config.cwd, "check.py"), "utf8"), editableFixtureCheck);
+      assert.equal(state.sendCalls, 0);
+      assert.equal(state.owners, 0);
     });
   }
 });
@@ -803,7 +892,7 @@ function installEditableToolHook(owned) {
       if (!state.missingPatchEffect) {
         writeFileSync(fileName, patch.split("\n").filter(line => line.startsWith("+")).map(line => line.slice(1)).join("\n") + "\n");
       }
-      if (state.editableStateMutation) state.rows[0].status = "done";
+      if (state.editableStateMutation) state.rows[0].title += " changed by fixture patch";
       if (state.editablePrefixMutation) state.events.push({
         id: randomUUID(), type: "assistant.message", data: { content: "Unexpected owner message" },
       });

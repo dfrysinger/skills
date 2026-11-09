@@ -496,6 +496,7 @@ export async function runProbe(op, config) {
   const started = performance.now();
   let ownerDeadline = started + 330000;
   const isCandidate = op === "candidate" || op === "preflight";
+  const historicalZeroSend = historicalProfile(config) && op !== "candidate";
   const selected = config?.profile !== undefined;
   let projection;
   let scheduleMapping;
@@ -756,7 +757,8 @@ export async function runProbe(op, config) {
     }
     state.tools_match_required = state.tools_initialized ? isDeepStrictEqual(
       state.tools.tools.map(tool => tool.name).sort(), [...fixture.required_tools].sort()) : null;
-    if (isCandidate && state.tools_match_required !== true) {
+    if (isCandidate && (!historicalZeroSend || state.tools_initialized)
+        && state.tools_match_required !== true) {
       throw new Error("Historical root tools are unavailable under the selected runtime");
     }
     state.event_log = await readEvents();
@@ -768,9 +770,19 @@ export async function runProbe(op, config) {
       state.context[name] = await call(`metadata.${name}`, args,
         () => session.rpc.metadata[name](...(args ? [args] : [])));
     }
-    state.context_initialized = state.context.getContextAttribution?.contextAttribution != null
-      && typeof state.context.getContextAttribution.contextAttribution === "object";
-    if (!state.context_initialized || state.context.isProcessing?.processing !== false) {
+    const attribution = state.context.getContextAttribution?.contextAttribution;
+    state.context_initialized = attribution != null && typeof attribution === "object"
+      && !Array.isArray(attribution);
+    if (historicalZeroSend && ((attribution !== null && !state.context_initialized)
+        || !Array.isArray(state.context.getContextHeaviestMessages?.messages)
+        || !Number.isFinite(state.context.getContextHeaviestMessages?.totalTokens)
+        || state.context.getContextHeaviestMessages.totalTokens < 0
+        || state.context.activity?.abortable !== false
+        || state.context.activity?.hasActiveWork !== false)) {
+      throw new Error("Historical context reader is malformed or has active work");
+    }
+    if ((!historicalZeroSend && !state.context_initialized)
+        || state.context.isProcessing?.processing !== false) {
       throw new Error("Historical context reader is uninitialized or processing");
     }
     return state;
@@ -950,16 +962,16 @@ export async function runProbe(op, config) {
       () => session.rpc.tools.getCurrentMetadata());
     const tools = report.effective_tools?.tools;
     const expectedTools = candidateTools(config).sort();
-    if (!Array.isArray(tools) || tools.length !== expectedTools.length
+    if (!(historicalZeroSend && tools === null) && (!Array.isArray(tools) || tools.length !== expectedTools.length
         || !isDeepStrictEqual(tools.map(tool => tool.name).sort(), expectedTools)
         || tools.some(tool => typeof tool.description !== "string"
           || ["namespacedName", "mcpServerName", "mcpToolName"].some(key => tool[key] !== undefined)
           || (tool.input_schema !== undefined
             && !(tool.name === "apply_patch" && tool.input_schema === null) && (!tool.input_schema
-            || typeof tool.input_schema !== "object" || Array.isArray(tool.input_schema))))) {
+            || typeof tool.input_schema !== "object" || Array.isArray(tool.input_schema)))))) {
       throw new Error("Effective native tool metadata does not match the selected grants");
     }
-    report.checks.effective_tools = true;
+    report.checks.effective_tools = tools === null ? null : true;
     report.model_configuration = await call("model.getCurrent", undefined, () => session.rpc.model.getCurrent());
     if (report.model_configuration?.modelId !== (selected ? config.model : "gpt-5.6-sol-fast")
         || report.model_configuration.reasoningEffort !== (selected ? config.effort : "high")) {
@@ -967,7 +979,7 @@ export async function runProbe(op, config) {
     }
     if (contextProfile(config)) {
       Object.assign(report, await observe(false));
-      if (!report.context_initialized) throw new Error("Native context remains uninitialized");
+      if (!historicalZeroSend && !report.context_initialized) throw new Error("Native context remains uninitialized");
       report.checks.cold_state = true;
       report.checks.context_summary_order = true;
     } else {
@@ -1026,6 +1038,23 @@ export async function runProbe(op, config) {
           throw new Error("Editable setup files do not match the declared frozen fixture");
         }
         report.editable_preflight = [];
+        let patchSchema;
+        if (historicalZeroSend && tools === null) {
+          report.argument_descriptors = await call("tools.getBuiltinDescriptors", {},
+            () => session.rpc.tools.getBuiltinDescriptors({}));
+          const descriptors = report.argument_descriptors?.tools;
+          const patches = Array.isArray(descriptors)
+            ? descriptors.filter(tool => tool?.name === "apply_patch") : [];
+          if (patches.length !== 1 || !Object.hasOwn(patches[0], "inputSchema")
+              || (patches[0].inputSchema !== null
+                && (patches[0].inputSchema?.type !== "object"
+                  || Array.isArray(patches[0].inputSchema)))) {
+            throw new Error("Unsupported historical apply_patch argument descriptor");
+          }
+          patchSchema = patches[0].inputSchema;
+        } else {
+          patchSchema = tools.find(tool => tool.name === "apply_patch").input_schema;
+        }
         report.editable_interpreter = execFileSync("python3", ["-I", "-c",
           "import sys; print(sys.executable); print(sys.version)"], {
           cwd: config.cwd, env: { PATH: process.env.PATH }, encoding: "utf8",
@@ -1050,7 +1079,7 @@ export async function runProbe(op, config) {
           const text = "*** Begin Patch\n*** Update File: " + path + "\n@@\n"
             + before.trimEnd().split("\n").map(line => "-" + line).join("\n") + "\n"
             + after.trimEnd().split("\n").map(line => "+" + line).join("\n") + "\n*** End Patch\n";
-          const schema = tools.find(tool => tool.name === "apply_patch").input_schema;
+          const schema = patchSchema;
           if (schema?.type === "object") {
             const keys = (schema.required ?? []).filter(key =>
               ["input", "patch"].includes(key) && schema.properties?.[key]?.type === "string");

@@ -1124,6 +1124,60 @@ class NativeContextCalibrationTests(unittest.TestCase):
                 "shutdown_errors": [], "model_message_id": "send", "model_result": message,
                 "model_completion_event": idle, "candidate_events": [message, idle], "model_event_start_index": 0}
 
+    def test_historical_preflight_accepts_nullable_caches_only_with_truthful_operation_witnesses(self):
+        fields = ["cli", "sdk", "home", "os_home", "cwd", "output", "prompt_path", "event_log",
+                  "plugin_path", "prefix_file", "context_fixture_file"]
+        config = {key: str(self.root / key) for key in fields}
+        config.update(profile="native-historical-context", session_id=self.session_id,
+                      model="fixture-model", effort="low",
+                      candidate_permissions={"write_paths": ["target.txt"],
+                                             "shell_commands": ["python3 -I check.py"]})
+        base = {
+            "cli": config["cli"], "sdk": config["sdk"], "session_id": self.session_id,
+            "profile": config["profile"], "connection": {"path": config["cli"]},
+            "runtime_identity": {"version": "1.0.97"}, "shutdown_errors": [],
+            "status": "PREFLIGHT_OBSERVED", "model_send_calls": 0, "firsterror": None,
+            "effective_tools": {"tools": None},
+            "context": {"getContextAttribution": {"contextAttribution": None}},
+            "context_initialized": False, "editable_restored": True,
+            "editable_preflight": [{} for _ in range(6)],
+            "checks": {key: True for key in (
+                "instruction_correspondence", "cold_state", "permission_traversal",
+                "prefix_preserved", "imported_prefix_correspondence", "context_summary_order",
+                "editable_permission_traversal")},
+        }
+        base["checks"]["effective_tools"] = None
+        for fault in ("none", "tools", "context", "callback", "restored", "count", "summary", "send"):
+            with self.subTest(fault=fault):
+                selected = {**config, "output": str(self.root / f"historical-{fault}.json")}
+                receipt = json.loads(json.dumps(base))
+                if fault == "tools":
+                    receipt["checks"]["effective_tools"] = True
+                elif fault == "context":
+                    receipt["context_initialized"] = True
+                elif fault == "callback":
+                    receipt["checks"]["editable_permission_traversal"] = False
+                elif fault == "restored":
+                    receipt["editable_restored"] = False
+                elif fault == "count":
+                    receipt["editable_preflight"].pop()
+                elif fault == "summary":
+                    receipt["checks"]["context_summary_order"] = False
+                elif fault == "send":
+                    receipt["model_send_calls"] = 1
+                def execute(command, **kwargs):
+                    Path(selected["output"]).write_text(json.dumps(receipt))
+                    return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+                with (
+                    mock.patch("skill_eval.subprocess.run", side_effect=execute),
+                    mock.patch("skill_eval.personal_instruction_environment", return_value={}),
+                ):
+                    if fault == "none":
+                        self.assertEqual(skill_eval._native_workflow_probe("preflight", selected), receipt)
+                    else:
+                        with self.assertRaises(ValueError):
+                            skill_eval._native_workflow_probe("preflight", selected)
+
 
 class NativeHistoricalContextTests(unittest.TestCase):
     arguments = NativeContextCalibrationTests.arguments

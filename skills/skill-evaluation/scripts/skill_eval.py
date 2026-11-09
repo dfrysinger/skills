@@ -1744,6 +1744,7 @@ def _native_workflow_probe(operation: str, config: dict) -> dict:
         raise ValueError(f"native {operation} produced no regular receipt")
     result = read_json(output)
     expected = {"setup": "SETUP_OBSERVED", "observe": "OBSERVED"}
+    historical_preflight = operation == "preflight" and config.get("profile") == "native-historical-context"
     if operation in {"candidate", "preflight"}:
         sends = result.get("model_send_calls")
         status = result.get("status")
@@ -1757,13 +1758,35 @@ def _native_workflow_probe(operation: str, config: dict) -> dict:
                     or result.get("firsterror") is not None
                     or any(result.get("checks", {}).get(key) is not True for key in (
                         "effective_tools", "instruction_correspondence", "cold_state",
-                        "permission_traversal", "prefix_preserved"))
+                        "permission_traversal", "prefix_preserved")
+                        if not (historical_preflight and key == "effective_tools"))
                     or ("profile" in config and result.get("checks", {}).get(
                         "imported_prefix_correspondence") is not True)
                     or (context_profile and (
                         result.get("checks", {}).get("context_summary_order") is not True
-                        or result.get("context_initialized") is not True))))):
+                        or (not historical_preflight and result.get("context_initialized") is not True)))))):
             raise ValueError("native candidate receipt did not verify conditional model execution")
+        if historical_preflight and status == "PREFLIGHT_OBSERVED":
+            metadata = result.get("effective_tools", {})
+            attribution = result.get("context", {}).get("getContextAttribution", {})
+            if not isinstance(metadata, dict) or not isinstance(attribution, dict):
+                raise ValueError("historical preflight did not verify nullable reader shapes")
+            tools = metadata.get("tools")
+            if ("tools" not in metadata or (tools is not None and not isinstance(tools, list))
+                    or result.get("checks", {}).get("effective_tools") is not (
+                        None if tools is None else True)
+                    or "contextAttribution" not in attribution
+                    or (attribution["contextAttribution"] is not None
+                        and not isinstance(attribution["contextAttribution"], dict))
+                    or result.get("context_initialized") is not (
+                        attribution["contextAttribution"] is not None)
+                    or (config.get("candidate_permissions", {}).get("write_paths")
+                        and config.get("candidate_permissions", {}).get("shell_commands") and (
+                            result.get("checks", {}).get("editable_permission_traversal") is not True
+                            or result.get("editable_restored") is not True
+                            or not isinstance(result.get("editable_preflight"), list)
+                            or len(result["editable_preflight"]) != 6))):
+                raise ValueError("historical preflight did not verify nullable diagnostics and operation witnesses")
     if (result.get("session_id") != config["session_id"]
             or (operation in expected and result.get("status") != expected[operation])
             or result.get("shutdown_errors") != []):
