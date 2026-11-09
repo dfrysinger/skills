@@ -808,6 +808,34 @@ async function continuationFixture(t, { loadedCopies = false, operational = fals
   return { ...owned, input, save };
 }
 
+test("continuation passes only an explicitly selected skill budget to the SDK env", async t => {
+  const previous = process.env.SKILL_CHAR_BUDGET;
+  process.env.SKILL_CHAR_BUDGET = "12345";
+  t.after(() => {
+    if (previous === undefined) delete process.env.SKILL_CHAR_BUDGET;
+    else process.env.SKILL_CHAR_BUDGET = previous;
+  });
+  for (const [budget, decimal] of [[undefined, undefined], [1, "1"], [50000, "50000"], [4294967295, "4294967295"]]) {
+    await t.test(`budget ${budget ?? "omitted"}`, async child => {
+      const { config, state, input, save } = await continuationFixture(child);
+      if (budget !== undefined) input.skill_char_budget = budget;
+      save();
+      const result = await runProbe("candidate", config);
+      assert.equal(result.status, "CANDIDATE_OBSERVED", result.error?.message);
+      assert.equal(result.continuation_entry.skill_char_budget, budget);
+      assert.equal(state.connections.length, 1);
+      assert.deepEqual(state.connections[0].env, {
+        PATH: input.executable_path, HOME: config.os_home, COPILOT_HOME: config.home,
+        TMPDIR: config.cwd, COPILOT_DISABLE_KEYTAR: "1", COPILOT_OTEL_ENABLED: "false",
+        COPILOT_STRIP_REASONING_ON_RESUME: "false", LANG: input.locale, LC_ALL: input.locale,
+        ...(process.env.COPILOT_GITHUB_TOKEN
+          ? { COPILOT_GITHUB_TOKEN: process.env.COPILOT_GITHUB_TOKEN } : {}),
+        ...(budget === undefined ? {} : { SKILL_CHAR_BUDGET: decimal }),
+      });
+    });
+  }
+});
+
 test("continuation admits separate unchanged loaded plugin and personal copies", async t => {
   const { config, state, input } = await continuationFixture(t, { loadedCopies: true });
   assert.ok(!config.plugin_path.startsWith(`${input.package_root}/`));
@@ -1016,13 +1044,15 @@ test("continuation resumes once with interactive options, normal permissions and
   assert.equal(state.sendCalls, 1);
 });
 
-for (const scenario of ["wrong-mode", "wrong-capabilities", "changed-preamble", "missing-receipt", "bad-mode-receipt", "wrong-source-receipt",
+for (const scenario of ["wrong-mode", "wrong-capabilities", "changed-preamble", "invalid-skill-budget",
+  "missing-receipt", "bad-mode-receipt", "wrong-source-receipt",
   "hidden-input", "namespace", "altered-trigger", "managed-denial"]) {
   test(`continuation refuses ${scenario} before any model send`, async t => {
     const { config, input, state, root, save } = await continuationFixture(t);
     if (scenario === "wrong-mode") input.running_in_interactive_mode = false;
     if (scenario === "wrong-capabilities") input.session_capabilities.pop();
     if (scenario === "changed-preamble") input.cli_preamble = "Synthetic substituted identity";
+    if (scenario === "invalid-skill-budget") input.skill_char_budget = 0;
     if (scenario.includes("receipt")) {
       input.purpose = "historical";
       input.canary_checks = null;
@@ -1043,6 +1073,7 @@ for (const scenario of ["wrong-mode", "wrong-capabilities", "changed-preamble", 
       "wrong-mode": /interactive continuation configuration/,
       "wrong-capabilities": /interactive continuation configuration/,
       "changed-preamble": /interactive continuation configuration/,
+      "invalid-skill-budget": /skill_char_budget/,
       "missing-receipt": /canary receipt requires exactly/,
       "bad-mode-receipt": /canary receipt/,
       "wrong-source-receipt": /canary receipt/,
@@ -1054,6 +1085,7 @@ for (const scenario of ["wrong-mode", "wrong-capabilities", "changed-preamble", 
     assert.match(result.error.message, reason);
     assert.equal(state.sendCalls, 0);
     assert.equal(result.model_send_calls, 0);
+    if (scenario === "invalid-skill-budget") assert.equal(state.connections.length, 0);
   });
 }
 
@@ -1392,6 +1424,12 @@ test("discovery diagnostics retain schema2 membership refusal and schema3 getter
 });
 
 test("recorded context preserves reasoning on each connection without changing the historical environment", async t => {
+  const previous = process.env.SKILL_CHAR_BUDGET;
+  process.env.SKILL_CHAR_BUDGET = "12345";
+  t.after(() => {
+    if (previous === undefined) delete process.env.SKILL_CHAR_BUDGET;
+    else process.env.SKILL_CHAR_BUDGET = previous;
+  });
   for (const [name, fixture, recorded] of [
     ["schema3", recordedContextFixture, true],
     ["schema2", historicalContextFixture, false],

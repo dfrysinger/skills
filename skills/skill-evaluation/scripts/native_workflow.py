@@ -164,7 +164,11 @@ def continuation_entry(path: Path, config: dict) -> dict:
         "schema_version", "purpose", "running_in_interactive_mode", "session_capabilities",
         "cli_preamble", "executable_path", "locale", "timeout_ms", "package_root",
         "workflow_commit", "workflow_sha256", "canary_receipt", "canary_checks",
-    }, "historical continuation")
+    } | ({"skill_char_budget"} if isinstance(value, dict) and "skill_char_budget" in value else set()),
+        "historical continuation")
+    if "skill_char_budget" in value and (
+            type(value["skill_char_budget"]) is not int or not 1 <= value["skill_char_budget"] <= 4294967295):
+        raise ValueError("skill_char_budget must be an integer in 1..4294967295")
     if (type(value["schema_version"]) is not int or value["schema_version"] != 1
             or value["purpose"] not in ("setup-canary", "historical")
             or value["running_in_interactive_mode"] is not True
@@ -213,6 +217,8 @@ def continuation_entry(path: Path, config: dict) -> dict:
                             for root in config.get("skill_directories", [])],
         "personal_sha256": digest(Path(config["home"]) / "copilot-instructions.md"),
     }
+    if "skill_char_budget" in value:
+        binding["interactive"]["skill_char_budget"] = value["skill_char_budget"]
     if "operational_file" in config:
         binding["operational"] = operational_input(Path(config["operational_file"]), config)["binding"]
     configuration_sha256 = hashlib.sha256(json.dumps(
