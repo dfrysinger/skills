@@ -39,6 +39,13 @@ what it measures. Explicit loading tests behavior after selection, not discovery
 **Complete when:** the trigger, starting state, outcome and comparison answer
 the user's question. Keep unresolved parts of that question in the plan.
 
+Keep one active work order: the selected question, current frontier, owner,
+remaining prerequisite and next delivery. Replace superseded instructions in
+the plan, charter and objective; preserve their evidence in linked history.
+After disproportionate preparation or repeated internal repairs, identify the
+first divergence and replace the implicated check plan before more spending.
+A smaller diagnostic remains a separate result, not completion of that question.
+
 ## 2. Make the test capable of observing that behavior
 
 Run model calls on **GitHub Actions VMs**, using the existing private corpus
@@ -75,6 +82,13 @@ import, authentication, or CLI exit zero alone does not establish readiness.
 Distinguish a clean replacement from an update during ongoing work using the
 [skill-context policy](references/case-contract.md#native-historical-continuation).
 Reloading availability does not prove a fresh invocation or removal of old text.
+
+Keep preparation, permission readiness, actual model-context consumption and
+behavioral improvement separate. Prove each when the current claim needs it.
+Treat optional cache metadata as diagnostic unless its effect on the required
+input or behavior is established. Reuse relevant successful proof while its
+source, settings and boundary are unchanged; choose the cheapest check that
+exercises an infrastructure change, including preparation and transport costs.
 
 If needed state or tools are unavailable, record the missing prerequisite.
 A narrower decision screen may answer a separate question, but does not close
@@ -124,7 +138,7 @@ Classify the result before changing instructions:
 | Baseline result | Next action |
 |---|---|
 | Reported behavior reproduced | Preserve the trace; identify the first wrong decision and a general correction to compare. |
-| Valid run avoids the behavior | Inspect restoration fidelity, competing instructions and variation. Use planned repetitions where needed, or report non-reproduction. |
+| Valid run avoids the behavior | Finish the declared population, retain non-reproduction, then inspect a concrete fidelity difference or hypothesis. A further attempt must answer that recorded question, not reopen an unchanged wave. |
 | Setup, access or grading fails | Repair that stage separately; preserve the error and reuse intact output for downstream repair. |
 | Only a narrower proxy succeeds | Report that observation and keep the original failure unresolved. |
 
@@ -132,6 +146,9 @@ Proceed to a repair comparison only after a baseline demonstrates the target
 failure or measured deficiency. If no failure reproduces, this remains a
 reproduction investigation, not a proven fix. Preserve natural ambiguity;
 changing a faithful task to make the desired answer easier is not skill repair.
+An identical observable input can produce a different decision. Accept honest
+non-reproduction rather than coaching the prompt or tightening the grader to
+force the historical failure.
 
 Regression checks, adoption comparisons and minimization need an unchanged
 reference but not an invented failure. A new capability uses an explicit
@@ -147,6 +164,11 @@ interaction, model variation, missing context, runtime, packet, or grading.
 Inspect the whole candidate-visible instruction stack before blaming one skill.
 Repair test defects outside the skill, preserving old outcomes and separating
 corrected inputs.
+
+For a surprising judgment, check its claim against the complete delivered
+answer, read receipts, rubric and visible instructions before editing a skill
+or repeating a candidate. If the answer contradicts the claimed omission,
+repair the judgment from retained output and label it separately.
 
 For a comparison, vary only the declared factor and hold the other conditions
 fixed. An instruction repair compares one general correction with unchanged

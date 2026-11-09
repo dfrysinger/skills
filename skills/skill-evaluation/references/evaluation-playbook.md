@@ -196,6 +196,13 @@ same user intervention, not whether an agent can agree with the correction.
    claim, restore prior messages in their conversation roles through a
    supported restore path. Supplying them only as a file is a different task;
    label that adaptation rather than calling it the original session.
+   Restore the conversation representation the original model received,
+   including its captured compaction boundary; a full raw transcript is not
+   equivalent to compacted context. Deliver the exact captured human or
+   scheduled event in its original role. Keep evaluation announcements,
+   diagnoses and forced skill loads outside that continuation unless they
+   were in the original event. Inspect the actual delivered input, not only
+   the importer receipt, and label unavailable original input precisely.
    Recover the skills through the [Git restoration recipe](#restore-historical-skills-from-git).
 3. **Prove the case, then reproduce with the current setup.** Check that the task is
    achievable and the required behavior is observable. Prefer a faithful
@@ -225,10 +232,12 @@ same user intervention, not whether an agent can agree with the correction.
    Apply [release qualification](release-qualification-and-generalization.md)
    only at the requested delivery boundary.
 
-If the current setup avoids the mistake, inspect restoration fidelity and
-variation before proposing a change. Record what worked under the measured
-conditions; a few successful screens neither establish that the real failure
-is solved nor justify inventing a skill advantage.
+If the declared baseline avoids the specific mistake, retain non-reproduction
+and inspect concrete fidelity differences before another attempt. A Negative
+for a different omission does not reproduce this incident. Keep the selected
+incident unresolved rather than substituting an easier task; further runs
+need a recorded changed fidelity or hypothesis question. Record what worked
+under the measured conditions without inventing a skill advantage.
 
 **Complete when:** the exact candidate has the required behavioral evidence,
 or the report identifies no supported change, an inconclusive comparison or a
