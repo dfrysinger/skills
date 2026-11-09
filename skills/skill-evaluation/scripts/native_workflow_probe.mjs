@@ -1098,7 +1098,8 @@ export async function runProbe(op, config) {
         }
         if (!report.editable_restored) throw new Error("Editable preflight was not restored");
         const after = await observe(false);
-        if (!matchesProfileState(after, projection, scheduleMapping) || after.dependencies_match !== true) {
+        if (!historicalProfile(config)
+            && (!matchesProfileState(after, projection, scheduleMapping) || after.dependencies_match !== true)) {
           throw new Error("Editable preflight changed native state");
         }
       }
@@ -1239,6 +1240,25 @@ export async function runProbe(op, config) {
     validateOutput(config);
     receipt = openSync(config.output, "wx", 0o600);
     report.goal_path = validateConfig(op, config);
+    if (historicalProfile(config) && op === "setup"
+        && (config.candidate_permissions.write_paths.length || config.candidate_permissions.shell_commands.length)) {
+      if (!isDeepStrictEqual(config.candidate_permissions,
+        { write_paths: ["target.txt"], shell_commands: ["python3 -I check.py"] })) {
+        throw new Error("Historical editable setup requires the canonical data-only grants");
+      }
+      const files = [["target.txt", "pending\n"], ["check.py", editableFixtureCheck]];
+      if (files.some(([name]) => pathExists(join(config.cwd, name)))) {
+        throw new Error("Historical editable fixture paths must be absent");
+      }
+      report.editable_setup = { provenance: "evaluation-operation-data-only", files: [] };
+      for (const [name, content] of files) {
+        const path = join(config.cwd, name);
+        writeFileSync(path, content, { flag: "wx", mode: 0o600 });
+        report.editable_setup.files.push({
+          path, sha256: createHash("sha256").update(content).digest("hex"), mode: lstatSync(path).mode & 0o777,
+        });
+      }
+    }
     if (selected && !contextProfile(config)) {
       projection = profileState(config);
       report.profile = config.profile;

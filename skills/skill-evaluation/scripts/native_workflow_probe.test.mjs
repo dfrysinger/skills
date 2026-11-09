@@ -482,7 +482,9 @@ async function historicalContextFixture(t) {
     }
     const source = snapshot.queries.find(item => item.query === args.query);
     const mismatch = state.schemaMismatch && args.description.includes("schema")
-      || state.coldMismatch && state.starts > 1 && args.description.includes("insertion order");
+      || state.coldMismatch && state.starts > 1 && args.description.includes("insertion order")
+      || args.description.includes("Compare explicit source rows")
+        && JSON.stringify(state.rows) !== JSON.stringify(snapshot.source.rows.todos);
     return { resultType: "success", textResultForLlm: state.queryMismatch ? "Changed" : source?.expected_text ?? "",
       toolTelemetry: { metrics: { rowsReturned: mismatch ? 1 : source?.expected_rows ?? 0 } } };
   };
@@ -579,6 +581,65 @@ test("historical preflight blocks null, missing and changed tool metadata withou
       assert.equal(state.sendCalls, 0);
     });
   }
+});
+
+test("historical canonical editable grants exercise and restore the owned fixture and exact snapshot", async t => {
+  const owned = await historicalContextFixture(t);
+  const { config, state, root, snapshot } = owned;
+  config.candidate_permissions = { write_paths: ["target.txt"], shell_commands: ["python3 -I check.py"] };
+  installEditableToolHook(owned);
+  const setup = await runProbe("setup", config);
+  assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
+  assert.equal(readFileSync(join(config.cwd, "target.txt"), "utf8"), "pending\n");
+  assert.equal(readFileSync(join(config.cwd, "check.py"), "utf8"), editableFixtureCheck);
+  const preflight = await runProbe("preflight", { ...config, output: join(root, "canonical-preflight.json") });
+  assert.equal(preflight.status, "PREFLIGHT_OBSERVED", preflight.error?.message);
+  assert.equal(preflight.editable_preflight.length, 6);
+  assert.equal(preflight.editable_restored, true);
+  assert.equal(readFileSync(join(config.cwd, "target.txt"), "utf8"), "pending\n");
+  assert.equal(readFileSync(join(config.cwd, "check.py"), "utf8"), editableFixtureCheck);
+  assert.equal(lstatSync(join(config.cwd, "target.txt")).mode & 0o777, 0o600);
+  assert.equal(lstatSync(join(config.cwd, "check.py")).mode & 0o777, 0o600);
+  assert.deepEqual(state.rows, snapshot.source.rows.todos);
+  assert.equal(state.sendCalls, 0);
+});
+
+test("historical editable setup refuses existing files and aliases without overwriting", async t => {
+  for (const collision of ["target.txt", "check.py", "alias"]) {
+    await t.test(collision, async t => {
+      const { config, state, root } = await historicalContextFixture(t);
+      config.candidate_permissions = { write_paths: ["target.txt"], shell_commands: ["python3 -I check.py"] };
+      const target = join(config.cwd, collision === "alias" ? "target.txt" : collision);
+      if (collision === "alias") symlinkSync(join(root, "unowned.txt"), target);
+      else writeFileSync(target, "preserve existing\n");
+      const setup = await runProbe("setup", config);
+      assert.equal(setup.status, "ERROR");
+      assert.match(setup.error.message, /Historical editable fixture paths must be absent/);
+      if (collision === "alias") assert.equal(lstatSync(target).isSymbolicLink(), true);
+      else assert.equal(readFileSync(target, "utf8"), "preserve existing\n");
+      assert.equal(state.starts, 0);
+      assert.equal(state.sendCalls, 0);
+    });
+  }
+});
+
+test("historical editable preflight still blocks changed source snapshot after restoring files", async t => {
+  const owned = await historicalContextFixture(t);
+  const { config, state, root } = owned;
+  config.candidate_permissions = { write_paths: ["target.txt"], shell_commands: ["python3 -I check.py"] };
+  installEditableToolHook(owned);
+  const invoke = state.toolExecuteHook;
+  state.toolExecuteHook = request => {
+    const result = invoke(request);
+    if (request.name === "apply_patch" && result?.resultType === "success") state.rows[0].title = "Changed source title";
+    return result;
+  };
+  assert.equal((await runProbe("setup", config)).status, "SETUP_OBSERVED");
+  const preflight = await runProbe("preflight", { ...config, output: join(root, "changed-snapshot.json") });
+  assert.equal(preflight.status, "PREMODEL_BLOCKED");
+  assert.match(preflight.firsterror, /Compare explicit source rows/);
+  assert.equal(preflight.editable_restored, true);
+  assert.equal(state.sendCalls, 0);
 });
 
 test("historical context refuses schema/query/cold/loaded-body mismatches with original error and no send", async t => {
@@ -714,12 +775,20 @@ async function profileFixture(t) {
 
 async function editableProfileFixture(t) {
   const owned = await profileFixture(t);
-  const { config, state } = owned;
+  const { config } = owned;
   config.candidate_permissions = { write_paths: ["target.txt"], shell_commands: ["python3 -I check.py"] };
   writeFileSync(join(config.cwd, "target.txt"), "pending\n");
   writeFileSync(join(config.cwd, "check.py"), editableFixtureCheck);
-  state.toolExecuteHook = ({ name, args, toolCallId, permission, sessionId }) => {
-    if (!["apply_patch", "bash"].includes(name)) return undefined;
+  installEditableToolHook(owned);
+  return owned;
+}
+
+function installEditableToolHook(owned) {
+  const { config, state } = owned;
+  const prior = state.toolExecuteHook;
+  state.toolExecuteHook = invocation => {
+    const { name, args, toolCallId, permission, sessionId } = invocation;
+    if (!["apply_patch", "bash"].includes(name)) return prior?.(invocation);
     const patch = typeof args === "string" ? args : args.patch ?? args.input;
     const fileName = name === "apply_patch" ? patch.match(/\*\*\* Update File: ([^\n]+)/)[1] : undefined;
     const request = name === "apply_patch"
@@ -748,7 +817,6 @@ async function editableProfileFixture(t) {
       structuredContent: { stdout: result.stdout, stderr: result.stderr,
         exitCode: state.unrelatedCheckFailure && result.status === 1 ? 137 : result.status } };
   };
-  return owned;
 }
 
 test("profile cold hydration preserves goal/rows/dependencies and explicitly maps schedule lifecycle", async t => {
