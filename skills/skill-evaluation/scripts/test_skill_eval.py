@@ -1733,6 +1733,26 @@ class NativeRecordedContextTests(unittest.TestCase):
     arguments = NativeContextCalibrationTests.arguments
     patches = NativeContextCalibrationTests.patches
 
+    def test_operational_continuation_accepts_source_owner_names_without_other_inputs(self):
+        from native_workflow import _screen_input_tree
+
+        package = self.root / "continuation-inputs"
+        owner = package / "owner"
+        owner.mkdir(parents=True)
+        for name in ("canonical-recorded-context.json", "native-objective-store.json",
+                     "source-trigger-event.jsonl"):
+            (owner / name).write_text("{}\n")
+        _screen_input_tree(package, package=True, operational=True)
+        with self.assertRaisesRegex(ValueError, "Hidden evaluation input"):
+            _screen_input_tree(package, package=True)
+        for name in ("unrelated.json", "criteria.md"):
+            with self.subTest(name=name):
+                extra = owner / name
+                extra.write_text("{}\n")
+                with self.assertRaisesRegex(ValueError, "Hidden evaluation input"):
+                    _screen_input_tree(package, package=True, operational=True)
+                extra.unlink()
+
     def setUp(self):
         NativeContextCalibrationTests.setUp(self)
         self.source_id, self.trigger_id = str(uuid.uuid4()), str(uuid.uuid4())

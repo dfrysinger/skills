@@ -21,7 +21,9 @@ def _screen_input_tree(root, *, package=False, operational=False):
     owner_names = {"context-fixture.json", "completed-objective.json", "recorded-context.json",
                    "source-event.json", "continuation.json", "calibration-evidence"}
     if operational:
-        owner_names |= {"operational.json", "schedule-events.json", "working-state"}
+        owner_names |= {"operational.json", "schedule-events.json", "working-state",
+                        "canonical-recorded-context.json", "native-objective-store.json",
+                        "source-trigger-event.jsonl"}
     for member in root.rglob("*"):
         parts = member.relative_to(root).parts
         if (member.is_symlink() or ".git" in parts
