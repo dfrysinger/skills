@@ -1707,7 +1707,7 @@ def evidence_list(manifest: dict) -> str:
     return "\n".join(f"- {item['path']}" for item in manifest["files"])
 
 
-def _native_workflow_probe(operation: str, config: dict) -> dict:
+def _native_workflow_probe(operation: str, config: dict, *, consumer: dict | None = None) -> dict:
     context_profile = config.get("profile") in {"native-context-calibration", "native-historical-context"}
     context_keys = {
         "cli", "sdk", "home", "os_home", "cwd", "session_id", "output", "profile",
@@ -1721,6 +1721,24 @@ def _native_workflow_probe(operation: str, config: dict) -> dict:
             raise ValueError("Historical context setup cannot send a model request")
     if context_profile and set(config) != context_keys:
         raise ValueError("Expected only the fixed native context coordinator fields")
+    release_pattern = r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?"
+    pinned_release = None
+    if consumer is not None:
+        if (config.get("profile") != "native-historical-context"
+                or operation not in {"setup", "observe", "cleanup"}
+                or not isinstance(consumer, dict)
+                or set(consumer) != {"cli_version", "cli_sha256", "sdk_sha256"}
+                or not isinstance(consumer["cli_version"], str) or not consumer["cli_version"]
+                or any(not isinstance(consumer[key], str)
+                       or re.fullmatch(r"[0-9a-f]{64}", consumer[key]) is None
+                       for key in ("cli_sha256", "sdk_sha256"))):
+            raise ValueError("Invalid recorded context consumer pins")
+        match = re.fullmatch(
+            rf"(?:GitHub Copilot CLI )?({release_pattern})\.?",
+            consumer["cli_version"].splitlines()[0])
+        if match is None:
+            raise ValueError("Invalid recorded context consumer version")
+        pinned_release = match[1]
     output = Path(config["output"])
     if output.exists() or output.is_symlink():
         raise ValueError("native probe receipt already exists; retaining first output")
@@ -1798,9 +1816,21 @@ def _native_workflow_probe(operation: str, config: dict) -> dict:
         raise ValueError(result.get("firsterror") or
                          f"native {operation} did not verify its owner and shutdown")
     runtime = result.get("runtime_identity", {})
+    runtime_matches = True
+    if consumer is not None:
+        runtime_matches = (isinstance(runtime, dict)
+                           and isinstance(runtime.get("version"), str)
+                           and re.fullmatch(release_pattern, runtime["version"]) is not None
+                           and runtime["version"] == pinned_release)
+        for key in ("cli", "sdk"):
+            path = Path(config[key])
+            runtime_matches = (runtime_matches and path.is_absolute() and path.resolve() == path
+                               and path.is_file() and not path.is_symlink()
+                               and digest(path) == consumer[f"{key}_sha256"])
     if (result.get("cli") != config["cli"] or result.get("sdk") != config["sdk"]
             or result.get("connection", {}).get("path") != config["cli"]
-            or not re.search(r"\b1\.0\.97(?:\b|-)", str(runtime.get("version", "")))
+            or (not runtime_matches if consumer is not None else
+                not re.search(r"\b1\.0\.97(?:\b|-)", str(runtime.get("version", ""))))
             or (operation not in {"candidate", "preflight"} and result.get("model_calls") != 0)):
         raise ValueError(result.get("firsterror") or
                          f"native {operation} did not verify its pinned runtime")
@@ -2917,6 +2947,7 @@ def _run_native_context_calibration(
               "operation_errors": {},
               "claim": "Synthetic source capability only; historical replay remains unproved"}
     config = None
+    probe_kwargs = {}
     owned = False
     run_root = run_root.absolute()
     try:
@@ -2998,6 +3029,7 @@ def _run_native_context_calibration(
                     or model != fixture["canonical"]["selected_model"]
                     or effort != fixture["canonical"]["reasoning_effort"]):
                 raise ValueError("Recorded context selected runtime/model identity differs")
+            probe_kwargs = {"consumer": fixture["consumer"]}
         elif (not re.search(r"\b1\.0\.97(?:\b|-)", cli_identity["version"])
               or digest(sdk) != "d336d72bd0f597d39c1c75732e5eb5b07cd43e65e81b45f90413ee86e69cb406"):
             raise ValueError("Context calibration requires pinned version97 CLI/SDK")
@@ -3096,7 +3128,7 @@ def _run_native_context_calibration(
             **({"personal_skills": directory_identity(pinned_personal)}
                if pinned_personal is not None else {}),
         })
-        result["setup"] = _native_workflow_probe("setup", config)
+        result["setup"] = _native_workflow_probe("setup", config, **probe_kwargs)
         result["checks"]["setup_observed"] = result["setup"].get("status") == "SETUP_OBSERVED"
         if not result["checks"]["setup_observed"]:
             raise ValueError("Context setup was not observed")
@@ -3122,7 +3154,8 @@ def _run_native_context_calibration(
             for operation in ("observe", "cleanup"):
                 try:
                     result[operation] = _native_workflow_probe(
-                        operation, {**config, "output": str(Path(config["output"]).parent / f"{operation}.json")})
+                        operation, {**config, "output": str(Path(config["output"]).parent / f"{operation}.json")},
+                        **probe_kwargs)
                     if operation == "cleanup" and result[operation].get("status") != "CLEANED":
                         raise ValueError("Context cleanup not verified")
                 except Exception as error:

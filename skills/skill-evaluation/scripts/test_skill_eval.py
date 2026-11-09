@@ -1747,11 +1747,138 @@ class NativeRecordedContextTests(unittest.TestCase):
             "status": "PASS", "session_id": self.session_id, "exit_code": 0, "history_sha256": digest(history)})
         return self.session_id
 
-    def probe_double(self, operation, config):
+    def probe_double(self, operation, config, *, consumer):
+        self.assertEqual(consumer, self.recorded["consumer"])
         self.order.append(operation)
         self.assertEqual(self.journal.read_bytes(), (self.run / "owner/journal-staged.jsonl").read_bytes())
         self.assertEqual((self.run / "owner/canonical-recorded-context.json").read_bytes(), self.canonical.read_bytes())
         return {"status": {"setup": "SETUP_OBSERVED", "observe": "OBSERVED", "cleanup": "CLEANED"}[operation]}
+
+    def test_source_preparation_passes_original_103_consumer_to_all_receipt_checks(self):
+        from contextlib import ExitStack
+        banner = "GitHub Copilot CLI 1.0.103.\nRun 'copilot update' to check for updates."
+        self.recorded["consumer"]["cli_version"] = banner
+        self.fixture.write_text(json.dumps(self.recorded))
+        calibration = self.root / "prior-calibration"
+        (calibration / "owner").mkdir(parents=True)
+        skill_eval.write_json(calibration / "owner/identities.json", {"session_id": str(uuid.uuid4())})
+        with ExitStack() as stack:
+            native, candidate = self.patches(stack)
+            stack.enter_context(mock.patch("skill_eval.copilot_identity", return_value={"version": banner}))
+            result = skill_eval._run_native_context_calibration(
+                **self.arguments(), source_preparation_only=True, calibration_root=calibration)
+        self.assertEqual(result["status"], "CONTEXT_SETUP_OBSERVED", result["firsterror"])
+        self.assertEqual(self.order, ["import-exit", "setup", "observe", "cleanup"])
+        self.assertEqual([call.args[0] for call in native.call_args_list], ["setup", "observe", "cleanup"])
+        for call in native.call_args_list:
+            self.assertEqual(call.kwargs, {"consumer": self.recorded["consumer"]})
+        candidate.assert_not_called()
+        self.assertIn("behavioral admission unproved", result["claim"])
+
+    def runtime_receipt_fixture(self, operation, name):
+        fields = ["home", "os_home", "cwd", "prompt_path", "event_log",
+                  "plugin_path", "prefix_file", "context_fixture_file"]
+        config = {key: str(self.root / key) for key in fields}
+        config.update(cli=str(self.cli), sdk=str(self.sdk), output=str(self.root / f"{name}.json"),
+                      profile="native-historical-context", session_id=self.session_id,
+                      model="fixture-model", effort="low",
+                      candidate_permissions={"write_paths": [], "shell_commands": []})
+        receipt = {
+            "cli": config["cli"], "sdk": config["sdk"], "session_id": self.session_id,
+            "profile": config["profile"], "connection": {"path": config["cli"]},
+            "runtime_identity": {"version": "1.0.103", "protocolVersion": 3},
+            "shutdown_errors": [], "model_calls": 0,
+            "status": {"setup": "SETUP_OBSERVED", "observe": "OBSERVED", "cleanup": "CLEANED"}[operation],
+        }
+        consumer = {"cli_version": "GitHub Copilot CLI 1.0.103.\nRun 'copilot update' to check for updates.",
+                    "cli_sha256": digest(self.cli), "sdk_sha256": digest(self.sdk)}
+        return config, receipt, consumer
+
+    def test_selected_103_receipts_and_legacy_97_receipts_keep_distinct_pins(self):
+        for operation in ("setup", "observe", "cleanup"):
+            for variant in ("103-banner", "103-token", "97-legacy", "97-legacy-suffix"):
+                with self.subTest(operation=operation, variant=variant):
+                    config, receipt, consumer = self.runtime_receipt_fixture(operation, f"{operation}-{variant}")
+                    if variant == "103-token":
+                        consumer["cli_version"] = "1.0.103"
+                    if variant.startswith("97"):
+                        consumer = None
+                        receipt["runtime_identity"]["version"] = (
+                            "1.0.97-2" if variant.endswith("suffix") else "1.0.97")
+                    def execute(command, **kwargs):
+                        Path(config["output"]).write_text(json.dumps(receipt))
+                        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+                    with (
+                        mock.patch("skill_eval.subprocess.run", side_effect=execute) as process,
+                        mock.patch("skill_eval.personal_instruction_environment", return_value={}),
+                    ):
+                        self.assertEqual(skill_eval._native_workflow_probe(
+                            operation, config, **({"consumer": consumer} if consumer is not None else {})), receipt)
+                    process.assert_called_once()
+
+    def test_selected_consumer_refuses_wrong_absent_malformed_or_substituted_runtime_pins(self):
+        failures = (
+            "wrong97", "different-release", "missing-version", "null-version", "nonstring-version",
+            "malformed-version", "missing-identity", "malformed-identity", "missing-consumer",
+            "bad-consumer-version", "bad-consumer-hash", "absent-consumer-hash",
+            "cli-hash", "sdk-hash", "cli-path", "sdk-path", "connection-path",
+            "missing-cli-path", "missing-sdk-path", "missing-connection-path",
+            "missing-file", "relative-file", "aliased-file", "legacy103",
+        )
+        for failure in failures:
+            with self.subTest(failure=failure):
+                config, receipt, consumer = self.runtime_receipt_fixture("setup", failure)
+                runtime = receipt["runtime_identity"]
+                if failure == "wrong97":
+                    runtime["version"] = "1.0.97"
+                elif failure == "different-release":
+                    runtime["version"] = "1.0.1031"
+                elif failure == "missing-version":
+                    del runtime["version"]
+                elif failure in ("null-version", "nonstring-version", "malformed-version"):
+                    runtime["version"] = {"null-version": None, "nonstring-version": 103,
+                                          "malformed-version": "GitHub Copilot CLI 1.0.103."}[failure]
+                elif failure == "missing-identity":
+                    del receipt["runtime_identity"]
+                elif failure == "malformed-identity":
+                    receipt["runtime_identity"] = None
+                elif failure == "missing-consumer":
+                    consumer = {}
+                elif failure == "bad-consumer-version":
+                    consumer["cli_version"] = "unrecognized 1.0.103"
+                elif failure == "bad-consumer-hash":
+                    consumer["cli_sha256"] = None
+                elif failure == "absent-consumer-hash":
+                    del consumer["sdk_sha256"]
+                elif failure in ("cli-hash", "sdk-hash"):
+                    consumer[f"{failure.split('-')[0]}_sha256"] = "0" * 64
+                elif failure in ("cli-path", "sdk-path"):
+                    receipt[failure.split("-")[0]] += "-different"
+                elif failure == "connection-path":
+                    receipt["connection"]["path"] += "-different"
+                elif failure in ("missing-cli-path", "missing-sdk-path"):
+                    del receipt[failure.split("-")[1]]
+                elif failure == "missing-connection-path":
+                    receipt["connection"] = {}
+                elif failure in ("missing-file", "relative-file", "aliased-file"):
+                    path = self.root / "absent"
+                    if failure == "relative-file":
+                        path = Path("relative-copilot")
+                    if failure == "aliased-file":
+                        path = self.root / "aliased-copilot"
+                        path.symlink_to(self.cli)
+                    config["cli"] = receipt["cli"] = receipt["connection"]["path"] = str(path)
+                elif failure == "legacy103":
+                    consumer = None
+                def execute(command, **kwargs):
+                    Path(config["output"]).write_text(json.dumps(receipt))
+                    return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+                with (
+                    mock.patch("skill_eval.subprocess.run", side_effect=execute),
+                    mock.patch("skill_eval.personal_instruction_environment", return_value={}),
+                ):
+                    with self.assertRaisesRegex(ValueError, "consumer|pinned runtime"):
+                        skill_eval._native_workflow_probe("setup", config, consumer=consumer)
 
     def candidate_double(self, config, **kwargs):
         self.order.append("preflight")
