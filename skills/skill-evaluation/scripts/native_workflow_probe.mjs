@@ -1651,8 +1651,13 @@ export async function runProbe(op, config) {
           requirePath(path, "file");
           if (hash(readFileSync(path)) !== expected) throw new Error("Frozen continuation source input changed");
         }
-        if (continuationEntry(config).observed_package.sha256 !== entry.observed_package.sha256) {
+        const observedEntry = continuationEntry(config);
+        if (observedEntry.observed_package.sha256 !== entry.observed_package.sha256) {
           throw new Error("Frozen continuation input package changed");
+        }
+        if (observedEntry.configuration_sha256 !== entry.configuration_sha256
+            || !isDeepStrictEqual(observedEntry.binding, entry.binding)) {
+          throw new Error("Frozen continuation configuration changed");
         }
         report.prefix_after = await readEvents();
         const correspondence = continuationCorrespondence(

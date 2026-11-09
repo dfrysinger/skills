@@ -55,14 +55,17 @@ def continuation_entry(path: Path, config: dict) -> dict:
         raise ValueError("Continuation run must be disjoint from its frozen input package")
     owner_names = {"context-fixture.json", "completed-objective.json", "recorded-context.json",
                    "source-event.json", "continuation.json", "calibration-evidence"}
-    for member in package.rglob("*"):
-        parts = member.relative_to(package).parts
-        if (member.is_symlink() or ".git" in parts
-                or parts[0] not in {"evaluator", "plugins", "owner"}
-                or (parts[0] == "owner" and len(parts) > 1 and parts[1] not in owner_names)
-                or any(re.search(r"(^|[-_.])(judge|criteria|diagnosis|work-order)([-_.]|$)", part, re.I)
-                       for part in parts)):
-            raise ValueError("Hidden evaluation input or aliased member in continuation package")
+    for root in [package, Path(config["plugin_path"]),
+                 *(Path(path) for path in config.get("skill_directories", []))]:
+        for member in root.rglob("*"):
+            parts = member.relative_to(root).parts
+            if (member.is_symlink() or ".git" in parts
+                    or (root == package and (
+                        parts[0] not in {"evaluator", "plugins", "owner"}
+                        or (parts[0] == "owner" and len(parts) > 1 and parts[1] not in owner_names)))
+                    or any(re.search(r"(^|[-_.])(judge|criteria|diagnosis|work-order)([-_.]|$)", part, re.I)
+                           for part in parts)):
+                raise ValueError("Hidden evaluation input or aliased member in continuation inputs")
     workspace = os.getenv("GITHUB_WORKSPACE")
     if workspace and any(Path(workspace).rglob(".git")):
         raise ValueError("Continuation job must omit repository checkout")

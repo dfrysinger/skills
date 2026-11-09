@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, linkSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, linkSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -612,7 +612,7 @@ async function completedRecordedContextFixture(t) {
   return { ...owned, store, source, goal, descriptor };
 }
 
-async function continuationFixture(t) {
+async function continuationFixture(t, { loadedCopies = false } = {}) {
   const owned = await completedRecordedContextFixture(t);
   const { config, root, state } = owned;
   writeFileSync(join(config.plugin_path, "generic.txt"), "Synthetic pinned plugin\n");
@@ -642,6 +642,17 @@ async function continuationFixture(t) {
   };
   const save = () => writeFileSync(config.continuation_file, JSON.stringify(input), { mode: 0o600 });
   save();
+  if (loadedCopies) {
+    const plugin = join(root, "pinned-plugin");
+    cpSync(config.plugin_path, plugin, { recursive: true });
+    config.plugin_path = plugin;
+    const source = join(root, "personal-source");
+    mkdirSync(source);
+    writeFileSync(join(source, "generic.txt"), "Synthetic personal skill\n");
+    const personal = join(root, "pinned-personal-skills");
+    cpSync(source, personal, { recursive: true });
+    config.skill_directories = [personal];
+  }
   state.metadataOverride = { tools: null };
   state.sendHook = (id, emit) => {
     const persist = (type, data) => state.events.push(emit(type, data));
@@ -676,6 +687,62 @@ async function continuationFixture(t) {
     return id;
   };
   return { ...owned, input, save };
+}
+
+test("continuation admits separate unchanged loaded plugin and personal copies", async t => {
+  const { config, state, input } = await continuationFixture(t, { loadedCopies: true });
+  assert.ok(!config.plugin_path.startsWith(`${input.package_root}/`));
+  assert.ok(!config.skill_directories[0].startsWith(`${input.package_root}/`));
+  state.completeViaTool = true;
+  const result = await runProbe("candidate", config);
+  assert.equal(result.status, "CANDIDATE_OBSERVED", result.error?.message);
+  assert.deepEqual(state.resumes[0].pluginDirectories, [config.plugin_path]);
+  assert.deepEqual(state.resumes[0].skillDirectories, config.skill_directories);
+  assert.equal(result.continuation_receipt.status, "CONTINUATION_CANARY_OBSERVED");
+  assert.equal(state.sendCalls, 1);
+});
+
+for (const kind of ["plugin", "personal"]) {
+  for (const hidden of ["judge-reference", "criteria.json"]) {
+    test(`continuation rejects hidden ${hidden} in loaded ${kind} copy with clean package`, async t => {
+      const { config, state } = await continuationFixture(t, { loadedCopies: true });
+      const before = continuationEntry(config);
+      const loaded = kind === "plugin" ? config.plugin_path : config.skill_directories[0];
+      const path = join(loaded, hidden);
+      if (hidden === "judge-reference") {
+        mkdirSync(path);
+        writeFileSync(join(path, "answer.json"), "{}");
+      } else writeFileSync(path, "{}");
+      const result = await runProbe("candidate", config);
+      assert.equal(result.status, "PREMODEL_BLOCKED", result.error?.message ?? result.status);
+      assert.match(result.error.message, /Hidden evaluation input/);
+      assert.equal(state.sendCalls, 0);
+      assert.equal(result.continuation_receipt, undefined);
+      rmSync(path, { recursive: true });
+      assert.equal(continuationEntry(config).observed_package.sha256, before.observed_package.sha256);
+    });
+  }
+  for (const mutation of ["content", "added-member"]) {
+    test(`continuation rejects post-send ${mutation} mutation of loaded ${kind} copy`, async t => {
+      const { config, state } = await continuationFixture(t, { loadedCopies: true });
+      const before = continuationEntry(config);
+      const send = state.sendHook;
+      state.sendHook = (id, emit) => {
+        const loaded = kind === "plugin" ? config.plugin_path : config.skill_directories[0];
+        writeFileSync(join(loaded, mutation === "content" ? "generic.txt" : "added.txt"), "Changed loaded input\n");
+        return send(id, emit);
+      };
+      const result = await runProbe("candidate", config);
+      const after = continuationEntry(config);
+      assert.equal(after.observed_package.sha256, before.observed_package.sha256);
+      assert.notEqual(after.configuration_sha256, before.configuration_sha256);
+      assert.equal(result.status, "FAILED", result.error?.message ?? result.status);
+      assert.match(result.error.message, /Frozen continuation configuration changed/);
+      assert.equal(result.model_completion_kind, "assistant_final");
+      assert.equal(state.sendCalls, 1);
+      assert.equal(result.continuation_receipt, undefined);
+    });
+  }
 }
 
 test("continuation accepts correlated native task_complete without fabricating assistant text", async t => {
