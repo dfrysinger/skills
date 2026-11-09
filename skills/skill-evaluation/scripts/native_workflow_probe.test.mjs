@@ -126,10 +126,12 @@ export class CopilotClient {
           },
         },
         model: { getCurrent: async () => state.modelOverride ?? ({ modelId: options.model, reasoningEffort: options.reasoningEffort }) },
-        autopilotObjective: { getState: async () => ({ state: current && {
+        autopilotObjective: { getState: async () => state.nativeGoalResponse === undefined ? ({ state: current && {
           id: current.id, objective: current.objective, status: current.status,
           turnCount: current.turnCount, creditCountNanoAiu: current.creditCountNanoAiu,
-        } }) },
+          ...(current.completionSummary !== undefined ? { completionSummary: current.completionSummary } : {}),
+          ...(current.pauseReason !== undefined ? { pauseReason: current.pauseReason } : {}),
+        } }) : structuredClone(state.nativeGoalResponse) },
         mode: {
           get: async () => state.mode,
           set: async ({ mode }) => { state.mode = mode; return { modeApplied: true }; },
@@ -575,6 +577,141 @@ async function recordedContextFixture(t) {
   writeFileSync(config.prompt_path, "Synthetic trigger");
   return { ...owned, locator: { ...locator, recorded_payloads: payloads } };
 }
+
+async function completedRecordedContextFixture(t) {
+  const owned = await recordedContextFixture(t);
+  const { config, root } = owned;
+  const store = {
+    version: 1, nextId: 40,
+    current: { id: 37, objective: "Synthetic completed objective", status: "completed",
+      autopilotOrigin: "objective", continuationCount: 2, turnCount: 9, tokenCount: 456,
+      creditCountNanoAiu: "123456789012345", resumeCount: 3,
+      createdAt: "2001-01-01T01:02:03.004Z", updatedAt: "2002-02-02T03:04:05.006Z",
+      completionSummary: "Synthetic completion" },
+  };
+  const source = join(root, "completed-objective.json");
+  const goal = join(config.home, "session-state", config.session_id, "autopilot-objective.json");
+  const bytes = JSON.stringify(store, null, 2) + "\n";
+  writeFileSync(source, bytes, { mode: 0o600 });
+  writeFileSync(goal, bytes, { mode: 0o600 });
+  const descriptor = { path: source, sha256: createHash("sha256").update(bytes).digest("hex") };
+  const locator = JSON.parse(readFileSync(config.context_fixture_file, "utf8"));
+  locator.completed_objective = descriptor;
+  writeFileSync(config.context_fixture_file, JSON.stringify(locator));
+  return { ...owned, store, source, goal, descriptor };
+}
+
+test("recorded completed store is preserved through warm/cold setup, observe and cleanup without sends", async t => {
+  const { config, state, root, store, source, goal, descriptor } = await completedRecordedContextFixture(t);
+  const bytes = readFileSync(source);
+  for (const [operation, status] of [
+    ["setup", "SETUP_OBSERVED"], ["observe", "OBSERVED"], ["cleanup", "CLEANED"],
+  ]) {
+    const result = await runProbe(operation, { ...config, output: join(root, `${operation}-completed.json`) });
+    assert.equal(result.status, status, result.error?.message);
+    const observations = operation === "setup" ? [result.before, result.warm, result]
+      : operation === "cleanup" ? [result.cleanup] : [result];
+    for (const observation of observations) {
+      assert.deepEqual(observation.completed_objective.store, store);
+      assert.equal(observation.completed_objective.source_sha256, descriptor.sha256);
+      assert.equal(observation.completed_objective.persisted_store_correspondence, true);
+      assert.equal(observation.completed_objective.native_state_correspondence, true);
+      assert.equal(observation.goal.state.status, "completed");
+      assert.equal(observation.goal.state.completionSummary, store.current.completionSummary);
+    }
+    if (operation !== "cleanup") {
+      assert.equal(result.recorded_context.native_payload_correspondence, true);
+      assert.equal(result.recorded_context.behavioral_baseline_ready, false);
+      assert.equal(result.invoked_after_reload.skills.length, 22);
+    }
+    assert.deepEqual(readFileSync(goal), bytes);
+    assert.equal(result.model_calls, 0);
+    assert.equal(state.sendCalls, 0);
+  }
+  assert.ok(state.resumes.every(options => options.continuePendingWork === false));
+  assert.equal(state.starts, 4);
+  assert.equal(state.owners, 0);
+});
+
+test("recorded completed-store admission refuses malformed sources and substituted destinations", async t => {
+  for (const fault of ["active", "malformed", "null", "hash", "counter", "destination",
+    "missing-destination", "symlink-destination", "outside-source", "source-mode", "destination-mode"]) {
+    await t.test(fault, async t => {
+      const { config, state, store, source, goal, root } = await completedRecordedContextFixture(t);
+      if (fault === "active") store.current.status = "active";
+      if (fault === "counter") store.current.tokenCount = -1;
+      writeFileSync(source, fault === "malformed" ? "not JSON" : JSON.stringify(fault === "null" ? null : store));
+      const locator = JSON.parse(readFileSync(config.context_fixture_file, "utf8"));
+      locator.completed_objective.sha256 = fault === "hash" ? "0".repeat(64)
+        : createHash("sha256").update(readFileSync(source)).digest("hex");
+      if (fault === "destination") {
+        const different = structuredClone(store);
+        different.current.updatedAt = "2003-01-01T00:00:00Z";
+        writeFileSync(goal, JSON.stringify(different));
+      }
+      if (fault === "missing-destination") rmSync(goal);
+      if (fault === "symlink-destination") {
+        rmSync(goal);
+        symlinkSync(source, goal);
+      }
+      if (fault === "outside-source") {
+        const outside = join(config.cwd, "completed.json");
+        writeFileSync(outside, readFileSync(source), { mode: 0o600 });
+        locator.completed_objective.path = outside;
+      }
+      if (fault === "source-mode") chmodSync(source, 0o644);
+      if (fault === "destination-mode") chmodSync(goal, 0o644);
+      writeFileSync(config.context_fixture_file, JSON.stringify(locator));
+      const result = await runProbe("setup", config);
+      assert.equal(result.status, "ERROR");
+      assert.equal(result.model_calls, 0);
+      assert.equal(state.starts, 0);
+      assert.equal(state.sendCalls, 0);
+    });
+  }
+});
+
+test("recorded completed-store readbacks refuse changed counters, nextId, timestamps or native state", async t => {
+  for (const fault of ["continuationCount", "tokenCount", "resumeCount", "createdAt", "nextId", "native"]) {
+    await t.test(fault, async t => {
+      const { config, state, store, goal } = await completedRecordedContextFixture(t);
+      state.startHook = () => {
+        if (state.starts !== 2) return;
+        if (fault === "native") {
+          state.nativeGoalResponse = { state: null };
+          return;
+        }
+        const changed = structuredClone(store);
+        if (fault === "nextId") changed.nextId++;
+        else if (fault === "createdAt") changed.current.createdAt = "2003-01-01T00:00:00Z";
+        else changed.current[fault]++;
+        writeFileSync(goal, JSON.stringify(changed));
+      };
+      const result = await runProbe("setup", config);
+      assert.equal(result.status, "ERROR");
+      assert.match(result.error.message, /Completed objective persisted\/native state differs/);
+      assert.equal(result.warm.completed_objective.native_state_correspondence, true);
+      assert.equal(result.model_calls, 0);
+      assert.equal(state.sendCalls, 0);
+      assert.equal(state.owners, 0);
+    });
+  }
+});
+
+test("context fixtures without the completed-store input still require an absent native objective", async t => {
+  for (const [name, fixture] of [
+    ["schema1", contextFixture], ["schema2", historicalContextFixture], ["schema3", recordedContextFixture],
+  ]) await t.test(name, async t => {
+    const { config, state } = await fixture(t);
+    writeFileSync(join(config.home, "session-state", config.session_id, "autopilot-objective.json"),
+      JSON.stringify({ version: 1, nextId: 2, current: { id: 1, status: "completed" } }), { mode: 0o600 });
+    const result = await runProbe("setup", config);
+    assert.equal(result.status, "ERROR");
+    assert.equal(result.error.message, "Setup requires an absent native goal");
+    assert.equal(state.starts, 0);
+    assert.equal(state.sendCalls, 0);
+  });
+});
 
 test("recorded context retains 22 skills and reads actual permission mode without sending", async t => {
   const { config, state } = await recordedContextFixture(t);

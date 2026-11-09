@@ -9,6 +9,7 @@ import shlex
 import sqlite3
 import subprocess
 import uuid
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 
@@ -24,6 +25,43 @@ RECORDED_ASSISTANT_FIELDS = {
     "providerId": "providerId", "reasoningBlocks": "reasoningBlocks",
     "apiCallId": "apiCallId", "phase": "phase", "outputTokens": "outputTokens",
 }
+
+
+def completed_objective_state(store: dict) -> dict:
+    required = {"id", "objective", "status", "autopilotOrigin", "continuationCount", "turnCount",
+                "tokenCount", "creditCountNanoAiu", "resumeCount", "createdAt", "updatedAt"}
+    optional = {"completionSummary", "pauseReason"}
+    current = store.get("current") if isinstance(store, dict) else None
+    if (not isinstance(store, dict) or set(store) != {"version", "nextId", "current"}
+            or type(store["version"]) is not int or store["version"] != 1
+            or not isinstance(current, dict) or not required <= current.keys()
+            or current.keys() - required - optional
+            or current["status"] != "completed"
+            or not isinstance(current["objective"], str) or not current["objective"]
+            or current["autopilotOrigin"] not in (None, "objective", "user")
+            or any(type(value) is not int or not 1 <= value <= 2**53 - 1
+                   for value in (store["nextId"], current["id"]))
+            or store["nextId"] <= current["id"]
+            or any(type(current[key]) is not int or not 0 <= current[key] <= 2**53 - 1
+                   for key in ("continuationCount", "turnCount", "tokenCount", "resumeCount"))
+            or not isinstance(current["creditCountNanoAiu"], str)
+            or re.fullmatch(r"[0-9]+", current["creditCountNanoAiu"]) is None
+            or int(current["creditCountNanoAiu"]) > 2**63 - 1
+            or any(not isinstance(current[key], str) for key in optional if key in current)):
+        raise ValueError("Invalid completed native objective store")
+    for key in ("createdAt", "updatedAt"):
+        value = current[key]
+        try:
+            if (not isinstance(value, str) or "T" not in value
+                    or datetime.fromisoformat(value.replace("Z", "+00:00")).tzinfo is None):
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise ValueError("Invalid completed native objective timestamp") from None
+    state = {key: current[key] for key in
+             ("id", "objective", "status", "turnCount", "creditCountNanoAiu",
+              "completionSummary", "pauseReason") if key in current}
+    state["creditCountNanoAiu"] = str(int(current["creditCountNanoAiu"]))
+    return state
 
 
 def recorded_field_digests(value: dict) -> dict:

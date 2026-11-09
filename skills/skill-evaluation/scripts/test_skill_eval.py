@@ -1763,7 +1763,132 @@ class NativeRecordedContextTests(unittest.TestCase):
         self.assertEqual((self.run / "owner/canonical-recorded-context.json").read_bytes(), self.canonical.read_bytes())
         self.assertEqual((self.run / "owner/source-trigger-event.jsonl").read_bytes(),
                          self.source_event_path.read_bytes())
+        goal = self.journal.with_name("autopilot-objective.json")
+        if "completed_objective" in self.recorded:
+            self.assertEqual(goal.read_bytes(), self.completed_path.read_bytes())
+            self.assertEqual(goal.stat().st_mode & 0o777, 0o600)
+        else:
+            self.assertFalse(goal.exists())
         return {"status": {"setup": "SETUP_OBSERVED", "observe": "OBSERVED", "cleanup": "CLEANED"}[operation]}
+
+    def add_completed_objective(self):
+        store = {
+            "version": 1, "nextId": 40,
+            "current": {"id": 37, "objective": "Synthetic completed objective", "status": "completed",
+                        "autopilotOrigin": "objective", "continuationCount": 2, "turnCount": 9,
+                        "tokenCount": 456, "creditCountNanoAiu": "123456789012345", "resumeCount": 3,
+                        "createdAt": "2001-01-01T01:02:03.004Z", "updatedAt": "2002-02-02T03:04:05.006Z",
+                        "completionSummary": "Synthetic completion"},
+        }
+        self.completed_path = self.root / "completed-objective.json"
+        self.completed_path.write_text(json.dumps(store, indent=2) + "\n")
+        self.completed_path.chmod(0o600)
+        self.recorded["completed_objective"] = {
+            "path": self.completed_path.name, "sha256": digest(self.completed_path)}
+        self.fixture.write_text(json.dumps(self.recorded))
+        return store
+
+    def test_completed_objective_is_copied_exactly_before_any_resume(self):
+        from contextlib import ExitStack
+        store = self.add_completed_objective()
+        original = self.completed_path.read_bytes()
+        calibration = self.root / "prior-completed-calibration"
+        (calibration / "owner").mkdir(parents=True)
+        skill_eval.write_json(calibration / "owner/identities.json", {"session_id": str(uuid.uuid4())})
+        with ExitStack() as stack:
+            native, candidate = self.patches(stack)
+            result = skill_eval._run_native_context_calibration(
+                **self.arguments(), source_preparation_only=True, calibration_root=calibration)
+        self.assertEqual(result["status"], "CONTEXT_SETUP_OBSERVED", result["firsterror"])
+        self.assertEqual([call.args[0] for call in native.call_args_list], ["setup", "observe", "cleanup"])
+        descriptor = result["locator"]["completed_objective"]
+        self.assertEqual(Path(descriptor["path"]).read_bytes(), original)
+        self.assertEqual(descriptor["sha256"], self.recorded["completed_objective"]["sha256"])
+        self.assertEqual(json.loads(self.journal.with_name("autopilot-objective.json").read_bytes()), store)
+        self.assertEqual(self.completed_path.read_bytes(), original)
+        candidate.assert_not_called()
+
+    def test_completed_objective_rejects_active_malformed_or_unbound_source(self):
+        from session_restore import completed_objective_state
+        store = self.add_completed_objective()
+        self.assertEqual(completed_objective_state(store), {
+            key: store["current"][key] for key in
+            ("id", "objective", "status", "turnCount", "creditCountNanoAiu", "completionSummary")})
+        for fault in ("active", "paused", "version", "null", "missing-counter", "counter",
+                      "id", "nextId", "credits", "timestamp", "unknown", "hash", "mode", "escape"):
+            with self.subTest(fault=fault):
+                fixture = json.loads(json.dumps(self.recorded))
+                changed = json.loads(json.dumps(store))
+                if fault in ("active", "paused"):
+                    changed["current"]["status"] = fault
+                elif fault == "version":
+                    changed["version"] = 2
+                elif fault == "null":
+                    changed["current"] = None
+                elif fault == "missing-counter":
+                    del changed["current"]["resumeCount"]
+                elif fault == "counter":
+                    changed["current"]["tokenCount"] = -1
+                elif fault == "id":
+                    changed["current"]["id"] = True
+                elif fault == "nextId":
+                    changed["nextId"] = changed["current"]["id"]
+                elif fault == "credits":
+                    changed["current"]["creditCountNanoAiu"] = "not-a-decimal"
+                elif fault == "timestamp":
+                    changed["current"]["updatedAt"] = "not-a-time"
+                elif fault == "unknown":
+                    changed["current"]["unexpected"] = "Synthetic extra field"
+                self.completed_path.write_text(json.dumps(changed))
+                fixture["completed_objective"]["sha256"] = (
+                    "0" * 64 if fault == "hash" else digest(self.completed_path))
+                if fault == "mode":
+                    self.completed_path.chmod(0o644)
+                if fault == "escape":
+                    fixture["completed_objective"]["path"] = "../completed-objective.json"
+                try:
+                    with self.assertRaises(ValueError):
+                        skill_eval._validate_historical_context_fixture(fixture, root=self.root)
+                finally:
+                    self.completed_path.chmod(0o600)
+
+    def test_completed_objective_refuses_occupied_or_escaped_native_destinations(self):
+        from contextlib import ExitStack
+        self.add_completed_objective()
+        original_import = self.import_double
+        for fault in ("occupied", "symlink", "namespace-symlink"):
+            with self.subTest(fault=fault), ExitStack() as stack:
+                self.run = self.root / f"destination-{fault}"
+                target = self.root / f"outside-{fault}.json"
+                target.write_text("Synthetic untouched destination")
+                def import_with_existing_destination(restoration, history, **kwargs):
+                    session = original_import(restoration, history, **kwargs)
+                    goal = self.journal.with_name("autopilot-objective.json")
+                    if fault == "occupied":
+                        goal.write_text("Synthetic occupied goal")
+                    elif fault == "symlink":
+                        goal.symlink_to(target)
+                    else:
+                        escaped = self.root / "escaped-namespace"
+                        self.journal.parent.rename(escaped)
+                        self.journal.parent.symlink_to(escaped, target_is_directory=True)
+                    return session
+                self.import_double = import_with_existing_destination
+                native, candidate = self.patches(stack)
+                result = skill_eval._run_native_context_calibration(**self.arguments())
+                self.assertEqual(result["status"], "FAILED")
+                self.assertRegex(result["firsterror"], "destination must be absent|unaliased single-link")
+                self.assertEqual(target.read_text(), "Synthetic untouched destination")
+                if fault == "occupied":
+                    self.assertEqual(self.journal.with_name("autopilot-objective.json").read_text(),
+                                     "Synthetic occupied goal")
+                elif fault == "symlink":
+                    self.assertTrue(self.journal.with_name("autopilot-objective.json").is_symlink())
+                else:
+                    self.assertFalse((self.root / "escaped-namespace/autopilot-objective.json").exists())
+                self.assertFalse((self.run / "owner/journal-staged.jsonl").exists())
+                native.assert_not_called()
+                candidate.assert_not_called()
 
     def test_source_preparation_passes_original_103_consumer_to_all_receipt_checks(self):
         from contextlib import ExitStack

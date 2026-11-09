@@ -40,6 +40,11 @@ The fixture contains `provenance: "source-bound-historical"` and these fields:
   absent field falls back to raw content. Staging copies the exact bytes to
   `owner/source-trigger-event.jsonl`; native readback checks the same binding.
 - `consumer`: selected `cli_version`, `cli_sha256`, and `sdk_sha256`.
+- Optional `completed_objective`: relative `path` and exact `sha256` for an
+  owned, owner-only, unaliased single-link source file under the fixture root.
+  Staging copies its exact bytes to the fresh namespace's
+  `autopilot-objective.json` before the first resume and retains an owner copy.
+  An existing destination is never replaced.
 - `snapshot`, `required_tools`, `limitations`, `personal_instructions`, and
   `candidate_permissions`, using the existing task and permission contracts.
 
@@ -53,6 +58,19 @@ and field digests, and refuses unknown message fields or unsupported selected
 native schemas. Skill bodies, paths, source identifiers and invocation-turn
 metadata remain captured data; the retained population is not fixed at seven.
 The last user message stays in an owner-only deferred-trigger artifact.
+
+The optional completed store has exactly `version: 1`, positive `nextId` and
+`current`. Its completed `current` contains `id`, `objective`, `status`,
+`autopilotOrigin`, `continuationCount`, `turnCount`, `tokenCount`,
+`creditCountNanoAiu`, `resumeCount`, `createdAt` and `updatedAt`, with optional
+string `completionSummary` and `pauseReason`. IDs/counters must be safe JSON
+integers, `nextId` must exceed `id`, and credits must be a nonnegative decimal
+string within the native signed 64-bit range. Timestamps must include a timezone.
+Unknown fields, legacy/defaulted shapes and credit-limit objects are not accepted.
+Warm/cold checks compare the complete persisted JSON values and the current-state
+projection exposed by native `autopilotObjective.getState`; that getter does not
+expose every stored field. Cleanup preserves the completed store without an
+objective transition. Fixtures without this input remain goal-free.
 
 Readback checks native event payloads and retained skills and reports the actual
 permission mode. These checks do not establish the initialized model context.

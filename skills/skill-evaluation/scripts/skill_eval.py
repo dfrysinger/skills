@@ -2389,6 +2389,9 @@ def _stage_recorded_native_context(events, before, *, historical, schema_text, o
 
     if any(event["type"] not in {"session.start", "session.shutdown"} for event in events):
         raise NativeContextSetupError("Recorded staging requires an empty imported namespace")
+    goal_path = journal.with_name("autopilot-objective.json")
+    if "completed_objective" in historical and os.path.lexists(goal_path):
+        raise NativeContextSetupError("Completed objective destination must be absent")
     interfaces = {
         "skill.invoked": "SkillInvokedEvent", "system.message": "SystemMessageEvent",
         "instruction.update": "InstructionUpdateEvent", "user.message": "UserMessageEvent",
@@ -2461,6 +2464,11 @@ def _stage_recorded_native_context(events, before, *, historical, schema_text, o
         "snapshot": historical["snapshot"], "required_tools": historical["required_tools"],
         "limitations": historical["limitations"] + unavailable,
     }
+    if "completed_objective" in historical:
+        locator["completed_objective"] = {
+            "path": str(owner / "completed-objective.json"),
+            "sha256": historical["completed_objective"]["sha256"],
+        }
     artifacts = (
         ("journal-before.jsonl", before), ("journal-staged.jsonl", after),
         ("imported-prefix.json", (json.dumps(staged, ensure_ascii=False) + "\n").encode()),
@@ -2473,6 +2481,11 @@ def _stage_recorded_native_context(events, before, *, historical, schema_text, o
         with (owner / name).open("xb") as stream:
             stream.write(content)
         (owner / name).chmod(0o600)
+    if "completed_objective" in historical:
+        for path in (owner / "completed-objective.json", goal_path):
+            with path.open("xb") as stream:
+                stream.write(historical["completed_objective_bytes"])
+            path.chmod(0o600)
     write_json(owner / "staging.json", {
         "schema_sha256": hashlib.sha256(schema_text.encode()).hexdigest(),
         "journal_before_sha256": hashlib.sha256(before).hexdigest(),
@@ -2779,11 +2792,13 @@ def _stage_native_context(*, home: Path, session_id: str, sdk: Path, owner: Path
 
 def _validate_recorded_context_fixture(fixture: dict, root: Path | None) -> dict:
     from native_workflow import owner_file, read_owner_json
-    from session_restore import compile_task_snapshot, permission_rules, recorded_native_payloads
+    from session_restore import (
+        compile_task_snapshot, completed_objective_state, permission_rules, recorded_native_payloads,
+    )
 
     keys = {"schema_version", "provenance", "recorded_context", "restoration", "trigger", "consumer",
             "snapshot", "required_tools", "limitations", "personal_instructions", "candidate_permissions"}
-    if (set(fixture) != keys or type(fixture["schema_version"]) is not int
+    if (set(fixture) - {"completed_objective"} != keys or type(fixture["schema_version"]) is not int
             or fixture["schema_version"] != 3
             or fixture["provenance"] != "source-bound-historical" or root is None
             or not isinstance(fixture["personal_instructions"], str)
@@ -2857,12 +2872,27 @@ def _validate_recorded_context_fixture(fixture: dict, root: Path | None) -> dict
     if (not isinstance(transformed, str) or context["chat_messages"][-1].get("role") != "user"
             or transformed != context["chat_messages"][-1].get("content")):
         raise ValueError("Original trigger transformed content differs")
+    completed = {}
+    if "completed_objective" in fixture:
+        descriptor = fixture["completed_objective"]
+        if (not isinstance(descriptor, dict) or set(descriptor) != {"path", "sha256"}
+                or not isinstance(descriptor["sha256"], str)
+                or re.fullmatch(r"[0-9a-f]{64}", descriptor["sha256"]) is None):
+            raise ValueError("Invalid completed objective input binding")
+        completed_path = owner_file(root.absolute(), descriptor["path"])
+        if completed_path.stat().st_mode & 0o077:
+            raise ValueError("Completed objective source must be owner-only")
+        completed_bytes = completed_path.read_bytes()
+        if hashlib.sha256(completed_bytes).hexdigest() != descriptor["sha256"]:
+            raise ValueError("Completed objective source checksum differs")
+        completed_objective_state(read_owner_json(completed_path))
+        completed["completed_objective_bytes"] = completed_bytes
     permission_rules(fixture["candidate_permissions"])
     return {**fixture, "snapshot": compile_task_snapshot(fixture["snapshot"]),
             "canonical": context, "canonical_bytes": source_bytes,
             "trigger_source_bytes": trigger_bytes,
             "native_payloads": payloads, "recorded_correspondence": correspondence,
-            "excluded_fields": excluded}
+            "excluded_fields": excluded, **completed}
 
 
 def _validate_historical_context_fixture(fixture: dict, *, root: Path | None = None) -> dict:

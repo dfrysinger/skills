@@ -184,7 +184,14 @@ function contextFixture(config) {
       const keys = ["schema_version", "canonical_file", "canonical_sha256", "source_binding",
         "trigger_file", "trigger_sha256", "root_skills", "correspondence", "excluded_fields",
         "snapshot", "required_tools", "limitations"];
+      const completed = Object.hasOwn(fixture, "completed_objective");
+      if (completed) keys.push("completed_objective");
       if (!isDeepStrictEqual(Object.keys(fixture).sort(), keys.sort())
+          || (completed && (!fixture.completed_objective
+            || !isDeepStrictEqual(Object.keys(fixture.completed_objective).sort(), ["path", "sha256"])
+            || !/^[0-9a-f]{64}$/.test(fixture.completed_objective.sha256)
+            || [config.home, config.os_home, config.cwd, config.plugin_path]
+              .some(root => within(fixture.completed_objective.path, root))))
           || !/^[0-9a-f]{64}$/.test(fixture.canonical_sha256)
           || !/^[0-9a-f]{64}$/.test(fixture.trigger_sha256)
           || !Array.isArray(fixture.root_skills) || !Array.isArray(fixture.correspondence)
@@ -198,6 +205,7 @@ function contextFixture(config) {
       }
       for (const [path, expected] of [
         [fixture.canonical_file, fixture.canonical_sha256], [fixture.trigger_file, fixture.trigger_sha256],
+        ...(completed ? [[fixture.completed_objective.path, fixture.completed_objective.sha256]] : []),
       ]) {
         requirePath(path, "file");
         const stat = lstatSync(path);
@@ -209,6 +217,8 @@ function contextFixture(config) {
       }
       const canonical = parseDataJson(readFileSync(fixture.canonical_file, "utf8"));
       const deferred = parseDataJson(readFileSync(fixture.trigger_file, "utf8"));
+      const completedStore = completed
+        ? parseDataJson(readFileSync(fixture.completed_objective.path, "utf8")) : null;
       const ownerRoot = dirname(config.context_fixture_file);
       if (typeof deferred.source_event_path !== "string" || !deferred.source_event_path
           || isAbsolute(deferred.source_event_path)
@@ -247,9 +257,11 @@ function contextFixture(config) {
         throw new Error("Recorded cutoff/trigger correspondence differs");
       }
       const compiled = JSON.parse(execFileSync("python3", ["-B", "-I", "-c",
-        "import json,sys; sys.path.insert(0,sys.argv[1]); from session_restore import recorded_native_payloads,compile_task_snapshot; value=json.load(sys.stdin); print(json.dumps([recorded_native_payloads(value['canonical']),compile_task_snapshot(value['snapshot'])]))",
+        "import json,sys; sys.path.insert(0,sys.argv[1]); from session_restore import recorded_native_payloads,compile_task_snapshot,completed_objective_state; value=json.load(sys.stdin); print(json.dumps([recorded_native_payloads(value['canonical']),compile_task_snapshot(value['snapshot']),completed_objective_state(value['completed']) if 'completed' in value else None]))",
         dirname(fileURLToPath(import.meta.url))], {
-        input: JSON.stringify({ canonical, snapshot: fixture.snapshot?.source }), env: { PATH: process.env.PATH },
+        input: JSON.stringify({ canonical, snapshot: fixture.snapshot?.source,
+          ...(completed ? { completed: completedStore } : {}) }),
+        env: { PATH: process.env.PATH },
         stdio: ["pipe", "pipe", "pipe"], maxBuffer: 16 * 1024 * 1024,
       }));
       if (!isDeepStrictEqual(compiled[1], fixture.snapshot)) throw new Error("Recorded task compilation differs");
@@ -262,7 +274,9 @@ function contextFixture(config) {
           || fixture.root_skills.length !== canonical.invoked_skills.length) {
         throw new Error("Recorded canonical-index correspondence differs");
       }
-      return { ...fixture, canonical, recorded_payloads: compiled[0][0] };
+      return { ...fixture, canonical, recorded_payloads: compiled[0][0],
+        ...(completed ? { completed_objective_store: completedStore,
+          completed_objective_native_state: compiled[2] } : {}) };
     }
     const keys = ["schema_version", "summary_event_id", "summary_sha256", "post_event_ids",
       "root_skills", "correspondence", "tool_call_ids", "snapshot", "required_tools", "limitations"];
@@ -299,6 +313,24 @@ function contextFixture(config) {
     throw new Error("Invalid fixed context locator");
   }
   return fixture;
+}
+
+function completedObjectiveReadback(path, fixture, goal) {
+  const nativeReadback = arguments.length === 3;
+  requirePath(path, "file");
+  const stat = lstatSync(path);
+  if (stat.uid !== userInfo().uid || stat.nlink !== 1 || (stat.mode & 0o077)) {
+    throw new Error("Completed objective destination must be owned, owner-only and single-link");
+  }
+  const bytes = readFileSync(path);
+  const store = parseDataJson(bytes.toString("utf8"));
+  if (!isDeepStrictEqual(store, fixture.completed_objective_store)
+      || (nativeReadback && !isDeepStrictEqual(goal?.state, fixture.completed_objective_native_state))) {
+    throw new Error("Completed objective persisted/native state differs from source");
+  }
+  return { store, sha256: createHash("sha256").update(bytes).digest("hex"),
+    source_sha256: fixture.completed_objective.sha256, persisted_store_correspondence: true,
+    ...(nativeReadback ? { native_state_correspondence: true } : {}) };
 }
 
 export function validateRecordedNativeEvents(fixture, events) {
@@ -378,14 +410,22 @@ export function validateConfig(op, config) {
   if (lstatSync(sessionPath).uid !== userInfo().uid) throw new Error("Expected an owned imported namespace");
   const goalPath = join(sessionPath, "autopilot-objective.json");
   if ((!contextProfile(config) && op !== "setup" && op !== "cleanup") || pathExists(goalPath)) requirePath(goalPath, "file");
-  if (op === "setup" && pathExists(goalPath)) throw new Error("Setup requires an absent native goal");
+  if (op === "setup" && pathExists(goalPath) && !contextProfile(config)) {
+    throw new Error("Setup requires an absent native goal");
+  }
   validateOutput(config);
   if (contextProfile(config)) {
     if (historicalProfile(config)) {
       if (op === "candidate") throw new Error("Historical setup forbids model sends");
       permissionProfile(config);
     }
-    if (pathExists(goalPath)) throw new Error("Context calibration requires an absent native goal");
+    const fixture = contextFixture(config);
+    if (fixture.schema_version === 3 && fixture.completed_objective) {
+      completedObjectiveReadback(goalPath, fixture);
+    } else if (pathExists(goalPath)) {
+      throw new Error(op === "setup" ? "Setup requires an absent native goal"
+        : "Context calibration requires an absent native goal");
+    }
     const roots = [config.home, config.os_home, config.cwd, config.plugin_path];
     requirePath(config.plugin_path, "directory");
     if (Object.hasOwn(config, "skill_directories")) {
@@ -418,7 +458,6 @@ export function validateConfig(op, config) {
     if (new Set(["prefix_file", "prompt_path", "context_fixture_file", "event_log", "output"]
       .map(key => config[key])).size !== 5 || typeof config.model !== "string" || !config.model.trim()
         || !["low", "medium", "high"].includes(config.effort)) throw new Error("Invalid context coordinates/model");
-    contextFixture(config);
     return goalPath;
   }
   if (selected) {
@@ -797,7 +836,11 @@ export async function runProbe(op, config) {
       schedules: await call("schedule.list", undefined, () => session.rpc.schedule.list()),
     };
     report.before = before;
-    if (before.goal?.state !== null || !Array.isArray(before.todos?.rows) || before.todos.rows.length
+    if (fixture.completed_objective) {
+      before.completed_objective = completedObjectiveReadback(report.goal_path, fixture, before.goal);
+    }
+    if ((!fixture.completed_objective && before.goal?.state !== null)
+        || !Array.isArray(before.todos?.rows) || before.todos.rows.length
         || !Array.isArray(before.schedules?.entries) || before.schedules.entries.length) {
       throw new Error("Historical snapshot requires an empty goal-free dormant namespace");
     }
@@ -821,7 +864,11 @@ export async function runProbe(op, config) {
       schedules: await call("schedule.list", undefined, () => session.rpc.schedule.list()),
       context: {}, snapshot_checks: [], source_query_readbacks: [],
     };
-    if (pathExists(report.goal_path) || state.goal?.state !== null || state.mode !== "autopilot"
+    if (fixture.completed_objective) {
+      state.completed_objective = completedObjectiveReadback(report.goal_path, fixture, state.goal);
+    }
+    if ((!fixture.completed_objective && (pathExists(report.goal_path) || state.goal?.state !== null))
+        || state.mode !== "autopilot"
         || !Array.isArray(state.todos?.rows) || state.todos.rows.length !== fixture.snapshot.row_counts.todos
         || !Array.isArray(state.schedules?.entries) || state.schedules.entries.length) {
       throw new Error("Historical mode/task/goal/scheduler readback differs");
@@ -1016,6 +1063,7 @@ export async function runProbe(op, config) {
       const state = await observe(false);
       return report.cleanup = { errors: [], todos: state.todos, schedules: state.schedules,
         dependencies_empty: state.dependencies_empty, goal: state.goal, mode: state.mode, context: state.context,
+        ...(state.completed_objective ? { completed_objective: state.completed_objective } : {}),
         ...(historicalProfile(config) ? { residual_namespace_preserved: true } : {}) };
     }
     const result = { errors: [] };
