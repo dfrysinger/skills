@@ -697,6 +697,8 @@ test("operational source tiers hydrate exact schedules warm/cold without model d
     && options.pluginDirectories.length === 0
     && options.skillDirectories[0] === input.custom_skills.path));
   assert.ok(state.allOptionUpdates.every(update => update.installedPlugins?.length === 2));
+  assert.ok(state.allOptionUpdates.every(update => update.installedPlugins.every(plugin =>
+    plugin.source?.source === "local" && plugin.source.path === plugin.cache_path)));
   assert.equal(state.sendCalls, 0);
   assert.equal(state.owners, 0);
   const clean = await runProbe("cleanup", { ...config, output: join(root, "cleanup.json") });

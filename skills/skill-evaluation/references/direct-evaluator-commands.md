@@ -103,6 +103,13 @@ each tree hash.
 The file has exactly these fields. This example uses synthetic paths and
 transport metadata:
 
+The producer registers each staged plugin with a local source pointing at its
+validated root. This selects the native installed tier; a record without both
+a marketplace and a source selects the higher-priority explicit-directory tier.
+The binding records the local source kind and root content hash, not the
+disposable absolute path. This registration is transport metadata, not a
+reconstruction of the original installation record.
+
 ```json
 {
   "schema_version": 1,

@@ -1929,6 +1929,10 @@ class NativeRecordedContextTests(unittest.TestCase):
         candidate.assert_not_called()
         config = native.call_args_list[0].args[1]
         staged = operational_input(Path(config["operational_file"]), config)
+        for plugin in staged["native_installed_plugins"]:
+            self.assertEqual(plugin["source"], {"source": "local", "path": plugin["cache_path"]})
+        self.assertTrue(all(plugin["source_kind"] == "local"
+                            for plugin in staged["binding"]["installed_plugins"]))
         self.assertEqual(staged["personal_skills"]["path"], str(Path(config["home"]) / "skills"))
         self.assertEqual(config["skill_directories"], [str(self.run / "pinned-custom-skills")])
         self.assertEqual(staged["source_aliases"], original["source_aliases"])

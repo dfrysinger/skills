@@ -85,7 +85,8 @@ def operational_input(path: Path, config: dict | None = None) -> dict:
         elif "version" in item:
             raise ValueError("Unmanifested source has no recovered version")
         installed.append({key: item[key] for key in ("name", "marketplace", "installed_at", "version") if key in item}
-                         | {"enabled": True, "cache_path": str(root)})
+                         | {"enabled": True, "cache_path": str(root),
+                            "source": {"source": "local", "path": str(root)}})
     if len({item["name"] for item in installed}) != len(installed):
         raise ValueError("Installed transport names must be distinct")
     for item in [value["personal_skills"], value["custom_skills"], *value["source_aliases"]]:
@@ -131,8 +132,9 @@ def operational_input(path: Path, config: dict | None = None) -> dict:
     return {**value, "native_installed_plugins": installed, "events": events,
             "expected_schedules": [active[key] for key in sorted(active)],
             "binding": {
-                "installed_plugins": [{key: value for key, value in item.items() if key != "cache_path"}
-                                      | {"sha256": source["sha256"]}
+                "installed_plugins": [{key: value for key, value in item.items()
+                                       if key not in {"cache_path", "source"}}
+                                      | {"source_kind": "local", "sha256": source["sha256"]}
                                       for item, source in zip(installed, value["installed_plugins"])],
                 "personal_skills": value["personal_skills"]["sha256"],
                 "custom_skills": value["custom_skills"]["sha256"],
