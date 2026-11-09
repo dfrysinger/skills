@@ -2755,9 +2755,13 @@ def _run_native_context_calibration(
                     or any(path.is_symlink() for path in (calibration_root, *calibration_root.parents))
                     or calibration_root.stat().st_uid != os.getuid()):
                 raise ValueError("Calibration root must be an owned unaliased directory")
-            inputs.append(calibration_root)
         if personal_skill_dir is not None:
             inputs.append(personal_skill_dir.absolute())
+        if calibration_root is not None:
+            if any(path.resolve().is_relative_to(calibration_root)
+                   or calibration_root.is_relative_to(path.resolve()) for path in inputs):
+                raise ValueError("Calibration evidence must be disjoint from all source inputs")
+            inputs.append(calibration_root)
         if (run_root.exists() or run_root.is_symlink() or run_root.resolve() != run_root
                 or any(run_root.is_relative_to(path.resolve()) or path.resolve().is_relative_to(run_root)
                        for path in inputs)):

@@ -1411,6 +1411,29 @@ class NativeHistoricalContextTests(unittest.TestCase):
         native.assert_not_called()
         candidate.assert_not_called()
 
+    def test_pristine_preparation_refuses_copying_calibration_as_a_skill_input(self):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self.patches(stack)
+            calibration = skill_eval._run_native_context_calibration(**self.arguments())
+        self.assertEqual(calibration["status"], "CONTEXT_SETUP_OBSERVED")
+        calibration_root = self.run
+        self.session_id = str(uuid.uuid4())
+        for input_name in ("plugin_dir", "personal_skill_dir"):
+            with self.subTest(input_name=input_name), ExitStack() as stack:
+                destination = self.root / f"pristine-{input_name}"
+                native, candidate = self.patches(stack)
+                imported = stack.enter_context(mock.patch(
+                    "session_restore.import_session", side_effect=self.import_double))
+                result = skill_eval._run_native_context_calibration(
+                    **{**self.arguments(), "run_root": destination, input_name: calibration_root},
+                    source_preparation_only=True, calibration_root=calibration_root)
+                self.assertEqual(result["status"], "FAILED")
+                self.assertFalse(destination.exists())
+                native.assert_not_called()
+                candidate.assert_not_called()
+                imported.assert_not_called()
+
     def test_separate_personal_definitions_are_snapshotted_and_forwarded(self):
         from contextlib import ExitStack
         personal = self.root / "personal"
