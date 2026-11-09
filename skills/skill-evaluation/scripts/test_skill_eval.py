@@ -1314,6 +1314,103 @@ class NativeHistoricalContextTests(unittest.TestCase):
         self.assertEqual(result["locator"]["tool_call_ids"], {"call-one": "native-one", "call-two": "native-two"})
         self.assertEqual(len(result["locator"]["correspondence"]), 7)
 
+    def test_pristine_preparation_uses_fresh_source_at_the_native_consumer_seam(self):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self.patches(stack)
+            calibration = skill_eval._run_native_context_calibration(**self.arguments())
+        self.assertEqual(calibration["status"], "CONTEXT_SETUP_OBSERVED")
+        calibration_session_id = self.session_id
+        calibration_root = self.run
+        calibration_journal = self.journal
+        with calibration_journal.open("a") as stream:
+            stream.write(json.dumps({"type": "session.warning",
+                                     "data": {"warningType": "interrupted_tools"}}) + "\n")
+        preserved = {path: path.read_bytes() for path in (
+            calibration_journal, calibration_root / "context-result.json",
+            calibration_root / "owner/identities.json")}
+        self.run = self.root / "pristine"
+        self.session_id = str(uuid.uuid4())
+        self.order = []
+        with ExitStack() as stack:
+            native, candidate = self.patches(stack)
+            result = skill_eval._run_native_context_calibration(
+                **self.arguments(), source_preparation_only=True,
+                calibration_root=calibration_root)
+        self.assertEqual(result["status"], "CONTEXT_SETUP_OBSERVED", result["firsterror"])
+        self.assertEqual(self.order, ["import-exit", "setup", "observe", "cleanup"])
+        candidate.assert_not_called()
+        self.assertNotIn("candidate", result)
+        selected = native.call_args_list[0].args[1]
+        self.assertEqual(Path(selected["home"]), self.run / "candidate-home")
+        self.assertEqual(selected["session_id"], self.session_id)
+        self.assertNotEqual(selected["session_id"], calibration_session_id)
+        self.assertEqual(Path(selected["prefix_file"]), self.run / "owner/imported-prefix.json")
+        self.assertEqual(result["source_preparation_only"], True)
+        self.assertTrue(all(path.read_bytes() == data for path, data in preserved.items()))
+
+    def test_pristine_preparation_refuses_destination_overlap_before_import(self):
+        from contextlib import ExitStack
+        calibration = self.root / "calibration"
+        calibration.mkdir()
+        for destination in (calibration, calibration / "nested", self.root):
+            with self.subTest(destination=destination), ExitStack() as stack:
+                native, candidate = self.patches(stack)
+                imported = stack.enter_context(mock.patch("session_restore.import_session"))
+                result = skill_eval._run_native_context_calibration(
+                    **{**self.arguments(), "run_root": destination},
+                    source_preparation_only=True, calibration_root=calibration)
+                self.assertEqual(result["status"], "FAILED")
+                native.assert_not_called()
+                candidate.assert_not_called()
+                imported.assert_not_called()
+        self.assertEqual(list(calibration.iterdir()), [])
+
+    def test_pristine_preparation_refuses_instrumented_input_and_model_send(self):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self.patches(stack)
+            calibration = skill_eval._run_native_context_calibration(**self.arguments())
+        self.assertEqual(calibration["status"], "CONTEXT_SETUP_OBSERVED")
+        calibration_root = self.run
+        for failure in ("instrumented", "model", "alias"):
+            with self.subTest(failure=failure), ExitStack() as stack:
+                selected = {**self.arguments(), "run_root": self.root / f"pristine-{failure}",
+                            "source_preparation_only": True, "calibration_root": calibration_root}
+                if failure == "instrumented":
+                    selected["fixture_file"] = calibration_root / "owner/imported-prefix.json"
+                elif failure == "model":
+                    selected["model_send"] = True
+                else:
+                    alias = self.root / "calibration-alias"
+                    alias.symlink_to(calibration_root, target_is_directory=True)
+                    selected["calibration_root"] = alias
+                native, candidate = self.patches(stack)
+                imported = stack.enter_context(mock.patch("session_restore.import_session"))
+                result = skill_eval._run_native_context_calibration(**selected)
+                self.assertEqual(result["status"], "FAILED")
+                self.assertFalse(selected["run_root"].exists())
+                native.assert_not_called()
+                candidate.assert_not_called()
+                imported.assert_not_called()
+
+    def test_pristine_preparation_refuses_reusing_calibration_session_id(self):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self.patches(stack)
+            calibration = skill_eval._run_native_context_calibration(**self.arguments())
+        self.assertEqual(calibration["status"], "CONTEXT_SETUP_OBSERVED")
+        calibration_root = self.run
+        self.run = self.root / "pristine"
+        with ExitStack() as stack:
+            native, candidate = self.patches(stack)
+            result = skill_eval._run_native_context_calibration(
+                **self.arguments(), source_preparation_only=True,
+                calibration_root=calibration_root)
+        self.assertEqual(result["status"], "FAILED")
+        native.assert_not_called()
+        candidate.assert_not_called()
+
     def test_separate_personal_definitions_are_snapshotted_and_forwarded(self):
         from contextlib import ExitStack
         personal = self.root / "personal"

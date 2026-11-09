@@ -2732,6 +2732,7 @@ def _native_context_oracle(candidate: dict, expected: dict) -> dict:
 def _run_native_context_calibration(
     *, fixture_file: Path, plugin_dir: Path, copilot: Path, sdk: Path, run_root: Path,
     model: str, effort: str, model_send: bool = False, personal_skill_dir: Path | None = None,
+    source_preparation_only: bool = False, calibration_root: Path | None = None,
 ) -> dict:
     from native_workflow import read_owner_json
     from session_restore import import_session
@@ -2745,6 +2746,16 @@ def _run_native_context_calibration(
     run_root = run_root.absolute()
     try:
         inputs = [path.absolute() for path in (fixture_file, plugin_dir, copilot, sdk)]
+        if type(source_preparation_only) is not bool or (
+                source_preparation_only != (calibration_root is not None)):
+            raise ValueError("Pristine preparation requires an explicit separate calibration root")
+        if calibration_root is not None:
+            calibration_root = calibration_root.absolute()
+            if (calibration_root.resolve() != calibration_root or not calibration_root.is_dir()
+                    or any(path.is_symlink() for path in (calibration_root, *calibration_root.parents))
+                    or calibration_root.stat().st_uid != os.getuid()):
+                raise ValueError("Calibration root must be an owned unaliased directory")
+            inputs.append(calibration_root)
         if personal_skill_dir is not None:
             inputs.append(personal_skill_dir.absolute())
         if (run_root.exists() or run_root.is_symlink() or run_root.resolve() != run_root
@@ -2758,6 +2769,13 @@ def _run_native_context_calibration(
             raise ValueError("Context fixture requires an owner-only unaliased single-link file")
         fixture = read_owner_json(fixture_file)
         historical = isinstance(fixture, dict) and fixture.get("provenance") == "source-bound-historical"
+        calibration_session_id = None
+        if source_preparation_only:
+            if not historical or model_send:
+                raise ValueError("Pristine preparation requires historical input and forbids model sends")
+            calibration_session_id = read_owner_json(calibration_root / "owner/identities.json")["session_id"]
+            measurement.session_uuid(calibration_session_id)
+            result["source_preparation_only"] = True
         if personal_skill_dir is not None and (
                 not historical or not personal_skill_dir.is_dir()
                 or personal_skill_dir.resolve() != personal_skill_dir.absolute()
@@ -2851,7 +2869,7 @@ def _run_native_context_calibration(
             plugin_dir=str(pinned_plugin))
         measurement.session_uuid(session_id)
         receipt = read_owner_json(owner / "restoration-receipt.json")
-        if (session_id == source_id or receipt.get("status") != "PASS"
+        if (session_id in {source_id, calibration_session_id} or receipt.get("status") != "PASS"
                 or receipt.get("session_id") != session_id or receipt.get("exit_code") != 0
                 or receipt.get("history_sha256") != digest(history)):
             raise NativeContextSetupError("No accepted isolated importer exit receipt")
@@ -2890,14 +2908,15 @@ def _run_native_context_calibration(
         result["checks"]["setup_observed"] = result["setup"].get("status") == "SETUP_OBSERVED"
         if not result["checks"]["setup_observed"]:
             raise ValueError("Context setup was not observed")
-        candidate = _run_native_candidate(
-            {**config, "output": str(owner / "candidate.json")},
-            cli_version=cli_identity["version"], preflight_only=not model_send)
-        result["candidate"] = candidate
-        if model_send:
-            result["oracle"] = _native_context_oracle(candidate, fixture["expected"])
-        elif candidate.get("status") != "PREFLIGHT_OBSERVED" or candidate.get("model_send_calls") != 0:
-            raise ValueError(candidate.get("firsterror") or "Context zero-model preflight did not complete")
+        if not source_preparation_only:
+            candidate = _run_native_candidate(
+                {**config, "output": str(owner / "candidate.json")},
+                cli_version=cli_identity["version"], preflight_only=not model_send)
+            result["candidate"] = candidate
+            if model_send:
+                result["oracle"] = _native_context_oracle(candidate, fixture["expected"])
+            elif candidate.get("status") != "PREFLIGHT_OBSERVED" or candidate.get("model_send_calls") != 0:
+                raise ValueError(candidate.get("firsterror") or "Context zero-model preflight did not complete")
     except Exception as error:
         result["firsterror"] = str(error)
         if isinstance(error, NativeContextSetupError):
@@ -2923,6 +2942,8 @@ def _run_native_context_calibration(
                 result["status"] = "CALIBRATION_OBSERVED" if model_send else "CONTEXT_SETUP_OBSERVED"
             if config is not None and config["profile"] == "native-historical-context":
                 result["claim"] = "Historical setup observations only; behavioral admission and skill improvement unproved"
+            if source_preparation_only:
+                result["claim"] = "Historical source preparation only; model consumption and behavioral admission unproved"
             write_json(run_root / "context-result.json", result)
     return result
 
