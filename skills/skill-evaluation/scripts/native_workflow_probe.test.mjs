@@ -545,6 +545,42 @@ test("historical personal discovery refuses empty or foreign roots before SDK st
   assert.equal(state.starts, 0);
 });
 
+test("historical setup records uninitialized metadata while preflight requires an initialized set", async t => {
+  const { config, state, root } = await historicalContextFixture(t);
+  state.metadataOverride = { tools: null };
+  const setup = await runProbe("setup", config);
+  assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
+  assert.deepEqual(setup.warm.tools, { tools: null });
+  assert.equal(setup.warm.tools_initialized, false);
+  assert.equal(setup.tools_initialized, false);
+  assert.equal(setup.tools_match_required, null);
+  state.metadataOverride = undefined;
+  const preflight = await runProbe("preflight", { ...config, output: join(root, "initialized-preflight.json") });
+  assert.equal(preflight.status, "PREFLIGHT_OBSERVED", preflight.error?.message);
+  assert.equal(state.sendCalls, 0);
+});
+
+test("historical preflight blocks null, missing and changed tool metadata without sending", async t => {
+  for (const failure of ["null", "missing", "changed"]) {
+    await t.test(failure, async t => {
+      const { config, state, root } = await historicalContextFixture(t);
+      const fixture = JSON.parse(readFileSync(config.context_fixture_file, "utf8"));
+      state.metadataOverride = { tools: null };
+      const setup = await runProbe("setup", config);
+      assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
+      const tools = fixture.required_tools.map(name => ({ name }));
+      if (failure === "missing") tools.pop();
+      if (failure === "changed") tools[0].name = "not-historical";
+      state.metadataOverride = { tools: failure === "null" ? null : tools };
+      const preflight = await runProbe("preflight", { ...config, output: join(root, "blocked-metadata.json") });
+      assert.equal(preflight.status, "PREMODEL_BLOCKED");
+      assert.equal(preflight.firsterror, "Effective native tool metadata does not match the selected grants");
+      assert.deepEqual(preflight.effective_tools, state.metadataOverride);
+      assert.equal(state.sendCalls, 0);
+    });
+  }
+});
+
 test("historical context refuses schema/query/cold/loaded-body mismatches with original error and no send", async t => {
   for (const failure of ["schemaMismatch", "queryMismatch", "coldMismatch", "refreshLoadedBodies"]) {
     await t.test(failure, async t => {

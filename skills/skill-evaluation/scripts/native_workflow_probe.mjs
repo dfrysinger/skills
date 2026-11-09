@@ -750,8 +750,13 @@ export async function runProbe(op, config) {
     state.reload = await call("skills.reload", undefined, () => session.rpc.skills.reload());
     state.invoked_after_reload = await checkInvoked("after-reload");
     state.tools = await call("tools.getCurrentMetadata", undefined, () => session.rpc.tools.getCurrentMetadata());
-    if (!Array.isArray(state.tools?.tools) || !isDeepStrictEqual(
-      state.tools.tools.map(tool => tool.name).sort(), [...fixture.required_tools].sort())) {
+    state.tools_initialized = Array.isArray(state.tools?.tools);
+    if (!state.tools_initialized && state.tools?.tools !== null) {
+      throw new Error("Historical tool metadata reader shape is unsupported");
+    }
+    state.tools_match_required = state.tools_initialized ? isDeepStrictEqual(
+      state.tools.tools.map(tool => tool.name).sort(), [...fixture.required_tools].sort()) : null;
+    if (isCandidate && state.tools_match_required !== true) {
       throw new Error("Historical root tools are unavailable under the selected runtime");
     }
     state.event_log = await readEvents();
