@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, linkSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
@@ -111,7 +111,9 @@ export class CopilotClient {
         skills: {
           getInvoked: async () => ({ skills: structuredClone(state.invokedSkills ?? []) }),
           ensureLoaded: async () => ({ loaded: true }),
-          list: async () => ({ skills: structuredClone(state.invokedSkills ?? []) }),
+          list: async () => ({ skills: structuredClone(state.invokedSkills ?? []).filter(skill =>
+            !state.personalSkillRoot || options.skillDirectories?.includes(state.personalSkillRoot)
+            || skill.name !== "synthetic-6") }),
           reload: async () => {
             state.reloads = (state.reloads ?? 0) + 1;
             if (state.refreshLoadedBodies) state.invokedSkills[0].content = "Unexpected fresh body";
@@ -513,6 +515,28 @@ test("historical context installs snapshot through connected SQL and checks warm
   assert.equal(cleanup.cleanup.residual_namespace_preserved, true);
   assert.deepEqual(state.rows, snapshot.source.rows.todos);
   assert.throws(() => validateConfig("candidate", config), /forbids model sends/);
+});
+
+test("historical context passes the owned personal discovery root on warm and cold resume", async t => {
+  const { config, state } = await historicalContextFixture(t);
+  const personal = join(dirname(config.cwd), "pinned-personal-skills");
+  mkdirSync(personal, { mode: 0o700 });
+  config.skill_directories = [personal];
+  state.personalSkillRoot = personal;
+  const setup = await runProbe("setup", config);
+  assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
+  assert.ok(state.resumes.every(options =>
+    options.skillDirectories?.length === 1 && options.skillDirectories[0] === personal));
+  assert.equal(state.sendCalls, 0);
+});
+
+test("historical personal discovery refuses empty or foreign roots before SDK start", async t => {
+  const { config, state } = await historicalContextFixture(t);
+  for (const roots of [[], [config.plugin_path], [config.cwd]]) {
+    assert.throws(() => validateConfig("setup", { ...config, skill_directories: roots }),
+      /single owned personal/);
+  }
+  assert.equal(state.starts, 0);
 });
 
 test("historical context refuses schema/query/cold/loaded-body mismatches with original error and no send", async t => {

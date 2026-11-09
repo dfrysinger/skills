@@ -1715,6 +1715,8 @@ def _native_workflow_probe(operation: str, config: dict) -> dict:
     }
     if config.get("profile") == "native-historical-context":
         context_keys.add("candidate_permissions")
+        if "skill_directories" in config:
+            context_keys.add("skill_directories")
         if operation == "candidate":
             raise ValueError("Historical context setup cannot send a model request")
     if context_profile and set(config) != context_keys:
@@ -2701,7 +2703,7 @@ def _native_context_oracle(candidate: dict, expected: dict) -> dict:
 
 def _run_native_context_calibration(
     *, fixture_file: Path, plugin_dir: Path, copilot: Path, sdk: Path, run_root: Path,
-    model: str, effort: str, model_send: bool = False,
+    model: str, effort: str, model_send: bool = False, personal_skill_dir: Path | None = None,
 ) -> dict:
     from native_workflow import read_owner_json
     from session_restore import import_session
@@ -2715,6 +2717,8 @@ def _run_native_context_calibration(
     run_root = run_root.absolute()
     try:
         inputs = [path.absolute() for path in (fixture_file, plugin_dir, copilot, sdk)]
+        if personal_skill_dir is not None:
+            inputs.append(personal_skill_dir.absolute())
         if (run_root.exists() or run_root.is_symlink() or run_root.resolve() != run_root
                 or any(run_root.is_relative_to(path.resolve()) or path.resolve().is_relative_to(run_root)
                        for path in inputs)):
@@ -2726,6 +2730,11 @@ def _run_native_context_calibration(
             raise ValueError("Context fixture requires an owner-only unaliased single-link file")
         fixture = read_owner_json(fixture_file)
         historical = isinstance(fixture, dict) and fixture.get("provenance") == "source-bound-historical"
+        if personal_skill_dir is not None and (
+                not historical or not personal_skill_dir.is_dir()
+                or personal_skill_dir.resolve() != personal_skill_dir.absolute()
+                or any(path.is_symlink() for path in (personal_skill_dir, *personal_skill_dir.parents))):
+            raise ValueError("Personal skill discovery requires an unaliased historical definition directory")
         if historical:
             result["claim"] = "Historical setup observations only; behavioral admission and skill improvement unproved"
             if model_send:
@@ -2769,6 +2778,11 @@ def _run_native_context_calibration(
             path.mkdir(mode=0o700)
         pinned_plugin = run_root / "pinned-plugin"
         snapshot_plugin(plugin_dir, pinned_plugin)
+        pinned_personal = None
+        if personal_skill_dir is not None:
+            pinned_personal = run_root / "pinned-personal-skills"
+            snapshot_plugin(personal_skill_dir, pinned_personal)
+            pinned_personal.chmod(0o700)
         personal = home / "copilot-instructions.md"
         personal.write_text(fixture["personal_instructions"] if historical
                             else "This is an isolated synthetic context calibration.\n")
@@ -2834,11 +2848,15 @@ def _run_native_context_calibration(
         }
         if historical:
             config["candidate_permissions"] = fixture["candidate_permissions"]
+            if pinned_personal is not None:
+                config["skill_directories"] = [str(pinned_personal)]
         write_json(owner / "identities.json", {
             "fixture_sha256": digest(fixture_file), "harness": harness_identity(),
             "cli": cli_identity, "sdk_sha256": digest(sdk), "plugin": directory_identity(pinned_plugin),
             "prompt_sha256": digest(prompt_path), "session_id": session_id,
             "staged_journal_sha256": digest(owner / "journal-staged.jsonl"),
+            **({"personal_skills": directory_identity(pinned_personal)}
+               if pinned_personal is not None else {}),
         })
         result["setup"] = _native_workflow_probe("setup", config)
         result["checks"]["setup_observed"] = result["setup"].get("status") == "SETUP_OBSERVED"

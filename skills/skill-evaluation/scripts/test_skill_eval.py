@@ -1249,6 +1249,25 @@ class NativeHistoricalContextTests(unittest.TestCase):
         self.assertEqual(result["locator"]["tool_call_ids"], {"call-one": "native-one", "call-two": "native-two"})
         self.assertEqual(len(result["locator"]["correspondence"]), 7)
 
+    def test_separate_personal_definitions_are_snapshotted_and_forwarded(self):
+        from contextlib import ExitStack
+        personal = self.root / "personal"
+        personal.mkdir()
+        definition = personal / "synthetic-personal"
+        definition.mkdir()
+        original = "---\nname: synthetic-personal\n---\nSynthetic personal definition.\n"
+        (definition / "SKILL.md").write_text(original)
+        with ExitStack() as stack:
+            native, candidate = self.patches(stack)
+            result = skill_eval._run_native_context_calibration(
+                **self.arguments(), personal_skill_dir=personal)
+        self.assertEqual(result["status"], "CONTEXT_SETUP_OBSERVED", result["firsterror"])
+        copied = self.run / "pinned-personal-skills"
+        self.assertEqual((copied / "synthetic-personal/SKILL.md").read_text(), original)
+        self.assertEqual(native.call_args_list[0].args[1]["skill_directories"], [str(copied)])
+        self.assertEqual(candidate.call_args.args[0]["skill_directories"], [str(copied)])
+        self.assertIn("personal_skills", json.loads((self.run / "owner/identities.json").read_text()))
+
     def test_freeform_tool_arguments_are_preserved_through_staging(self):
         from contextlib import ExitStack
         patch = "*** Begin Patch\n*** Add File: synthetic.txt\n+sample\n*** End Patch"

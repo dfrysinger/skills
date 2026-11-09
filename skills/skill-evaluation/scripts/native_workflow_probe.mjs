@@ -221,7 +221,8 @@ export function validateConfig(op, config) {
   if (!["setup", "observe", "cleanup", "candidate", "preflight"].includes(op)) throw new Error("Unknown operation");
   const selected = config?.profile !== undefined;
   const keys = contextProfile(config) ? [...contextFields,
-    ...(historicalProfile(config) ? ["candidate_permissions"] : [])] : selected ? [
+    ...(historicalProfile(config) ? ["candidate_permissions",
+      ...(Object.hasOwn(config, "skill_directories") ? ["skill_directories"] : [])] : [])] : selected ? [
     ...phaseFields, ...(Object.hasOwn(config, "candidate_permissions") ? ["candidate_permissions"] : []),
   ] : fields;
   if (!config || typeof config !== "object" || Array.isArray(config)
@@ -266,6 +267,17 @@ export function validateConfig(op, config) {
     if (pathExists(goalPath)) throw new Error("Context calibration requires an absent native goal");
     const roots = [config.home, config.os_home, config.cwd, config.plugin_path];
     requirePath(config.plugin_path, "directory");
+    if (Object.hasOwn(config, "skill_directories")) {
+      if (!Array.isArray(config.skill_directories) || config.skill_directories.length !== 1
+          || config.skill_directories[0] !== join(dirname(config.cwd), "pinned-personal-skills")) {
+        throw new Error("Expected the single owned personal skill discovery root");
+      }
+      requirePath(config.skill_directories[0], "directory");
+      if (lstatSync(config.skill_directories[0]).uid !== userInfo().uid) {
+        throw new Error("Personal skill discovery root must be owned");
+      }
+      roots.push(config.skill_directories[0]);
+    }
     if (roots.some((root, i) => roots.some((other, j) => i !== j && within(root, other)))) {
       throw new Error("Context roots must be disjoint");
     }
@@ -1285,6 +1297,7 @@ export async function runProbe(op, config) {
     if (contextProfile(config) && !isCandidate) candidateOptions = {
       ...options, availableTools: candidateTools(config), model: config.model, reasoningEffort: config.effort,
       pluginDirectories: [config.plugin_path], disabledMcpServers: ["github-mcp-server", "playwright"],
+      ...(config.skill_directories ? { skillDirectories: config.skill_directories } : {}),
       skipCustomInstructions: false, instructionDirectories: [], organizationCustomInstructions: "",
       onPermissionRequest: candidatePermissionHandler(config, report.goal_path, config.plugin_path, []),
     };
