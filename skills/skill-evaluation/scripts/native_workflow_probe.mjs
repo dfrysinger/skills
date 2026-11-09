@@ -1282,6 +1282,7 @@ export async function runProbe(op, config) {
         reasoningEffort: selected ? config.effort : "high",
         availableTools: candidateTools(config),
         pluginDirectories: [report.plugin_path], disabledMcpServers: ["github-mcp-server", "playwright"],
+        ...(config.skill_directories ? { skillDirectories: config.skill_directories } : {}),
         skipCustomInstructions: false, instructionDirectories: [], organizationCustomInstructions: "",
         onPermissionRequest(request, invocation) {
           const decision = permissionHandler(request, invocation);

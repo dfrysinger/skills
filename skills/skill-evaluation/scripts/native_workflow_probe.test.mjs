@@ -517,14 +517,20 @@ test("historical context installs snapshot through connected SQL and checks warm
   assert.throws(() => validateConfig("candidate", config), /forbids model sends/);
 });
 
-test("historical context passes the owned personal discovery root on warm and cold resume", async t => {
-  const { config, state } = await historicalContextFixture(t);
+test("historical context passes the owned personal discovery root on every zero-send resume", async t => {
+  const { config, state, root } = await historicalContextFixture(t);
   const personal = join(dirname(config.cwd), "pinned-personal-skills");
   mkdirSync(personal, { mode: 0o700 });
   config.skill_directories = [personal];
   state.personalSkillRoot = personal;
   const setup = await runProbe("setup", config);
   assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
+  for (const [operation, status] of [
+    ["preflight", "PREFLIGHT_OBSERVED"], ["observe", "OBSERVED"], ["cleanup", "CLEANED"],
+  ]) {
+    const report = await runProbe(operation, { ...config, output: join(root, `personal-${operation}.json`) });
+    assert.equal(report.status, status, report.error?.message);
+  }
   assert.ok(state.resumes.every(options =>
     options.skillDirectories?.length === 1 && options.skillDirectories[0] === personal));
   assert.equal(state.sendCalls, 0);
