@@ -461,13 +461,14 @@ async function contextFixture(t) {
   return { ...owned, config: selected, state };
 }
 
-async function historicalContextFixture(t) {
+async function historicalContextFixture(t, { allTables = false } = {}) {
   const owned = await contextFixture(t);
   const { config, state } = owned;
   config.profile = "native-historical-context";
   config.candidate_permissions = { write_paths: [], shell_commands: [] };
   const compiled = spawnSync("python3", ["-c",
-    "import json; from test_skill_eval import historical_snapshot_fixture; from session_restore import compile_task_snapshot; print(json.dumps(compile_task_snapshot(historical_snapshot_fixture())))"],
+    "import json,sys; from test_skill_eval import historical_snapshot_fixture; from session_restore import compile_task_snapshot; print(json.dumps(compile_task_snapshot(historical_snapshot_fixture(all_tables=sys.argv[1]=='five'))))",
+    allTables ? "five" : "three"],
     { cwd: resolve("skills/skill-evaluation/scripts"), encoding: "utf8", env: { PATH: process.env.PATH } });
   assert.equal(compiled.status, 0, compiled.stderr);
   const snapshot = JSON.parse(compiled.stdout);
@@ -514,8 +515,8 @@ async function historicalContextFixture(t) {
   return { ...owned, snapshot };
 }
 
-async function recordedContextFixture(t) {
-  const owned = await historicalContextFixture(t);
+async function recordedContextFixture(t, options) {
+  const owned = await historicalContextFixture(t, options);
   const { config, state, root, snapshot } = owned;
   const sourceId = randomUUID(), triggerId = randomUUID();
   const canonical = {
@@ -1293,6 +1294,66 @@ test("recorded context setup refuses allow-all, forged bindings and an extra obs
     assert.equal(state.owners, 0);
   });
 });
+
+for (const scenario of ["valid", "occupied", "changed-state", "changed-ledger"]) {
+  test(`five-table historical SQL installation: ${scenario}`, async t => {
+    const { config, root, state, snapshot } = await recordedContextFixture(t, { allTables: true });
+    const database = join(root, "synthetic-snapshot.sqlite");
+    const sql = query => {
+      const result = spawnSync("python3", ["-B", "-c", `
+import json,sqlite3,sys
+value=json.load(sys.stdin)
+with sqlite3.connect(value["database"]) as db:
+    db.row_factory=sqlite3.Row
+    db.execute("PRAGMA foreign_keys=ON")
+    if value["query"].startswith("BEGIN;"):
+        db.executescript(value["query"])
+        rows=[]
+    else:
+        rows=[dict(row) for row in db.execute(value["query"])]
+print(json.dumps(rows))
+`], { input: JSON.stringify({ database, query }), encoding: "utf8", env: { PATH: process.env.PATH } });
+      assert.equal(result.status, 0, result.stderr);
+      return JSON.parse(result.stdout);
+    };
+    for (const table of ["todos", "todo_deps"]) sql(snapshot.source.schemas[table]);
+    if (scenario === "occupied") sql(snapshot.source.schemas.session_state);
+    const created = [];
+    state.toolExecuteHook = ({ name, args }) => {
+      if (name !== "sql") return undefined;
+      if (/^CREATE TABLE/i.test(args.query)) created.push(args.query);
+      const rows = sql(args.query);
+      if (args.query === snapshot.transaction) state.rows = sql("SELECT * FROM todos ORDER BY rowid");
+      return { resultType: "success",
+        textResultForLlm: snapshot.queries.find(item => item.query === args.query)?.expected_text ?? "",
+        toolTelemetry: { metrics: { rowsReturned: rows.length } } };
+    };
+    const setup = await runProbe("setup", config);
+    if (scenario === "occupied") {
+      assert.equal(setup.status, "ERROR", setup.error?.message ?? setup.status);
+      assert.match(setup.error.message, /absent source/);
+      assert.equal(created.length, 0);
+    } else {
+      assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message ?? setup.status);
+      assert.equal(created.length, 3);
+      assert.ok(created.every(query => !/^CREATE TABLE (?:IF NOT EXISTS )?(todos|todo_deps)\b/i.test(query)));
+      assert.equal(setup.warm.snapshot_checks.length, 5);
+      assert.equal(setup.snapshot_checks.length, 5);
+      for (const [table, rows] of Object.entries(snapshot.source.rows)) {
+        assert.deepEqual(sql(`SELECT * FROM ${table} ORDER BY rowid`), rows);
+      }
+      if (scenario !== "valid") {
+        const table = scenario === "changed-state" ? "session_state" : "remote_v1_app_normal_answer_prior_ledger";
+        sql(`DELETE FROM ${table} WHERE rowid=1`);
+        const observed = await runProbe("observe", { ...config, output: join(root, "changed-state.json") });
+        assert.equal(observed.status, "ERROR", observed.error?.message ?? observed.status);
+        assert.match(observed.error.message, /Compare explicit source rows/);
+      }
+    }
+    assert.equal(state.sendCalls, 0);
+    assert.equal(state.owners, 0);
+  });
+}
 
 test("historical context installs snapshot through connected SQL and checks warm/cold without sending", async t => {
   const { config, state, root, snapshot } = await historicalContextFixture(t);

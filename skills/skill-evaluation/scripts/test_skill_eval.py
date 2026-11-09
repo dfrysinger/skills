@@ -669,8 +669,8 @@ class NativeWorkflowDiagnosticTests(unittest.TestCase):
                         self.assertIn("owner preflight rejection", result["firsterror"])
 
 
-def historical_snapshot_fixture():
-    return {
+def historical_snapshot_fixture(*, all_tables=False):
+    snapshot = {
         "schemas": {
             "todos": "CREATE TABLE todos (id TEXT PRIMARY KEY,title TEXT NOT NULL,description TEXT,"
                      "status TEXT DEFAULT 'pending' CHECK(status IN ('pending','in_progress','done','blocked')),"
@@ -701,9 +701,93 @@ def historical_snapshot_fixture():
                         ("SELECT * FROM live_proof_receipts ORDER BY rowid", 1),
                         ("SELECT id FROM todos WHERE status='pending'", 0)]],
     }
+    if all_tables:
+        snapshot["schemas"].update({
+            "session_state": "CREATE TABLE session_state (key TEXT PRIMARY KEY, value TEXT)",
+            "remote_v1_app_normal_answer_prior_ledger":
+                "CREATE TABLE remote_v1_app_normal_answer_prior_ledger (claim_id TEXT,status TEXT,"
+                "scenario TEXT,artifact_path TEXT,candidate_identity TEXT,running_identity TEXT,"
+                "updated_at TEXT,archived_at)",
+        })
+        snapshot["rows"].update({
+            "session_state": [{"key": "synthetic-key", "value": "Synthetic 'quoted' value"},
+                              {"key": "synthetic-null", "value": None}],
+            "remote_v1_app_normal_answer_prior_ledger": [
+                {"claim_id": "synthetic", "status": status, "scenario": "Synthetic archive",
+                 "artifact_path": "synthetic.json", "candidate_identity": None,
+                 "running_identity": "", "updated_at": None, "archived_at": "2003-01-02 03:04:05"}
+                for status in ("first", "second")],
+        })
+    return snapshot
 
 
 class HistoricalSnapshotTests(unittest.TestCase):
+    def test_five_table_values_keys_and_mutation_comparisons(self):
+        from contextlib import closing
+        import sqlite3
+        from session_restore import compile_task_snapshot
+        source = historical_snapshot_fixture(all_tables=True)
+        compiled = compile_task_snapshot(source)
+        self.assertEqual(len(compiled["comparisons"]), 5)
+        with closing(sqlite3.connect(":memory:")) as database:
+            for schema in source["schemas"].values():
+                database.execute(schema)
+            database.executescript(compiled["transaction"])
+            for table, rows in source["rows"].items():
+                columns = list(rows[0])
+                actual = database.execute(f"SELECT {','.join(columns)} FROM {table} ORDER BY rowid").fetchall()
+                self.assertEqual(actual, [tuple(row[column] for column in columns) for row in rows])
+            self.assertTrue(all(not database.execute(query).fetchall() for query in compiled["comparisons"]))
+            for table in ("session_state", "remote_v1_app_normal_answer_prior_ledger"):
+                database.execute("SAVEPOINT changed_table")
+                database.execute(f"DELETE FROM {table} WHERE rowid=1")
+                self.assertTrue(any(database.execute(query).fetchall() for query in compiled["comparisons"]))
+                database.execute("ROLLBACK TO changed_table")
+                database.execute("RELEASE changed_table")
+
+    def test_finite_three_or_five_table_shapes_only(self):
+        import copy
+        from session_restore import compile_task_snapshot
+        full = historical_snapshot_fixture(all_tables=True)
+        for fault in ("partial-state", "partial-ledger", "extra", "mismatched"):
+            source = copy.deepcopy(full)
+            if fault == "extra":
+                source["schemas"]["arbitrary"] = "CREATE TABLE arbitrary (key TEXT PRIMARY KEY)"
+                source["rows"]["arbitrary"] = [{"key": "synthetic"}]
+            elif fault == "mismatched":
+                del source["rows"]["session_state"]
+            else:
+                table = "session_state" if fault == "partial-state" else "remote_v1_app_normal_answer_prior_ledger"
+                del source["schemas"][table]
+                del source["rows"][table]
+            with self.subTest(fault=fault), self.assertRaises(ValueError):
+                compile_task_snapshot(source)
+
+    def test_five_table_contract_rejects_changed_columns_types_and_keys(self):
+        from session_restore import compile_task_snapshot
+        for fault in ("state-key", "state-null", "state-unique", "ledger-key",
+                      "ledger-unique", "ledger-type", "ledger-column"):
+            source = historical_snapshot_fixture(all_tables=True)
+            table = "session_state" if fault.startswith("state") else "remote_v1_app_normal_answer_prior_ledger"
+            schema = source["schemas"][table]
+            if fault == "state-key":
+                schema = schema.replace(" PRIMARY KEY", "")
+            elif fault == "state-null":
+                schema = schema.replace("value TEXT", "value TEXT NOT NULL")
+            elif fault == "state-unique":
+                schema = schema.replace("value TEXT", "value TEXT UNIQUE")
+            elif fault == "ledger-key":
+                schema = schema.replace("claim_id TEXT", "claim_id TEXT PRIMARY KEY")
+            elif fault == "ledger-unique":
+                schema = schema.replace("scenario TEXT", "scenario TEXT UNIQUE")
+            elif fault == "ledger-type":
+                schema = schema.replace("archived_at)", "archived_at TEXT)")
+            else:
+                schema = schema.replace(",archived_at", "")
+            source["schemas"][table] = schema
+            with self.subTest(fault=fault), self.assertRaises(ValueError):
+                compile_task_snapshot(source)
+
     def test_explicit_nulls_quotes_timestamps_and_order_roundtrip(self):
         from contextlib import closing
         import sqlite3

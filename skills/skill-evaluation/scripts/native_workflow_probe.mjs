@@ -924,8 +924,8 @@ export async function runProbe(op, config) {
     } while (more);
     return events;
   };
-  const historicalSchema = async (snapshot, includeReceipts) => {
-    const tables = includeReceipts ? Object.keys(snapshot.schemas) : ["todos", "todo_deps"];
+  const historicalSchema = async (snapshot, includeSourceTables) => {
+    const tables = includeSourceTables ? Object.keys(snapshot.schemas) : ["todos", "todo_deps"];
     const normalize = value => value.toLowerCase().replace(/\s+/g, "");
     for (const table of tables) {
       await zeroRows(`SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name=${quoteSql(table)} AND lower(replace(replace(replace(replace(sql,' ',''),char(10),''),char(13),''),char(9),''))=${quoteSql(normalize(snapshot.schemas[table]))})`,
@@ -952,10 +952,15 @@ export async function runProbe(op, config) {
     }
     await historicalSchema(fixture.snapshot, false);
     await zeroRows("SELECT * FROM todo_deps", "Verify empty native dependencies");
-    await zeroRows("SELECT name FROM sqlite_master WHERE name='live_proof_receipts'",
-      "Verify absent source receipt table");
-    await execute("sql", { description: "Create source receipt schema",
-      query: fixture.snapshot.source.schemas.live_proof_receipts });
+    const customTables = Object.keys(fixture.snapshot.schemas).filter(table => !["todos", "todo_deps"].includes(table));
+    for (const table of customTables) {
+      await zeroRows(`SELECT name FROM sqlite_master WHERE name=${quoteSql(table)}`,
+        `Verify absent source ${table} table`);
+    }
+    for (const table of customTables) {
+      await execute("sql", { description: `Create source ${table} schema`,
+        query: fixture.snapshot.source.schemas[table] });
+    }
     await historicalSchema(fixture.snapshot, true);
     await execute("sql", { description: "Install explicit source task snapshot",
       query: fixture.snapshot.transaction });

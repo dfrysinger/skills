@@ -278,15 +278,24 @@ SNAPSHOT_COLUMNS = {
     "live_proof_receipts": ["claim_id", "status", "scenario", "artifact_path",
                             "candidate_identity", "running_identity", "updated_at"],
 }
+OPERATIONAL_SNAPSHOT_COLUMNS = {
+    **SNAPSHOT_COLUMNS,
+    "session_state": ["key", "value"],
+    "remote_v1_app_normal_answer_prior_ledger": [
+        *SNAPSHOT_COLUMNS["live_proof_receipts"], "archived_at"],
+}
 
 
 def compile_task_snapshot(snapshot: dict) -> dict:
     """Compile explicit source rows; an in-memory check is not native consumption."""
     if (not isinstance(snapshot, dict) or set(snapshot) != {"schemas", "rows", "queries"}
-            or set(snapshot["schemas"]) != set(SNAPSHOT_COLUMNS)
-            or set(snapshot["rows"]) != set(SNAPSHOT_COLUMNS)
+            or not isinstance(snapshot["schemas"], dict) or not isinstance(snapshot["rows"], dict)
+            or set(snapshot["schemas"]) not in (set(SNAPSHOT_COLUMNS), set(OPERATIONAL_SNAPSHOT_COLUMNS))
+            or set(snapshot["rows"]) != set(snapshot["schemas"])
             or not isinstance(snapshot["queries"], list) or len(snapshot["queries"]) != 4):
         raise ValueError("Invalid historical task snapshot shape")
+    tables = {table: columns for table, columns in OPERATIONAL_SNAPSHOT_COLUMNS.items()
+              if table in snapshot["schemas"]}
     def quote(value):
         if value is None:
             return "NULL"
@@ -297,23 +306,32 @@ def compile_task_snapshot(snapshot: dict) -> dict:
     connection = sqlite3.connect(":memory:")
     try:
         connection.execute("PRAGMA foreign_keys=ON")
-        for table, columns in SNAPSHOT_COLUMNS.items():
+        for table, columns in tables.items():
             schema = snapshot["schemas"][table]
             if not isinstance(schema, str) or not re.match(
                     rf"^\s*CREATE TABLE (?:IF NOT EXISTS )?{table}\s*\(", schema, re.I):
                 raise ValueError("Snapshot schema must create only its declared table")
             connection.execute(schema)
             info = connection.execute(f"PRAGMA table_info({table})").fetchall()
-            if [row[1] for row in info] != columns or any(row[2].upper() != "TEXT" for row in info):
+            archived = table == "remote_v1_app_normal_answer_prior_ledger"
+            types = ["TEXT"] * len(columns)
+            if archived:
+                types[-1] = ""
+            if [row[1] for row in info] != columns or [row[2].upper() for row in info] != types:
                 raise ValueError("Snapshot columns/types differ from the source contract")
             primary = [row[1] for row in sorted(info, key=lambda row: row[5]) if row[5]]
-            expected_primary = columns if table == "todo_deps" else columns[:1]
+            expected_primary = [] if archived else columns if table == "todo_deps" else columns[:1]
             if primary != expected_primary:
                 raise ValueError("Snapshot primary keys differ from the source contract")
             required = {"todos": {"title"}, "todo_deps": set(columns),
-                        "live_proof_receipts": {"status", "scenario", "artifact_path"}}[table]
+                        "live_proof_receipts": {"status", "scenario", "artifact_path"},
+                        "session_state": set(), "remote_v1_app_normal_answer_prior_ledger": set()}[table]
             if {row[1] for row in info if row[3]} != required:
                 raise ValueError("Snapshot NOT NULL constraints differ from source")
+            if table not in SNAPSHOT_COLUMNS:
+                if (connection.execute(f"PRAGMA foreign_key_list({table})").fetchall()
+                        or any(row[3] != "pk" for row in connection.execute(f"PRAGMA index_list({table})"))):
+                    raise ValueError("Snapshot keys differ from source")
         foreign = connection.execute("PRAGMA foreign_key_list(todo_deps)").fetchall()
         if ({(row[2], row[3], row[4]) for row in foreign}
                 != {("todos", "todo_id", "id"), ("todos", "depends_on", "id")}
@@ -328,7 +346,7 @@ def compile_task_snapshot(snapshot: dict) -> dict:
         transaction = ["BEGIN;"]
         comparisons = []
         counts = {}
-        for table, columns in SNAPSHOT_COLUMNS.items():
+        for table, columns in tables.items():
             rows = snapshot["rows"][table]
             if not isinstance(rows, list) or not rows:
                 raise ValueError("Historical snapshot tables must have explicit rows")

@@ -50,8 +50,20 @@ The fixture contains `provenance: "source-bound-historical"` and these fields:
 
 Direct validation requires
 `_validate_historical_context_fixture(fixture, root=fixture_file.parent)`.
-The producer supplies this owner root itself. The task snapshot schema is
-unchanged.
+The producer supplies this owner root itself. Task snapshots contain `schemas`,
+`rows` and exactly four source-query `queries` readbacks. Their table set is
+exactly `todos`, `todo_deps`, `live_proof_receipts`, or those three plus
+`session_state` and `remote_v1_app_normal_answer_prior_ledger`.
+`session_state` has a `TEXT` primary `key` and nullable `TEXT value`. The prior
+ledger has the receipt table's seven column names and `TEXT` types, all nullable
+with no primary key, followed by `archived_at` with no declared type. Snapshot
+values remain explicit text or NULL.
+
+Setup verifies the existing native task/dependency schemas without recreating
+them. All declared source-only tables must be absent before setup creates them.
+The existing SQL tool installs the compiled row transaction and compares every
+table's exact values and insertion order during warm and cold readback. A
+standalone schema dump must not be executed against native builtin tables.
 
 Staging retains the original artifact bytes, records canonical collection/index
 and field digests, and refuses unknown message fields or unsupported selected
