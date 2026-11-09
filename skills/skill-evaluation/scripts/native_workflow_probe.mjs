@@ -884,6 +884,8 @@ export async function runProbe(op, config) {
             ? { COPILOT_STRIP_REASONING_ON_RESUME: "false" } : {}),
           ...(continuation ? {
             PATH: entry.executable_path, LANG: entry.locale, LC_ALL: entry.locale,
+            ...(Object.hasOwn(entry, "skill_char_budget")
+              ? { SKILL_CHAR_BUDGET: String(entry.skill_char_budget) } : {}),
             ...(process.env.COPILOT_GITHUB_TOKEN
               ? { COPILOT_GITHUB_TOKEN: process.env.COPILOT_GITHUB_TOKEN } : {}),
           } : {}),

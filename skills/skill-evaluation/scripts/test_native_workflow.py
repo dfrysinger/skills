@@ -85,6 +85,83 @@ class NativeWorkflowTests(unittest.TestCase):
     def freeze(self):
         skill_eval.freeze_case(self.root, "example-case", replace=False)
 
+    def test_continuation_skill_char_budget_validation_binding_and_receipt(self):
+        package = self.base / "input"
+        (package / "evaluator").mkdir(parents=True)
+        (package / "evaluator" / "generic.py").write_text("pass\n")
+        home = self.base / "home"
+        home.mkdir()
+        (home / "copilot-instructions.md").write_text("Synthetic instructions\n")
+        cwd = self.base / "run" / "cwd"
+        cwd.mkdir(parents=True)
+        path = self.base / "continuation.json"
+        value = {
+            "schema_version": 1, "purpose": "setup-canary", "running_in_interactive_mode": True,
+            "session_capabilities": native_workflow.CLI_CONTINUATION_CAPABILITIES,
+            "cli_preamble": native_workflow.CLI_CONTINUATION_PREAMBLE,
+            "executable_path": "/usr/bin:/bin", "locale": "C.UTF-8", "timeout_ms": 10000,
+            "package_root": str(package), "workflow_commit": "a" * 40, "workflow_sha256": "b" * 64,
+            "canary_receipt": None,
+            "canary_checks": {"file": {"path": "result.txt", "sha256": "c" * 64},
+                              "shell": {"command": "printf synthetic"},
+                              "sql": {"query": "SELECT 7"}},
+        }
+        config = {"cwd": str(cwd), "home": str(home), "plugin_path": str(self.plugin),
+                  "cli": str(self.cli), "sdk": str(self.sdk), "model": "fixture-model", "effort": "medium"}
+
+        def entry():
+            path.write_text(json.dumps(value))
+            path.chmod(0o600)
+            return native_workflow.continuation_entry(path, config)
+
+        with mock.patch.dict("os.environ", {"GITHUB_WORKSPACE": "", "GITHUB_WORKFLOW_SHA": ""}):
+            omitted = entry()
+            self.assertNotIn("skill_char_budget", omitted)
+            self.assertEqual(omitted["binding"]["interactive"], {
+                key: value[key] for key in ("running_in_interactive_mode", "session_capabilities",
+                                           "cli_preamble", "executable_path", "locale", "timeout_ms")})
+            hashes = {omitted["configuration_sha256"]}
+            for budget in (1, 15000, 50000, 4294967295):
+                with self.subTest(budget=budget):
+                    value["skill_char_budget"] = budget
+                    selected = entry()
+                    self.assertEqual(selected["skill_char_budget"], budget)
+                    expected = copy.deepcopy(omitted["binding"])
+                    expected["interactive"]["skill_char_budget"] = budget
+                    self.assertEqual(selected["binding"], expected)
+                    self.assertNotIn(selected["configuration_sha256"], hashes)
+                    hashes.add(selected["configuration_sha256"])
+            for budget in (True, False, 0, -1, 1.0, 1.5, "50000", None, [], {}, 4294967296):
+                with self.subTest(invalid=budget):
+                    value["skill_char_budget"] = budget
+                    with self.assertRaisesRegex(ValueError, "skill_char_budget"):
+                        entry()
+            value["skill_char_budget"] = 50000
+            canary = entry()
+            value.update(purpose="historical", canary_checks=None, canary_receipt={
+                "status": "CONTINUATION_CANARY_OBSERVED",
+                "configuration_sha256": canary["configuration_sha256"],
+                "interactive_identity": True, "operation_witnesses": True,
+                "exactly_once": True, "shutdown_errors": [],
+            })
+            self.assertEqual(entry()["configuration_sha256"], canary["configuration_sha256"])
+            value["skill_char_budget"] = 15000
+            with self.assertRaisesRegex(ValueError, "canary receipt"):
+                entry()
+            del value["skill_char_budget"]
+            with self.assertRaisesRegex(ValueError, "canary receipt"):
+                entry()
+            value.update(purpose="setup-canary", canary_receipt=None,
+                         canary_checks=omitted["canary_checks"])
+            self.assertEqual(entry()["configuration_sha256"], omitted["configuration_sha256"])
+            value["unexpected"] = 1
+            with self.assertRaisesRegex(ValueError, "requires exactly"):
+                entry()
+            del value["unexpected"]
+            del value["timeout_ms"]
+            with self.assertRaisesRegex(ValueError, "requires exactly"):
+                entry()
+
     def test_schema_and_owner_inputs_refuse_authority_paths_and_missing_restoration(self):
         native_workflow.validate_native_workflow(self.definition, self.case)
         for field in ("query", "code", "runtime", "home", "session_id", "grant"):

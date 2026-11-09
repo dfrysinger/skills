@@ -216,6 +216,14 @@ The continuation file is an owned, owner-only, unaliased single-link JSON file:
 }
 ```
 
+The optional `skill_char_budget` field accepts only a JSON integer from `1` to
+`4294967295`. When present, it enters the interactive configuration binding and
+reaches continuation connections as the decimal `SKILL_CHAR_BUDGET` environment
+value. A different value requires a matching canary receipt. Omission preserves
+the CLI default path. The selected value does not prove which descriptions the
+model received; verify actual presentation separately and use the same setting
+in both comparison arms.
+
 `package_root` contains only `evaluator/`, `plugins/` and `owner/`.
 Owner inputs are `context-fixture.json`, `completed-objective.json`,
 `recorded-context.json`, `source-event.json`, `continuation.json` and optional
