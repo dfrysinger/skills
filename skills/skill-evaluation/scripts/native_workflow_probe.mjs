@@ -850,9 +850,23 @@ export async function runProbe(op, config) {
     state.invoked_before_reload = await checkInvoked("before-reload");
     state.ensure_loaded = await call("skills.ensureLoaded", undefined, () => session.rpc.skills.ensureLoaded());
     state.catalog = await call("skills.list", undefined, () => session.rpc.skills.list());
-    if (!Array.isArray(state.catalog?.skills) || fixture.root_skills.some(expected =>
-      !state.catalog.skills.some(skill => skill.name === expected.name))) {
+    if (!Array.isArray(state.catalog?.skills) || (recorded
+      ? state.catalog.skills.some(skill => !skill || typeof skill.name !== "string" || !skill.name)
+      : fixture.root_skills.some(expected =>
+        !state.catalog.skills.some(skill => skill.name === expected.name)))) {
       throw new Error("Historical staged skill catalog is not visible");
+    }
+    if (recorded) {
+      state.recorded_context.retained_names_not_currently_discovered = fixture.root_skills
+        .filter(expected => !state.catalog.skills.some(skill => skill.name === expected.name))
+        .map(expected => expected.name);
+      state.recorded_context.full_available_collection_equivalence = false;
+      state.recorded_context.behavioral_baseline_ready = false;
+      state.recorded_context.discovery_limitations = [
+        "Current discovery does not establish capture-time availability.",
+        "Future skill lookup may return not found for retained names not currently discovered.",
+        "Full available-collection equivalence remains UNPROVED and required for behavioral baseline qualification.",
+      ];
     }
     state.reload = await call("skills.reload", undefined, () => session.rpc.skills.reload());
     state.invoked_after_reload = await checkInvoked("after-reload");

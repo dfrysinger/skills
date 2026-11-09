@@ -115,7 +115,8 @@ export class CopilotClient {
         skills: {
           getInvoked: async () => ({ skills: structuredClone(state.invokedSkills ?? []) }),
           ensureLoaded: async () => ({ loaded: true }),
-          list: async () => ({ skills: structuredClone(state.invokedSkills ?? []).filter(skill =>
+          list: async () => state.catalogOverride ?? ({ skills: structuredClone(
+            state.discoveredSkills ?? state.invokedSkills ?? []).filter(skill =>
             !state.personalSkillRoot || options.skillDirectories?.includes(state.personalSkillRoot)
             || skill.name !== "synthetic-6") }),
           reload: async () => {
@@ -579,11 +580,84 @@ test("recorded context retains 22 skills and reads actual permission mode withou
   assert.equal(setup.recorded_context.native_payload_correspondence, true);
   assert.equal(setup.recorded_context.authorization_history_equivalence, false);
   assert.equal(setup.recorded_context.authority_evidence_required, true);
+  assert.deepEqual(setup.recorded_context.retained_names_not_currently_discovered, []);
+  assert.equal(setup.recorded_context.full_available_collection_equivalence, false);
+  assert.equal(setup.recorded_context.behavioral_baseline_ready, false);
   assert.match(setup.recorded_context.model_visible_correspondence, /Requires actual post-resume/);
   assert.equal(state.sendCalls, 0);
   assert.equal(state.owners, 0);
   assert.equal(state.starts, 2);
   assert.throws(() => validateConfig("candidate", config), /forbids model sends/);
+});
+
+test("recorded context observes independent discovery without qualifying a behavioral baseline", async t => {
+  const { config, state, root } = await recordedContextFixture(t);
+  const retained = structuredClone(state.invokedSkills);
+  state.discoveredSkills = [
+    ...retained.slice(9).map(skill => ({ name: skill.name })),
+    ...Array.from({ length: 18 }, (_, index) => ({ name: `discovered-only-${index}` })),
+  ];
+  for (const [operation, status] of [["setup", "SETUP_OBSERVED"], ["observe", "OBSERVED"]]) {
+    const result = await runProbe(operation, {
+      ...config, output: join(root, `${operation}-discovery.json`),
+    });
+    assert.equal(result.status, status, result.error?.message);
+    for (const observation of operation === "setup" ? [result.warm, result] : [result]) {
+      assert.deepEqual(observation.invoked_before_reload.skills, retained);
+      assert.deepEqual(observation.invoked_after_reload.skills, retained);
+      assert.deepEqual(observation.catalog.skills, state.discoveredSkills);
+      const metadata = observation.recorded_context;
+      assert.deepEqual(metadata.retained_names_not_currently_discovered,
+        retained.slice(0, 9).map(skill => skill.name));
+      assert.equal(metadata.native_payload_correspondence, true);
+      assert.equal(metadata.full_available_collection_equivalence, false);
+      assert.equal(metadata.behavioral_baseline_ready, false);
+      assert.match(metadata.discovery_limitations.join("\n"), /not found/);
+      assert.match(metadata.discovery_limitations.join("\n"), /does not establish capture-time availability/);
+      assert.match(metadata.discovery_limitations.join("\n"), /UNPROVED and required/);
+    }
+    assert.equal(result.model_calls, 0);
+  }
+  assert.equal(state.starts, 3);
+  assert.equal(state.reloads, 3);
+  assert.equal(state.sendCalls, 0);
+  assert.equal(state.owners, 0);
+});
+
+test("recorded discovery diagnostics preserve source-first invocation and root refusals", async t => {
+  for (const failure of ["body", "order", "reload", "root"]) await t.test(failure, async t => {
+    const { config, state } = await recordedContextFixture(t);
+    state.discoveredSkills = [];
+    if (failure === "body") state.invokedSkills[0].content = "Changed synthetic body";
+    if (failure === "order") state.invokedSkills.reverse();
+    if (failure === "reload") state.refreshLoadedBodies = true;
+    if (failure === "root") state.startHook = () => {
+      delete state.events.find(event => event.type === "assistant.message").data.encryptedContent;
+    };
+    const result = await runProbe("setup", config);
+    assert.equal(result.status, "ERROR");
+    assert.match(result.error.message, failure === "root"
+      ? /Historical native root projection changed/ : /loaded root skill body\/order/);
+    assert.equal(result.model_calls, 0);
+    assert.equal(state.sendCalls, 0);
+    assert.equal(state.owners, 0);
+  });
+});
+
+test("discovery diagnostics retain schema2 membership refusal and schema3 getter validation", async t => {
+  for (const scenario of ["schema2", "schema3-shape", "schema3-name"]) await t.test(scenario, async t => {
+    const fixture = scenario === "schema2" ? historicalContextFixture : recordedContextFixture;
+    const { config, state } = await fixture(t);
+    if (scenario === "schema2") state.discoveredSkills = [];
+    else state.catalogOverride = scenario === "schema3-shape"
+      ? { skills: null } : { skills: [{ name: null }] };
+    const result = await runProbe("setup", config);
+    assert.equal(result.status, "ERROR");
+    assert.equal(result.error.message, "Historical staged skill catalog is not visible");
+    assert.equal(result.model_calls, 0);
+    assert.equal(state.sendCalls, 0);
+    assert.equal(state.owners, 0);
+  });
 });
 
 test("recorded context preserves reasoning on each connection without changing the historical environment", async t => {
