@@ -586,6 +586,48 @@ test("recorded context retains 22 skills and reads actual permission mode withou
   assert.throws(() => validateConfig("candidate", config), /forbids model sends/);
 });
 
+test("recorded context preserves reasoning on each connection without changing the historical environment", async t => {
+  for (const [name, fixture, recorded] of [
+    ["schema3", recordedContextFixture, true],
+    ["schema2", historicalContextFixture, false],
+  ]) await t.test(name, async t => {
+    const { config, state, root } = await fixture(t);
+    for (const [operation, status] of [
+      ["setup", "SETUP_OBSERVED"], ["observe", "OBSERVED"], ["cleanup", "CLEANED"],
+    ]) {
+      const result = await runProbe(operation, {
+        ...config, output: join(root, `${operation}-environment.json`),
+      });
+      assert.equal(result.status, status, result.error?.message);
+      assert.equal(result.model_calls, 0);
+    }
+    assert.equal(state.connections.length, 4);
+    for (const connection of state.connections) assert.deepEqual(connection.env, {
+      PATH: process.env.PATH ?? "",
+      HOME: config.os_home, COPILOT_HOME: config.home,
+      TMPDIR: config.cwd,
+      COPILOT_DISABLE_KEYTAR: "1", COPILOT_OTEL_ENABLED: "false",
+      ...(recorded ? { COPILOT_STRIP_REASONING_ON_RESUME: "false" } : {}),
+    });
+    assert.equal(state.sendCalls, 0);
+    assert.equal(state.owners, 0);
+  });
+});
+
+test("recorded context retains the first root projection failure if native readback drops reasoning", async t => {
+  const { config, state } = await recordedContextFixture(t);
+  state.startHook = () => {
+    delete state.events.find(event => event.type === "assistant.message").data.encryptedContent;
+  };
+  const result = await runProbe("setup", config);
+  assert.equal(result.status, "ERROR");
+  assert.equal(result.error.message, "Historical native root projection changed");
+  assert.equal(result.model_calls, 0);
+  assert.equal(state.sendCalls, 0);
+  assert.equal(state.starts, 1);
+  assert.equal(state.owners, 0);
+});
+
 test("recorded context consumer rejects changed provider fields, roles and a duplicate trigger", async t => {
   const { state, locator } = await recordedContextFixture(t);
   assert.equal(validateRecordedNativeEvents(locator, state.events).native_payload_correspondence, true);

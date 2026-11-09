@@ -691,6 +691,8 @@ export async function runProbe(op, config) {
           HOME: config.os_home, COPILOT_HOME: config.home,
           TMPDIR: config.cwd,
           COPILOT_DISABLE_KEYTAR: "1", COPILOT_OTEL_ENABLED: "false",
+          ...(historicalProfile(config) && contextFixture(config).schema_version === 3
+            ? { COPILOT_STRIP_REASONING_ON_RESUME: "false" } : {}),
         },
       }),
       workingDirectory: config.cwd, baseDirectory: config.home,
