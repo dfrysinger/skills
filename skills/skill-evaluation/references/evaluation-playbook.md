@@ -316,6 +316,13 @@ earlier decision that may have caused the failure. They are not always the
 same event. Record the exact trigger, then-current state, expected transition,
 observable progress and observation horizon before choosing skill changes.
 
+For autonomy failures, a real user follow-up after the agent has stalled tests
+response to human intervention, not prevention of the stall. For a prevention
+claim, start from the real earlier event before the first unsupported stop or
+before the agent produced the plan, objective or schedule that caused it.
+Withhold the later intervention. A scheduled wake in the bad state may test
+autonomous recovery, not initial prevention.
+
 | Suspected source or opportunity | Replay starting point | Required observation |
 |---|---|---|
 | An ordinary scheduled prompt should recover a stalled run | Bad state intact, immediately before the original scheduled prompt | The prompt reaches the intended skills; the agent recognizes the problem, changes the relevant state and resumes permitted work. |
