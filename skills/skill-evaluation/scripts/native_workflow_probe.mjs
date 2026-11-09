@@ -407,6 +407,59 @@ export function continuationCorrespondence(before, after, events, messageId, raw
     primary_system_messages: primary, interaction_id: users[0].data.interactionId };
 }
 
+export function continuationCompletion(events, messageId) {
+  let interactionId;
+  let assistant;
+  let task;
+  for (const event of events) {
+    const data = event.data;
+    if (event.agentId || data?.parentToolCallId) continue;
+    if (event.type === "session.error") {
+      return { error: new Error(data?.message ?? "Native root session error") };
+    }
+    if (event.type === "user.message") {
+      interactionId = data?.messageId === messageId && typeof data.interactionId === "string"
+        && data.interactionId ? data.interactionId : undefined;
+      assistant = task = undefined;
+    } else if (event.type === "assistant.message") {
+      assistant = interactionId && typeof event.id === "string" && event.id && data?.originatingMessageId === messageId
+        && data.interactionId === interactionId ? event : undefined;
+      const requests = Array.isArray(assistant?.data.toolRequests)
+        ? assistant.data.toolRequests.filter(request =>
+          request?.name === "task_complete" && typeof request.toolCallId === "string" && request.toolCallId) : [];
+      task = requests?.length === 1 && typeof data.turnId === "string" && data.turnId
+        ? { request: requests[0], invalid: false } : undefined;
+    } else if (task && event.type === "tool.execution_start" && data?.toolCallId === task.request.toolCallId) {
+      task.invalid ||= typeof event.id !== "string" || !event.id || Boolean(task.start) || data.toolName !== "task_complete"
+        || data.turnId !== assistant.data.turnId
+        || !isDeepStrictEqual(data.arguments, task.request.arguments);
+      task.start = event;
+    } else if (task && event.type === "tool.execution_complete" && data?.toolCallId === task.request.toolCallId) {
+      task.invalid ||= typeof event.id !== "string" || !event.id || !task.start || Boolean(task.completion) || data.success !== true
+        || data.interactionId !== interactionId || data.turnId !== assistant.data.turnId
+        || typeof data.result?.content !== "string" || !data.result.content.trim();
+      task.completion = event;
+    } else if (task?.completion && event.type === "assistant.turn_end") {
+      task.turn_end = typeof event.id === "string" && event.id && data?.turnId === assistant.data.turnId ? event : undefined;
+    } else if (event.type === "session.idle") {
+      if (!data || typeof event.id !== "string" || !event.id || (data.aborted !== undefined && data.aborted !== false)) {
+        return { error: new Error("Native session idle was aborted or malformed") };
+      }
+      if (assistant && typeof assistant.data.content === "string" && assistant.data.content.trim()
+          && (assistant.data.toolRequests === undefined
+            || (Array.isArray(assistant.data.toolRequests) && assistant.data.toolRequests.length === 0))) {
+        return { kind: "assistant_final", message: assistant, idle: event };
+      }
+      if (task?.completion && task.turn_end && !task.invalid) {
+        return { kind: "task_complete", message: assistant,
+          task_complete: { request: task.request, start: task.start,
+            completion: task.completion, turn_end: task.turn_end }, idle: event };
+      }
+      return { error: new Error("Native session idle lacked a matching root final response") };
+    }
+  }
+}
+
 export function validateConfig(op, config) {
   if (!["setup", "observe", "cleanup", "candidate", "preflight"].includes(op)) throw new Error("Unknown operation");
   if (continuationProfile(config) && !["candidate", "observe", "cleanup"].includes(op)) {
@@ -1511,6 +1564,7 @@ export async function runProbe(op, config) {
     const buffered = [];
     let messageId;
     let matchingMessage;
+    const completionEvents = [];
     let active = true;
     let resolveOutcome;
     const outcome = new Promise(resolve => { resolveOutcome = resolve; });
@@ -1525,6 +1579,11 @@ export async function runProbe(op, config) {
         resolveOutcome({ error: new Error("Native session idle was aborted") });
       } else if (messageId === undefined) {
         buffered.push(event);
+      } else if (continuation) {
+        completionEvents.push(event);
+        const terminal = event.type === "session.idle"
+          ? continuationCompletion(completionEvents, messageId) : undefined;
+        if (terminal) resolveOutcome(terminal);
       } else if (event.type === "assistant.message") {
         matchingMessage = event.data?.originatingMessageId === messageId
           && typeof event.id === "string" && typeof event.data.content === "string"
@@ -1567,6 +1626,10 @@ export async function runProbe(op, config) {
         if (terminal.error) throw terminal.error;
         report.model_result = terminal.message;
         report.model_completion_event = terminal.idle;
+        if (continuation && !terminal.pending) {
+          report.model_completion_kind = terminal.kind;
+          if (terminal.task_complete) report.model_task_completion = terminal.task_complete;
+        }
         if (terminal.pending) {
           report.pending_input_observed = true;
           await call("session.abort", undefined, () => session.abort());

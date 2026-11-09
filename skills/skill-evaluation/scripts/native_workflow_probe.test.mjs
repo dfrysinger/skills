@@ -8,7 +8,7 @@ import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { candidatePermissionHandler, editableFixtureCheck, matchesFixtureState, matchesProfileState,
-  continuationCorrespondence, continuationEntry, runProbe, validateConfig,
+  continuationCompletion, continuationCorrespondence, continuationEntry, runProbe, validateConfig,
   validateProfile, validateRecordedNativeEvents } from "./native_workflow_probe.mjs";
 
 // This SDK double exercises control flow only, never native interoperability.
@@ -660,11 +660,75 @@ async function continuationFixture(t) {
     state.rows.push({ id: "candidate-edit", status: "done" });
     state.invokedSkills.push({ name: "candidate-loaded", content: "Synthetic new invocation" });
     state.entries.push({ id: 25, prompt: "Synthetic owned timer" });
-    persist("assistant.message", { content: "Synthetic completion", originatingMessageId: id });
+    if (state.completeViaTool) {
+      const request = { name: "task_complete", toolCallId: "completed-task", arguments: { summary: "Synthetic completion" } };
+      persist("assistant.message", { content: null, originatingMessageId: id, interactionId: id,
+        turnId: "task-turn", toolRequests: [request] });
+      persist("tool.execution_start", { toolName: request.name, toolCallId: request.toolCallId,
+        arguments: request.arguments, turnId: "task-turn" });
+      persist("tool.execution_complete", { toolCallId: request.toolCallId, success: true,
+        interactionId: id, turnId: "task-turn", result: { content: "Synthetic completion" } });
+      persist("assistant.turn_end", { turnId: "task-turn" });
+    } else {
+      persist("assistant.message", { content: "Synthetic completion", originatingMessageId: id, interactionId: id });
+    }
     persist("session.idle", { aborted: false });
     return id;
   };
   return { ...owned, input, save };
+}
+
+test("continuation accepts correlated native task_complete without fabricating assistant text", async t => {
+  const { config, state } = await continuationFixture(t);
+  state.completeViaTool = true;
+  const result = await runProbe("candidate", config);
+  assert.equal(result.status, "CANDIDATE_OBSERVED", result.error?.message);
+  assert.equal(result.model_completion_kind, "task_complete");
+  assert.equal(result.model_result.data.content, null);
+  assert.equal(result.model_task_completion.completion.data.result.content, "Synthetic completion");
+  assert.equal(result.continuation_receipt.status, "CONTINUATION_CANARY_OBSERVED");
+  assert.equal(state.sendCalls, 1);
+  assert.equal(state.aborts, 0);
+});
+
+for (const mutation of ["none", "wrong-origin", "wrong-interaction", "wrong-start", "wrong-call",
+  "wrong-turn", "no-start", "failed-completion", "child-completion", "no-turn-end",
+  "aborted-idle", "malformed-idle", "unrelated-tool", "idle-alone"]) {
+  test(`continuation task_complete correlation: ${mutation}`, () => {
+    const request = { toolCallId: "task", name: "task_complete", arguments: { summary: "Synthetic result" } };
+    const events = [
+      { type: "user.message", data: { messageId: "sent", interactionId: "interaction",
+        parentAgentTaskId: "synthetic-root-task" } },
+      { type: "assistant.message", id: "assistant", data: { content: null, originatingMessageId: "sent",
+        interactionId: "interaction", turnId: "turn", toolRequests: [request] } },
+      { type: "tool.execution_start", data: { toolCallId: "task", toolName: "task_complete",
+        turnId: "turn", arguments: request.arguments } },
+      { type: "tool.execution_complete", data: { toolCallId: "task", success: true, turnId: "turn",
+        interactionId: "interaction", result: { content: "Synthetic result" } } },
+      { type: "assistant.turn_end", data: { turnId: "turn" } },
+      { type: "session.idle", id: "idle", data: { aborted: false } },
+    ].map((event, index) => ({ id: `event-${index}`, ...event }));
+    if (mutation === "wrong-origin") events[1].data.originatingMessageId = "other";
+    if (mutation === "wrong-interaction") events[3].data.interactionId = "other";
+    if (mutation === "wrong-start") events[2].data.arguments = { summary: "Substituted summary" };
+    if (mutation === "wrong-call") events[3].data.toolCallId = "other";
+    if (mutation === "wrong-turn") events[3].data.turnId = "other";
+    if (mutation === "no-start") events.splice(2, 1);
+    if (mutation === "failed-completion") events[3].data.success = false;
+    if (mutation === "child-completion") events[3].agentId = "child";
+    if (mutation === "no-turn-end") events.splice(4, 1);
+    if (mutation === "aborted-idle") events.at(-1).data.aborted = true;
+    if (mutation === "malformed-idle") events.at(-1).id = "";
+    if (mutation === "unrelated-tool") request.name = events[2].data.toolName = "sql";
+    if (mutation === "idle-alone") events.splice(0, 5);
+    const outcome = continuationCompletion(events, "sent");
+    if (mutation === "none") {
+      assert.equal(outcome.kind, "task_complete");
+      assert.equal(outcome.message, events[1]);
+      assert.equal(outcome.task_complete.completion, events[3]);
+      assert.equal(continuationCompletion(events.slice(0, -1), "sent"), undefined);
+    } else assert.ok(outcome.error);
+  });
 }
 
 test("continuation resumes once with interactive options, normal permissions and real effect witnesses", async t => {
@@ -677,6 +741,7 @@ test("continuation resumes once with interactive options, normal permissions and
   });
   const result = await runProbe("candidate", config);
   assert.equal(result.status, "CANDIDATE_OBSERVED", result.error?.message);
+  assert.equal(result.model_completion_kind, "assistant_final");
   assert.equal(state.sendCalls, 1);
   assert.equal(state.resumes.length, 1);
   assert.equal(state.sentPrompt, "Synthetic trigger");

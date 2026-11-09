@@ -158,7 +158,14 @@ correlated to the new user's interaction. Interactive identity is checked after
 dispatch. This passive observation is not a pre-provider barrier. Wrong primary
 identity, a changed prefix, duplicate/substituted user input or changed frozen
 inputs invalidate the attempt as setup/fidelity evidence, not a skill result.
-Ordinary completion requires a correlated root assistant response and idle.
+Ordinary completion requires a correlated root final assistant response, or a
+successful root `task_complete` requested by the originating assistant in the
+same interaction. Tool completion must match its request, start and turn, then
+reach the matching `assistant.turn_end` and ordinary idle. An arbitrary successful
+tool or idle alone is insufficient. `model_completion_kind` identifies the path;
+`model_task_completion` retains the native request/start/completion/turn-end chain
+without fabricating final assistant text. The same `continuationCompletion`
+parser can inspect retained events without a model send.
 A real input callback instead yields `HUMAN_INPUT_PENDING`; no answer or
 automatic continuation is supplied. The owner freezes its interpretation.
 
