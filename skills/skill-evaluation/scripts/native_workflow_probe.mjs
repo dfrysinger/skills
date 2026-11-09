@@ -1146,6 +1146,10 @@ export async function runProbe(op, config) {
       throw new Error("Owner preflight added or changed imported conversation content");
     }
     report.checks.prefix_preserved = true;
+    if (historicalZeroSend) {
+      report.checks.prefix_preservation_scope = "preflight_snapshot";
+      report.checks.terminal_prefix_preserved = null;
+    }
     for (const item of report.preflight) {
       const requests = report.permissions.filter(entry => entry.session_id === config.session_id
         && entry.tool_call_id === item.tool_call_id && entry.request?.kind === "read");

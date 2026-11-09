@@ -1147,7 +1147,10 @@ class NativeContextCalibrationTests(unittest.TestCase):
                 "editable_permission_traversal")},
         }
         base["checks"]["effective_tools"] = None
-        for fault in ("none", "tools", "context", "callback", "restored", "count", "summary", "send"):
+        base["checks"].update(prefix_preservation_scope="preflight_snapshot",
+                              terminal_prefix_preserved=None)
+        for fault in ("none", "tools", "context", "callback", "restored", "count", "summary", "send",
+                      "scope", "terminal", "missing_terminal", "prefix"):
             with self.subTest(fault=fault):
                 selected = {**config, "output": str(self.root / f"historical-{fault}.json")}
                 receipt = json.loads(json.dumps(base))
@@ -1165,6 +1168,14 @@ class NativeContextCalibrationTests(unittest.TestCase):
                     receipt["checks"]["context_summary_order"] = False
                 elif fault == "send":
                     receipt["model_send_calls"] = 1
+                elif fault == "scope":
+                    receipt["checks"]["prefix_preservation_scope"] = "whole_namespace"
+                elif fault == "terminal":
+                    receipt["checks"]["terminal_prefix_preserved"] = True
+                elif fault == "missing_terminal":
+                    del receipt["checks"]["terminal_prefix_preserved"]
+                elif fault == "prefix":
+                    receipt["checks"]["prefix_preserved"] = False
                 def execute(command, **kwargs):
                     Path(selected["output"]).write_text(json.dumps(receipt))
                     return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")

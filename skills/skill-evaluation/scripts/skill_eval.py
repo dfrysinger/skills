@@ -1767,6 +1767,11 @@ def _native_workflow_probe(operation: str, config: dict) -> dict:
                         or (not historical_preflight and result.get("context_initialized") is not True)))))):
             raise ValueError("native candidate receipt did not verify conditional model execution")
         if historical_preflight and status == "PREFLIGHT_OBSERVED":
+            checks = result.get("checks", {})
+            if (checks.get("prefix_preservation_scope") != "preflight_snapshot"
+                    or "terminal_prefix_preserved" not in checks
+                    or checks["terminal_prefix_preserved"] is not None):
+                raise ValueError("historical preflight did not scope preservation to its snapshot")
             metadata = result.get("effective_tools", {})
             attribution = result.get("context", {}).get("getContextAttribution", {})
             if not isinstance(metadata, dict) or not isinstance(attribution, dict):

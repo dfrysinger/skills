@@ -48,6 +48,7 @@ export class CopilotClient {
       return new Promise(() => {});
     }
     if (state.stopFails) throw new Error("Test shutdown failure");
+    state.stopHook?.();
     if (this.started) state.owners--;
     this.started = false; state.stops++; return [];
   }
@@ -542,6 +543,25 @@ test("historical context passes the owned personal discovery root on every zero-
   }
   assert.ok(state.resumes.every(options =>
     options.skillDirectories?.length === 1 && options.skillDirectories[0] === personal));
+  assert.equal(state.sendCalls, 0);
+});
+
+test("historical preflight scopes preservation to its snapshot before late recovery records", async t => {
+  const { config, state, root } = await historicalContextFixture(t);
+  const setup = await runProbe("setup", config);
+  assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
+  const lateId = randomUUID();
+  state.stopHook = () => state.events.push(state.emit("tool.execution_complete", {
+    toolCallId: lateId, success: false, model: "resumed", interactionId: "resume",
+    error: { code: "interrupted", message: "No persisted result" },
+  }));
+  const report = await runProbe("preflight", { ...config, output: join(root, "late-preflight.json") });
+  assert.equal(report.status, "PREFLIGHT_OBSERVED", report.error?.message);
+  assert.equal(report.checks.prefix_preserved, true);
+  assert.equal(report.checks.prefix_preservation_scope, "preflight_snapshot");
+  assert.equal(report.checks.terminal_prefix_preserved, null);
+  assert.ok(!report.prefix_after.some(event => event.data?.toolCallId === lateId));
+  assert.ok(state.events.some(event => event.data?.toolCallId === lateId));
   assert.equal(state.sendCalls, 0);
 });
 
