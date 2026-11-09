@@ -18,7 +18,10 @@ plugin snapshot.
 The existing `_run_native_context_calibration` producer accepts an owner-only
 historical fixture with `schema_version: 3`. This is model-free preparation,
 not a behavioral run. It creates an empty namespace through the existing
-importer, then stages the materialized recorded projection as native events.
+importer using a session-header-only transport with the operational title
+`owned-recorded-context`, then stages the materialized recorded projection as
+native events. The title is not a source-original title claim. Import acceptance
+does not replace verification of an actual owned journal before staging.
 It does not send the final recorded human trigger.
 
 The fixture contains `provenance: "source-bound-historical"` and these fields:

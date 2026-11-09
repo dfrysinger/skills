@@ -1726,10 +1726,16 @@ class NativeRecordedContextTests(unittest.TestCase):
                 stream.write("}\n")
 
     def import_double(self, restoration, history, **kwargs):
+        from session_restore import semantic_projection
+
         self.order.append("import-exit")
         seed = [json.loads(line) for line in history.read_text().splitlines()]
         self.assertEqual(len(seed), 1)
+        self.assertEqual(set(seed[0]), {"type", "version", "externalId", "createdAt", "title"})
+        self.assertEqual(seed[0]["type"], "session")
         self.assertEqual(seed[0]["externalId"], self.source_id)
+        self.assertEqual(seed[0]["title"], "owned-recorded-context")
+        self.assertEqual(semantic_projection(seed), [])
         home = Path(kwargs["receipt_path"]).parents[1] / "candidate-home"
         self.journal = home / "session-state" / self.session_id / "events.jsonl"
         self.journal.parent.mkdir(parents=True)
@@ -1819,6 +1825,28 @@ class NativeRecordedContextTests(unittest.TestCase):
         self.assertEqual(result["setup_error_code"], "NATIVE_CONTEXT_SETUP_UNSUPPORTED")
         self.assertEqual(self.order, ["import-exit"])
         self.assertEqual(len(self.journal.read_text().splitlines()), 1)
+        native.assert_not_called()
+        candidate.assert_not_called()
+
+    def test_accepted_named_import_without_journal_preserves_bootstrap_failure(self):
+        from contextlib import ExitStack
+
+        def accepted_without_journal(restoration, history, **kwargs):
+            self.order.append("import-exit")
+            skill_eval.write_json(kwargs["receipt_path"], {
+                "status": "PASS", "session_id": self.session_id, "exit_code": 0,
+                "history_sha256": digest(history)})
+            return self.session_id
+
+        self.import_double = accepted_without_journal
+        with ExitStack() as stack:
+            native, candidate = self.patches(stack)
+            result = skill_eval._run_native_context_calibration(**self.arguments())
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["setup_error_code"], "NATIVE_CONTEXT_SETUP_UNSUPPORTED")
+        self.assertEqual(result["firsterror"], "Native journal is not an owned unaliased single-link file")
+        self.assertEqual(self.order, ["import-exit"])
+        self.assertFalse((self.run / "owner/journal-staged.jsonl").exists())
         native.assert_not_called()
         candidate.assert_not_called()
 

@@ -3025,7 +3025,8 @@ def _run_native_context_calibration(
         created_at = utc_instant()
         if historical:
             source_id, cutoff = fixture["restoration"]["source_session_id"], fixture["restoration"]["cutoff_event_id"]
-            records = ([{"type": "session", "version": 1, "externalId": source_id, "createdAt": created_at}]
+            records = ([{"type": "session", "version": 1, "externalId": source_id,
+                         "createdAt": created_at, "title": "owned-recorded-context"}]
                        if recorded else fixture["records"])
         else:
             records = [{"type": "session", "version": 1, "externalId": source_id, "createdAt": created_at}]
