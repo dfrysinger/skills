@@ -316,12 +316,22 @@ earlier decision that may have caused the failure. They are not always the
 same event. Record the exact trigger, then-current state, expected transition,
 observable progress and observation horizon before choosing skill changes.
 
-For autonomy failures, a real user follow-up after the agent has stalled tests
-response to human intervention, not prevention of the stall. For a prevention
-claim, start from the real earlier event before the first unsupported stop or
-before the agent produced the plan, objective or schedule that caused it.
-Withhold the later intervention. A scheduled wake in the bad state may test
-autonomous recovery, not initial prevention.
+Apply the main skill's negative-example default here: start before the
+supported causal mistake and withhold the later user intervention. For a
+stall, this can be before the first unsupported stop or before creation of
+the plan, objective or schedule that caused it. A real user follow-up after
+the stall tests response to intervention; a normal scheduled wake in the bad
+state tests autonomous recovery, not initial prevention.
+
+**Least-intervention fallback:** after checking practical restoration or
+execution options, explain the specific limit that prevents testing or
+achieving prevention. Propose the supported alternative that needs the least
+human involvement: prefer autonomous recovery on an ordinary existing trigger
+over a diagnostic user message. State any required user action, what the
+alternative would establish, and what remains unresolved. Obtain agreement
+before replacing the requested goal. Preserve evidence and continue relevant
+preparation that does not depend on that choice; a proxy stays separately
+labeled rather than becoming completion of the original task.
 
 | Suspected source or opportunity | Replay starting point | Required observation |
 |---|---|---|

@@ -14,6 +14,11 @@ substituted. A later phase's pending result is not a defect in a baseline-only
 method. Use the rule's stated branch rather than inventing a historical
 failure for adoption, regression or a new capability.
 
+Derive the goal from the user request and the skill's negative-example default,
+not only the plan's label. Under R1/R5, a real post-intervention prompt cannot
+qualify prevention; an unavailable prevention path needs the user's agreement
+to a declared alternative, not a narrower goal approved only by reviewers.
+
 | Rule | Evidence required for score 2 |
 |---|---|
 | R1. Replay a real trigger | For historical work, the exact source event, timestamp/ID, conversation cutoff, prompt bytes and restored state. Preserve original ambiguity, skill names and message roles. Audit every added sentence as sourced restoration or necessary execution setup. Use the [trigger branches](evaluation-playbook.md#choose-the-trigger-and-recovery-expectation); artifact-creation arms produce and exercise their own artifacts. An invented wake, diagnosis or corrected input is a different intervention, not an authentic replay. Synthetic tasks remain separately labeled. |
@@ -48,6 +53,10 @@ reassesses the same or corrected frozen evidence and both return READY.
 Finding disposition cannot override an unresolved BLOCKED or REVISE grade.
 Material method/evidence changes invalidate affected approvals until reviewed.
 Unchanged repetitions within the reviewed attempt set need no new review.
+Keep review packets focused on the current decision and linked evidence.
+Mechanical rebinding or evidence-navigation repairs reuse accepted method
+scope when inputs, meaning and behavior are unchanged; review only a material
+method change or the finding-scoped fix, not the whole experiment again.
 
 When checking a rubric against a known malformed plan, give both reviewers
 the original user outcome and that plan's actual inputs, not merely its

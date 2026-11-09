@@ -16,6 +16,14 @@ the branch for the user's decision. Search the
 [task catalog](references/task-catalog.md) when a checkout exists; reuse exact
 cases and prior outcomes before creating another.
 
+For a new negative example, default to preventing the failure before the
+user needed to intervene, not improving the reply to that intervention.
+Measure useful autonomous work for an autonomy failure. An explicit request
+to improve the response instead selects that narrower goal. If prevention
+cannot be tested or achieved, follow the playbook's
+[least-intervention fallback](references/evaluation-playbook.md#choose-the-trigger-and-recovery-expectation)
+and propose it to the user rather than silently changing the goal.
+
 Record the following in the existing plan or evaluator report, not another
 tracking system:
 
@@ -86,9 +94,12 @@ Reloading availability does not prove a fresh invocation or removal of old text.
 Keep preparation, permission readiness, actual model-context consumption and
 behavioral improvement separate. Prove each when the current claim needs it.
 Treat optional cache metadata as diagnostic unless its effect on the required
-input or behavior is established. Reuse relevant successful proof while its
-source, settings and boundary are unchanged; choose the cheapest check that
-exercises an infrastructure change, including preparation and transport costs.
+input or behavior is established. Reuse operational proof while the runner,
+permissions and required operations remain applicable. New skill bytes or
+binding hashes alone do not require another model setup run; verify those
+bindings mechanically and observe instruction exposure in the candidate run.
+Choose the cheapest check that exercises an infrastructure change, including
+preparation and transport costs.
 
 If needed state or tools are unavailable, record the missing prerequisite.
 A narrower decision screen may answer a separate question, but does not close
@@ -173,9 +184,11 @@ repair the judgment from retained output and label it separately.
 For a comparison, vary only the declared factor and hold the other conditions
 fixed. An instruction repair compares one general correction with unchanged
 instructions on the same frozen case, trigger, model/settings, tools, criteria
-and limits. Model adoption varies the model instead; follow its selected
-comparison contract. Judge actual outcome movement, separately from use of a
-changed instruction. Planned repetitions address variation; a lucky
+and limits. Expanded skill visibility, forced loading or changed context limits
+are separate runtime interventions; success there does not establish a repair
+under the original settings. Model adoption varies the model instead; follow
+its selected comparison contract. Judge actual outcome movement, separately
+from use of a changed instruction. Planned repetitions address variation; a lucky
 before/after pair does not establish reliability.
 
 An unchanged evaluation, such as a regression check, needs no proposed change
