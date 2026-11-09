@@ -137,6 +137,7 @@ def operational_input(path: Path, config: dict | None = None) -> dict:
                 "personal_skills": value["personal_skills"]["sha256"],
                 "custom_skills": value["custom_skills"]["sha256"],
                 "source_aliases": value["source_aliases"],
+                "enableConfigDiscovery": True,
                 "requestExtensions": False,
             },
             "limits": ["Registration names/timestamps are selected transport metadata, not recovered registration",

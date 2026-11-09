@@ -139,7 +139,7 @@ transport registration; they do not recover original registration metadata.
 The producer copies installed sources into separate pinned roots, personal
 skills into owned `COPILOT_HOME/skills`, and custom skills into the owned custom
 discovery root. Resume has no explicit plugin-directory tier, sets
-`requestExtensions=false`, and uses native `options.update.installedPlugins`
+`enableConfigDiscovery=true` and `requestExtensions=false`, and uses native `options.update.installedPlugins`
 followed by catalog reload. No manifest or extension host is created. Source
 aliases are existing readable directories staged by the caller, not copied by
 the producer. Include every original-path skill-helper copy in that list.

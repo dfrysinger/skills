@@ -693,6 +693,7 @@ test("operational source tiers hydrate exact schedules warm/cold without model d
   }
   assert.ok(state.resumes.length >= 2);
   assert.ok(state.resumes.every(options => options.requestExtensions === false
+    && options.enableConfigDiscovery === true
     && options.pluginDirectories.length === 0
     && options.skillDirectories[0] === input.custom_skills.path));
   assert.ok(state.allOptionUpdates.every(update => update.installedPlugins?.length === 2));
@@ -825,6 +826,7 @@ test("operational continuation binds every discovery tier and readable source al
   writeFileSync(join(working, "source.txt"), "Synthetic cutoff working file\n");
   const bound = continuationEntry(config);
   assert.equal(bound.binding.operational.source_aliases.length, 1);
+  assert.equal(bound.binding.operational.enableConfigDiscovery, true);
   const hidden = join(working, "criteria.json");
   writeFileSync(hidden, "Synthetic hidden member\n");
   assert.throws(() => continuationEntry(config), /Hidden evaluation input/);
@@ -834,6 +836,7 @@ test("operational continuation binds every discovery tier and readable source al
   assert.equal(report.status, "CANDIDATE_OBSERVED", report.error?.message);
   assert.equal(state.sendCalls, 1);
   assert.ok(state.resumes.every(options => options.requestExtensions === false
+    && options.enableConfigDiscovery === true
     && options.pluginDirectories.length === 0));
   assert.deepEqual(report.cleanup.stopped_schedule_ids, [3, 4, 25]);
   assert.equal(report.checks.exactly_once, true);

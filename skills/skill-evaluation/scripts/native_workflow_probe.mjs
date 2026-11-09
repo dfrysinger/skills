@@ -1926,7 +1926,7 @@ export async function runProbe(op, config) {
       onPermissionRequest: candidatePermissionHandler(config, report.goal_path, config.plugin_path, []),
     };
     if (operational) candidateOptions = {
-      ...candidateOptions, pluginDirectories: [], requestExtensions: false,
+      ...candidateOptions, pluginDirectories: [], enableConfigDiscovery: true, requestExtensions: false,
     };
     sdk = await import(pathToFileURL(config.sdk).href);
     await connect();
