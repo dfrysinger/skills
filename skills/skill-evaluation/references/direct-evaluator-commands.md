@@ -31,8 +31,14 @@ The fixture contains `provenance: "source-bound-historical"` and these fields:
   runtime revisions are separate identities.
 - `restoration`: `source_session_id`, `cutoff_event_id`, and
   `skill_context: "recorded-target-context"`.
-- `trigger`: original `event_id`, `timestamp`, raw `content`, and
-  `source_line_sha256`.
+- `trigger`: original `event_id`, `timestamp`, raw `content`,
+  `source_line_sha256`, and relative `source_event_path`. The path must name an
+  owned, owner-only, unaliased single-link file under the fixture root containing
+  the exact source `user.message` JSON line bytes without whitespace or line-ending normalization.
+  Its hash, ID, timestamp and raw `data.content` must match the trigger.
+  `data.transformedContent` must equal the final canonical user message; only an
+  absent field falls back to raw content. Staging copies the exact bytes to
+  `owner/source-trigger-event.jsonl`; native readback checks the same binding.
 - `consumer`: selected `cli_version`, `cli_sha256`, and `sdk_sha256`.
 - `snapshot`, `required_tools`, `limitations`, `personal_instructions`, and
   `candidate_permissions`, using the existing task and permission contracts.

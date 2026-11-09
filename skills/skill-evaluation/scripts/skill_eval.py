@@ -2431,7 +2431,8 @@ def _stage_recorded_native_context(events, before, *, historical, schema_text, o
         staged.append({**event, "parentId": staged[-1]["id"]})
     after = "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in staged).encode()
     canonical = historical["canonical"]
-    deferred = {**historical["trigger"], "canonical_index": len(canonical["chat_messages"]) - 1,
+    deferred = {**historical["trigger"], "source_event_path": "source-trigger-event.jsonl",
+                "canonical_index": len(canonical["chat_messages"]) - 1,
                 "recorded_message": canonical["chat_messages"][-1]}
     canonical_path = owner / "canonical-recorded-context.json"
     trigger_path = owner / "deferred-original-trigger.json"
@@ -2465,6 +2466,7 @@ def _stage_recorded_native_context(events, before, *, historical, schema_text, o
         ("imported-prefix.json", (json.dumps(staged, ensure_ascii=False) + "\n").encode()),
         ("context-fixture.json", (json.dumps(locator, ensure_ascii=False) + "\n").encode()),
         (canonical_path.name, historical["canonical_bytes"]),
+        (deferred["source_event_path"], historical["trigger_source_bytes"]),
         (trigger_path.name, (json.dumps(deferred, ensure_ascii=False) + "\n").encode()),
     )
     for name, content in artifacts:
@@ -2825,7 +2827,7 @@ def _validate_recorded_context_fixture(fixture: dict, root: Path | None) -> dict
             or Path(context["source"]).parent.name != restoration["source_session_id"]
             or binding["cutoff_offset"] != context["source_cutoff_offset"]
             or not isinstance(trigger, dict) or set(trigger) != {
-                "event_id", "timestamp", "content", "source_line_sha256"}
+                "event_id", "timestamp", "content", "source_line_sha256", "source_event_path"}
             or trigger["event_id"] != restoration["cutoff_event_id"]
             or not isinstance(trigger["content"], str) or not trigger["content"]
             or not re.fullmatch(r"[0-9a-f]{64}", str(trigger["source_line_sha256"]))):
@@ -2838,9 +2840,27 @@ def _validate_recorded_context_fixture(fixture: dict, root: Path | None) -> dict
             raise ValueError()
     except (ValueError, AttributeError, TypeError):
         raise ValueError("Invalid original trigger timestamp") from None
+    trigger_path = owner_file(root.absolute(), trigger["source_event_path"])
+    if trigger_path.stat().st_mode & 0o077:
+        raise ValueError("Original trigger source event must be owner-only")
+    trigger_bytes = trigger_path.read_bytes()
+    if hashlib.sha256(trigger_bytes).hexdigest() != trigger["source_line_sha256"]:
+        raise ValueError("Original trigger source event checksum differs")
+    event = read_owner_json(trigger_path)
+    if (not isinstance(event, dict) or event.get("type") != "user.message"
+            or event.get("id") != trigger["event_id"] or event.get("timestamp") != trigger["timestamp"]
+            or not isinstance(event.get("data"), dict)
+            or not isinstance(event["data"].get("content"), str)
+            or event["data"]["content"] != trigger["content"]):
+        raise ValueError("Original trigger source event binding differs")
+    transformed = event["data"].get("transformedContent", event["data"]["content"])
+    if (not isinstance(transformed, str) or context["chat_messages"][-1].get("role") != "user"
+            or transformed != context["chat_messages"][-1].get("content")):
+        raise ValueError("Original trigger transformed content differs")
     permission_rules(fixture["candidate_permissions"])
     return {**fixture, "snapshot": compile_task_snapshot(fixture["snapshot"]),
             "canonical": context, "canonical_bytes": source_bytes,
+            "trigger_source_bytes": trigger_bytes,
             "native_payloads": payloads, "recorded_correspondence": correspondence,
             "excluded_fields": excluded}
 

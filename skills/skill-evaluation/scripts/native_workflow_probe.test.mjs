@@ -542,13 +542,19 @@ async function recordedContextFixture(t) {
     })),
   ];
   state.invokedSkills = structuredClone(canonical.invoked_skills);
+  const hash = path => createHash("sha256").update(readFileSync(path)).digest("hex");
   const canonicalFile = join(root, "canonical.json"), triggerFile = join(root, "trigger.json");
+  const sourceFile = join(root, "source-trigger-event.jsonl");
+  writeFileSync(sourceFile, JSON.stringify({
+    id: triggerId, type: "user.message", timestamp: "2026-01-01T00:00:00Z",
+    data: { content: "Synthetic trigger", transformedContent: canonical.chat_messages[4].content },
+  }) + "\n", { mode: 0o600 });
   writeFileSync(canonicalFile, JSON.stringify(canonical, null, 2), { mode: 0o600 });
   writeFileSync(triggerFile, JSON.stringify({
     event_id: triggerId, content: "Synthetic trigger", timestamp: "2026-01-01T00:00:00Z",
-    source_line_sha256: "3".repeat(64), canonical_index: 4, recorded_message: canonical.chat_messages[4],
+    source_line_sha256: hash(sourceFile), source_event_path: "source-trigger-event.jsonl",
+    canonical_index: 4, recorded_message: canonical.chat_messages[4],
   }), { mode: 0o600 });
-  const hash = path => createHash("sha256").update(readFileSync(path)).digest("hex");
   const locator = {
     schema_version: 3, canonical_file: canonicalFile, canonical_sha256: hash(canonicalFile),
     trigger_file: triggerFile, trigger_sha256: hash(triggerFile),
@@ -588,6 +594,78 @@ test("recorded context retains 22 skills and reads actual permission mode withou
   assert.equal(state.owners, 0);
   assert.equal(state.starts, 2);
   assert.throws(() => validateConfig("candidate", config), /forbids model sends/);
+});
+
+test("recorded trigger source binding refuses substituted raw or transformed content before resume", async t => {
+  for (const fault of ["hash", "fixture-content", "id", "timestamp", "raw-content", "type",
+    "transformed", "null-transformed", "absent-transformed", "canonical-transformed", "missing-path",
+    "absolute-path", "parent-path", "mode", "symlink", "hardlink"]) {
+    await t.test(fault, async t => {
+      const { config, state, locator, root } = await recordedContextFixture(t);
+      const deferred = JSON.parse(readFileSync(locator.trigger_file, "utf8"));
+      const sourceFile = join(root, deferred.source_event_path);
+      const event = JSON.parse(readFileSync(sourceFile, "utf8"));
+      const canonical = JSON.parse(readFileSync(locator.canonical_file, "utf8"));
+      if (fault === "fixture-content") deferred.content = "Synthetic mismatch diagnostic only";
+      if (fault === "id") event.id = randomUUID();
+      if (fault === "timestamp") event.timestamp = "2026-01-02T00:00:00Z";
+      if (fault === "raw-content") event.data.content = "Changed synthetic raw content";
+      if (fault === "type") event.type = "assistant.message";
+      if (fault === "transformed") event.data.transformedContent = "Changed transformed content";
+      if (fault === "null-transformed") event.data.transformedContent = null;
+      if (fault === "absent-transformed") delete event.data.transformedContent;
+      if (fault === "canonical-transformed") canonical.chat_messages.at(-1).content = "Changed canonical trigger";
+      if (fault === "missing-path") delete deferred.source_event_path;
+      writeFileSync(sourceFile, JSON.stringify(event) + "\n");
+      const hash = path => createHash("sha256").update(readFileSync(path)).digest("hex");
+      deferred.source_line_sha256 = fault === "hash" ? "0".repeat(64) : hash(sourceFile);
+      if (fault === "absolute-path") deferred.source_event_path = sourceFile;
+      if (fault === "parent-path") deferred.source_event_path = "../source-trigger-event.jsonl";
+      if (fault === "mode") chmodSync(sourceFile, 0o644);
+      if (fault === "symlink" || fault === "hardlink") {
+        const alias = join(root, `${fault}.jsonl`);
+        if (fault === "symlink") symlinkSync(sourceFile, alias);
+        else linkSync(sourceFile, alias);
+        deferred.source_event_path = `${fault}.jsonl`;
+      }
+      if (fault === "canonical-transformed") writeFileSync(locator.canonical_file, JSON.stringify(canonical));
+      locator.canonical_sha256 = locator.source_binding.sha256 = hash(locator.canonical_file);
+      writeFileSync(locator.trigger_file, JSON.stringify(deferred));
+      locator.trigger_sha256 = hash(locator.trigger_file);
+      const { recorded_payloads, ...stored } = locator;
+      writeFileSync(config.context_fixture_file, JSON.stringify(stored));
+      const result = await runProbe("setup", config);
+      assert.equal(result.status, "ERROR");
+      assert.match(result.error.message, /[Rr]ecorded trigger|Symlink/);
+      assert.equal(result.model_calls, 0);
+      assert.equal(state.starts, 0);
+      assert.equal(state.sendCalls, 0);
+    });
+  }
+});
+
+test("recorded trigger without transformedContent uses exact raw content and remains deferred", async t => {
+  const { config, state, locator, root } = await recordedContextFixture(t);
+  const deferred = JSON.parse(readFileSync(locator.trigger_file, "utf8"));
+  const sourceFile = join(root, deferred.source_event_path);
+  const event = JSON.parse(readFileSync(sourceFile, "utf8"));
+  const canonical = JSON.parse(readFileSync(locator.canonical_file, "utf8"));
+  delete event.data.transformedContent;
+  canonical.chat_messages.at(-1).content = event.data.content;
+  deferred.recorded_message = canonical.chat_messages.at(-1);
+  writeFileSync(sourceFile, JSON.stringify(event) + "\n");
+  const hash = path => createHash("sha256").update(readFileSync(path)).digest("hex");
+  deferred.source_line_sha256 = hash(sourceFile);
+  writeFileSync(locator.canonical_file, JSON.stringify(canonical));
+  locator.canonical_sha256 = locator.source_binding.sha256 = hash(locator.canonical_file);
+  writeFileSync(locator.trigger_file, JSON.stringify(deferred));
+  locator.trigger_sha256 = hash(locator.trigger_file);
+  const { recorded_payloads, ...stored } = locator;
+  writeFileSync(config.context_fixture_file, JSON.stringify(stored));
+  const result = await runProbe("setup", config);
+  assert.equal(result.status, "SETUP_OBSERVED", result.error?.message);
+  assert.equal(state.events.some(item => item.id === event.id), false);
+  assert.equal(state.sendCalls, 0);
 });
 
 test("recorded context observes independent discovery without qualifying a behavioral baseline", async t => {

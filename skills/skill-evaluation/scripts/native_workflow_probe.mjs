@@ -209,6 +209,35 @@ function contextFixture(config) {
       }
       const canonical = parseDataJson(readFileSync(fixture.canonical_file, "utf8"));
       const deferred = parseDataJson(readFileSync(fixture.trigger_file, "utf8"));
+      const ownerRoot = dirname(config.context_fixture_file);
+      if (typeof deferred.source_event_path !== "string" || !deferred.source_event_path
+          || isAbsolute(deferred.source_event_path)
+          || !within(resolve(ownerRoot, deferred.source_event_path), ownerRoot)
+          || relative(ownerRoot, resolve(ownerRoot, deferred.source_event_path)) !== deferred.source_event_path) {
+        throw new Error("Invalid recorded trigger source event path");
+      }
+      const sourcePath = resolve(ownerRoot, deferred.source_event_path);
+      requirePath(sourcePath, "file");
+      const sourceStat = lstatSync(sourcePath);
+      const sourceBytes = readFileSync(sourcePath);
+      if (!within(sourcePath, ownerRoot) || sourceStat.uid !== userInfo().uid
+          || sourceStat.nlink !== 1 || (sourceStat.mode & 0o077)
+          || !/^[0-9a-f]{64}$/.test(deferred.source_line_sha256)
+          || createHash("sha256").update(sourceBytes).digest("hex") !== deferred.source_line_sha256) {
+        throw new Error("Recorded trigger source event owner artifact differs");
+      }
+      const sourceEvent = parseDataJson(sourceBytes.toString("utf8"));
+      if (sourceEvent?.type !== "user.message" || sourceEvent.id !== deferred.event_id
+          || typeof deferred.timestamp !== "string" || !deferred.timestamp
+          || sourceEvent.timestamp !== deferred.timestamp
+          || typeof deferred.content !== "string" || !deferred.content
+          || sourceEvent.data?.content !== deferred.content
+          || typeof sourceEvent.data.content !== "string"
+          || (Object.hasOwn(sourceEvent.data, "transformedContent")
+            ? sourceEvent.data.transformedContent : sourceEvent.data.content) !== canonical.chat_messages.at(-1)?.content
+          || typeof canonical.chat_messages.at(-1)?.content !== "string") {
+        throw new Error("Recorded trigger source event correspondence differs");
+      }
       if (fixture.source_binding?.sha256 !== fixture.canonical_sha256
           || fixture.source_binding.cutoff_offset !== canonical.source_cutoff_offset
           || fixture.source_binding.cutoff_event_id !== canonical.last_source_event

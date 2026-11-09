@@ -1690,6 +1690,14 @@ class NativeRecordedContextTests(unittest.TestCase):
         self.canonical = self.root / "recorded.json"
         self.canonical.write_text(json.dumps(self.context, indent=2) + "\n")
         self.canonical.chmod(0o600)
+        self.source_event = {
+            "id": self.trigger_id, "type": "user.message", "timestamp": "2026-01-01T00:00:00Z",
+            "data": {"content": "Synthetic trigger", "transformedContent": "Wrapped Synthetic trigger"},
+        }
+        self.source_event_path = self.root / "source-events/trigger.jsonl"
+        self.source_event_path.parent.mkdir()
+        self.source_event_path.write_bytes((json.dumps(self.source_event) + "\n").encode())
+        self.source_event_path.chmod(0o600)
         self.recorded = {
             "schema_version": 3, "provenance": "source-bound-historical",
             "recorded_context": {"path": self.canonical.name, "sha256": digest(self.canonical),
@@ -1700,7 +1708,8 @@ class NativeRecordedContextTests(unittest.TestCase):
             "restoration": {"source_session_id": self.source_id, "cutoff_event_id": self.trigger_id,
                             "skill_context": "recorded-target-context"},
             "trigger": {"event_id": self.trigger_id, "timestamp": "2026-01-01T00:00:00Z",
-                        "content": "Synthetic trigger", "source_line_sha256": "3" * 64},
+                        "content": "Synthetic trigger", "source_line_sha256": digest(self.source_event_path),
+                        "source_event_path": "source-events/trigger.jsonl"},
             "snapshot": historical_snapshot_fixture(), "required_tools": ["skill", "view", "sql", "manage_schedule"],
             "personal_instructions": "Synthetic personal", "candidate_permissions": {
                 "write_paths": [], "shell_commands": []},
@@ -1752,6 +1761,8 @@ class NativeRecordedContextTests(unittest.TestCase):
         self.order.append(operation)
         self.assertEqual(self.journal.read_bytes(), (self.run / "owner/journal-staged.jsonl").read_bytes())
         self.assertEqual((self.run / "owner/canonical-recorded-context.json").read_bytes(), self.canonical.read_bytes())
+        self.assertEqual((self.run / "owner/source-trigger-event.jsonl").read_bytes(),
+                         self.source_event_path.read_bytes())
         return {"status": {"setup": "SETUP_OBSERVED", "observe": "OBSERVED", "cleanup": "CLEANED"}[operation]}
 
     def test_source_preparation_passes_original_103_consumer_to_all_receipt_checks(self):
@@ -1910,8 +1921,83 @@ class NativeRecordedContextTests(unittest.TestCase):
         deferred = json.loads(Path(locator["trigger_file"]).read_text())
         self.assertEqual(deferred["event_id"], self.trigger_id)
         self.assertEqual(deferred["recorded_message"], self.context["chat_messages"][-1])
+        self.assertEqual(deferred["source_event_path"], "source-trigger-event.jsonl")
+        self.assertEqual(digest(self.run / "owner" / deferred["source_event_path"]),
+                         deferred["source_line_sha256"])
         self.assertEqual(original, self.canonical.read_bytes())
         self.assertTrue(any("approval indices" in item for item in locator["limitations"]))
+
+    def test_recorded_trigger_refuses_changed_raw_or_transformed_source_bindings(self):
+        canonical_bytes = self.canonical.read_bytes()
+        for fault in ("hash", "fixture-content", "id", "timestamp", "content", "type",
+                      "transformed", "null-transformed", "absent-transformed", "canonical-transformed"):
+            with self.subTest(fault=fault):
+                fixture = json.loads(json.dumps(self.recorded))
+                event = json.loads(json.dumps(self.source_event))
+                context = json.loads(json.dumps(self.context))
+                if fault == "fixture-content":
+                    fixture["trigger"]["content"] = "synthetic mismatch diagnostic only"
+                elif fault == "id":
+                    event["id"] = str(uuid.uuid4())
+                elif fault == "timestamp":
+                    event["timestamp"] = "2026-01-02T00:00:00Z"
+                elif fault == "content":
+                    event["data"]["content"] = "Changed synthetic raw content"
+                elif fault == "type":
+                    event["type"] = "assistant.message"
+                elif fault == "transformed":
+                    event["data"]["transformedContent"] = "Changed synthetic transformed content"
+                elif fault == "null-transformed":
+                    event["data"]["transformedContent"] = None
+                elif fault == "absent-transformed":
+                    del event["data"]["transformedContent"]
+                elif fault == "canonical-transformed":
+                    context["chat_messages"][-1]["content"] = "Changed synthetic canonical trigger"
+                self.source_event_path.write_text(json.dumps(event) + "\n")
+                fixture["trigger"]["source_line_sha256"] = (
+                    "0" * 64 if fault == "hash" else digest(self.source_event_path))
+                self.canonical.write_bytes(
+                    json.dumps(context).encode() if fault == "canonical-transformed" else canonical_bytes)
+                fixture["recorded_context"]["sha256"] = digest(self.canonical)
+                with self.assertRaisesRegex(ValueError, "Original trigger"):
+                    skill_eval._validate_historical_context_fixture(fixture, root=self.root)
+
+    def test_recorded_trigger_falls_back_to_raw_content_only_when_transform_is_absent(self):
+        del self.source_event["data"]["transformedContent"]
+        self.context["chat_messages"][-1]["content"] = self.source_event["data"]["content"]
+        self.source_event_path.write_text(json.dumps(self.source_event) + "\n")
+        self.canonical.write_text(json.dumps(self.context))
+        self.recorded["trigger"]["source_line_sha256"] = digest(self.source_event_path)
+        self.recorded["recorded_context"]["sha256"] = digest(self.canonical)
+        validated = skill_eval._validate_historical_context_fixture(self.recorded, root=self.root)
+        self.assertEqual(validated["trigger_source_bytes"], self.source_event_path.read_bytes())
+
+    def test_recorded_trigger_preserves_owner_file_defenses(self):
+        for fault in ("missing-path", "absolute", "traversal", "mode", "symlink", "hardlink"):
+            with self.subTest(fault=fault):
+                fixture = json.loads(json.dumps(self.recorded))
+                alias = self.root / f"{fault}.jsonl"
+                if fault == "missing-path":
+                    del fixture["trigger"]["source_event_path"]
+                elif fault == "absolute":
+                    fixture["trigger"]["source_event_path"] = str(self.source_event_path)
+                elif fault == "traversal":
+                    fixture["trigger"]["source_event_path"] = "../trigger.jsonl"
+                elif fault == "mode":
+                    self.source_event_path.chmod(0o644)
+                else:
+                    if fault == "symlink":
+                        alias.symlink_to(self.source_event_path)
+                    else:
+                        alias.hardlink_to(self.source_event_path)
+                    fixture["trigger"]["source_event_path"] = alias.name
+                try:
+                    with self.assertRaises(ValueError):
+                        skill_eval._validate_historical_context_fixture(fixture, root=self.root)
+                finally:
+                    self.source_event_path.chmod(0o600)
+                    if alias.exists():
+                        alias.unlink()
 
     def test_unmapped_provider_field_refuses_before_import_without_discarding_it(self):
         from contextlib import ExitStack
