@@ -56,6 +56,17 @@ export class CopilotClient {
   async forceStop() { state.owners = 0; this.started = false; }
   async resumeSession(id, options) {
     state.resumes.push(options);
+    if (state.hydrateSchedules) {
+      const active = new Map();
+      for (const event of state.events) {
+        if (event.type === "session.schedule_created") {
+          const { id, intervalMs, prompt, recurring } = event.data;
+          active.set(id, { id, intervalMs, prompt, recurring,
+            nextRunAt: new Date(Date.now() + intervalMs + (state.scheduleClockOffset ?? 0)).toISOString() });
+        } else if (event.type === "session.schedule_cancelled") active.delete(event.data.id);
+      }
+      state.entries = [...active.values()];
+    }
     const goalPath = join(this.options.baseDirectory, "session-state", id, "autopilot-objective.json");
     let current = null;
     try { current = JSON.parse(readFileSync(goalPath, "utf8")).current; } catch {}
@@ -88,6 +99,7 @@ export class CopilotClient {
       },
       rpc: {
         options: { update: async args => {
+          (state.allOptionUpdates ??= []).push(args);
           state.optionUpdates = args; return { success: !state.optionsDenied };
         } },
         permissions: {
@@ -159,6 +171,10 @@ export class CopilotClient {
           stop: async ({ id }) => {
             const entry = state.entries.find(entry => entry.id === id);
             state.entries = state.entries.filter(entry => entry.id !== id);
+            if (state.hydrateSchedules) state.events.push({
+              id: randomUUID(), timestamp: new Date().toISOString(),
+              type: "session.schedule_cancelled", data: { id },
+            });
             return { entry };
           },
         },
@@ -613,10 +629,109 @@ async function completedRecordedContextFixture(t) {
   return { ...owned, store, source, goal, descriptor };
 }
 
-async function continuationFixture(t, { loadedCopies = false } = {}) {
+function addOperationalInput({ config, root, state }) {
+  const tree = path => {
+    const result = spawnSync("python3", ["-B", "-c",
+      "import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);from skill_eval import directory_identity;print(json.dumps(directory_identity(Path(sys.argv[2]))))",
+      dirname(new URL(import.meta.url).pathname), path], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return { path, sha256: JSON.parse(result.stdout).sha256 };
+  };
+  writeFileSync(join(config.plugin_path, "plugin.json"), JSON.stringify({ name: "synthetic-main", version: "1.0" }));
+  const roots = ["pinned-installed-1", "pinned-custom-skills", "source-alias"]
+    .map(name => join(root, name));
+  const personal = join(config.home, "skills");
+  for (const path of [...roots, personal]) {
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, "SKILL.md"), "Synthetic source-safe skill\n");
+  }
+  const events = [
+    ...[1, 2, 3, 4].map(id => ({
+      id: randomUUID(), timestamp: "2026-01-02T00:00:00Z", type: "session.schedule_created",
+      data: { id, intervalMs: id % 2 ? 14400000 : 3600000, recurring: true, origin: "model",
+        prompt: `Synthetic inert reminder ${id}` },
+    })),
+    ...[1, 2].map(id => ({
+      id: randomUUID(), timestamp: "2026-01-02T00:01:00Z", type: "session.schedule_cancelled", data: { id },
+    })),
+  ];
+  const prefix = JSON.parse(readFileSync(config.prefix_file));
+  state.events = [prefix[0], ...structuredClone(events), ...prefix.slice(1)];
+  state.events.forEach((event, index) => { if (index) event.parentId = state.events[index - 1].id; });
+  writeFileSync(config.prefix_file, JSON.stringify(state.events), { mode: 0o600 });
+  const schedulePath = join(root, "schedule-events.json");
+  writeFileSync(schedulePath, JSON.stringify(events), { mode: 0o600 });
+  const installed = (path, name, version) => ({
+    ...tree(path), name, marketplace: "", installed_at: "2026-02-01T00:00:00Z",
+    ...(version ? { version } : {}),
+  });
+  const input = {
+    schema_version: 1,
+    installed_plugins: [installed(config.plugin_path, "synthetic-main", "1.0"),
+      installed(roots[0], "synthetic-deep")],
+    personal_skills: tree(personal), custom_skills: tree(roots[1]), source_aliases: [tree(roots[2])],
+    schedule_events: { path: "schedule-events.json",
+      sha256: createHash("sha256").update(readFileSync(schedulePath)).digest("hex") },
+  };
+  config.operational_file = join(root, "operational.json");
+  config.skill_directories = [roots[1]];
+  writeFileSync(config.operational_file, JSON.stringify(input), { mode: 0o600 });
+  state.hydrateSchedules = true;
+  return { input, events };
+}
+
+test("operational source tiers hydrate exact schedules warm/cold without model delivery", async t => {
+  const owned = await recordedContextFixture(t);
+  const { config, root, state } = owned;
+  const { input, events } = addOperationalInput(owned);
+  const report = await runProbe("setup", config);
+  assert.equal(report.status, "SETUP_OBSERVED", report.error?.message);
+  for (const readback of [report.warm, report]) {
+    assert.deepEqual(readback.schedules.entries.map(entry => entry.id), [3, 4]);
+    assert.deepEqual(readback.events.filter(event => /session.schedule_/.test(event.type))
+      .map(({ parentId, ...source }) => source), events);
+  }
+  assert.ok(state.resumes.length >= 2);
+  assert.ok(state.resumes.every(options => options.requestExtensions === false
+    && options.pluginDirectories.length === 0
+    && options.skillDirectories[0] === input.custom_skills.path));
+  assert.ok(state.allOptionUpdates.every(update => update.installedPlugins?.length === 2));
+  assert.equal(state.sendCalls, 0);
+  assert.equal(state.owners, 0);
+  const clean = await runProbe("cleanup", { ...config, output: join(root, "cleanup.json") });
+  assert.equal(clean.status, "CLEANED", clean.error?.message);
+  assert.deepEqual(clean.cleanup.schedules.entries, []);
+  assert.deepEqual(clean.cleanup.stopped_schedule_ids, [3, 4]);
+  assert.equal(state.sendCalls, 0);
+});
+
+test("operational setup rejects changed schedule definitions and unrequested turns", async t => {
+  for (const fault of ["schedule", "clock", "turn"]) {
+    await t.test(fault, async t => {
+      const owned = await recordedContextFixture(t);
+      addOperationalInput(owned);
+      if (fault === "schedule") owned.state.events.find(event =>
+        event.type === "session.schedule_created" && event.data.id === 3).data.prompt = "Changed source";
+      else if (fault === "clock") owned.state.scheduleClockOffset = -1800000;
+      else owned.state.events.push({
+        id: randomUUID(), timestamp: new Date().toISOString(), type: "user.message",
+        data: { content: "Unexpected scheduled delivery", source: "schedule" },
+      });
+      const report = await runProbe("setup", owned.config);
+      assert.equal(report.status, "ERROR");
+      assert.match(report.error.message, fault === "schedule" ? /scheduler|namespace/
+        : fault === "clock" ? /interval clock/ : /unrequested turn/);
+      assert.equal(owned.state.sendCalls, 0);
+      assert.equal(owned.state.owners, 0);
+    });
+  }
+});
+
+async function continuationFixture(t, { loadedCopies = false, operational = false } = {}) {
   const owned = await completedRecordedContextFixture(t);
   const { config, root, state } = owned;
   writeFileSync(join(config.plugin_path, "generic.txt"), "Synthetic pinned plugin\n");
+  if (operational) addOperationalInput(owned);
   const setup = await runProbe("setup", config);
   assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
   state.resumes = [];
@@ -702,6 +817,60 @@ test("continuation admits separate unchanged loaded plugin and personal copies",
   assert.equal(result.continuation_receipt.status, "CONTINUATION_CANARY_OBSERVED");
   assert.equal(state.sendCalls, 1);
 });
+
+test("operational continuation binds every discovery tier and readable source alias", async t => {
+  const { config, state, input } = await continuationFixture(t, { operational: true });
+  const working = join(input.package_root, "owner/working-state/documents");
+  mkdirSync(working, { recursive: true });
+  writeFileSync(join(working, "source.txt"), "Synthetic cutoff working file\n");
+  const bound = continuationEntry(config);
+  assert.equal(bound.binding.operational.source_aliases.length, 1);
+  const hidden = join(working, "criteria.json");
+  writeFileSync(hidden, "Synthetic hidden member\n");
+  assert.throws(() => continuationEntry(config), /Hidden evaluation input/);
+  rmSync(hidden);
+  state.completeViaTool = true;
+  const report = await runProbe("candidate", config);
+  assert.equal(report.status, "CANDIDATE_OBSERVED", report.error?.message);
+  assert.equal(state.sendCalls, 1);
+  assert.ok(state.resumes.every(options => options.requestExtensions === false
+    && options.pluginDirectories.length === 0));
+  assert.deepEqual(report.cleanup.stopped_schedule_ids, [3, 4, 25]);
+  assert.equal(report.checks.exactly_once, true);
+  assert.equal(report.checks.operation_witnesses, true);
+});
+
+test("working-state package directory requires explicit operational input", async t => {
+  const { config, input } = await continuationFixture(t);
+  const working = join(input.package_root, "owner/working-state");
+  mkdirSync(working);
+  writeFileSync(join(working, "manifest.json"), "{}");
+  assert.throws(() => continuationEntry(config), /Hidden evaluation input/);
+});
+
+for (const kind of ["deep", "personal", "custom", "alias"]) {
+  test(`operational continuation rejects hidden or post-send changed ${kind} root`, async t => {
+    for (const phase of ["before", "after"]) {
+      await t.test(phase, async t => {
+        const { config, state } = await continuationFixture(t, { operational: true });
+        const input = JSON.parse(readFileSync(config.operational_file));
+        const path = kind === "deep" ? input.installed_plugins[1].path
+          : kind === "alias" ? input.source_aliases[0].path : input[`${kind}_skills`].path;
+        const original = state.sendHook;
+        const mutate = () => writeFileSync(join(path, phase === "before" ? "criteria.json" : "SKILL.md"),
+          "Synthetic changed input\n");
+        if (phase === "before") mutate();
+        else state.sendHook = (...args) => { const result = original(...args); mutate(); return result; };
+        const report = await runProbe("candidate", config);
+        assert.equal(report.status, phase === "before" ? "PREMODEL_BLOCKED" : "FAILED");
+        assert.equal(state.sendCalls, phase === "before" ? 0 : 1);
+        assert.match(report.firsterror, phase === "before" ? /Hidden evaluation input/
+          : /Operational tree binding changed/);
+        assert.equal(state.owners, 0);
+      });
+    }
+  });
+}
 
 for (const kind of ["plugin", "personal"]) {
   for (const hidden of ["judge-reference", "criteria.json"]) {

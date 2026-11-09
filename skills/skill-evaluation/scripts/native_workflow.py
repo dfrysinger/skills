@@ -17,6 +17,132 @@ CLI_CONTINUATION_CAPABILITIES = [
 ]
 CLI_CONTINUATION_PREAMBLE = "You are the GitHub Copilot CLI, a terminal assistant built by GitHub."
 
+def _screen_input_tree(root, *, package=False, operational=False):
+    owner_names = {"context-fixture.json", "completed-objective.json", "recorded-context.json",
+                   "source-event.json", "continuation.json", "calibration-evidence"}
+    if operational:
+        owner_names |= {"operational.json", "schedule-events.json", "working-state"}
+    for member in root.rglob("*"):
+        parts = member.relative_to(root).parts
+        if (member.is_symlink() or ".git" in parts
+                or (package and (
+                    parts[0] not in {"evaluator", "plugins", "owner"}
+                    or (parts[0] == "owner" and len(parts) > 1 and parts[1] not in owner_names)))
+                or any(re.search(r"(^|[-_.])(judge|criteria|diagnosis|work-order)([-_.]|$)", part, re.I)
+                       for part in parts)):
+            raise ValueError("Hidden evaluation input or aliased member in continuation inputs")
+
+
+def operational_input(path: Path, config: dict | None = None) -> dict:
+    from datetime import datetime
+    from skill_eval import digest, directory_identity
+
+    path = owner_file(path.parent, path.name)
+    if path.stat().st_mode & 0o077:
+        raise ValueError("Operational input must be owner-only")
+    value = read_owner_json(path)
+    _object(value, {"schema_version", "installed_plugins", "personal_skills", "custom_skills",
+                    "source_aliases", "schedule_events"}, "operational input")
+    if (type(value["schema_version"]) is not int or value["schema_version"] != 1
+            or not isinstance(value["installed_plugins"], list) or not value["installed_plugins"]
+            or not isinstance(value["source_aliases"], list)):
+        raise ValueError("Invalid operational input population")
+
+    def tree(item, *, plugin=False):
+        fields = {"path", "sha256"}
+        if plugin:
+            fields |= {"name", "marketplace", "installed_at"}
+        _object(item, fields | ({"version"} if plugin and "version" in item else set()), "operational tree")
+        if not _text(item["path"]):
+            raise ValueError("Invalid operational root path")
+        root = Path(item["path"])
+        if (not root.is_absolute() or root.resolve() != root or not root.is_dir()
+                or any(part.is_symlink() for part in (root, *root.parents))
+                or root.stat().st_uid != os.getuid()):
+            raise ValueError("Operational root must be owned and unaliased")
+        _screen_input_tree(root)
+        if (not isinstance(item["sha256"], str)
+                or directory_identity(root)["sha256"] != item["sha256"]):
+            raise ValueError("Operational tree binding changed")
+        return root
+
+    installed = []
+    for item in value["installed_plugins"]:
+        root = tree(item, plugin=True)
+        if (not _text(item["name"]) or item["marketplace"] != ""
+                or ("version" in item and not _text(item["version"]))
+                or not isinstance(item["installed_at"], str)
+                or datetime.fromisoformat(item["installed_at"].replace("Z", "+00:00")).tzinfo is None):
+            raise ValueError("Invalid installed-plugin transport metadata")
+        manifest = next((root / part / "plugin.json" for part in
+                         (".plugin", ".", ".github/plugin", ".claude-plugin")
+                         if (root / part / "plugin.json").is_file()), None)
+        if manifest is not None:
+            metadata = json.loads(manifest.read_text())
+            if (not isinstance(metadata, dict) or item["name"] != metadata.get("name")
+                    or item.get("version") != metadata.get("version")):
+                raise ValueError("Installed transport metadata differs from source manifest")
+        elif "version" in item:
+            raise ValueError("Unmanifested source has no recovered version")
+        installed.append({key: item[key] for key in ("name", "marketplace", "installed_at", "version") if key in item}
+                         | {"enabled": True, "cache_path": str(root)})
+    if len({item["name"] for item in installed}) != len(installed):
+        raise ValueError("Installed transport names must be distinct")
+    for item in [value["personal_skills"], value["custom_skills"], *value["source_aliases"]]:
+        tree(item)
+    event_source = value["schedule_events"]
+    _object(event_source, {"path", "sha256"}, "operational schedule source")
+    events_path = owner_file(path.parent, event_source["path"])
+    if events_path.stat().st_mode & 0o077 or digest(events_path) != event_source["sha256"]:
+        raise ValueError("Operational schedule source binding changed")
+    events = read_owner_json(events_path)
+    if not isinstance(events, list) or not events:
+        raise ValueError("Operational schedule events must be a nonempty array")
+    active, ids, created = {}, set(), set()
+    for event in events:
+        _object(event, {"id", "timestamp", "type", "data"}, "source schedule event")
+        if (not isinstance(event["id"], str) or re.fullmatch(
+                r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}", event["id"]) is None
+                or event["id"] in ids or not isinstance(event["timestamp"], str)
+                or datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00")).tzinfo is None):
+            raise ValueError("Invalid source schedule event identity/time")
+        ids.add(event["id"])
+        data = event["data"]
+        if event["type"] == "session.schedule_created":
+            _object(data, {"id", "intervalMs", "prompt", "recurring", "origin"}, "source interval schedule")
+            if (type(data["id"]) is not int or data["id"] < 1 or data["id"] in created
+                    or type(data["intervalMs"]) is not int or data["intervalMs"] < 3600000
+                    or data["recurring"] is not True or not _text(data["prompt"]) or not _text(data["origin"])):
+                raise ValueError("Unsupported or unsafe source interval schedule")
+            created.add(data["id"])
+            active[data["id"]] = {key: data[key] for key in ("id", "intervalMs", "prompt", "recurring")}
+        elif event["type"] == "session.schedule_cancelled":
+            _object(data, {"id"}, "source cancelled schedule")
+            if type(data["id"]) is not int or data["id"] not in active:
+                raise ValueError("Unknown source schedule cancellation")
+            del active[data["id"]]
+        else:
+            raise ValueError("Only native schedule creation/cancellation may be staged")
+    if config is not None and (
+            installed[0]["cache_path"] != config["plugin_path"]
+            or value["personal_skills"]["path"] != str(Path(config["home"]) / "skills")
+            or config.get("skill_directories") != [value["custom_skills"]["path"]]):
+        raise ValueError("Operational loaded roots differ from selected native tiers")
+    return {**value, "native_installed_plugins": installed, "events": events,
+            "expected_schedules": [active[key] for key in sorted(active)],
+            "binding": {
+                "installed_plugins": [{key: value for key, value in item.items() if key != "cache_path"}
+                                      | {"sha256": source["sha256"]}
+                                      for item, source in zip(installed, value["installed_plugins"])],
+                "personal_skills": value["personal_skills"]["sha256"],
+                "custom_skills": value["custom_skills"]["sha256"],
+                "source_aliases": value["source_aliases"],
+                "requestExtensions": False,
+            },
+            "limits": ["Registration names/timestamps are selected transport metadata, not recovered registration",
+                       "Interval next-run clocks reset on resume; nextId is source-derived, not getter-observed",
+                       "Owning import/setup/candidate/observe/cleanup watchdogs total less than one hour"]}
+
 
 def continuation_entry(path: Path, config: dict) -> dict:
     from skill_eval import digest, directory_identity
@@ -53,19 +179,9 @@ def continuation_entry(path: Path, config: dict) -> dict:
     run_root = Path(config["cwd"]).parent
     if package.is_relative_to(run_root) or run_root.is_relative_to(package):
         raise ValueError("Continuation run must be disjoint from its frozen input package")
-    owner_names = {"context-fixture.json", "completed-objective.json", "recorded-context.json",
-                   "source-event.json", "continuation.json", "calibration-evidence"}
     for root in [package, Path(config["plugin_path"]),
                  *(Path(path) for path in config.get("skill_directories", []))]:
-        for member in root.rglob("*"):
-            parts = member.relative_to(root).parts
-            if (member.is_symlink() or ".git" in parts
-                    or (root == package and (
-                        parts[0] not in {"evaluator", "plugins", "owner"}
-                        or (parts[0] == "owner" and len(parts) > 1 and parts[1] not in owner_names)))
-                    or any(re.search(r"(^|[-_.])(judge|criteria|diagnosis|work-order)([-_.]|$)", part, re.I)
-                           for part in parts)):
-                raise ValueError("Hidden evaluation input or aliased member in continuation inputs")
+        _screen_input_tree(root, package=root == package, operational="operational_file" in config)
     workspace = os.getenv("GITHUB_WORKSPACE")
     if workspace and any(Path(workspace).rglob(".git")):
         raise ValueError("Continuation job must omit repository checkout")
@@ -92,6 +208,8 @@ def continuation_entry(path: Path, config: dict) -> dict:
                             for root in config.get("skill_directories", [])],
         "personal_sha256": digest(Path(config["home"]) / "copilot-instructions.md"),
     }
+    if "operational_file" in config:
+        binding["operational"] = operational_input(Path(config["operational_file"]), config)["binding"]
     configuration_sha256 = hashlib.sha256(json.dumps(
         binding, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     if value["purpose"] == "setup-canary":

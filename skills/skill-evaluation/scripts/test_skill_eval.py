@@ -1872,6 +1872,104 @@ class NativeRecordedContextTests(unittest.TestCase):
         self.fixture.write_text(json.dumps(self.recorded))
         return store
 
+    def add_operational_input(self):
+        roots = {}
+        for key in ("deep", "personal", "custom", "alias"):
+            path = self.root / key
+            path.mkdir()
+            (path / "SKILL.md").write_text("Synthetic source-safe skill\n")
+            roots[key] = {"path": str(path), "sha256": skill_eval.directory_identity(path)["sha256"]}
+        (self.plugin / "plugin.json").write_text(json.dumps({"name": "synthetic-main", "version": "1.0"}))
+        events = [
+            {"id": str(uuid.uuid4()), "timestamp": "2025-12-01T00:00:00Z",
+             "type": "session.schedule_created",
+             "data": {"id": index, "intervalMs": 3600000, "prompt": f"Synthetic inert reminder {index}",
+                      "recurring": True, "origin": "model"}}
+            for index in range(1, 5)]
+        events.extend({"id": str(uuid.uuid4()), "timestamp": "2025-12-01T00:01:00Z",
+                       "type": "session.schedule_cancelled", "data": {"id": index}} for index in (1, 2))
+        self.schedule_source = self.root / "schedule-events.json"
+        self.schedule_source.write_text(json.dumps(events))
+        self.schedule_source.chmod(0o600)
+        input_value = {
+            "schema_version": 1,
+            "installed_plugins": [{
+                "path": str(self.plugin), "sha256": skill_eval.directory_identity(self.plugin)["sha256"],
+                "name": "synthetic-main", "version": "1.0", "marketplace": "",
+                "installed_at": "2026-02-01T00:00:00Z",
+            }, {**roots["deep"], "name": "synthetic-deep", "marketplace": "",
+                "installed_at": "2026-02-01T00:00:00Z"}],
+            "personal_skills": roots["personal"], "custom_skills": roots["custom"],
+            "source_aliases": [roots["alias"]],
+            "schedule_events": {"path": self.schedule_source.name, "sha256": digest(self.schedule_source)},
+        }
+        self.operational_file = self.root / "operational.json"
+        skill_eval.write_json(self.operational_file, input_value)
+        self.operational_file.chmod(0o600)
+        with (self.sdk.parent / "generated/session-events.d.ts").open("a") as stream:
+            for kind in ("created", "cancelled"):
+                stream.write(f'type: "session.schedule_{kind}";\n')
+        return input_value, events
+
+    def test_operational_source_tiers_and_exact_native_schedule_events_are_staged(self):
+        from contextlib import ExitStack
+        from native_workflow import operational_input
+        original, events = self.add_operational_input()
+        calibration = self.root / "prior-operational-calibration"
+        (calibration / "owner").mkdir(parents=True)
+        skill_eval.write_json(calibration / "owner/identities.json", {"session_id": str(uuid.uuid4())})
+        with ExitStack() as stack:
+            native, candidate = self.patches(stack)
+            imported = stack.enter_context(mock.patch("session_restore.import_session", side_effect=self.import_double))
+            result = skill_eval._run_native_context_calibration(
+                **self.arguments(), operational_file=self.operational_file,
+                source_preparation_only=True, calibration_root=calibration)
+        self.assertEqual(result["status"], "CONTEXT_SETUP_OBSERVED", result["firsterror"])
+        self.assertIsNone(imported.call_args.kwargs["plugin_dir"])
+        candidate.assert_not_called()
+        config = native.call_args_list[0].args[1]
+        staged = operational_input(Path(config["operational_file"]), config)
+        self.assertEqual(staged["personal_skills"]["path"], str(Path(config["home"]) / "skills"))
+        self.assertEqual(config["skill_directories"], [str(self.run / "pinned-custom-skills")])
+        self.assertEqual(staged["source_aliases"], original["source_aliases"])
+        self.assertEqual([entry["id"] for entry in staged["expected_schedules"]], [3, 4])
+        journal = [json.loads(line) for line in self.journal.read_text().splitlines()]
+        schedules = [{key: value for key, value in event.items() if key != "parentId"}
+                     for event in journal if event["type"].startswith("session.schedule_")]
+        self.assertEqual(schedules, events)
+        for previous, event in zip(journal, journal[1:]):
+            self.assertEqual(event["parentId"], previous["id"])
+        self.assertEqual(sum(event["type"] == "user.message" for event in journal), 1)
+        self.assertEqual((self.run / "owner/schedule-events.json").read_bytes(), self.schedule_source.read_bytes())
+
+    def test_operational_input_refuses_unbound_hidden_or_unsafe_source(self):
+        from native_workflow import operational_input
+        original, events = self.add_operational_input()
+        for fault in ("hash", "hidden-alias", "deep-version", "main-name", "short-clock", "extra-event"):
+            with self.subTest(fault=fault):
+                value = json.loads(json.dumps(original))
+                changed = json.loads(json.dumps(events))
+                hidden = Path(value["source_aliases"][0]["path"]) / "criteria.json"
+                if fault == "hash":
+                    value["personal_skills"]["sha256"] = "0" * 64
+                elif fault == "hidden-alias":
+                    hidden.write_text("Synthetic hidden input")
+                    value["source_aliases"][0]["sha256"] = skill_eval.directory_identity(hidden.parent)["sha256"]
+                elif fault == "deep-version":
+                    value["installed_plugins"][1]["version"] = "invented"
+                elif fault == "main-name":
+                    value["installed_plugins"][0]["name"] = "wrong"
+                elif fault == "short-clock":
+                    changed[0]["data"]["intervalMs"] = 100
+                else:
+                    changed[0]["type"] = "user.message"
+                self.schedule_source.write_text(json.dumps(changed))
+                value["schedule_events"]["sha256"] = digest(self.schedule_source)
+                skill_eval.write_json(self.operational_file, value)
+                with self.assertRaises(ValueError):
+                    operational_input(self.operational_file)
+                hidden.unlink(missing_ok=True)
+
     def test_completed_objective_is_copied_exactly_before_any_resume(self):
         from contextlib import ExitStack
         store = self.add_completed_objective()

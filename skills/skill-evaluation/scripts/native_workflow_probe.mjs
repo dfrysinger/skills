@@ -23,6 +23,7 @@ const conversational = events => events.filter(event =>
 const objective = "Synthetic native workflow diagnostic. Not a historical task.";
 const prompt = "Synthetic native workflow diagnostic only.";
 const rowId = "native-workflow-fixture";
+const hash = content => createHash("sha256").update(content).digest("hex");
 const options = {
   continuePendingWork: false,
   suppressResumeEvent: true,
@@ -383,6 +384,14 @@ export function continuationEntry(config) {
   } }));
 }
 
+function operationalEntry(config) {
+  requirePath(config.operational_file, "file");
+  return JSON.parse(execFileSync("python3", ["-B", "-I", "-c",
+    "import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);from native_workflow import operational_input;print(json.dumps(operational_input(Path(sys.argv[2]),json.loads(sys.argv[3]))))",
+    dirname(fileURLToPath(import.meta.url)), config.operational_file, JSON.stringify(config)],
+  { encoding: "utf8", env: { PATH: process.env.PATH ?? "" } }));
+}
+
 export function continuationCorrespondence(before, after, events, messageId, raw) {
   if (after.length < before.length || before.some((event, index) => !isDeepStrictEqual(event, after[index]))) {
     throw new Error("Historical continuation mutated its native journal prefix");
@@ -469,6 +478,7 @@ export function validateConfig(op, config) {
   const keys = contextProfile(config) ? [...contextFields,
     ...(historicalProfile(config) ? ["candidate_permissions",
       ...(Object.hasOwn(config, "skill_directories") ? ["skill_directories"] : []),
+      ...(Object.hasOwn(config, "operational_file") ? ["operational_file"] : []),
       ...(continuationProfile(config) ? ["continuation_file"] : [])] : [])] : selected ? [
     ...phaseFields, ...(Object.hasOwn(config, "candidate_permissions") ? ["candidate_permissions"] : []),
   ] : fields;
@@ -514,6 +524,9 @@ export function validateConfig(op, config) {
       if (!continuationProfile(config)) permissionProfile(config);
     }
     const fixture = contextFixture(config);
+    if (Object.hasOwn(config, "operational_file") && fixture.schema_version !== 3) {
+      throw new Error("Operational input requires recorded schema3 input");
+    }
     if (continuationProfile(config) && fixture.schema_version !== 3) {
       throw new Error("Continuation requires recorded schema3 input");
     }
@@ -528,7 +541,8 @@ export function validateConfig(op, config) {
     requirePath(config.plugin_path, "directory");
     if (Object.hasOwn(config, "skill_directories")) {
       if (!Array.isArray(config.skill_directories) || config.skill_directories.length !== 1
-          || config.skill_directories[0] !== join(dirname(config.cwd), "pinned-personal-skills")) {
+          || config.skill_directories[0] !== join(dirname(config.cwd),
+            config.operational_file ? "pinned-custom-skills" : "pinned-personal-skills")) {
         throw new Error("Expected the single owned personal skill discovery root");
       }
       requirePath(config.skill_directories[0], "directory");
@@ -536,6 +550,9 @@ export function validateConfig(op, config) {
         throw new Error("Personal skill discovery root must be owned");
       }
       roots.push(config.skill_directories[0]);
+    }
+    if (config.operational_file) {
+      roots.push(...operationalEntry(config).installed_plugins.slice(1).map(item => item.path));
     }
     if (roots.some((root, i) => roots.some((other, j) => i !== j && within(root, other)))) {
       throw new Error("Context roots must be disjoint");
@@ -757,6 +774,9 @@ export async function runProbe(op, config) {
   const continuation = continuationProfile(config);
   const historicalZeroSend = historicalProfile(config) && (op !== "candidate" || continuation);
   let entry;
+  let operational;
+  let operationalHashes;
+  let resumedAt;
   let pendingOutcome;
   const selected = config?.profile !== undefined;
   let projection;
@@ -884,6 +904,7 @@ export async function runProbe(op, config) {
     }
     const resumeOptions = candidateOptions ?? options;
     const { onPermissionRequest, ...recordedOptions } = resumeOptions;
+    resumedAt = Date.now();
     await call("client.resumeSession", { session_id: config.session_id, ...recordedOptions }, async () => {
       session = await client.resumeSession(config.session_id, resumeOptions);
       return { session_id: session.sessionId };
@@ -897,8 +918,30 @@ export async function runProbe(op, config) {
         } catch (error) { fail(error); }
       });
     }
+    if (operational) {
+      const updated = await call("options.update:installedPlugins",
+        { installedPlugins: operational.native_installed_plugins },
+        () => session.rpc.options.update({ installedPlugins: operational.native_installed_plugins }));
+      if (updated?.success !== true) throw new Error("Native installed-plugin configuration failed");
+      await call("skills.reload:installedPlugins", undefined, () => session.rpc.skills.reload());
+    }
     await call("tools.initializeAndValidate", undefined,
       () => session.rpc.tools.initializeAndValidate());
+  };
+  const checkSchedules = schedules => {
+    if (!Array.isArray(schedules?.entries)) throw new Error("Unknown native scheduler reader");
+    if (!operational) return schedules.entries.length === 0;
+    const definitions = schedules.entries.map(entry => {
+      const next = Date.parse(entry.nextRunAt);
+      if (entry.cron != null || entry.tz != null || entry.at != null || entry.selfPaced
+          || !Number.isFinite(next) || next <= Date.now() + 390000
+          || next < resumedAt + entry.intervalMs - 1000
+          || next > Date.now() + entry.intervalMs + 1000) {
+        throw new Error("Source interval clock is unsafe for the bounded owning phase");
+      }
+      return Object.fromEntries(["id", "intervalMs", "prompt", "recurring"].map(key => [key, entry[key]]));
+    }).sort((a, b) => a.id - b.id);
+    return isDeepStrictEqual(definitions, operational.expected_schedules);
   };
   const zeroRows = async (query, description) => {
     const result = await execute("sql", { query, description });
@@ -947,7 +990,7 @@ export async function runProbe(op, config) {
     }
     if ((!fixture.completed_objective && before.goal?.state !== null)
         || !Array.isArray(before.todos?.rows) || before.todos.rows.length
-        || !Array.isArray(before.schedules?.entries) || before.schedules.entries.length) {
+        || !checkSchedules(before.schedules)) {
       throw new Error("Historical snapshot requires an empty goal-free dormant namespace");
     }
     await historicalSchema(fixture.snapshot, false);
@@ -981,7 +1024,7 @@ export async function runProbe(op, config) {
     if ((!fixture.completed_objective && (pathExists(report.goal_path) || state.goal?.state !== null))
         || state.mode !== "autopilot"
         || !Array.isArray(state.todos?.rows) || state.todos.rows.length !== fixture.snapshot.row_counts.todos
-        || !Array.isArray(state.schedules?.entries) || state.schedules.entries.length) {
+        || !checkSchedules(state.schedules)) {
       throw new Error("Historical mode/task/goal/scheduler readback differs");
     }
     await historicalSchema(fixture.snapshot, true);
@@ -1002,6 +1045,19 @@ export async function runProbe(op, config) {
     const ids = new Set(prefix.map(event => event.id));
     const observed = state.events.filter(event => ids.has(event.id));
     if (!isDeepStrictEqual(observed, prefix)) throw new Error("Historical native root projection changed");
+    if (operational) {
+      const scheduleIds = new Set(operational.events.map(event => event.id));
+      const originalEvents = state.events.filter(event => scheduleIds.has(event.id))
+        .map(({ parentId, ...source }) => source);
+      if (!isDeepStrictEqual(originalEvents, operational.events)
+          || state.events.some(event => !ids.has(event.id)
+            && /^(user|assistant)\./.test(event.type))) {
+        throw new Error("Source schedule journal changed or an unrequested turn was delivered");
+      }
+      state.operational = { schedule_events_preserved: true, no_scheduled_turn: true,
+        registration: "Selected installed transport metadata; not recovered registration",
+        clock: "Current-time interval reset; nextId not exposed by schedule.list" };
+    }
     const recorded = fixture.schema_version === 3;
     if (recorded) {
       state.recorded_context = validateRecordedNativeEvents(fixture, state.events);
@@ -1185,7 +1241,19 @@ export async function runProbe(op, config) {
     }
     if (contextProfile(config)) {
       const state = await observe(false);
+      const stopped = [];
+      if (operational) {
+        for (const entry of state.schedules.entries) {
+          await call("schedule.stop", { id: entry.id }, () => session.rpc.schedule.stop({ id: entry.id }));
+          stopped.push(entry.id);
+        }
+        state.operational_schedules_before_cleanup = state.schedules;
+        state.schedules = await call("schedule.list", undefined, () => session.rpc.schedule.list());
+        if (state.schedules.entries.length) throw new Error("Owned operational timers remain active");
+      }
       return report.cleanup = { errors: [], todos: state.todos, schedules: state.schedules,
+        ...(operational ? { stopped_schedule_ids: stopped,
+          operational_schedules_before_cleanup: state.operational_schedules_before_cleanup } : {}),
         dependencies_empty: state.dependencies_empty, goal: state.goal, mode: state.mode, context: state.context,
         ...(state.completed_objective ? { completed_objective: state.completed_objective } : {}),
         ...(historicalProfile(config) ? { residual_namespace_preserved: true } : {}) };
@@ -1265,7 +1333,6 @@ export async function runProbe(op, config) {
     native_store: pathExists(report.goal_path) ? parseDataJson(readFileSync(report.goal_path, "utf8")) : null,
   });
   const candidate = async () => {
-    const hash = content => createHash("sha256").update(content).digest("hex");
     report.prefix_before = await readEvents();
     if (selected) {
       const imported = JSON.parse(readFileSync(config.prefix_file, "utf8"));
@@ -1295,6 +1362,7 @@ export async function runProbe(op, config) {
         config.context_fixture_file, config.prefix_file, config.prompt_path, identityPath, fixture.canonical_file,
         fixture.trigger_file, resolve(dirname(fixture.trigger_file), deferred.source_event_path),
         ...(fixture.completed_objective ? [fixture.completed_objective.path] : []),
+        ...(operational ? Object.keys(operationalHashes) : []),
         join(config.home, "copilot-instructions.md"),
         ...Object.keys(entry.binding.source).map(name => join(dirname(fileURLToPath(import.meta.url)), name)),
         ...entry.observed_package.files.map(file => join(entry.package_root, file.path)),
@@ -1725,6 +1793,14 @@ export async function runProbe(op, config) {
     validateOutput(config);
     receipt = openSync(config.output, "wx", 0o600);
     report.goal_path = validateConfig(op, config);
+    if (config.operational_file) {
+      operational = operationalEntry(config);
+      operationalHashes = Object.fromEntries([
+        config.operational_file,
+        resolve(dirname(config.operational_file), operational.schedule_events.path),
+      ].map(path => [path, hash(readFileSync(path))]));
+      report.operational_input = { binding: operational.binding, limits: operational.limits };
+    }
     if (continuation) {
       entry = continuationEntry(config);
       report.continuation_entry = entry;
@@ -1848,6 +1924,9 @@ export async function runProbe(op, config) {
       ...(config.skill_directories ? { skillDirectories: config.skill_directories } : {}),
       skipCustomInstructions: false, instructionDirectories: [], organizationCustomInstructions: "",
       onPermissionRequest: candidatePermissionHandler(config, report.goal_path, config.plugin_path, []),
+    };
+    if (operational) candidateOptions = {
+      ...candidateOptions, pluginDirectories: [], requestExtensions: false,
     };
     sdk = await import(pathToFileURL(config.sdk).href);
     await connect();
@@ -2010,6 +2089,10 @@ export async function runProbe(op, config) {
         }
         report.status = "OBSERVED";
       }
+    }
+    if (operational && (!isDeepStrictEqual(operationalEntry(config), operational)
+        || Object.entries(operationalHashes).some(([path, expected]) => hash(readFileSync(path)) !== expected))) {
+      throw new Error("Frozen operational configuration changed");
     }
   } catch (error) {
     fail(error);

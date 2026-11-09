@@ -92,6 +92,87 @@ approval indices and source annotations are retained separately, not presented
 as reconstructed authorization history. An assisted permission mode requires
 the corresponding authentic authority evidence before an operation that uses it.
 
+## Restore discovery inputs and interval schedules
+
+The schema3 producer also accepts `operational_file: Path | None = None`.
+This is a separate owner-only JSON input, not a new fixture version. Omit
+`personal_skill_dir` when using it. The first installed source must equal the
+existing `plugin_dir` argument. Use `directory_identity(path)["sha256"]` for
+each tree hash.
+
+The file has exactly these fields. This example uses synthetic paths and
+transport metadata:
+
+```json
+{
+  "schema_version": 1,
+  "installed_plugins": [
+    {
+      "path": "/owned/input/plugins/main",
+      "sha256": "<tree SHA256>",
+      "name": "example-main",
+      "marketplace": "",
+      "installed_at": "2026-01-01T00:00:00Z",
+      "version": "1.0"
+    },
+    {
+      "path": "/owned/input/plugins/deep",
+      "sha256": "<tree SHA256>",
+      "name": "example-deep",
+      "marketplace": "",
+      "installed_at": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "personal_skills": {"path": "/owned/input/plugins/personal", "sha256": "<tree SHA256>"},
+  "custom_skills": {"path": "/owned/input/plugins/custom", "sha256": "<tree SHA256>"},
+  "source_aliases": [{"path": "/owned/original/skill-helpers", "sha256": "<tree SHA256>"}],
+  "schedule_events": {"path": "schedule-events.json", "sha256": "<file SHA256>"}
+}
+```
+
+Use the selected source manifest's name/version. Manifest precedence is
+`.plugin`, root, `.github/plugin`, then `.claude-plugin`. Without a manifest,
+select the original source-root basename as the transport name and omit version.
+Freeze `installed_at` once during input assembly. These records select native
+transport registration; they do not recover original registration metadata.
+
+The producer copies installed sources into separate pinned roots, personal
+skills into owned `COPILOT_HOME/skills`, and custom skills into the owned custom
+discovery root. Resume has no explicit plugin-directory tier, sets
+`requestExtensions=false`, and uses native `options.update.installedPlugins`
+followed by catalog reload. No manifest or extension host is created. Source
+aliases are existing readable directories staged by the caller, not copied by
+the producer. Include every original-path skill-helper copy in that list.
+All selected loaded roots and aliases receive hidden-input screening and full
+before/after binding. Generated-cache identity exclusions remain unchanged.
+
+The schedule file is a nonempty array of exact native envelopes with `id`,
+`timestamp`, `type`, and `data`. Only `session.schedule_created` and
+`session.schedule_cancelled` are supported. Creation data has exactly `id`,
+`intervalMs`, `prompt`, `recurring`, and `origin`; cancellation data has only
+`id`. IDs must be positive integers, recurring must be true, and intervals must
+be at least one hour. Staging preserves every source field and adds only the
+owned journal's `parentId` link. It adds no conversation message.
+
+Native resume hydrates these events automatically. Warm/cold checks compare
+active definitions and exact source envelopes, require a safe future next-run
+clock, and reject unrequested conversation turns. Interval clocks reset from
+resume time. `schedule.list` does not expose `nextId`; a source-derived counter
+is not an observed native counter. The existing bounded phase watchdogs keep
+this route below one hour. Final cleanup stops owned timers and preserves the
+namespace; warm/cold transitions dispose the owner without cancelling source
+definitions. After candidate actions, cleanup uses actual mutable state rather
+than restoring the source snapshot.
+
+The result adds `operational` with `source_sha256`, `staged_file`, and `limits`.
+The generated config's `operational_file` points to `owner/operational.json`;
+`skill_directories` selects only the custom copy. Each phase receives those
+same fields. Native receipts include the selected discovery binding and limits.
+The clean package may include `owner/operational.json`,
+`owner/schedule-events.json`, and `owner/working-state/`. The caller owns working
+file/Git staging; this helper does not install those files. These inputs remain
+subject to the existing hidden-member screening.
+
 ## Continue a recorded native session
 
 The same producer accepts `continuation_file: Path | None = None`. Set

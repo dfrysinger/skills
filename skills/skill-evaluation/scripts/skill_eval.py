@@ -1719,6 +1719,8 @@ def _native_workflow_probe(operation: str, config: dict, *, consumer: dict | Non
             context_keys.add("continuation_file")
         if "skill_directories" in config:
             context_keys.add("skill_directories")
+        if "operational_file" in config:
+            context_keys.add("operational_file")
         if operation == "candidate" and "continuation_file" not in config:
             raise ValueError("Historical context setup cannot send a model request")
     if context_profile and set(config) != context_keys:
@@ -2419,6 +2421,12 @@ def _stage_recorded_native_context(events, before, *, historical, schema_text, o
     }
     staged, correspondence, requests = [events[0]], [], {}
     timestamp = events[0]["timestamp"]
+    if "operational" in historical:
+        for event in historical["operational"]["events"]:
+            if (event["id"] in {item["id"] for item in [*events, *staged]}
+                    or f'type: "{event["type"]}";' not in schema_text):
+                raise NativeContextSetupError("Source schedule identity/schema cannot be staged")
+            staged.append({**event, "parentId": staged[-1]["id"]})
 
     def append(kind, data):
         envelope = re.search(
@@ -3008,8 +3016,9 @@ def _run_native_context_calibration(
     model: str, effort: str, model_send: bool = False, personal_skill_dir: Path | None = None,
     source_preparation_only: bool = False, calibration_root: Path | None = None,
     continuation_file: Path | None = None,
+    operational_file: Path | None = None,
 ) -> dict:
-    from native_workflow import read_owner_json
+    from native_workflow import read_owner_json, operational_input
     from session_restore import import_session
 
     result = {"status": "FAILED", "firsterror": None, "setup_error_code": None,
@@ -3022,6 +3031,16 @@ def _run_native_context_calibration(
     run_root = run_root.absolute()
     try:
         inputs = [path.absolute() for path in (fixture_file, plugin_dir, copilot, sdk)]
+        operational = None
+        if operational_file is not None:
+            inputs.append(operational_file.absolute())
+            operational = operational_input(operational_file.absolute())
+            if (personal_skill_dir is not None
+                    or Path(operational["installed_plugins"][0]["path"]) != plugin_dir.absolute()):
+                raise ValueError("Operational discovery selects its own personal collection and main source")
+            inputs.extend(Path(item["path"]) for item in [
+                *operational["installed_plugins"], operational["personal_skills"],
+                operational["custom_skills"], *operational["source_aliases"]])
         if continuation_file is not None:
             if not model_send or source_preparation_only or calibration_root is not None:
                 raise ValueError("Historical continuation requires explicit model send, not source preparation")
@@ -3072,6 +3091,10 @@ def _run_native_context_calibration(
             fixture = _validate_historical_context_fixture(fixture, root=fixture_file.parent)
         if continuation_file is not None and (not historical or fixture["schema_version"] != 3):
             raise ValueError("Historical continuation requires recorded schema3 input")
+        if operational is not None:
+            if not historical or fixture["schema_version"] != 3:
+                raise ValueError("Operational input requires recorded schema3 input")
+            fixture["operational"] = operational
         if not historical and (not isinstance(fixture, dict) or set(fixture) != {
                 "schema_version", "provenance", "messages", "summary", "prompt", "expected"}
                 or fixture["schema_version"] != 1 or fixture["provenance"] != "synthetic-calibration"
@@ -3119,6 +3142,36 @@ def _run_native_context_calibration(
             path.mkdir(mode=0o700)
         pinned_plugin = run_root / "pinned-plugin"
         snapshot_plugin(plugin_dir, pinned_plugin)
+        staged_operational = None
+        if operational is not None:
+            staged_operational = {key: operational[key] for key in (
+                "schema_version", "installed_plugins", "personal_skills", "custom_skills",
+                "source_aliases", "schedule_events")}
+            installed = []
+            for index, item in enumerate(operational["installed_plugins"]):
+                target = pinned_plugin if index == 0 else run_root / f"pinned-installed-{index}"
+                if index:
+                    snapshot_plugin(Path(item["path"]), target)
+                installed.append({**item, "path": str(target)})
+            staged_operational["installed_plugins"] = installed
+            for key, target in (("personal_skills", home / "skills"),
+                                ("custom_skills", run_root / "pinned-custom-skills")):
+                snapshot_plugin(Path(operational[key]["path"]), target)
+                staged_operational[key] = {**operational[key], "path": str(target)}
+            source_events = operational_file.parent / operational["schedule_events"]["path"]
+            (owner / "schedule-events.json").write_bytes(source_events.read_bytes())
+            (owner / "schedule-events.json").chmod(0o600)
+            staged_operational["schedule_events"] = {
+                **operational["schedule_events"], "path": "schedule-events.json"}
+            write_json(owner / "operational.json", staged_operational)
+            (owner / "operational.json").chmod(0o600)
+            (owner / "operational-source.json").write_bytes(operational_file.read_bytes())
+            (owner / "operational-source.json").chmod(0o600)
+            result["operational"] = {
+                "source_sha256": digest(operational_file),
+                "staged_file": str(owner / "operational.json"),
+                "limits": operational["limits"],
+            }
         pinned_personal = None
         if personal_skill_dir is not None:
             pinned_personal = run_root / "pinned-personal-skills"
@@ -3163,7 +3216,7 @@ def _run_native_context_calibration(
         session_id = import_session(
             restoration, history, copilot=str(copilot), workdir=str(workdir), execute=execute_import,
             receipt_path=owner / "restoration-receipt.json", cli_identity=cli_identity,
-            plugin_dir=str(pinned_plugin))
+            plugin_dir=None if operational is not None else str(pinned_plugin))
         measurement.session_uuid(session_id)
         receipt = read_owner_json(owner / "restoration-receipt.json")
         if (session_id in {source_id, calibration_session_id} or receipt.get("status") != "PASS"
@@ -3194,6 +3247,9 @@ def _run_native_context_calibration(
         }
         if historical:
             config["candidate_permissions"] = fixture["candidate_permissions"]
+            if staged_operational is not None:
+                config["operational_file"] = str(owner / "operational.json")
+                config["skill_directories"] = [staged_operational["custom_skills"]["path"]]
             if pinned_personal is not None:
                 config["skill_directories"] = [str(pinned_personal)]
         write_json(owner / "identities.json", {
