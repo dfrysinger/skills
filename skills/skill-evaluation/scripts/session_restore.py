@@ -15,6 +15,152 @@ from pathlib import Path, PurePosixPath
 FIELDS = {"history_file", "source_session_id", "cutoff_event_id", "skill_context", "limitations"}
 OPTIONAL_FIELDS = {"personal_instructions_file"}
 
+RECORDED_INTERNAL_FIELDS = {
+    "__copilotAutoApprovalHumanMessageIndex", "__copilotMessageSource",
+}
+RECORDED_ASSISTANT_FIELDS = {
+    "reasoning_opaque": "reasoningOpaque", "reasoning_text": "reasoningText",
+    "encrypted_content": "encryptedContent", "serverTools": "serverTools",
+    "providerId": "providerId", "reasoningBlocks": "reasoningBlocks",
+    "apiCallId": "apiCallId", "phase": "phase", "outputTokens": "outputTokens",
+}
+
+
+def recorded_field_digests(value: dict) -> dict:
+    return {key: hashlib.sha256(json.dumps(
+        item, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        allow_nan=False).encode()).hexdigest() for key, item in value.items()}
+
+
+def recorded_native_payloads(context: dict) -> tuple[list[dict], list[dict], list[dict]]:
+    """Encode a materialized projection, not invented original event history."""
+    keys = {
+        "source", "source_cutoff_offset", "last_source_event", "source_bytes_consumed",
+        "source_events_consumed", "compactions_consumed", "reader", "mode",
+        "selected_model", "reasoning_effort", "context_tier", "original_user_messages",
+        "invoked_skills", "chat_messages", "system_context_messages", "handoff_context",
+    }
+    if (not isinstance(context, dict) or set(context) != keys
+            or context["handoff_context"] is not None
+            or not isinstance(context["original_user_messages"], list)
+            or any(not isinstance(value, str) for value in context["original_user_messages"])
+            or not isinstance(context["chat_messages"], list) or len(context["chat_messages"]) < 2
+            or not isinstance(context["system_context_messages"], list)
+            or not isinstance(context["invoked_skills"], list)):
+        raise ValueError("Unsupported recorded projection shape or handoff context")
+    payloads, bindings, omitted = [], [], []
+
+    def append(kind, data, collection, index, original):
+        payloads.append({"type": kind, "data": data})
+        bindings.append({
+            "collection": collection, "index": index,
+            "source_field_sha256": recorded_field_digests(original),
+            "native_field_sha256": recorded_field_digests(data),
+        })
+
+    for index, skill in enumerate(context["invoked_skills"]):
+        if (not isinstance(skill, dict) or not {
+                "name", "path", "content", "allowedTools", "source", "invokedAtTurn"} <= skill.keys()
+                or skill.keys() - {
+                    "name", "path", "content", "allowedTools", "source", "invokedAtTurn",
+                    "disableModelInvocation"}
+                or any(not isinstance(skill[key], str) for key in ("name", "path", "content", "source"))
+                or not skill["name"] or not isinstance(skill["allowedTools"], list)
+                or any(not isinstance(tool, str) for tool in skill["allowedTools"])
+                or ("disableModelInvocation" in skill and type(skill["disableModelInvocation"]) is not bool)
+                or type(skill["invokedAtTurn"]) is not int or not 0 <= skill["invokedAtTurn"] < 2**53):
+            raise ValueError("Unsupported recorded skill fields")
+        append("skill.invoked", dict(skill), "invoked_skills", index, skill)
+    names = [skill["name"] for skill in context["invoked_skills"]]
+    if len(set(names)) != len(names):
+        raise ValueError("Duplicate retained recorded skill identity")
+    for index, message in enumerate(context["system_context_messages"]):
+        if (not isinstance(message, dict) or message.get("role") != "system"
+                or not isinstance(message.get("content"), str)
+                or message.keys() - {"role", "content", "metadata", "contentBlocks", "name"}):
+            raise ValueError("Unsupported recorded system fields")
+        append("system.message", dict(message), "system_context_messages", index, message)
+
+    calls, completed = set(), set()
+    for index, message in enumerate(context["chat_messages"]):
+        if not isinstance(message, dict):
+            raise ValueError("Invalid recorded message")
+        role = message.get("role")
+        content = message.get("content")
+        retained = {key: value for key, value in message.items() if key not in RECORDED_INTERNAL_FIELDS}
+        internal = {key: value for key, value in message.items() if key in RECORDED_INTERNAL_FIELDS}
+        if internal:
+            omitted.append({"collection": "chat_messages", "index": index,
+                            "field_sha256": recorded_field_digests(internal),
+                            "reason": "Runtime annotations removed before primary-model serialization"})
+        if index == len(context["chat_messages"]) - 1:
+            if (role != "user" or not isinstance(content, str)
+                    or retained.keys() - {"role", "content", "copilotResponsesReasoning"}):
+                raise ValueError("Recorded cutoff must end with one separate user trigger")
+            continue
+        if role == "developer":
+            if set(retained) != {"role", "content"} or not isinstance(content, str) or not content.strip():
+                raise ValueError("Unsupported recorded developer fields")
+            append("instruction.update", {
+                "authority": "host", "boundary": "nextModelRequest",
+                "lifetime": "persistent", "fallback": "reject", "content": content,
+            }, "chat_messages", index, message)
+        elif role == "user":
+            if (not isinstance(content, str)
+                    or retained.keys() - {"role", "content", "copilotResponsesReasoning"}):
+                raise ValueError("Unsupported recorded user fields")
+            data = {"content": "", "transformedContent": content, "source": "system"}
+            if "copilotResponsesReasoning" in retained:
+                data["responsesReasoning"] = retained["copilotResponsesReasoning"]
+            append("user.message", data, "chat_messages", index, message)
+        elif role == "assistant":
+            if ("content" not in retained or content == ""
+                    or content is not None and not isinstance(content, str)
+                    or retained.keys() - {"role", "content", "tool_calls"} - RECORDED_ASSISTANT_FIELDS.keys()
+                    or ("tool_calls" in retained and (
+                        not isinstance(retained["tool_calls"], list) or not retained["tool_calls"]))
+                    or any(retained[key] is None for key in RECORDED_ASSISTANT_FIELDS if key in retained)
+                    or any(not isinstance(retained[key], str) or not retained[key]
+                           for key in ("reasoning_opaque", "reasoning_text", "encrypted_content")
+                           if key in retained)):
+                raise ValueError("Unsupported recorded assistant fields")
+            data = {"content": content or ""}
+            data.update({native: retained[source] for source, native in RECORDED_ASSISTANT_FIELDS.items()
+                         if source in retained})
+            requests = []
+            for call in retained.get("tool_calls", []):
+                if (not isinstance(call, dict) or set(call) != {"id", "type", call.get("type")}
+                        or call["type"] not in {"function", "custom"}
+                        or not isinstance(call["id"], str) or not call["id"] or call["id"] in calls):
+                    raise ValueError("Unsupported or duplicate recorded tool call")
+                body = call[call["type"]]
+                argument_key = "arguments" if call["type"] == "function" else "input"
+                if (not isinstance(body, dict) or set(body) != {"name", argument_key}
+                        or not isinstance(body["name"], str)
+                        or not isinstance(body[argument_key], str)):
+                    raise ValueError("Unsupported recorded tool argument representation")
+                calls.add(call["id"])
+                requests.append({"toolCallId": call["id"], "type": call["type"],
+                                 "name": body["name"], "arguments": body[argument_key]})
+            if requests:
+                data["toolRequests"] = requests
+            append("assistant.message", data, "chat_messages", index, message)
+        elif role == "tool":
+            call_id = retained.get("tool_call_id")
+            if (set(retained) != {"role", "content", "tool_call_id"} or not isinstance(content, str)
+                    or call_id not in calls or call_id in completed):
+                raise ValueError("Unsupported, orphaned or duplicate recorded tool result")
+            completed.add(call_id)
+            # The projection stores model text, not the original execution status.
+            append("tool.execution_complete", {
+                "toolCallId": call_id, "success": True, "result": {"content": content},
+            }, "chat_messages", index, message)
+        else:
+            raise ValueError("Unsupported recorded message role")
+    if calls != completed:
+        raise ValueError("Incomplete recorded tool-call/result population")
+    return payloads, bindings, omitted
+
 
 def semantic_projection(records: list[dict]) -> list[dict]:
     """Validate and project public root records without importing a native session."""

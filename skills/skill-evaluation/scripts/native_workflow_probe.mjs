@@ -180,6 +180,61 @@ function contextFixture(config) {
   }
   const fixture = parseDataJson(readFileSync(path, "utf8"));
   if (historicalProfile(config)) {
+    if (fixture?.schema_version === 3) {
+      const keys = ["schema_version", "canonical_file", "canonical_sha256", "source_binding",
+        "trigger_file", "trigger_sha256", "root_skills", "correspondence", "excluded_fields",
+        "snapshot", "required_tools", "limitations"];
+      if (!isDeepStrictEqual(Object.keys(fixture).sort(), keys.sort())
+          || !/^[0-9a-f]{64}$/.test(fixture.canonical_sha256)
+          || !/^[0-9a-f]{64}$/.test(fixture.trigger_sha256)
+          || !Array.isArray(fixture.root_skills) || !Array.isArray(fixture.correspondence)
+          || !Array.isArray(fixture.excluded_fields)
+          || !Array.isArray(fixture.required_tools) || !fixture.required_tools.length
+          || fixture.required_tools.some(name => typeof name !== "string" || !name.trim())
+          || new Set(fixture.required_tools).size !== fixture.required_tools.length
+          || !Array.isArray(fixture.limitations) || !fixture.limitations.length
+          || new Set(fixture.correspondence.map(item => item.native_event_id)).size !== fixture.correspondence.length) {
+        throw new Error("Invalid recorded context locator");
+      }
+      for (const [path, expected] of [
+        [fixture.canonical_file, fixture.canonical_sha256], [fixture.trigger_file, fixture.trigger_sha256],
+      ]) {
+        requirePath(path, "file");
+        const stat = lstatSync(path);
+        if (stat.uid !== userInfo().uid || stat.nlink !== 1 || (stat.mode & 0o077)
+            || !within(path, dirname(config.context_fixture_file))
+            || createHash("sha256").update(readFileSync(path)).digest("hex") !== expected) {
+          throw new Error("Recorded context/trigger owner artifact differs");
+        }
+      }
+      const canonical = parseDataJson(readFileSync(fixture.canonical_file, "utf8"));
+      const deferred = parseDataJson(readFileSync(fixture.trigger_file, "utf8"));
+      if (fixture.source_binding?.sha256 !== fixture.canonical_sha256
+          || fixture.source_binding.cutoff_offset !== canonical.source_cutoff_offset
+          || fixture.source_binding.cutoff_event_id !== canonical.last_source_event
+          || deferred.event_id !== canonical.last_source_event
+          || deferred.canonical_index !== canonical.chat_messages.length - 1
+          || !isDeepStrictEqual(deferred.recorded_message, canonical.chat_messages.at(-1))) {
+        throw new Error("Recorded cutoff/trigger correspondence differs");
+      }
+      const compiled = JSON.parse(execFileSync("python3", ["-B", "-I", "-c",
+        "import json,sys; sys.path.insert(0,sys.argv[1]); from session_restore import recorded_native_payloads,compile_task_snapshot; value=json.load(sys.stdin); print(json.dumps([recorded_native_payloads(value['canonical']),compile_task_snapshot(value['snapshot'])]))",
+        dirname(fileURLToPath(import.meta.url))], {
+        input: JSON.stringify({ canonical, snapshot: fixture.snapshot?.source }), env: { PATH: process.env.PATH },
+        stdio: ["pipe", "pipe", "pipe"], maxBuffer: 16 * 1024 * 1024,
+      }));
+      if (!isDeepStrictEqual(compiled[1], fixture.snapshot)) throw new Error("Recorded task compilation differs");
+      if (fixture.correspondence.length !== compiled[0][1].length
+          || fixture.correspondence.some((binding, index) =>
+            binding.collection !== compiled[0][1][index].collection
+            || binding.index !== compiled[0][1][index].index
+            || !isDeepStrictEqual(binding.source_field_sha256, compiled[0][1][index].source_field_sha256))
+          || !isDeepStrictEqual(fixture.excluded_fields, compiled[0][2])
+          || fixture.root_skills.length !== canonical.invoked_skills.length) {
+        throw new Error("Recorded canonical-index correspondence differs");
+      }
+      return { ...fixture, canonical, recorded_payloads: compiled[0][0] };
+    }
     const keys = ["schema_version", "summary_event_id", "summary_sha256", "post_event_ids",
       "root_skills", "correspondence", "tool_call_ids", "snapshot", "required_tools", "limitations"];
     if (!fixture || !isDeepStrictEqual(Object.keys(fixture).sort(), keys.sort())
@@ -215,6 +270,43 @@ function contextFixture(config) {
     throw new Error("Invalid fixed context locator");
   }
   return fixture;
+}
+
+export function validateRecordedNativeEvents(fixture, events) {
+  if (!Array.isArray(fixture.recorded_payloads)
+      || fixture.correspondence.length !== fixture.recorded_payloads.length) {
+    throw new Error("Recorded event correspondence population differs");
+  }
+  const byId = new Map(events.map(event => [event.id, event]));
+  const bound = new Set(fixture.correspondence.map(binding => binding.native_event_id));
+  if (events.some(event => [
+    "user.message", "assistant.message", "tool.execution_complete", "instruction.update",
+    "system.message", "skill.invoked",
+  ].includes(event.type) && !bound.has(event.id))) {
+    throw new Error("Unbound recorded context event or duplicate trigger");
+  }
+  let last = -1;
+  for (const [index, expected] of fixture.recorded_payloads.entries()) {
+    const binding = fixture.correspondence[index];
+    const event = byId.get(binding.native_event_id);
+    const position = events.indexOf(event);
+    if (!event || position <= last || event.type !== expected.type || event.type !== binding.native_type
+        || event.agentId || event.data?.parentToolCallId) {
+      throw new Error("Recorded event role/order differs");
+    }
+    const data = { ...event.data };
+    if (event.type === "assistant.message") {
+      if (typeof data.messageId !== "string" || !data.messageId) throw new Error("Missing recorded native message ID");
+      delete data.messageId;
+    }
+    if (!isDeepStrictEqual(data, expected.data)) throw new Error("Recorded native body/tool/provider fields differ");
+    last = position;
+  }
+  return {
+    native_payload_correspondence: true,
+    model_visible_correspondence: "Requires actual post-resume context readback, not event equality",
+    authorization_history_equivalence: false,
+  };
 }
 
 export function validateConfig(op, config) {
@@ -721,21 +813,33 @@ export async function runProbe(op, config) {
     const ids = new Set(prefix.map(event => event.id));
     const observed = state.events.filter(event => ids.has(event.id));
     if (!isDeepStrictEqual(observed, prefix)) throw new Error("Historical native root projection changed");
-    const summaryIndex = prefix.findIndex(event => event.id === fixture.summary_event_id);
-    const summary = prefix[summaryIndex];
-    if (summary?.type !== "session.compaction_complete" || summary.data?.success !== true
+    const recorded = fixture.schema_version === 3;
+    if (recorded) {
+      state.recorded_context = validateRecordedNativeEvents(fixture, state.events);
+      state.permission_mode = await call("permissions.getMode", {}, () => session.rpc.permissions.getMode({}));
+      if (!["manual", "assisted"].includes(state.permission_mode?.mode)) {
+        throw new Error("Recorded checked-policy proof requires a non-allow-all permission mode");
+      }
+      state.recorded_context.assisted_auto_approval = state.permission_mode.mode === "assisted";
+      state.recorded_context.authority_evidence_required = state.recorded_context.assisted_auto_approval;
+    } else {
+      const summaryIndex = prefix.findIndex(event => event.id === fixture.summary_event_id);
+      const summary = prefix[summaryIndex];
+      if (summary?.type !== "session.compaction_complete" || summary.data?.success !== true
         || createHash("sha256").update(summary.data.summaryContent).digest("hex") !== fixture.summary_sha256
         || fixture.root_skills.slice(0, 6).some(item =>
           prefix.findIndex(event => event.id === item.native_event_id) >= summaryIndex)
         || prefix.findIndex(event => event.id === fixture.root_skills[6].native_event_id) <= summaryIndex) {
-      throw new Error("Historical summary/root skill role/order differs");
+        throw new Error("Historical summary/root skill role/order differs");
+      }
     }
     const checkInvoked = async label => {
       const invoked = await call(`skills.getInvoked:${label}`, undefined, () => session.rpc.skills.getInvoked());
-      if (!Array.isArray(invoked?.skills) || invoked.skills.length !== 7
+      if (!Array.isArray(invoked?.skills) || invoked.skills.length !== (recorded ? fixture.root_skills.length : 7)
           || invoked.skills.some((skill, index) => {
             const expected = fixture.root_skills[index];
-            return skill.name !== expected.name || skill.path !== expected.native_path
+            return (recorded && !isDeepStrictEqual(skill, fixture.canonical.invoked_skills[index]))
+              || skill.name !== expected.name || skill.path !== expected.native_path
               || typeof skill.content !== "string"
               || createHash("sha256").update(skill.content).digest("hex") !== expected.body_sha256;
           })) throw new Error("Historical loaded root skill body/order differs or reader shape is unsupported");
@@ -981,7 +1085,9 @@ export async function runProbe(op, config) {
       Object.assign(report, await observe(false));
       if (!historicalZeroSend && !report.context_initialized) throw new Error("Native context remains uninitialized");
       report.checks.cold_state = true;
-      report.checks.context_summary_order = true;
+      if (historicalProfile(config) && contextFixture(config).schema_version === 3) {
+        report.checks.recorded_payload_correspondence = report.recorded_context.native_payload_correspondence;
+      } else report.checks.context_summary_order = true;
     } else {
     Object.assign(report, await observe(false));
     report.schedule_ids = report.schedules.entries.map(entry => entry.id);

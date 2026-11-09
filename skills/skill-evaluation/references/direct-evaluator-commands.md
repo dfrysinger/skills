@@ -13,6 +13,46 @@ tools required by the task, regardless of where it runs.
 Resolve `SKILL_DIR` to the evaluator skill directory, separate from the target
 plugin snapshot.
 
+## Recorded native context preparation
+
+The existing `_run_native_context_calibration` producer accepts an owner-only
+historical fixture with `schema_version: 3`. This is model-free preparation,
+not a behavioral run. It creates an empty namespace through the existing
+importer, then stages the materialized recorded projection as native events.
+It does not send the final recorded human trigger.
+
+The fixture contains `provenance: "source-bound-historical"` and these fields:
+
+- `recorded_context`: relative `path`, exact `sha256`, `reader_revision`,
+  `original_runtime_revision`, and `cutoff_offset`. The reader and original
+  runtime revisions are separate identities.
+- `restoration`: `source_session_id`, `cutoff_event_id`, and
+  `skill_context: "recorded-target-context"`.
+- `trigger`: original `event_id`, `timestamp`, raw `content`, and
+  `source_line_sha256`.
+- `consumer`: selected `cli_version`, `cli_sha256`, and `sdk_sha256`.
+- `snapshot`, `required_tools`, `limitations`, `personal_instructions`, and
+  `candidate_permissions`, using the existing task and permission contracts.
+
+Direct validation requires
+`_validate_historical_context_fixture(fixture, root=fixture_file.parent)`.
+The producer supplies this owner root itself. The task snapshot schema is
+unchanged.
+
+Staging retains the original artifact bytes, records canonical collection/index
+and field digests, and refuses unknown message fields or unsupported selected
+native schemas. Skill bodies, paths, source identifiers and invocation-turn
+metadata remain captured data; the retained population is not fixed at seven.
+The last user message stays in an owner-only deferred-trigger artifact.
+
+Readback checks native event payloads and retained skills and reports the actual
+permission mode. These checks do not establish the initialized model context.
+Cold reasoning retention, system-context composition and the selected runtime's
+post-resume projection still require model-free native observation. Internal
+approval indices and source annotations are retained separately, not presented
+as reconstructed authorization history. An assisted permission mode requires
+the corresponding authentic authority evidence before an operation that uses it.
+
 ## Prepare a case
 
 Scaffold a new corpus and case when no reusable frozen case exists:

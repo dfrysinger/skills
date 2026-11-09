@@ -8,7 +8,7 @@ import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { candidatePermissionHandler, editableFixtureCheck, matchesFixtureState, matchesProfileState,
-  runProbe, validateConfig, validateProfile } from "./native_workflow_probe.mjs";
+  runProbe, validateConfig, validateProfile, validateRecordedNativeEvents } from "./native_workflow_probe.mjs";
 
 // This SDK double exercises control flow only, never native interoperability.
 const sdkDouble = `
@@ -86,6 +86,7 @@ export class CopilotClient {
         return id;
       },
       rpc: {
+        permissions: { getMode: async () => ({ mode: state.permissionMode ?? "manual" }) },
         metadata: {
           getContextAttribution: async () => state.contextAttribution === undefined
             ? { contextAttribution: { successfulCompactionCount: 1, entries: [] } } : state.contextAttribution,
@@ -498,6 +499,128 @@ async function historicalContextFixture(t) {
   };
   return { ...owned, snapshot };
 }
+
+async function recordedContextFixture(t) {
+  const owned = await historicalContextFixture(t);
+  const { config, state, root, snapshot } = owned;
+  const sourceId = randomUUID(), triggerId = randomUUID();
+  const canonical = {
+    source: `/synthetic/${sourceId}/events.jsonl`, source_cutoff_offset: 100,
+    last_source_event: triggerId, source_bytes_consumed: 200, source_events_consumed: 12,
+    compactions_consumed: 2, reader: "Synthetic reader", mode: "recorded/live",
+    selected_model: config.model, reasoning_effort: config.effort, context_tier: null,
+    original_user_messages: ["Synthetic original", "Synthetic trigger"], handoff_context: null,
+    invoked_skills: Array.from({ length: 22 }, (_, index) => ({
+      name: `synthetic-${index}`, path: `synthetic/${index}/SKILL.md`, content: `Synthetic body ${index}`,
+      allowedTools: [], source: "plugin", invokedAtTurn: index + 1000,
+    })),
+    system_context_messages: [{ role: "system", content: "Synthetic system", metadata: { kind: "fixture" } }],
+    chat_messages: [
+      { role: "developer", content: "Synthetic developer" },
+      { role: "user", content: "Synthetic original", __copilotAutoApprovalHumanMessageIndex: 147 },
+      { role: "assistant", content: null, providerId: "synthetic-provider",
+        encrypted_content: "synthetic encrypted", reasoningBlocks: [{ type: "synthetic" }],
+        tool_calls: [{ id: "synthetic-call", type: "function",
+          function: { name: "view", arguments: '{ "path": "synthetic.txt" }' } }] },
+      { role: "tool", content: "Synthetic result", tool_call_id: "synthetic-call" },
+      { role: "user", content: "Wrapped synthetic trigger", __copilotAutoApprovalHumanMessageIndex: 161 },
+    ],
+  };
+  const compiled = spawnSync("python3", ["-B", "-I", "-c",
+    "import json,sys; sys.path.insert(0,sys.argv[1]); from session_restore import recorded_native_payloads; print(json.dumps(recorded_native_payloads(json.load(sys.stdin))))",
+    resolve("skills/skill-evaluation/scripts")], {
+    input: JSON.stringify(canonical), encoding: "utf8", env: { PATH: process.env.PATH },
+  });
+  assert.equal(compiled.status, 0, compiled.stderr);
+  const [payloads, bindings, excluded] = JSON.parse(compiled.stdout);
+  state.events = [
+    { id: randomUUID(), type: "session.start", data: { sessionId: config.session_id } },
+    ...payloads.map(payload => ({
+      ...payload, id: randomUUID(),
+      data: { ...payload.data, ...(payload.type === "assistant.message" ? { messageId: randomUUID() } : {}) },
+    })),
+  ];
+  state.invokedSkills = structuredClone(canonical.invoked_skills);
+  const canonicalFile = join(root, "canonical.json"), triggerFile = join(root, "trigger.json");
+  writeFileSync(canonicalFile, JSON.stringify(canonical, null, 2), { mode: 0o600 });
+  writeFileSync(triggerFile, JSON.stringify({
+    event_id: triggerId, content: "Synthetic trigger", timestamp: "2026-01-01T00:00:00Z",
+    source_line_sha256: "3".repeat(64), canonical_index: 4, recorded_message: canonical.chat_messages[4],
+  }), { mode: 0o600 });
+  const hash = path => createHash("sha256").update(readFileSync(path)).digest("hex");
+  const locator = {
+    schema_version: 3, canonical_file: canonicalFile, canonical_sha256: hash(canonicalFile),
+    trigger_file: triggerFile, trigger_sha256: hash(triggerFile),
+    source_binding: { sha256: hash(canonicalFile), cutoff_offset: 100, cutoff_event_id: triggerId,
+      source_session_id: sourceId, reader_revision: "1".repeat(40), original_runtime_revision: "2".repeat(40) },
+    root_skills: state.events.slice(1, 23).map(event => ({
+      native_event_id: event.id, name: event.data.name, source_path: event.data.path,
+      native_path: event.data.path, body_sha256: createHash("sha256").update(event.data.content).digest("hex"),
+    })),
+    correspondence: bindings.map((binding, index) => ({
+      ...binding, native_event_id: state.events[index + 1].id, native_type: payloads[index].type,
+    })),
+    excluded_fields: excluded, snapshot, required_tools: ["skill", "view", "sql", "manage_schedule"],
+    limitations: ["Synthetic recorded fixture; no native or model consumption proof."],
+  };
+  writeFileSync(config.prefix_file, JSON.stringify(state.events));
+  writeFileSync(config.context_fixture_file, JSON.stringify(locator));
+  writeFileSync(config.prompt_path, "Synthetic trigger");
+  return { ...owned, locator: { ...locator, recorded_payloads: payloads } };
+}
+
+test("recorded context retains 22 skills and reads actual permission mode without sending", async t => {
+  const { config, state } = await recordedContextFixture(t);
+  state.permissionMode = "assisted";
+  const setup = await runProbe("setup", config);
+  assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
+  assert.equal(setup.invoked_after_reload.skills.length, 22);
+  assert.deepEqual(setup.permission_mode, { mode: "assisted" });
+  assert.equal(setup.recorded_context.native_payload_correspondence, true);
+  assert.equal(setup.recorded_context.authorization_history_equivalence, false);
+  assert.equal(setup.recorded_context.authority_evidence_required, true);
+  assert.match(setup.recorded_context.model_visible_correspondence, /Requires actual post-resume/);
+  assert.equal(state.sendCalls, 0);
+  assert.equal(state.owners, 0);
+  assert.equal(state.starts, 2);
+  assert.throws(() => validateConfig("candidate", config), /forbids model sends/);
+});
+
+test("recorded context consumer rejects changed provider fields, roles and a duplicate trigger", async t => {
+  const { state, locator } = await recordedContextFixture(t);
+  assert.equal(validateRecordedNativeEvents(locator, state.events).native_payload_correspondence, true);
+  const assistant = state.events.findIndex(event => event.type === "assistant.message");
+  for (const mutate of [
+    events => { events[assistant].data.providerId = "changed"; },
+    events => { events[assistant].type = "user.message"; },
+    events => { events[assistant].data.toolRequests[0].arguments = "{}"; },
+    events => { events.push({ id: randomUUID(), type: "user.message", data: { content: "Synthetic trigger" } }); },
+  ]) {
+    const events = structuredClone(state.events);
+    mutate(events);
+    assert.throws(() => validateRecordedNativeEvents(locator, events), /Recorded|recorded/);
+  }
+});
+
+test("recorded context setup refuses allow-all, forged bindings and an extra observed trigger", async t => {
+  for (const scenario of ["allow-all", "binding", "trigger"]) await t.test(scenario, async t => {
+    const { config, state } = await recordedContextFixture(t);
+    if (scenario === "allow-all") state.permissionMode = "allow-all";
+    if (scenario === "binding") {
+      const locator = JSON.parse(readFileSync(config.context_fixture_file, "utf8"));
+      locator.correspondence[0].source_field_sha256.content = "0".repeat(64);
+      writeFileSync(config.context_fixture_file, JSON.stringify(locator));
+    }
+    if (scenario === "trigger") state.events.push({
+      id: randomUUID(), type: "user.message", data: { content: "Synthetic trigger" },
+    });
+    const setup = await runProbe("setup", config);
+    assert.equal(setup.status, "ERROR");
+    assert.match(setup.error.message, /non-allow-all|canonical-index|duplicate trigger/);
+    assert.equal(state.sendCalls, 0);
+    assert.equal(state.owners, 0);
+  });
+});
 
 test("historical context installs snapshot through connected SQL and checks warm/cold without sending", async t => {
   const { config, state, root, snapshot } = await historicalContextFixture(t);

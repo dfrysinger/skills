@@ -2354,6 +2354,106 @@ class NativeContextSetupError(ValueError):
     code = "NATIVE_CONTEXT_SETUP_UNSUPPORTED"
 
 
+def _stage_recorded_native_context(events, before, *, historical, schema_text, owner, journal):
+    from session_restore import recorded_field_digests
+
+    if any(event["type"] not in {"session.start", "session.shutdown"} for event in events):
+        raise NativeContextSetupError("Recorded staging requires an empty imported namespace")
+    interfaces = {
+        "skill.invoked": "SkillInvokedEvent", "system.message": "SystemMessageEvent",
+        "instruction.update": "InstructionUpdateEvent", "user.message": "UserMessageEvent",
+        "assistant.message": "AssistantMessageEvent", "tool.execution_start": "ToolExecutionStartEvent",
+        "tool.execution_complete": "ToolExecutionCompleteEvent",
+    }
+    staged, correspondence, requests = [events[0]], [], {}
+    timestamp = events[0]["timestamp"]
+
+    def append(kind, data):
+        envelope = re.search(
+            rf"export interface {interfaces[kind]} \{{(.*?)\n\}}", schema_text, re.S)
+        data_type = re.search(r"\bdata: (\w+);", envelope[1]) if envelope else None
+        schema = re.search(
+            rf"export interface {data_type[1]} \{{(.*?)\n\}}", schema_text, re.S) if data_type else None
+        if (envelope is None or f'type: "{kind}";' not in envelope[1] or schema is None
+                or any(not re.search(rf"\b{re.escape(field)}\??:", schema[1]) for field in data)):
+            raise NativeContextSetupError(f"Recorded staging schema cannot carry {kind} fields")
+        event = {"id": str(uuid.uuid4()), "parentId": staged[-1]["id"],
+                 "type": kind, "timestamp": timestamp, "data": data}
+        staged.append(event)
+        return event
+
+    for payload, binding in zip(historical["native_payloads"], historical["recorded_correspondence"]):
+        data = dict(payload["data"])
+        if payload["type"] == "assistant.message":
+            data["messageId"] = str(uuid.uuid4())
+            for request in data.get("toolRequests", []):
+                requests[request["toolCallId"]] = request
+        elif payload["type"] == "tool.execution_complete":
+            request = requests[data["toolCallId"]]
+            append("tool.execution_start", {
+                "toolCallId": request["toolCallId"], "toolName": request["name"],
+                "arguments": request["arguments"],
+            })
+        event = append(payload["type"], data)
+        correspondence.append({**binding, "native_event_id": event["id"], "native_type": event["type"],
+                               "native_field_sha256": recorded_field_digests(data)})
+    for event in events[1:]:
+        staged.append({**event, "parentId": staged[-1]["id"]})
+    after = "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in staged).encode()
+    canonical = historical["canonical"]
+    deferred = {**historical["trigger"], "canonical_index": len(canonical["chat_messages"]) - 1,
+                "recorded_message": canonical["chat_messages"][-1]}
+    canonical_path = owner / "canonical-recorded-context.json"
+    trigger_path = owner / "deferred-original-trigger.json"
+    unavailable = [
+        "Materialized recorded projection, not original native event history or original CLI consumption",
+        "Staged event IDs/timestamps are import occurrences, not recovered source message identities",
+        "Original tool execution status is unavailable; success carriers reproduce recorded model text only",
+        "Original compaction sequence and raw original-user history are retained as source data, not replayed",
+        "Internal approval indices and message-source annotations are retained in source, not reconstructed",
+        "Cold reasoning retention and post-initialization system/context correspondence require native proof",
+        "Full authorization-history equivalence is not claimed; assisted permission mode must be read back",
+    ]
+    locator = {
+        "schema_version": 3, "canonical_file": str(canonical_path),
+        "canonical_sha256": historical["recorded_context"]["sha256"],
+        "source_binding": {**historical["recorded_context"], **historical["restoration"]},
+        "trigger_file": str(trigger_path), "trigger_sha256": hashlib.sha256(
+            (json.dumps(deferred, ensure_ascii=False) + "\n").encode()).hexdigest(),
+        "root_skills": [
+            {"native_event_id": item["native_event_id"], "name": skill["name"],
+             "body_sha256": hashlib.sha256(skill["content"].encode()).hexdigest(),
+             "source_path": skill["path"], "native_path": skill["path"]}
+            for item, skill in zip(correspondence, canonical["invoked_skills"])
+        ],
+        "correspondence": correspondence, "excluded_fields": historical["excluded_fields"],
+        "snapshot": historical["snapshot"], "required_tools": historical["required_tools"],
+        "limitations": historical["limitations"] + unavailable,
+    }
+    artifacts = (
+        ("journal-before.jsonl", before), ("journal-staged.jsonl", after),
+        ("imported-prefix.json", (json.dumps(staged, ensure_ascii=False) + "\n").encode()),
+        ("context-fixture.json", (json.dumps(locator, ensure_ascii=False) + "\n").encode()),
+        (canonical_path.name, historical["canonical_bytes"]),
+        (trigger_path.name, (json.dumps(deferred, ensure_ascii=False) + "\n").encode()),
+    )
+    for name, content in artifacts:
+        with (owner / name).open("xb") as stream:
+            stream.write(content)
+        (owner / name).chmod(0o600)
+    write_json(owner / "staging.json", {
+        "schema_sha256": hashlib.sha256(schema_text.encode()).hexdigest(),
+        "journal_before_sha256": hashlib.sha256(before).hexdigest(),
+        "journal_staged_sha256": hashlib.sha256(after).hexdigest(),
+        "canonical_sha256": historical["recorded_context"]["sha256"],
+        "claim": "Recorded projection encoding only; native/model context consumption unproved",
+    })
+    if journal.read_bytes() != before:
+        raise NativeContextSetupError("Native journal changed before recorded writer handoff")
+    journal.write_bytes(after)
+    return locator
+
+
 def _historical_native_layout(events: list[dict], historical: dict, schema_text: str) -> tuple:
     from session_restore import semantic_projection
 
@@ -2525,6 +2625,9 @@ def _stage_native_context(*, home: Path, session_id: str, sdk: Path, owner: Path
         previous_timestamp = timestamp
     if events[0]["type"] != "session.start" or events[0]["data"].get("sessionId") != session_id:
         refuse("Native journal session identity is unknown")
+    if historical is not None and historical.get("schema_version") == 3:
+        return _stage_recorded_native_context(
+            events, before, historical=historical, schema_text=schema_text, owner=owner, journal=journal)
     if historical is not None:
         insertions, correspondence, skills, call_ids = _historical_native_layout(events, historical, schema_text)
         summary_id = str(uuid.uuid4())
@@ -2642,9 +2745,81 @@ def _stage_native_context(*, home: Path, session_id: str, sdk: Path, owner: Path
     return locator
 
 
-def _validate_historical_context_fixture(fixture: dict) -> dict:
+def _validate_recorded_context_fixture(fixture: dict, root: Path | None) -> dict:
+    from native_workflow import owner_file, read_owner_json
+    from session_restore import compile_task_snapshot, permission_rules, recorded_native_payloads
+
+    keys = {"schema_version", "provenance", "recorded_context", "restoration", "trigger", "consumer",
+            "snapshot", "required_tools", "limitations", "personal_instructions", "candidate_permissions"}
+    if (set(fixture) != keys or type(fixture["schema_version"]) is not int
+            or fixture["schema_version"] != 3
+            or fixture["provenance"] != "source-bound-historical" or root is None
+            or not isinstance(fixture["personal_instructions"], str)
+            or not fixture["personal_instructions"].strip()
+            or not isinstance(fixture["limitations"], list) or not fixture["limitations"]
+            or any(not isinstance(value, str) or not value.strip() for value in fixture["limitations"])
+            or not isinstance(fixture["required_tools"], list) or not fixture["required_tools"]
+            or any(not isinstance(value, str) or not value.strip() for value in fixture["required_tools"])
+            or len(set(fixture["required_tools"])) != len(fixture["required_tools"])):
+        raise ValueError("Invalid recorded-context fixture or missing owner root")
+    binding = fixture["recorded_context"]
+    if (not isinstance(binding, dict) or set(binding) != {
+            "path", "sha256", "reader_revision", "original_runtime_revision", "cutoff_offset"}
+            or not re.fullmatch(r"[0-9a-f]{64}", str(binding["sha256"]))
+            or any(not re.fullmatch(r"[0-9a-f]{40}", str(binding[key]))
+                   for key in ("reader_revision", "original_runtime_revision"))
+            or type(binding["cutoff_offset"]) is not int or binding["cutoff_offset"] < 0):
+        raise ValueError("Invalid recorded-context artifact/runtime binding")
+    path = owner_file(root.absolute(), binding["path"])
+    if path.stat().st_mode & 0o077:
+        raise ValueError("Recorded context must be owner-only")
+    source_bytes = path.read_bytes()
+    if hashlib.sha256(source_bytes).hexdigest() != binding["sha256"]:
+        raise ValueError("Recorded context artifact checksum differs")
+    context = read_owner_json(path)
+    payloads, correspondence, excluded = recorded_native_payloads(context)
+    consumer = fixture["consumer"]
+    if (not isinstance(consumer, dict) or set(consumer) != {"cli_sha256", "sdk_sha256", "cli_version"}
+            or any(not re.fullmatch(r"[0-9a-f]{64}", str(consumer[key]))
+                   for key in ("cli_sha256", "sdk_sha256"))
+            or not isinstance(consumer["cli_version"], str) or not consumer["cli_version"].strip()):
+        raise ValueError("Recorded input requires an exact selected CLI/SDK identity")
+    restoration = fixture["restoration"]
+    trigger = fixture["trigger"]
+    if (not isinstance(restoration, dict) or set(restoration) != {
+            "source_session_id", "cutoff_event_id", "skill_context"}
+            or restoration["skill_context"] != "recorded-target-context"
+            or any(not isinstance(value, str) or not value for value in restoration.values())
+            or restoration["cutoff_event_id"] != context["last_source_event"]
+            or not isinstance(context["source"], str)
+            or Path(context["source"]).parent.name != restoration["source_session_id"]
+            or binding["cutoff_offset"] != context["source_cutoff_offset"]
+            or not isinstance(trigger, dict) or set(trigger) != {
+                "event_id", "timestamp", "content", "source_line_sha256"}
+            or trigger["event_id"] != restoration["cutoff_event_id"]
+            or not isinstance(trigger["content"], str) or not trigger["content"]
+            or not re.fullmatch(r"[0-9a-f]{64}", str(trigger["source_line_sha256"]))):
+        raise ValueError("Recorded context/cutoff/trigger binding differs")
+    measurement.session_uuid(restoration["source_session_id"])
+    measurement.session_uuid(trigger["event_id"])
+    try:
+        timestamp = datetime.fromisoformat(trigger["timestamp"].replace("Z", "+00:00"))
+        if timestamp.tzinfo is None:
+            raise ValueError()
+    except (ValueError, AttributeError, TypeError):
+        raise ValueError("Invalid original trigger timestamp") from None
+    permission_rules(fixture["candidate_permissions"])
+    return {**fixture, "snapshot": compile_task_snapshot(fixture["snapshot"]),
+            "canonical": context, "canonical_bytes": source_bytes,
+            "native_payloads": payloads, "recorded_correspondence": correspondence,
+            "excluded_fields": excluded}
+
+
+def _validate_historical_context_fixture(fixture: dict, *, root: Path | None = None) -> dict:
     from session_restore import compile_task_snapshot, semantic_projection, permission_rules
 
+    if isinstance(fixture, dict) and fixture.get("schema_version") == 3:
+        return _validate_recorded_context_fixture(fixture, root)
     keys = {"schema_version", "provenance", "records", "source_mapping", "summary",
             "summary_timestamp", "skill_events", "snapshot", "required_tools", "limitations",
             "restoration", "personal_instructions", "candidate_permissions"}
@@ -2789,7 +2964,7 @@ def _run_native_context_calibration(
             result["claim"] = "Historical setup observations only; behavioral admission and skill improvement unproved"
             if model_send:
                 raise ValueError("Historical context setup forbids model sends")
-            fixture = _validate_historical_context_fixture(fixture)
+            fixture = _validate_historical_context_fixture(fixture, root=fixture_file.parent)
         elif (not isinstance(fixture, dict) or set(fixture) != {
                 "schema_version", "provenance", "messages", "summary", "prompt", "expected"}
                 or fixture["schema_version"] != 1 or fixture["provenance"] != "synthetic-calibration"
@@ -2815,8 +2990,16 @@ def _run_native_context_calibration(
         if any(path.resolve() != path or not path.is_file() or path.is_symlink() for path in (copilot, sdk)):
             raise ValueError("Context runtime paths require regular absolute originals")
         cli_identity = copilot_identity(copilot)
-        if (not re.search(r"\b1\.0\.97(?:\b|-)", cli_identity["version"])
-                or digest(sdk) != "d336d72bd0f597d39c1c75732e5eb5b07cd43e65e81b45f90413ee86e69cb406"):
+        recorded = historical and fixture["schema_version"] == 3
+        if recorded:
+            if (cli_identity["version"] != fixture["consumer"]["cli_version"]
+                    or digest(copilot) != fixture["consumer"]["cli_sha256"]
+                    or digest(sdk) != fixture["consumer"]["sdk_sha256"]
+                    or model != fixture["canonical"]["selected_model"]
+                    or effort != fixture["canonical"]["reasoning_effort"]):
+                raise ValueError("Recorded context selected runtime/model identity differs")
+        elif (not re.search(r"\b1\.0\.97(?:\b|-)", cli_identity["version"])
+              or digest(sdk) != "d336d72bd0f597d39c1c75732e5eb5b07cd43e65e81b45f90413ee86e69cb406"):
             raise ValueError("Context calibration requires pinned version97 CLI/SDK")
         run_root.mkdir(parents=True, mode=0o700)
         owned = True
@@ -2841,8 +3024,9 @@ def _run_native_context_calibration(
         history = owner / "synthetic-history.jsonl"
         created_at = utc_instant()
         if historical:
-            records = fixture["records"]
             source_id, cutoff = fixture["restoration"]["source_session_id"], fixture["restoration"]["cutoff_event_id"]
+            records = ([{"type": "session", "version": 1, "externalId": source_id, "createdAt": created_at}]
+                       if recorded else fixture["records"])
         else:
             records = [{"type": "session", "version": 1, "externalId": source_id, "createdAt": created_at}]
             records.extend({"type": "message", "id": str(uuid.uuid4()), "timestamp": created_at,
@@ -2879,13 +3063,16 @@ def _run_native_context_calibration(
             raise NativeContextSetupError("No accepted isolated importer exit receipt")
         result["locator"] = _stage_native_context(
             home=home, session_id=session_id, sdk=sdk, owner=owner,
-            messages=None if historical else fixture["messages"], summary=fixture["summary"],
+            messages=None if historical else fixture["messages"],
+            summary="" if recorded else fixture["summary"],
             historical=fixture if historical else None)
         for name, value in (() if historical else (("expected.json", fixture["expected"]),)):
             write_json(owner / name, value)
             (owner / name).chmod(0o600)
         prompt_path = owner / "candidate-prompt.md"
-        prompt_path.write_text("Historical context setup only. No model send." if historical else fixture["prompt"])
+        prompt_path.write_text(
+            fixture["trigger"]["content"] if recorded else
+            "Historical context setup only. No model send." if historical else fixture["prompt"])
         prompt_path.chmod(0o600)
         config = {
             "cli": str(copilot), "sdk": str(sdk), "home": str(home), "os_home": str(os_home),

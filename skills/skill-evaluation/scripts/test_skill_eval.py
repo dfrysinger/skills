@@ -1645,6 +1645,184 @@ class NativeHistoricalContextTests(unittest.TestCase):
         candidate.assert_not_called()
 
 
+class NativeRecordedContextTests(unittest.TestCase):
+    arguments = NativeContextCalibrationTests.arguments
+    patches = NativeContextCalibrationTests.patches
+
+    def setUp(self):
+        NativeContextCalibrationTests.setUp(self)
+        self.source_id, self.trigger_id = str(uuid.uuid4()), str(uuid.uuid4())
+        self.context = {
+            "source": f"/synthetic/{self.source_id}/events.jsonl", "source_cutoff_offset": 100,
+            "last_source_event": self.trigger_id, "source_bytes_consumed": 200,
+            "source_events_consumed": 12, "compactions_consumed": 2,
+            "reader": "Synthetic recorded reader", "mode": "recorded/live projection",
+            "selected_model": "fixture-model", "reasoning_effort": "low", "context_tier": None,
+            "original_user_messages": ["Synthetic original request", "Synthetic trigger"],
+            "handoff_context": None,
+            "invoked_skills": [
+                {"name": f"synthetic-{index}", "path": f"synthetic/{index}/SKILL.md",
+                 "content": f"Synthetic body {index}", "allowedTools": [], "source": "plugin",
+                 "invokedAtTurn": index + 1000}
+                for index in range(22)],
+            "system_context_messages": [
+                {"role": "system", "content": "Synthetic system", "metadata": {"source": "fixture"}}],
+            "chat_messages": [
+                {"role": "developer", "content": "Synthetic developer"},
+                {"role": "user", "content": "Wrapped synthetic original",
+                 "copilotResponsesReasoning": {"effort": "low"}, "__copilotAutoApprovalHumanMessageIndex": 147},
+                {"role": "assistant", "content": None, "reasoning_opaque": "synthetic opaque",
+                 "encrypted_content": "synthetic encrypted", "reasoningBlocks": [{"type": "synthetic"}],
+                 "providerId": "synthetic-provider", "serverTools": {"items": []}, "apiCallId": "synthetic-api",
+                 "phase": "commentary", "tool_calls": [
+                     {"id": "synthetic-call", "type": "function",
+                      "function": {"name": "view", "arguments": '{ "path": "synthetic.txt" }'}},
+                     {"id": "custom_synthetic", "type": "custom",
+                      "custom": {"name": "apply_patch", "input": "synthetic input"}}]},
+                {"role": "tool", "tool_call_id": "synthetic-call", "content": "Synthetic result",
+                 "__copilotMessageSource": {"kind": "tool", "name": "view"}},
+                {"role": "tool", "tool_call_id": "custom_synthetic", "content": "Synthetic failure text"},
+                {"role": "assistant", "content": "Synthetic final"},
+                {"role": "user", "content": "Wrapped Synthetic trigger",
+                 "copilotResponsesReasoning": {"effort": "low"}, "__copilotAutoApprovalHumanMessageIndex": 161},
+            ],
+        }
+        self.canonical = self.root / "recorded.json"
+        self.canonical.write_text(json.dumps(self.context, indent=2) + "\n")
+        self.canonical.chmod(0o600)
+        self.recorded = {
+            "schema_version": 3, "provenance": "source-bound-historical",
+            "recorded_context": {"path": self.canonical.name, "sha256": digest(self.canonical),
+                                 "reader_revision": "1" * 40, "original_runtime_revision": "2" * 40,
+                                 "cutoff_offset": 100},
+            "consumer": {"cli_version": "1.0.97", "cli_sha256": digest(self.cli),
+                         "sdk_sha256": "d336d72bd0f597d39c1c75732e5eb5b07cd43e65e81b45f90413ee86e69cb406"},
+            "restoration": {"source_session_id": self.source_id, "cutoff_event_id": self.trigger_id,
+                            "skill_context": "recorded-target-context"},
+            "trigger": {"event_id": self.trigger_id, "timestamp": "2026-01-01T00:00:00Z",
+                        "content": "Synthetic trigger", "source_line_sha256": "3" * 64},
+            "snapshot": historical_snapshot_fixture(), "required_tools": ["skill", "view", "sql", "manage_schedule"],
+            "personal_instructions": "Synthetic personal", "candidate_permissions": {
+                "write_paths": [], "shell_commands": []},
+            "limitations": ["Synthetic unit fixture only; no native consumption"],
+        }
+        self.fixture.write_text(json.dumps(self.recorded))
+        schemas = {
+            "SkillInvoked": ("skill.invoked", "name path content allowedTools source invokedAtTurn"),
+            "SystemMessage": ("system.message", "role content metadata"),
+            "InstructionUpdate": ("instruction.update", "authority boundary lifetime fallback content"),
+            "UserMessage": ("user.message", "content transformedContent source responsesReasoning"),
+            "AssistantMessage": ("assistant.message",
+                                 "content messageId reasoningOpaque encryptedContent reasoningBlocks "
+                                 "serverTools providerId apiCallId phase toolRequests"),
+            "ToolExecutionStart": ("tool.execution_start", "toolCallId toolName arguments"),
+            "ToolExecutionComplete": ("tool.execution_complete", "toolCallId success result"),
+        }
+        with (self.sdk.parent / "generated/session-events.d.ts").open("a") as stream:
+            for name, (kind, fields) in schemas.items():
+                stream.write(f'export interface {name}Event {{\ntype: "{kind}";\ndata: {name}Data;\n}}\n')
+                stream.write(f"export interface {name}Data {{\n")
+                stream.writelines(f"{field}?: unknown;\n" for field in fields.split())
+                stream.write("}\n")
+
+    def import_double(self, restoration, history, **kwargs):
+        self.order.append("import-exit")
+        seed = [json.loads(line) for line in history.read_text().splitlines()]
+        self.assertEqual(len(seed), 1)
+        self.assertEqual(seed[0]["externalId"], self.source_id)
+        home = Path(kwargs["receipt_path"]).parents[1] / "candidate-home"
+        self.journal = home / "session-state" / self.session_id / "events.jsonl"
+        self.journal.parent.mkdir(parents=True)
+        self.journal.write_text(json.dumps({
+            "id": str(uuid.uuid4()), "parentId": None, "type": "session.start",
+            "timestamp": seed[0]["createdAt"], "data": {"sessionId": self.session_id},
+        }) + "\n")
+        skill_eval.write_json(kwargs["receipt_path"], {
+            "status": "PASS", "session_id": self.session_id, "exit_code": 0, "history_sha256": digest(history)})
+        return self.session_id
+
+    def probe_double(self, operation, config):
+        self.order.append(operation)
+        self.assertEqual(self.journal.read_bytes(), (self.run / "owner/journal-staged.jsonl").read_bytes())
+        self.assertEqual((self.run / "owner/canonical-recorded-context.json").read_bytes(), self.canonical.read_bytes())
+        return {"status": {"setup": "SETUP_OBSERVED", "observe": "OBSERVED", "cleanup": "CLEANED"}[operation]}
+
+    def candidate_double(self, config, **kwargs):
+        self.order.append("preflight")
+        self.assertTrue(kwargs["preflight_only"])
+        self.assertEqual(Path(config["prompt_path"]).read_text(), self.recorded["trigger"]["content"])
+        return {"status": "PREFLIGHT_OBSERVED", "model_send_calls": 0}
+
+    def test_recorded_path_preserves_population_fields_and_defers_trigger_after_empty_import(self):
+        from contextlib import ExitStack
+        original = self.canonical.read_bytes()
+        with ExitStack() as stack:
+            self.patches(stack)
+            result = skill_eval._run_native_context_calibration(**self.arguments())
+        self.assertEqual(result["status"], "CONTEXT_SETUP_OBSERVED", result["firsterror"])
+        self.assertEqual(self.order, ["import-exit", "setup", "preflight", "observe", "cleanup"])
+        locator = result["locator"]
+        self.assertEqual(len(locator["root_skills"]), 22)
+        events = [json.loads(line) for line in self.journal.read_text().splitlines()]
+        self.assertFalse(any(event["type"] == "session.compaction_complete" for event in events))
+        self.assertEqual([event["data"]["content"] for event in events if event["type"] == "user.message"], [""])
+        assistant = next(event["data"] for event in events if event["type"] == "assistant.message")
+        self.assertEqual(assistant["providerId"], "synthetic-provider")
+        self.assertEqual(assistant["encryptedContent"], "synthetic encrypted")
+        self.assertEqual(assistant["reasoningBlocks"], [{"type": "synthetic"}])
+        self.assertEqual(assistant["toolRequests"][0]["arguments"], '{ "path": "synthetic.txt" }')
+        self.assertEqual(assistant["toolRequests"][1]["type"], "custom")
+        source_indices = [item["index"] for item in locator["correspondence"] if item["collection"] == "chat_messages"]
+        self.assertEqual(source_indices, list(range(6)))
+        deferred = json.loads(Path(locator["trigger_file"]).read_text())
+        self.assertEqual(deferred["event_id"], self.trigger_id)
+        self.assertEqual(deferred["recorded_message"], self.context["chat_messages"][-1])
+        self.assertEqual(original, self.canonical.read_bytes())
+        self.assertTrue(any("approval indices" in item for item in locator["limitations"]))
+
+    def test_unmapped_provider_field_refuses_before_import_without_discarding_it(self):
+        from contextlib import ExitStack
+        self.context["chat_messages"][2]["unmapped_provider_state"] = "synthetic"
+        self.canonical.write_text(json.dumps(self.context))
+        self.recorded["recorded_context"]["sha256"] = digest(self.canonical)
+        self.fixture.write_text(json.dumps(self.recorded))
+        with ExitStack() as stack:
+            self.patches(stack)
+            result = skill_eval._run_native_context_calibration(**self.arguments())
+        self.assertEqual(result["status"], "FAILED")
+        self.assertIn("assistant fields", result["firsterror"])
+        self.assertEqual(self.order, [])
+        self.assertFalse(self.run.exists())
+
+    def test_changed_artifact_or_cutoff_binding_refuses_before_import(self):
+        from contextlib import ExitStack
+        import copy
+        for key, value in (("sha256", "f" * 64), ("cutoff_offset", 101)):
+            with self.subTest(key=key), ExitStack() as stack:
+                fixture = copy.deepcopy(self.recorded)
+                fixture["recorded_context"][key] = value
+                self.fixture.write_text(json.dumps(fixture))
+                self.patches(stack)
+                result = skill_eval._run_native_context_calibration(**self.arguments())
+                self.assertEqual(result["status"], "FAILED")
+                self.assertEqual(self.order, [])
+                self.assertFalse(self.run.exists())
+
+    def test_schema_without_provider_field_cannot_mutate_imported_journal(self):
+        from contextlib import ExitStack
+        schema = self.sdk.parent / "generated/session-events.d.ts"
+        schema.write_text(schema.read_text().replace("providerId?: unknown;\n", ""))
+        with ExitStack() as stack:
+            native, candidate = self.patches(stack)
+            result = skill_eval._run_native_context_calibration(**self.arguments())
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["setup_error_code"], "NATIVE_CONTEXT_SETUP_UNSUPPORTED")
+        self.assertEqual(self.order, ["import-exit"])
+        self.assertEqual(len(self.journal.read_text().splitlines()), 1)
+        native.assert_not_called()
+        candidate.assert_not_called()
+
+
 class NativeRunTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
