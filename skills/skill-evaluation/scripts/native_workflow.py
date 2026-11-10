@@ -222,6 +222,13 @@ def continuation_entry(path: Path, config: dict) -> dict:
         binding["interactive"]["skill_char_budget"] = value["skill_char_budget"]
     if "context_fixture_file" in config:
         fixture = read_owner_json(owned(config["context_fixture_file"]))
+        if "runtime_treatment" in fixture:
+            from session_restore import NORMALIZED_ACTIVE_CANARY
+            if (fixture["runtime_treatment"] != NORMALIZED_ACTIVE_CANARY
+                    or value["purpose"] != "setup-canary"
+                    or "recorded_autopilot_request" not in fixture):
+                raise ValueError("Normalized active treatment is setup-canary only")
+            binding["runtime_treatment"] = NORMALIZED_ACTIVE_CANARY
         if "recorded_autopilot_request" in fixture:
             if "active_objective" not in fixture or "completed_objective" in fixture:
                 raise ValueError("Recorded autopilot continuation requires its active objective")

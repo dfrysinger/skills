@@ -1939,6 +1939,48 @@ class NativeRecordedContextTests(unittest.TestCase):
         self.fixture.write_text(json.dumps(self.recorded))
         return store
 
+    def test_normalized_active_canary_requires_explicit_synthetic_provenance_and_exact_initial_window(self):
+        store = self.add_recorded_autopilot()
+        store["current"]["continuationCount"] = 0
+        store["current"]["creditLimit"] = {
+            "credits": 100, "creditsUsed": 0, "creditsUsedNanoAiu": "0"}
+        self.active_path.write_text(json.dumps(store))
+        self.recorded["active_objective"]["sha256"] = digest(self.active_path)
+        self.context["source"] = f"/synthetic/{self.source_id}/events.jsonl"
+        self.canonical.write_text(json.dumps(self.context))
+        self.recorded["recorded_context"]["sha256"] = digest(self.canonical)
+        self.recorded["provenance"] = "synthetic-continuation-canary"
+        self.recorded["runtime_treatment"] = "public-command-normalized-active-v1"
+        valid = skill_eval._validate_recorded_context_fixture(self.recorded, self.root)
+        self.assertEqual(valid["runtime_treatment"], self.recorded["runtime_treatment"])
+        self.assertEqual(json.loads(valid["active_objective_bytes"]), store)
+        for fault in ("historical", "name", "source", "cap", "used", "continuations", "ordinary"):
+            with self.subTest(fault=fault):
+                fixture = json.loads(json.dumps(self.recorded))
+                changed = json.loads(json.dumps(store))
+                context = json.loads(json.dumps(self.context))
+                if fault == "historical":
+                    fixture["provenance"] = "source-bound-historical"
+                elif fault == "name":
+                    fixture["runtime_treatment"] = "unknown-treatment"
+                elif fault == "source":
+                    context["source"] = f"/historical/{self.source_id}/events.jsonl"
+                elif fault == "cap":
+                    changed["current"]["creditLimit"]["credits"] = 101
+                elif fault == "used":
+                    changed["current"]["creditLimit"].update(creditsUsed=1, creditsUsedNanoAiu="1000000000")
+                elif fault == "continuations":
+                    changed["current"]["continuationCount"] = 1
+                else:
+                    del fixture["active_objective"]
+                    del fixture["recorded_autopilot_request"]
+                self.active_path.write_text(json.dumps(changed))
+                self.canonical.write_text(json.dumps(context))
+                fixture.get("active_objective", {})["sha256"] = digest(self.active_path)
+                fixture["recorded_context"]["sha256"] = digest(self.canonical)
+                with self.assertRaises(ValueError):
+                    skill_eval._validate_recorded_context_fixture(fixture, self.root)
+
     def test_recorded_autopilot_stages_exact_active_store_and_separate_producer_without_sending(self):
         from contextlib import ExitStack
         from session_restore import active_objective_state, completed_objective_state

@@ -69,7 +69,15 @@ export class CopilotClient {
     }
     const goalPath = join(this.options.baseDirectory, "session-state", id, "autopilot-objective.json");
     let current = null;
-    try { current = JSON.parse(readFileSync(goalPath, "utf8")).current; } catch {}
+    let goalStore;
+    try { goalStore = JSON.parse(readFileSync(goalPath, "utf8")); current = goalStore.current; } catch {}
+    const persistGoal = () => writeFileSync(goalPath, JSON.stringify(goalStore));
+    if (current && state.pauseOnCold && current.status === "active") {
+      Object.assign(current, { status: "paused", pauseReason: "resumed_session",
+        updatedAt: new Date().toISOString() });
+      state.coldHook?.(current);
+      persistGoal();
+    }
     if (current && state.coldMismatch && state.starts > 1) current.id = 18;
     const session = {
       sessionId: id,
@@ -88,7 +96,15 @@ export class CopilotClient {
         state.sentId = id;
         state.sendReady?.();
         if (state.sendFails) throw new Error("Test send transport failure");
-        if (state.sendHook) return state.sendHook(id, emit);
+        if (state.sendHook) {
+          const messageId = state.sendHook(id, emit);
+          if (state.completeOnSend) {
+            current.status = "completed";
+            current.completionSummary = "Synthetic completion";
+            persistGoal();
+          }
+          return messageId;
+        }
         emit("assistant.turn_start", { model: options.model });
         emit("assistant.usage", { apiCallId: "test-api-1", model: options.model });
         emit("assistant.usage", { apiCallId: "test-api-2", model: options.model });
@@ -98,6 +114,19 @@ export class CopilotClient {
         return id;
       },
       rpc: {
+        commands: { invoke: async request => {
+          (state.commandRequests ??= []).push(structuredClone(request));
+          Object.assign(current, { status: "active",
+            autopilotOrigin: state.mode === "autopilot" ? "user" : "objective",
+            continuationCount: 0, resumeCount: current.resumeCount + 1,
+            creditLimit: { credits: 100, creditsUsed: 0, creditsUsedNanoAiu: "0" },
+            updatedAt: new Date().toISOString() });
+          delete current.pauseReason;
+          state.mode = "autopilot";
+          state.resumeHook?.(current, emit);
+          persistGoal();
+          return { kind: "agent-prompt", prompt: "UNCONSUMED COMMAND PROMPT", displayPrompt: "", mode: "autopilot" };
+        } },
         send: async request => {
           state.rpcSendRequest = structuredClone(request);
           return { messageId: await session.send(request) };
@@ -1240,6 +1269,135 @@ test("recorded completed store is preserved through warm/cold setup, observe and
   assert.ok(state.resumes.every(options => options.continuePendingWork === false));
   assert.equal(state.starts, 4);
   assert.equal(state.owners, 0);
+});
+
+async function normalizedCanaryFixture(t) {
+  const owned = await continuationFixture(t, { autopilot: true });
+  const { config, root, state, store, source, goal, locator } = owned;
+  store.current.continuationCount = 0;
+  store.current.creditLimit = { credits: 100, creditsUsed: 0, creditsUsedNanoAiu: "0" };
+  const bytes = JSON.stringify(store);
+  writeFileSync(source, bytes);
+  writeFileSync(goal, bytes);
+  locator.active_objective.sha256 = createHash("sha256").update(bytes).digest("hex");
+  locator.runtime_treatment = "public-command-normalized-active-v1";
+  writeFileSync(config.context_fixture_file, JSON.stringify(locator));
+  state.pauseOnCold = true;
+  state.completeViaTool = true;
+  state.completeOnSend = true;
+  state.rows = [];
+  state.mode = "interactive";
+  rmSync(join(root, "setup.json"));
+  const setupConfig = { ...config, output: join(root, "setup.json") };
+  delete setupConfig.continuation_file;
+  return { ...owned, setupConfig };
+}
+
+test("normalized canary witnesses both cold pauses and resumes without sending the command prompt", async t => {
+  const { config, setupConfig, state, store, goal, request, input, save } = await normalizedCanaryFixture(t);
+  const setup = await runProbe("setup", setupConfig);
+  assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
+  assert.equal(state.sendCalls, 0);
+  assert.equal(setup.normalized_active.transitions.length, 2);
+  for (const [index, transition] of setup.normalized_active.transitions.entries()) {
+    assert.equal(transition.cold.store.current.status, "paused");
+    assert.equal(transition.cold.store.current.pauseReason, "resumed_session");
+    assert.equal(transition.resumed.store.current.status, "active");
+    assert.equal(transition.resumed.store.current.resumeCount, store.current.resumeCount + index + 1);
+    assert.equal(transition.resumed.store.current.autopilotOrigin, index ? "user" : "objective");
+    assert.equal(transition.command.returned_prompt_consumed, false);
+    assert.equal(transition.resumed.persisted_store_correspondence, false);
+    assert.equal(transition.resumed.native_state_correspondence, false);
+    assert.equal(transition.resumed.normalized_native_state_correspondence, true);
+    for (const key of ["objective", "id", "turnCount", "tokenCount", "creditCountNanoAiu"]) {
+      assert.equal(transition.resumed.store.current[key], store.current[key]);
+    }
+  }
+  const candidate = await runProbe("candidate", config);
+  assert.equal(candidate.status, "CANDIDATE_OBSERVED", candidate.error?.message);
+  assert.equal(candidate.historical_active_equivalence, false);
+  assert.equal(candidate.checks.normalized_native_completion, true);
+  assert.equal(candidate.normalized_active.transitions.length, 1);
+  assert.equal(candidate.normalized_active.before_explicit_send.setup_model_calls, 0);
+  assert.equal(candidate.normalized_active.before_send_objective.store.current.status, "active");
+  assert.equal(JSON.parse(readFileSync(goal)).current.resumeCount, store.current.resumeCount + 3);
+  assert.equal(state.sendCalls, 1);
+  assert.equal(state.sentPrompt, request.prompt);
+  assert.deepEqual(state.commandRequests, Array(3).fill({ name: "autopilot", input: "--max-ai-credits 100" }));
+  assert.equal(continuationEntry(config).binding.runtime_treatment, "public-command-normalized-active-v1");
+  input.purpose = "historical";
+  input.canary_checks = null;
+  input.canary_receipt = candidate.continuation_receipt;
+  save();
+  assert.throws(() => continuationEntry(config), /setup-canary only/);
+});
+
+test("normalized canary rejects cold drift, wrong resume deltas and unsolicited native work before send", async t => {
+  for (const fault of ["cold-counter", "cold-reason", "cold-time", "resume-count", "resume-limit",
+    "resume-turn", "resume-origin", "resume-time", "resume-mode", "resume-user", "resume-model", "resume-work"]) {
+    await t.test(fault, async t => {
+      const { setupConfig, state } = await normalizedCanaryFixture(t);
+      state.coldHook = current => {
+        if (fault === "cold-counter") current.tokenCount++;
+        if (fault === "cold-reason") current.pauseReason = "manual";
+        if (fault === "cold-time") current.updatedAt = "2001-01-01T00:00:00.000Z";
+      };
+      state.resumeHook = (current, emit) => {
+        if (fault === "resume-count") current.resumeCount--;
+        if (fault === "resume-limit") current.creditLimit.credits = 101;
+        if (fault === "resume-turn") current.turnCount++;
+        if (fault === "resume-origin") current.autopilotOrigin = "user";
+        if (fault === "resume-time") current.updatedAt = "2001-01-01T00:00:00.000Z";
+        if (fault === "resume-mode") state.mode = "interactive";
+        if (fault === "resume-user") state.events.push(state.emit("user.message", { content: "Unexpected command send" }));
+        if (fault === "resume-model") emit("assistant.usage", { apiCallId: "unexpected" });
+        if (fault === "resume-work") state.processingOverride = { processing: true };
+      };
+      const report = await runProbe("setup", setupConfig);
+      assert.equal(report.status, "ERROR", fault);
+      assert.match(report.error.message, /Normalized/);
+      assert.equal(state.sendCalls, 0);
+      assert.equal(report.normalized_active.transitions.length, 1);
+    });
+  }
+});
+
+test("normalized candidate rejects unwitnessed persisted drift and the strict active path still rejects a cold pause", async t => {
+  const { config, setupConfig, state, goal } = await normalizedCanaryFixture(t);
+  const setup = await runProbe("setup", setupConfig);
+  assert.equal(setup.status, "SETUP_OBSERVED", setup.error?.message);
+  const store = JSON.parse(readFileSync(goal));
+  store.current.tokenCount++;
+  writeFileSync(goal, JSON.stringify(store));
+  const report = await runProbe("candidate", config);
+  assert.equal(report.status, "PREMODEL_BLOCKED");
+  assert.match(report.error.message, /Normalized objective persisted\/native/);
+  assert.equal(state.sendCalls, 0);
+  await t.test("strict active", async t => {
+    const { config, state } = await activeRecordedContextFixture(t);
+    state.pauseOnCold = true;
+    const report = await runProbe("setup", config);
+    assert.equal(report.status, "ERROR");
+    assert.match(report.error.message, /Active objective persisted\/native state differs from source/);
+    assert.equal(state.commandRequests, undefined);
+    assert.equal(state.sendCalls, 0);
+  });
+});
+
+test("normalized canary does not qualify assistant-only or uncompleted native outcomes", async t => {
+  for (const fault of ["assistant-only", "still-active"]) {
+    await t.test(fault, async t => {
+      const { config, setupConfig, state } = await normalizedCanaryFixture(t);
+      assert.equal((await runProbe("setup", setupConfig)).status, "SETUP_OBSERVED");
+      if (fault === "assistant-only") state.completeViaTool = false;
+      else state.completeOnSend = false;
+      const report = await runProbe("candidate", config);
+      assert.equal(report.status, "FAILED");
+      assert.match(report.error.message, /requires genuine task_complete/);
+      assert.equal(report.continuation_receipt, undefined);
+      assert.equal(state.sendCalls, 1);
+    });
+  }
 });
 
 test("recorded active store survives dormant warm/cold setup with counters, limits and loaded bodies intact", async t => {

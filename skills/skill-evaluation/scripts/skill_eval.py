@@ -2492,6 +2492,8 @@ def _stage_recorded_native_context(events, before, *, historical, schema_text, o
         "snapshot": historical["snapshot"], "required_tools": historical["required_tools"],
         "limitations": historical["limitations"] + unavailable,
     }
+    if "runtime_treatment" in historical:
+        locator["runtime_treatment"] = historical["runtime_treatment"]
     if objective_key in historical:
         locator[objective_key] = {
             "path": str(owner / f"{objective_key.replace('_', '-')}.json"),
@@ -2832,17 +2834,24 @@ def _validate_recorded_context_fixture(fixture: dict, root: Path | None) -> dict
     from session_restore import (
         active_objective_state, compile_task_snapshot, completed_objective_state, permission_rules,
         recorded_autopilot_request, recorded_native_payloads,
+        NORMALIZED_ACTIVE_CANARY, normalized_active_canary,
     )
 
     keys = {"schema_version", "provenance", "recorded_context", "restoration", "trigger", "consumer",
             "snapshot", "required_tools", "limitations", "personal_instructions", "candidate_permissions"}
     autopilot = "recorded_autopilot_request" in fixture
-    if (set(fixture) - {"completed_objective", "active_objective", "recorded_autopilot_request"} != keys
+    normalized = "runtime_treatment" in fixture
+    if (set(fixture) - {"completed_objective", "active_objective", "recorded_autopilot_request",
+                       "runtime_treatment"} != keys
             or ("active_objective" in fixture) != autopilot
             or (autopilot and "completed_objective" in fixture)
+            or (normalized and (not autopilot
+                or fixture["runtime_treatment"] != NORMALIZED_ACTIVE_CANARY))
             or type(fixture["schema_version"]) is not int
             or fixture["schema_version"] != 3
-            or fixture["provenance"] != "source-bound-historical" or root is None
+            or fixture["provenance"] != (
+                "synthetic-continuation-canary" if normalized else "source-bound-historical")
+            or root is None
             or not isinstance(fixture["personal_instructions"], str)
             or not fixture["personal_instructions"].strip()
             or not isinstance(fixture["limitations"], list) or not fixture["limitations"]
@@ -2949,6 +2958,8 @@ def _validate_recorded_context_fixture(fixture: dict, root: Path | None) -> dict
         objective["autopilot_send"] = recorded_autopilot_request(
             read_owner_json(request_path), event, trigger, store)
         objective["recorded_autopilot_request_bytes"] = request_bytes
+        if normalized:
+            normalized_active_canary(store, context["source"])
     permission_rules(fixture["candidate_permissions"])
     return {**fixture, "snapshot": compile_task_snapshot(fixture["snapshot"]),
             "canonical": context, "canonical_bytes": source_bytes,
@@ -3106,7 +3117,14 @@ def _run_native_context_calibration(
                 or fixture_file.stat().st_mode & 0o077):
             raise ValueError("Context fixture requires an owner-only unaliased single-link file")
         fixture = read_owner_json(fixture_file)
-        historical = isinstance(fixture, dict) and fixture.get("provenance") == "source-bound-historical"
+        normalized = isinstance(fixture, dict) and "runtime_treatment" in fixture
+        historical = isinstance(fixture, dict) and (
+            fixture.get("provenance") == "source-bound-historical" or normalized)
+        if normalized:
+            if continuation_file is None or source_preparation_only or not model_send:
+                raise ValueError("Normalized active treatment requires the explicit continuation canary")
+            result["runtime_treatment"] = fixture["runtime_treatment"]
+            result["historical_active_equivalence"] = False
         calibration_session_id = None
         if source_preparation_only:
             if not historical or model_send:
@@ -3120,7 +3138,9 @@ def _run_native_context_calibration(
                 or any(path.is_symlink() for path in (personal_skill_dir, *personal_skill_dir.parents))):
             raise ValueError("Personal skill discovery requires an unaliased historical definition directory")
         if historical:
-            result["claim"] = "Historical setup observations only; behavioral admission and skill improvement unproved"
+            result["claim"] = ("Synthetic normalized-active infrastructure only; historical equivalence unproved"
+                               if normalized else
+                               "Historical setup observations only; behavioral admission and skill improvement unproved")
             if model_send and continuation_file is None:
                 raise ValueError("Historical context setup forbids model sends")
             fixture = _validate_historical_context_fixture(fixture, root=fixture_file.parent)

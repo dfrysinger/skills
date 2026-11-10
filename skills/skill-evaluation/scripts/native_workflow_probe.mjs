@@ -172,6 +172,8 @@ function profileState(config) {
   return state;
 }
 
+const normalizedActiveCanary = "public-command-normalized-active-v1";
+
 function contextFixture(config) {
   const path = config.context_fixture_file;
   requirePath(path, "file");
@@ -189,10 +191,13 @@ function contextFixture(config) {
       const completed = Object.hasOwn(fixture, "completed_objective");
       const active = Object.hasOwn(fixture, "active_objective");
       const autopilot = Object.hasOwn(fixture, "recorded_autopilot_request");
+      const normalized = Object.hasOwn(fixture, "runtime_treatment");
       if (completed) keys.push("completed_objective");
       if (active) keys.push("active_objective");
       if (autopilot) keys.push("recorded_autopilot_request");
+      if (normalized) keys.push("runtime_treatment");
       if (!isDeepStrictEqual(Object.keys(fixture).sort(), keys.sort())
+          || (normalized && (!active || fixture.runtime_treatment !== normalizedActiveCanary))
           || active !== autopilot || (active && completed)
           || [active && fixture.active_objective, autopilot && fixture.recorded_autopilot_request]
             .filter(value => value !== false).some(value => !value
@@ -235,6 +240,12 @@ function contextFixture(config) {
       const completedStore = completed
         ? parseDataJson(readFileSync(fixture.completed_objective.path, "utf8")) : null;
       const activeStore = active ? parseDataJson(readFileSync(fixture.active_objective.path, "utf8")) : null;
+      if (normalized && (!/^\/synthetic\/[0-9a-f-]{36}\/events\.jsonl$/.test(canonical.source)
+          || activeStore.current.continuationCount !== 0
+          || !isDeepStrictEqual(activeStore.current.creditLimit,
+            { credits: 100, creditsUsed: 0, creditsUsedNanoAiu: "0" }))) {
+        throw new Error("Normalized active treatment requires the capped synthetic canary");
+      }
       const recordedRequest = autopilot
         ? parseDataJson(readFileSync(fixture.recorded_autopilot_request.path, "utf8")) : null;
       const ownerRoot = dirname(config.context_fixture_file);
@@ -362,6 +373,34 @@ function objectiveReadback(path, fixture, goal) {
   return { store, sha256: createHash("sha256").update(bytes).digest("hex"),
     source_sha256: fixture[key].sha256, persisted_store_correspondence: true,
     ...(nativeReadback ? { native_state_correspondence: true } : {}) };
+}
+
+function objectiveState(store) {
+  const current = store.current;
+  return {
+    ...Object.fromEntries(["id", "objective", "status", "turnCount", "completionSummary", "pauseReason"]
+      .filter(key => Object.hasOwn(current, key)).map(key => [key, current[key]])),
+    creditCountNanoAiu: String(BigInt(current.creditCountNanoAiu)),
+    ...(current.creditLimit ? { creditLimit: current.creditLimit } : {}),
+  };
+}
+
+function normalizedReadback(path, fixture, expected, goal) {
+  requirePath(path, "file");
+  const stat = lstatSync(path);
+  if (stat.uid !== userInfo().uid || stat.nlink !== 1 || (stat.mode & 0o077)) {
+    throw new Error("Normalized objective destination must be owned, owner-only and single-link");
+  }
+  const bytes = readFileSync(path);
+  const store = parseDataJson(bytes.toString("utf8"));
+  if (!expected || !isDeepStrictEqual(store, expected)
+      || (goal !== undefined && !isDeepStrictEqual(goal?.state, objectiveState(expected)))) {
+    throw new Error("Normalized objective persisted/native state differs from declared transition");
+  }
+  return { store, sha256: hash(bytes), source_sha256: fixture.active_objective.sha256,
+    persisted_store_correspondence: false, native_state_correspondence: false,
+    historical_active_equivalence: false, normalized_persisted_state_correspondence: true,
+    ...(goal !== undefined ? { normalized_native_state_correspondence: true } : {}) };
 }
 
 export function validateRecordedNativeEvents(fixture, events) {
@@ -571,7 +610,7 @@ export function validateConfig(op, config) {
     }
     if (fixture.schema_version === 3 && (fixture.completed_objective || fixture.active_objective)
         && !(continuationProfile(config) && ["observe", "cleanup"].includes(op))) {
-      objectiveReadback(goalPath, fixture);
+      if (!(fixture.runtime_treatment && op === "candidate")) objectiveReadback(goalPath, fixture);
     } else if (pathExists(goalPath) && !(continuationProfile(config) && ["observe", "cleanup"].includes(op))) {
       throw new Error(op === "setup" ? "Setup requires an absent native goal"
         : "Context calibration requires an absent native goal");
@@ -820,6 +859,7 @@ export async function runProbe(op, config) {
   const selected = config?.profile !== undefined;
   let projection;
   let scheduleMapping;
+  let normalizedExpected;
   const report = {
     status: "ERROR", session_id: config?.session_id,
     calls: [], shutdown_errors: [], model_calls: 0,
@@ -911,6 +951,45 @@ export async function runProbe(op, config) {
   };
   const connect = async () => {
     if (client) throw new Error("Previous native owner has not stopped");
+    const fixture = historicalProfile(config) ? contextFixture(config) : null;
+    const normalize = fixture?.runtime_treatment && (op === "setup" || isCandidate);
+    let before;
+    let coldStarted;
+    if (normalize) {
+      if (!report.normalized_active) {
+        report.runtime_treatment = normalizedActiveCanary;
+        report.provenance = "synthetic-continuation-canary";
+        report.historical_active_equivalence = false;
+        report.normalized_active = {
+          source_store: fixture.active_objective_store,
+          source_sha256: fixture.active_objective.sha256, transitions: [],
+          completion_eligibility: "Command owner records eligibility; no public readback. Native task_complete remains unproven.",
+        };
+        normalizedExpected = fixture.active_objective_store;
+        if (isCandidate) {
+          if (!continuation || entry.purpose !== "setup-canary") {
+            throw new Error("Normalized active treatment requires setup-canary continuation");
+          }
+          const setupPath = join(dirname(config.context_fixture_file), "setup.json");
+          requirePath(setupPath, "file");
+          const stat = lstatSync(setupPath);
+          const setupBytes = readFileSync(setupPath);
+          const setup = parseDataJson(setupBytes.toString("utf8"));
+          if (stat.uid !== userInfo().uid || stat.nlink !== 1 || (stat.mode & 0o077)
+              || setup.status !== "SETUP_OBSERVED" || setup.session_id !== config.session_id
+              || setup.runtime_treatment !== normalizedActiveCanary
+              || setup.normalized_active?.source_sha256 !== fixture.active_objective.sha256
+              || !isDeepStrictEqual(setup.normalized_active?.source_store, fixture.active_objective_store)
+              || setup.normalized_active?.transitions?.length !== 2) {
+            throw new Error("Missing matching normalized setup receipt");
+          }
+          normalizedExpected = setup.normalized_active.transitions.at(-1).resumed.store;
+          report.normalized_active.setup_receipt_sha256 = hash(setupBytes);
+        }
+      }
+      before = normalizedReadback(report.goal_path, fixture, normalizedExpected);
+      coldStarted = Date.now();
+    }
     client = new sdk.CopilotClient({
       connection: sdk.RuntimeConnection.forStdio({
         path: config.cli, args: [],
@@ -951,13 +1030,67 @@ export async function runProbe(op, config) {
       return { session_id: session.sessionId };
     });
     if (session.sessionId !== config.session_id) throw new Error("Resumed a different namespace");
-    if (isCandidate) {
+    if (isCandidate || normalize) {
       unsubscribe = session.on(event => {
         try {
-          writeFileSync(eventFile, JSON.stringify(event) + "\n");
+          if (isCandidate) writeFileSync(eventFile, JSON.stringify(event) + "\n");
           candidateEvents.push(event);
         } catch (error) { fail(error); }
       });
+    }
+    if (normalize) {
+      const transition = { before };
+      report.normalized_active.transitions.push(transition);
+      const freshTime = (value, since) => typeof value === "string"
+        && Number.isFinite(Date.parse(value)) && Date.parse(value) >= since
+        && Date.parse(value) <= Date.now();
+      const coldGoal = await call("autopilotObjective.getState:cold", undefined,
+        () => session.rpc.autopilotObjective.getState());
+      const coldStore = parseDataJson(readFileSync(report.goal_path, "utf8"));
+      transition.cold_observed = { store: coldStore, goal: coldGoal };
+      const expectedCold = structuredClone(before.store);
+      expectedCold.current.status = "paused";
+      expectedCold.current.pauseReason = "resumed_session";
+      expectedCold.current.updatedAt = coldStore.current.updatedAt;
+      if (!freshTime(coldStore.current.updatedAt, coldStarted)) {
+        throw new Error("Normalized cold objective timestamp outside load operation");
+      }
+      transition.cold = normalizedReadback(report.goal_path, fixture, expectedCold, coldGoal);
+      transition.cold_mode = await call("mode.get:cold", undefined, () => session.rpc.mode.get());
+      if (!["interactive", "autopilot"].includes(transition.cold_mode)) {
+        throw new Error("Normalized resume requires a supported non-plan mode");
+      }
+      transition.before_command = await assertNoNormalizationWork();
+      const command = { name: "autopilot", input: "--max-ai-credits 100" };
+      const resumeStarted = Date.now();
+      transition.command = { request: command };
+      transition.command.result = await call("commands.invoke:normalize-active", command,
+        () => session.rpc.commands.invoke(command));
+      transition.command.returned_prompt_consumed = false;
+      transition.after_command = await assertNoNormalizationWork();
+      if (transition.command.result?.kind !== "agent-prompt"
+          || transition.command.result.mode !== "autopilot") {
+        throw new Error("Normalized resume did not return the unconsumed native agent prompt");
+      }
+      const resumedGoal = await call("autopilotObjective.getState:resumed", undefined,
+        () => session.rpc.autopilotObjective.getState());
+      const resumedStore = parseDataJson(readFileSync(report.goal_path, "utf8"));
+      transition.resumed_observed = { store: resumedStore, goal: resumedGoal };
+      const expectedResumed = structuredClone(expectedCold);
+      Object.assign(expectedResumed.current, {
+        status: "active", autopilotOrigin: transition.cold_mode === "autopilot" ? "user" : "objective",
+        continuationCount: 0, resumeCount: expectedCold.current.resumeCount + 1,
+        updatedAt: resumedStore.current.updatedAt,
+        creditLimit: { credits: 100, creditsUsed: 0, creditsUsedNanoAiu: "0" },
+      });
+      delete expectedResumed.current.pauseReason;
+      if (!freshTime(resumedStore.current.updatedAt, resumeStarted)) {
+        throw new Error("Normalized resumed objective timestamp outside command operation");
+      }
+      transition.resumed = normalizedReadback(report.goal_path, fixture, expectedResumed, resumedGoal);
+      transition.resumed_mode = await call("mode.get:resumed", undefined, () => session.rpc.mode.get());
+      if (transition.resumed_mode !== "autopilot") throw new Error("Normalized resume did not set autopilot mode");
+      normalizedExpected = expectedResumed;
     }
     if (operational) {
       const updated = await call("options.update:installedPlugins",
@@ -968,7 +1101,32 @@ export async function runProbe(op, config) {
     }
     await call("tools.initializeAndValidate", undefined,
       () => session.rpc.tools.initializeAndValidate());
+    if (normalize) report.normalized_active.after_initialize = await assertNoNormalizationWork();
   };
+  const assertNoNormalizationWork = async () => {
+    const events = await call("session.getEvents:normalization", undefined, () => session.getEvents());
+    const prefix = parseDataJson(readFileSync(config.prefix_file, "utf8"));
+    const ids = new Set(prefix.map(event => event.id));
+    const observation = {
+      events, emitted_events: [...candidateEvents],
+      activity: await call("metadata.activity:normalization", undefined, () => session.rpc.metadata.activity()),
+      processing: await call("metadata.isProcessing:normalization", undefined, () => session.rpc.metadata.isProcessing()),
+      explicit_model_send_calls: report.model_send_calls ?? 0,
+    };
+    (report.normalized_active.work_checks ??= []).push(observation);
+    if (!isDeepStrictEqual(events.filter(event => ids.has(event.id)), prefix)
+        || events.some(event => !ids.has(event.id) && /^(user\.message$|assistant\.)/.test(event.type))
+        || candidateEvents.some(event => /^(user\.message$|assistant\.)/.test(event.type))
+        || observation.activity?.hasActiveWork !== false || observation.activity?.abortable !== false
+        || observation.processing?.processing !== false || observation.explicit_model_send_calls !== 0) {
+      throw new Error("Normalized setup produced unexpected native work or added a user/model event");
+    }
+    observation.setup_model_calls = 0;
+    return observation;
+  };
+  const readObjective = (fixture, goal) => fixture.runtime_treatment
+    ? normalizedReadback(report.goal_path, fixture, normalizedExpected, goal)
+    : objectiveReadback(report.goal_path, fixture, goal);
   const checkSchedules = schedules => {
     if (!Array.isArray(schedules?.entries)) throw new Error("Unknown native scheduler reader");
     if (!operational) return schedules.entries.length === 0;
@@ -1028,7 +1186,7 @@ export async function runProbe(op, config) {
     report.before = before;
     if (fixture.completed_objective || fixture.active_objective) {
       before[fixture.active_objective ? "active_objective" : "completed_objective"]
-        = objectiveReadback(report.goal_path, fixture, before.goal);
+        = readObjective(fixture, before.goal);
     }
     if ((!fixture.completed_objective && !fixture.active_objective && before.goal?.state !== null)
         || !Array.isArray(before.todos?.rows) || before.todos.rows.length
@@ -1062,7 +1220,7 @@ export async function runProbe(op, config) {
     };
     if (fixture.completed_objective || fixture.active_objective) {
       state[fixture.active_objective ? "active_objective" : "completed_objective"]
-        = objectiveReadback(report.goal_path, fixture, state.goal);
+        = readObjective(fixture, state.goal);
     }
     if ((!fixture.completed_objective && !fixture.active_objective
         && (pathExists(report.goal_path) || state.goal?.state !== null))
@@ -1689,6 +1847,13 @@ export async function runProbe(op, config) {
       throw new Error("Missing public SDK send or abort surface");
     }
     const renderedPrompt = readFileSync(report.prompt_path, "utf8");
+    if (report.normalized_active) {
+      report.normalized_active.before_explicit_send = await assertNoNormalizationWork();
+      const fixture = contextFixture(config);
+      report.normalized_active.before_send_objective = readObjective(fixture,
+        await call("autopilotObjective.getState:before-send", undefined,
+          () => session.rpc.autopilotObjective.getState()));
+    }
     if (continuation && report.pending_input?.length) throw new Error("Native input request preceded original submission");
     report.prompt_sha256 = hash(renderedPrompt);
     report.timeout_ms = Math.max(0, Math.floor(Math.min(report.max_timeout_ms, 330000 - (performance.now() - started))));
@@ -1803,6 +1968,17 @@ export async function runProbe(op, config) {
         report.primary_system_messages = correspondence.primary_system_messages;
         delete report.checks.primary_system_messages;
         report.final_state = await continuationState();
+        if (report.normalized_active && !report.pending_input_observed) {
+          const store = report.final_state.native_store;
+          report.checks.normalized_native_completion = report.model_completion_kind === "task_complete"
+            && store?.current?.status === "completed"
+            && store.current.id === normalizedExpected.current.id
+            && store.current.objective === normalizedExpected.current.objective
+            && isDeepStrictEqual(report.final_state.goal?.state, objectiveState(store));
+          if (!report.checks.normalized_native_completion) {
+            throw new Error("Normalized canary requires genuine task_complete and matching completed native/persisted objective");
+          }
+        }
         report.tool_effects = candidateEvents.slice(report.model_event_start_index)
           .filter(event => /^tool\./.test(event.type));
         if (entry.purpose === "setup-canary" && !report.pending_input_observed) {

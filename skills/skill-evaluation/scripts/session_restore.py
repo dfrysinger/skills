@@ -36,6 +36,18 @@ def active_objective_state(store: dict) -> dict:
     return _objective_state(store, "active")
 
 
+NORMALIZED_ACTIVE_CANARY = "public-command-normalized-active-v1"
+
+
+def normalized_active_canary(store: dict, source: str) -> None:
+    active_objective_state(store)
+    if (not re.fullmatch(r"/synthetic/[0-9a-f-]{36}/events\.jsonl", source)
+            or store["current"]["continuationCount"] != 0
+            or store["current"].get("creditLimit") != {
+                "credits": 100, "creditsUsed": 0, "creditsUsedNanoAiu": "0"}):
+        raise ValueError("Normalized active treatment requires the capped synthetic canary")
+
+
 def _objective_state(store: dict, status: str) -> dict:
     required = {"id", "objective", "status", "autopilotOrigin", "continuationCount", "turnCount",
                 "tokenCount", "creditCountNanoAiu", "resumeCount", "createdAt", "updatedAt"}
