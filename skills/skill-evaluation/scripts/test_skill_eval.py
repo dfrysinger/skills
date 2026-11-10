@@ -722,6 +722,43 @@ def historical_snapshot_fixture(*, all_tables=False):
 
 
 class HistoricalSnapshotTests(unittest.TestCase):
+    def test_preserves_multiple_statements_in_each_source_readback(self):
+        from session_restore import compile_task_snapshot
+        source = historical_snapshot_fixture()
+        source["queries"] = [
+            {"query": "SELECT ';' AS value;\nSELECT id FROM todos ORDER BY rowid;",
+             "expected_text": "Synthetic first two-statement readback", "expected_rows": 3},
+            {"query": "SELECT claim_id FROM live_proof_receipts;\n"
+                      "SELECT id FROM todos WHERE status='pending';",
+             "expected_text": "Synthetic second two-statement readback", "expected_rows": 1},
+        ]
+        compiled = compile_task_snapshot(source)
+        self.assertEqual(compiled["queries"], source["queries"])
+
+    def test_multistatement_readbacks_check_total_rows_and_deny_later_writes(self):
+        from session_restore import compile_task_snapshot
+        for fault in ("count", "write", "attach", "syntax"):
+            source = historical_snapshot_fixture()
+            query = "SELECT id FROM todos;"
+            tail = {
+                "count": "SELECT claim_id FROM live_proof_receipts;",
+                "write": "DELETE FROM todos;",
+                "attach": "ATTACH DATABASE ':memory:' AS other;",
+                "syntax": "SELECT 'unfinished",
+            }[fault]
+            source["queries"] = [
+                {"query": query + tail, "expected_text": "Synthetic readback", "expected_rows": 2}
+            ]
+            with self.subTest(fault=fault), self.assertRaises(ValueError):
+                compile_task_snapshot(source)
+
+    def test_requires_at_least_one_source_readback(self):
+        from session_restore import compile_task_snapshot
+        source = historical_snapshot_fixture()
+        source["queries"] = []
+        with self.assertRaises(ValueError):
+            compile_task_snapshot(source)
+
     def test_five_table_values_keys_and_mutation_comparisons(self):
         from contextlib import closing
         import sqlite3
