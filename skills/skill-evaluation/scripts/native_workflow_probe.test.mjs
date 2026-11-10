@@ -1332,6 +1332,25 @@ test("normalized canary witnesses both cold pauses and resumes without sending t
   assert.throws(() => continuationEntry(config), /setup-canary only/);
 });
 
+test("normalized canary permits only the empty ephemeral SQL intent refresh", async t => {
+  for (const variant of ["empty-ephemeral", "nonempty", "non-ephemeral", "extra-data", "persisted"]) {
+    await t.test(variant, async t => {
+      const { setupConfig, state } = await normalizedCanaryFixture(t);
+      state.resumeHook = (current, emit) => {
+        const event = emit("assistant.intent",
+          { intent: variant === "nonempty" ? "Unexpected work" : "",
+            ...(variant === "extra-data" ? { apiCallId: "unexpected" } : {}) },
+          { ephemeral: variant !== "non-ephemeral" });
+        if (variant === "persisted") state.events.push(event);
+      };
+      const report = await runProbe("setup", setupConfig);
+      assert.equal(report.status, variant === "empty-ephemeral" ? "SETUP_OBSERVED" : "ERROR",
+        report.error?.message);
+      assert.equal(state.sendCalls, 0);
+    });
+  }
+});
+
 test("normalized canary rejects cold drift, wrong resume deltas and unsolicited native work before send", async t => {
   for (const fault of ["cold-counter", "cold-reason", "cold-time", "resume-count", "resume-limit",
     "resume-turn", "resume-origin", "resume-time", "resume-mode", "resume-user", "resume-model", "resume-work"]) {

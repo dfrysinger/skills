@@ -1116,7 +1116,9 @@ export async function runProbe(op, config) {
     (report.normalized_active.work_checks ??= []).push(observation);
     if (!isDeepStrictEqual(events.filter(event => ids.has(event.id)), prefix)
         || events.some(event => !ids.has(event.id) && /^(user\.message$|assistant\.)/.test(event.type))
-        || candidateEvents.some(event => /^(user\.message$|assistant\.)/.test(event.type))
+        || candidateEvents.some(event => /^(user\.message$|assistant\.)/.test(event.type)
+          && !(event.type === "assistant.intent" && event.ephemeral === true
+            && isDeepStrictEqual(event.data, { intent: "" })))
         || observation.activity?.hasActiveWork !== false || observation.activity?.abortable !== false
         || observation.processing?.processing !== false || observation.explicit_model_send_calls !== 0) {
       throw new Error("Normalized setup produced unexpected native work or added a user/model event");
