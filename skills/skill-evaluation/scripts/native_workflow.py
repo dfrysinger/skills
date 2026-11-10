@@ -19,7 +19,8 @@ CLI_CONTINUATION_PREAMBLE = "You are the GitHub Copilot CLI, a terminal assistan
 
 def _screen_input_tree(root, *, package=False, operational=False):
     owner_names = {"context-fixture.json", "completed-objective.json", "recorded-context.json",
-                   "source-event.json", "continuation.json", "calibration-evidence"}
+                   "source-event.json", "continuation.json", "calibration-evidence",
+                   "active-objective.json", "recorded-autopilot-request.json"}
     if operational:
         owner_names |= {"operational.json", "schedule-events.json", "working-state",
                         "canonical-recorded-context.json", "native-objective-store.json",
@@ -219,6 +220,16 @@ def continuation_entry(path: Path, config: dict) -> dict:
     }
     if "skill_char_budget" in value:
         binding["interactive"]["skill_char_budget"] = value["skill_char_budget"]
+    if "context_fixture_file" in config:
+        fixture = read_owner_json(owned(config["context_fixture_file"]))
+        if "recorded_autopilot_request" in fixture:
+            if "active_objective" not in fixture or "completed_objective" in fixture:
+                raise ValueError("Recorded autopilot continuation requires its active objective")
+            binding["recorded_request"] = {
+                "source": "autopilot", "displayPrompt": "", "requiredTool": "task_complete",
+                "agentMode": "autopilot", "objective_status": "active",
+                "send_surface": "session.rpc.send", "wait": False,
+            }
     if "operational_file" in config:
         binding["operational"] = operational_input(Path(config["operational_file"]), config)["binding"]
     configuration_sha256 = hashlib.sha256(json.dumps(

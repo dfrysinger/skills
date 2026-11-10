@@ -98,6 +98,10 @@ export class CopilotClient {
         return id;
       },
       rpc: {
+        send: async request => {
+          state.rpcSendRequest = structuredClone(request);
+          return { messageId: await session.send(request) };
+        },
         options: { update: async args => {
           (state.allOptionUpdates ??= []).push(args);
           state.optionUpdates = args; return { success: !state.optionsDenied };
@@ -154,6 +158,7 @@ export class CopilotClient {
           turnCount: current.turnCount, creditCountNanoAiu: current.creditCountNanoAiu,
           ...(current.completionSummary !== undefined ? { completionSummary: current.completionSummary } : {}),
           ...(current.pauseReason !== undefined ? { pauseReason: current.pauseReason } : {}),
+          ...(current.creditLimit !== undefined ? { creditLimit: current.creditLimit } : {}),
         } }) : structuredClone(state.nativeGoalResponse) },
         mode: {
           get: async () => state.mode,
@@ -629,6 +634,59 @@ async function completedRecordedContextFixture(t) {
   return { ...owned, store, source, goal, descriptor };
 }
 
+async function activeRecordedContextFixture(t) {
+  const owned = await recordedContextFixture(t);
+  const { config, root } = owned;
+  const store = { version: 1, nextId: 9, current: {
+    id: 5, objective: "Synthetic active objective: preserve π and newlines.\nStill unfinished.", status: "active",
+    autopilotOrigin: "objective", continuationCount: 3, turnCount: 12, tokenCount: 678,
+    creditCountNanoAiu: "123456789012345", resumeCount: 2,
+    createdAt: "2001-01-01T01:02:03.004Z", updatedAt: "2002-02-02T03:04:05.006Z",
+    creditLimit: { credits: 250000, creditsUsedNanoAiu: "123456789012345", creditsUsed: 123456.789012345 },
+  } };
+  const source = join(root, "active-objective.json");
+  const goal = join(config.home, "session-state", config.session_id, "autopilot-objective.json");
+  const bytes = JSON.stringify(store, null, 2) + "\n";
+  writeFileSync(source, bytes, { mode: 0o600 });
+  writeFileSync(goal, bytes, { mode: 0o600 });
+  const locator = JSON.parse(readFileSync(config.context_fixture_file));
+  const deferred = JSON.parse(readFileSync(locator.trigger_file));
+  const canonical = JSON.parse(readFileSync(locator.canonical_file));
+  const request = {
+    event_id: deferred.event_id, source_line_sha256: "", current_datetime: "2026-01-01T00:00:00.000Z",
+    prompt: `Synthetic recorded producer only.\n\n${store.current.objective}\n\nSynthetic continuation.`,
+    source: "autopilot", displayPrompt: "", requiredTool: "task_complete", agentMode: "autopilot",
+    objective_id: store.current.id,
+    objective_sha256: createHash("sha256").update(store.current.objective).digest("hex"),
+  };
+  const sourcePath = join(root, deferred.source_event_path);
+  const event = JSON.parse(readFileSync(sourcePath));
+  event.data = { content: "", source: "autopilot", delivery: "idle", agentMode: "autopilot",
+    transformedContent: `<current_datetime>${request.current_datetime}</current_datetime>\n\n${request.prompt}` };
+  canonical.chat_messages.at(-1).content = event.data.transformedContent;
+  deferred.content = "";
+  deferred.recorded_message = canonical.chat_messages.at(-1);
+  const requestPath = join(root, "recorded-autopilot-request.json");
+  const digest = path => createHash("sha256").update(readFileSync(path)).digest("hex");
+  const save = () => {
+    writeFileSync(source, JSON.stringify(store, null, 2) + "\n");
+    writeFileSync(sourcePath, JSON.stringify(event) + "\n");
+    deferred.source_line_sha256 = digest(sourcePath);
+    request.source_line_sha256 = deferred.source_line_sha256;
+    writeFileSync(requestPath, JSON.stringify(request), { mode: 0o600 });
+    writeFileSync(locator.canonical_file, JSON.stringify(canonical));
+    writeFileSync(locator.trigger_file, JSON.stringify(deferred));
+    locator.canonical_sha256 = locator.source_binding.sha256 = digest(locator.canonical_file);
+    locator.trigger_sha256 = digest(locator.trigger_file);
+    locator.active_objective = { path: source, sha256: digest(source) };
+    locator.recorded_autopilot_request = { path: requestPath, sha256: digest(requestPath) };
+    writeFileSync(config.context_fixture_file, JSON.stringify(locator));
+    writeFileSync(config.prompt_path, request.prompt);
+  };
+  save();
+  return { ...owned, store, source, goal, request, requestPath, event, locator, save };
+}
+
 function addOperationalInput({ config, root, state }) {
   const tree = path => {
     const result = spawnSync("python3", ["-B", "-c",
@@ -730,8 +788,8 @@ test("operational setup rejects changed schedule definitions and unrequested tur
   }
 });
 
-async function continuationFixture(t, { loadedCopies = false, operational = false } = {}) {
-  const owned = await completedRecordedContextFixture(t);
+async function continuationFixture(t, { loadedCopies = false, operational = false, autopilot = false } = {}) {
+  const owned = await (autopilot ? activeRecordedContextFixture : completedRecordedContextFixture)(t);
   const { config, root, state } = owned;
   writeFileSync(join(config.plugin_path, "generic.txt"), "Synthetic pinned plugin\n");
   if (operational) addOperationalInput(owned);
@@ -775,7 +833,10 @@ async function continuationFixture(t, { loadedCopies = false, operational = fals
   state.metadataOverride = { tools: null };
   state.sendHook = (id, emit) => {
     const persist = (type, data) => state.events.push(emit(type, data));
-    persist("user.message", { content: "Synthetic trigger", messageId: id, interactionId: id });
+    persist("user.message", { ...(autopilot ? {
+      content: "", source: "autopilot", agentMode: "autopilot",
+      transformedContent: `<current_datetime>2026-02-02T00:00:00.000Z</current_datetime>\n\n${owned.request.prompt}`,
+    } : { content: "Synthetic trigger" }), messageId: id, interactionId: id });
     emit("system.message", {
       interactionId: id, content: input.cli_preamble
         + "\nYou are an interactive tool that helps users with software engineering tasks.",
@@ -1181,6 +1242,129 @@ test("recorded completed store is preserved through warm/cold setup, observe and
   assert.equal(state.owners, 0);
 });
 
+test("recorded active store survives dormant warm/cold setup with counters, limits and loaded bodies intact", async t => {
+  const { config, root, state, store, source, goal } = await activeRecordedContextFixture(t);
+  const bytes = readFileSync(source);
+  for (const [operation, status] of [["setup", "SETUP_OBSERVED"], ["observe", "OBSERVED"], ["cleanup", "CLEANED"]]) {
+    const report = await runProbe(operation, { ...config, output: join(root, `${operation}-active.json`) });
+    assert.equal(report.status, status, report.error?.message);
+    for (const readback of operation === "setup" ? [report.before, report.warm, report]
+      : [operation === "cleanup" ? report.cleanup : report]) {
+      assert.deepEqual(readback.active_objective.store, store);
+      assert.equal(readback.active_objective.native_state_correspondence, true);
+      assert.deepEqual(readback.goal.state.creditLimit, store.current.creditLimit);
+    }
+    if (operation !== "cleanup") assert.equal(report.invoked_after_reload.skills.length, 22);
+    assert.deepEqual(readFileSync(goal), bytes);
+    assert.equal(state.sendCalls, 0);
+  }
+  assert.ok(state.resumes.every(options => options.continuePendingWork === false));
+});
+
+test("recorded autopilot single send keeps hidden display, full producer prompt and active-goal readback", async t => {
+  const { config, state, request, store, goal, input, save } = await continuationFixture(t, { autopilot: true });
+  const report = await runProbe("candidate", config);
+  assert.equal(report.status, "CANDIDATE_OBSERVED", report.error?.message);
+  assert.deepEqual(state.rpcSendRequest, {
+    prompt: request.prompt, displayPrompt: "", requiredTool: "task_complete",
+    source: "autopilot", agentMode: "autopilot", mode: "immediate", wait: false,
+  });
+  assert.equal(state.sendCalls, 1);
+  assert.equal(report.checks.recorded_autopilot_request, true);
+  assert.equal(report.before_continuation.active_objective.native_state_correspondence, true);
+  assert.deepEqual(JSON.parse(readFileSync(goal)), store);
+  assert.equal(report.before_continuation.invoked_after_reload.skills.length, 22);
+  assert.equal(report.behavioral_baseline_ready, false);
+  const binding = continuationEntry(config);
+  assert.equal(binding.binding.recorded_request.objective_status, "active");
+  input.purpose = "historical";
+  input.canary_checks = null;
+  input.canary_receipt = report.continuation_receipt;
+  save();
+  assert.equal(continuationEntry(config).configuration_sha256, binding.configuration_sha256);
+  const locator = JSON.parse(readFileSync(config.context_fixture_file));
+  delete locator.active_objective;
+  delete locator.recorded_autopilot_request;
+  writeFileSync(config.context_fixture_file, JSON.stringify(locator));
+  assert.throws(() => continuationEntry(config), /canary receipt/);
+});
+
+test("recorded autopilot rejects substituted source, producer, goal and ordinary-source spoofing before resume", async t => {
+  for (const fault of ["body", "extra-wrapper", "source", "display", "attachment", "child",
+    "delivery", "agent-mode", "event-id", "goal-id", "goal-text", "completed",
+    "descriptor-hash", "missing-request", "ordinary-spoof"]) {
+    await t.test(fault, async t => {
+      const { config, state, request, event, store, locator, save } = await activeRecordedContextFixture(t);
+      if (fault === "body") request.prompt += " Different body";
+      if (fault === "extra-wrapper") event.data.transformedContent = "Additional injected text\n" + event.data.transformedContent;
+      if (fault === "source" || fault === "ordinary-spoof") event.data.source = "user";
+      if (fault === "display") event.data.content = "Visible substitution";
+      if (fault === "attachment") event.data.attachments = [{ path: "synthetic.txt" }];
+      if (fault === "child") event.agentId = "synthetic-child";
+      if (fault === "delivery") event.data.delivery = "immediate";
+      if (fault === "agent-mode") event.data.agentMode = "interactive";
+      if (fault === "event-id") request.event_id = randomUUID();
+      if (fault === "goal-id") request.objective_id++;
+      if (fault === "goal-text") store.current.objective += " Changed goal";
+      if (fault === "completed") store.current.status = "completed";
+      save();
+      if (fault === "descriptor-hash") locator.recorded_autopilot_request.sha256 = "0".repeat(64);
+      if (fault === "missing-request") delete locator.recorded_autopilot_request;
+      if (fault === "ordinary-spoof") {
+        delete locator.recorded_autopilot_request;
+        delete locator.active_objective;
+      }
+      writeFileSync(config.context_fixture_file, JSON.stringify(locator));
+      const result = await runProbe("setup", config);
+      assert.equal(result.status, "ERROR");
+      assert.equal(state.starts, 0);
+      assert.equal(state.sendCalls, 0);
+    });
+  }
+});
+
+test("active native readback and persisted limits must match before dispatch", async t => {
+  for (const fault of ["native", "limits", "counter"]) {
+    await t.test(fault, async t => {
+      const { config, state, goal, store } = await continuationFixture(t, { autopilot: true });
+      if (fault === "native") state.nativeGoalResponse = { state: null };
+      else {
+        const changed = structuredClone(store);
+        if (fault === "limits") changed.current.creditLimit.credits++;
+        else changed.current.continuationCount++;
+        writeFileSync(goal, JSON.stringify(changed));
+      }
+      const report = await runProbe("candidate", config);
+      assert.equal(report.status, "PREMODEL_BLOCKED", report.error?.message);
+      assert.match(report.error.message, /Active objective persisted\/native state differs/);
+      assert.equal(state.sendCalls, 0);
+    });
+  }
+});
+
+test("autopilot journal correspondence refuses relabeling, body changes and additional sends", async t => {
+  for (const fault of ["source", "body", "wrapper", "duplicate", "prefix"]) {
+    await t.test(fault, async t => {
+      const { config, state } = await continuationFixture(t, { autopilot: true });
+      const send = state.sendHook;
+      state.sendHook = (...args) => {
+        const id = send(...args);
+        const user = state.events.find(event => event.data?.messageId === id);
+        if (fault === "source") delete user.data.source;
+        if (fault === "body") user.data.transformedContent += "\nSubstitution";
+        if (fault === "wrapper") user.data.transformedContent = "Arbitrary preamble\n" + user.data.transformedContent;
+        if (fault === "duplicate") state.events.push(structuredClone(user));
+        if (fault === "prefix") state.events[1].data.content = "Changed loaded body";
+        return id;
+      };
+      const report = await runProbe("candidate", config);
+      assert.equal(report.status, "FAILED");
+      assert.equal(report.continuation_receipt, undefined);
+      assert.equal(state.sendCalls, 1);
+    });
+  }
+});
+
 test("recorded completed-store admission refuses malformed sources and substituted destinations", async t => {
   for (const fault of ["active", "malformed", "null", "hash", "counter", "destination",
     "missing-destination", "symlink-destination", "outside-source", "source-mode", "destination-mode"]) {
@@ -1284,7 +1468,7 @@ test("recorded context retains 22 skills and reads actual permission mode withou
 test("recorded trigger source binding refuses substituted raw or transformed content before resume", async t => {
   for (const fault of ["hash", "fixture-content", "id", "timestamp", "raw-content", "type",
     "transformed", "null-transformed", "absent-transformed", "canonical-transformed", "missing-path",
-    "absolute-path", "parent-path", "mode", "symlink", "hardlink"]) {
+    "absolute-path", "parent-path", "mode", "symlink", "hardlink", "autopilot-source"]) {
     await t.test(fault, async t => {
       const { config, state, locator, root } = await recordedContextFixture(t);
       const deferred = JSON.parse(readFileSync(locator.trigger_file, "utf8"));
@@ -1295,6 +1479,7 @@ test("recorded trigger source binding refuses substituted raw or transformed con
       if (fault === "id") event.id = randomUUID();
       if (fault === "timestamp") event.timestamp = "2026-01-02T00:00:00Z";
       if (fault === "raw-content") event.data.content = "Changed synthetic raw content";
+      if (fault === "autopilot-source") event.data.source = "autopilot";
       if (fault === "type") event.type = "assistant.message";
       if (fault === "transformed") event.data.transformedContent = "Changed transformed content";
       if (fault === "null-transformed") event.data.transformedContent = null;

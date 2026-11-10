@@ -187,8 +187,19 @@ function contextFixture(config) {
         "trigger_file", "trigger_sha256", "root_skills", "correspondence", "excluded_fields",
         "snapshot", "required_tools", "limitations"];
       const completed = Object.hasOwn(fixture, "completed_objective");
+      const active = Object.hasOwn(fixture, "active_objective");
+      const autopilot = Object.hasOwn(fixture, "recorded_autopilot_request");
       if (completed) keys.push("completed_objective");
+      if (active) keys.push("active_objective");
+      if (autopilot) keys.push("recorded_autopilot_request");
       if (!isDeepStrictEqual(Object.keys(fixture).sort(), keys.sort())
+          || active !== autopilot || (active && completed)
+          || [active && fixture.active_objective, autopilot && fixture.recorded_autopilot_request]
+            .filter(value => value !== false).some(value => !value
+              || !isDeepStrictEqual(Object.keys(value).sort(), ["path", "sha256"])
+              || !/^[0-9a-f]{64}$/.test(value.sha256)
+              || [config.home, config.os_home, config.cwd, config.plugin_path]
+                .some(root => within(value.path, root)))
           || (completed && (!fixture.completed_objective
             || !isDeepStrictEqual(Object.keys(fixture.completed_objective).sort(), ["path", "sha256"])
             || !/^[0-9a-f]{64}$/.test(fixture.completed_objective.sha256)
@@ -208,6 +219,8 @@ function contextFixture(config) {
       for (const [path, expected] of [
         [fixture.canonical_file, fixture.canonical_sha256], [fixture.trigger_file, fixture.trigger_sha256],
         ...(completed ? [[fixture.completed_objective.path, fixture.completed_objective.sha256]] : []),
+        ...(active ? [[fixture.active_objective.path, fixture.active_objective.sha256],
+          [fixture.recorded_autopilot_request.path, fixture.recorded_autopilot_request.sha256]] : []),
       ]) {
         requirePath(path, "file");
         const stat = lstatSync(path);
@@ -221,6 +234,9 @@ function contextFixture(config) {
       const deferred = parseDataJson(readFileSync(fixture.trigger_file, "utf8"));
       const completedStore = completed
         ? parseDataJson(readFileSync(fixture.completed_objective.path, "utf8")) : null;
+      const activeStore = active ? parseDataJson(readFileSync(fixture.active_objective.path, "utf8")) : null;
+      const recordedRequest = autopilot
+        ? parseDataJson(readFileSync(fixture.recorded_autopilot_request.path, "utf8")) : null;
       const ownerRoot = dirname(config.context_fixture_file);
       if (typeof deferred.source_event_path !== "string" || !deferred.source_event_path
           || isAbsolute(deferred.source_event_path)
@@ -242,9 +258,12 @@ function contextFixture(config) {
       if (sourceEvent?.type !== "user.message" || sourceEvent.id !== deferred.event_id
           || typeof deferred.timestamp !== "string" || !deferred.timestamp
           || sourceEvent.timestamp !== deferred.timestamp
-          || typeof deferred.content !== "string" || !deferred.content
+          || typeof deferred.content !== "string" || (!autopilot && !deferred.content)
           || sourceEvent.data?.content !== deferred.content
           || typeof sourceEvent.data.content !== "string"
+          || (!autopilot && (sourceEvent.agentId || sourceEvent.data.parentToolCallId
+            || sourceEvent.data.source || sourceEvent.data.isAutopilotContinuation
+            || sourceEvent.data.attachments?.length))
           || (Object.hasOwn(sourceEvent.data, "transformedContent")
             ? sourceEvent.data.transformedContent : sourceEvent.data.content) !== canonical.chat_messages.at(-1)?.content
           || typeof canonical.chat_messages.at(-1)?.content !== "string") {
@@ -259,10 +278,11 @@ function contextFixture(config) {
         throw new Error("Recorded cutoff/trigger correspondence differs");
       }
       const compiled = JSON.parse(execFileSync("python3", ["-B", "-I", "-c",
-        "import json,sys; sys.path.insert(0,sys.argv[1]); from session_restore import recorded_native_payloads,compile_task_snapshot,completed_objective_state; value=json.load(sys.stdin); print(json.dumps([recorded_native_payloads(value['canonical']),compile_task_snapshot(value['snapshot']),completed_objective_state(value['completed']) if 'completed' in value else None]))",
+        "import json,sys; sys.path.insert(0,sys.argv[1]); from session_restore import recorded_native_payloads,compile_task_snapshot,completed_objective_state,active_objective_state,recorded_autopilot_request; value=json.load(sys.stdin); print(json.dumps([recorded_native_payloads(value['canonical']),compile_task_snapshot(value['snapshot']),completed_objective_state(value['completed']) if 'completed' in value else None,active_objective_state(value['active']) if 'active' in value else None,recorded_autopilot_request(value['request'],value['event'],value['trigger'],value['active']) if 'active' in value else None]))",
         dirname(fileURLToPath(import.meta.url))], {
         input: JSON.stringify({ canonical, snapshot: fixture.snapshot?.source,
-          ...(completed ? { completed: completedStore } : {}) }),
+          ...(completed ? { completed: completedStore } : {}),
+          ...(active ? { active: activeStore, request: recordedRequest, event: sourceEvent, trigger: deferred } : {}) }),
         env: { PATH: process.env.PATH },
         stdio: ["pipe", "pipe", "pipe"], maxBuffer: 16 * 1024 * 1024,
       }));
@@ -278,7 +298,14 @@ function contextFixture(config) {
       }
       return { ...fixture, canonical, recorded_payloads: compiled[0][0],
         ...(completed ? { completed_objective_store: completedStore,
-          completed_objective_native_state: compiled[2] } : {}) };
+          completed_objective_native_state: compiled[2] } : {}),
+        ...(active ? { active_objective_store: activeStore,
+          active_objective_native_state: compiled[3], autopilot_send: compiled[4],
+          limitations: [...fixture.limitations,
+            "Single recorded native event replay only; automatic producer leases, repeated continuations and timers are not reproduced",
+            "Native runtime regenerates transport current_datetime; the recorded datetime is not sent",
+            "Pinned single-send forwarding omits billable; no billing-fidelity claim, actual accounting unchanged",
+          ] } : {}) };
     }
     const keys = ["schema_version", "summary_event_id", "summary_sha256", "post_event_ids",
       "root_skills", "correspondence", "tool_call_ids", "snapshot", "required_tools", "limitations"];
@@ -317,21 +344,23 @@ function contextFixture(config) {
   return fixture;
 }
 
-function completedObjectiveReadback(path, fixture, goal) {
+function objectiveReadback(path, fixture, goal) {
   const nativeReadback = arguments.length === 3;
+  const key = fixture.active_objective ? "active_objective" : "completed_objective";
+  const label = fixture.active_objective ? "Active" : "Completed";
   requirePath(path, "file");
   const stat = lstatSync(path);
   if (stat.uid !== userInfo().uid || stat.nlink !== 1 || (stat.mode & 0o077)) {
-    throw new Error("Completed objective destination must be owned, owner-only and single-link");
+    throw new Error(`${label} objective destination must be owned, owner-only and single-link`);
   }
   const bytes = readFileSync(path);
   const store = parseDataJson(bytes.toString("utf8"));
-  if (!isDeepStrictEqual(store, fixture.completed_objective_store)
-      || (nativeReadback && !isDeepStrictEqual(goal?.state, fixture.completed_objective_native_state))) {
-    throw new Error("Completed objective persisted/native state differs from source");
+  if (!isDeepStrictEqual(store, fixture[`${key}_store`])
+      || (nativeReadback && !isDeepStrictEqual(goal?.state, fixture[`${key}_native_state`]))) {
+    throw new Error(`${label} objective persisted/native state differs from source`);
   }
   return { store, sha256: createHash("sha256").update(bytes).digest("hex"),
-    source_sha256: fixture.completed_objective.sha256, persisted_store_correspondence: true,
+    source_sha256: fixture[key].sha256, persisted_store_correspondence: true,
     ...(nativeReadback ? { native_state_correspondence: true } : {}) };
 }
 
@@ -392,15 +421,24 @@ function operationalEntry(config) {
   { encoding: "utf8", env: { PATH: process.env.PATH ?? "" } }));
 }
 
-export function continuationCorrespondence(before, after, events, messageId, raw) {
+export function continuationCorrespondence(before, after, events, messageId, raw, autopilotSend) {
   if (after.length < before.length || before.some((event, index) => !isDeepStrictEqual(event, after[index]))) {
     throw new Error("Historical continuation mutated its native journal prefix");
   }
   const root = event => !event.agentId && !event.data?.parentToolCallId;
   const users = after.slice(before.length).filter(event => root(event) && event.type === "user.message");
-  if (users.length !== 1 || users[0].data?.content !== raw
-      || users[0].data?.messageId !== messageId || users[0].data?.isAutopilotContinuation
-      || users[0].data?.source || users[0].data?.attachments?.length
+  const data = users[0]?.data;
+  const wrapper = typeof data?.transformedContent === "string"
+    ? data.transformedContent.match(/^<current_datetime>([0-9T:.+Z-]+)<\/current_datetime>\n\n/) : null;
+  const autopilotMatches = autopilotSend
+    && isDeepStrictEqual(autopilotSend, { prompt: raw, displayPrompt: "", requiredTool: "task_complete",
+      source: "autopilot", agentMode: "autopilot" })
+    && data?.content === "" && data.source === "autopilot" && data.agentMode === "autopilot"
+    && wrapper && Number.isFinite(Date.parse(wrapper[1]))
+    && data.transformedContent.slice(wrapper[0].length) === raw;
+  if (users.length !== 1 || (autopilotSend ? !autopilotMatches
+    : (users[0].data?.content !== raw || users[0].data?.isAutopilotContinuation || users[0].data?.source))
+      || users[0].data?.messageId !== messageId || users[0].data?.attachments?.length
       || typeof users[0].data?.interactionId !== "string" || !users[0].data.interactionId) {
     throw new Error("Historical continuation requires exactly one unsubstituted root raw user event");
   }
@@ -413,6 +451,7 @@ export function continuationCorrespondence(before, after, events, messageId, raw
     throw new Error("Fresh correlated primary system prompt did not verify interactive CLI identity");
   }
   return { prefix_preserved: true, exactly_once: true, interactive_identity: true,
+    ...(autopilotSend ? { recorded_autopilot_request: true } : {}),
     primary_system_messages: primary, interaction_id: users[0].data.interactionId };
 }
 
@@ -530,9 +569,9 @@ export function validateConfig(op, config) {
     if (continuationProfile(config) && fixture.schema_version !== 3) {
       throw new Error("Continuation requires recorded schema3 input");
     }
-    if (fixture.schema_version === 3 && fixture.completed_objective
+    if (fixture.schema_version === 3 && (fixture.completed_objective || fixture.active_objective)
         && !(continuationProfile(config) && ["observe", "cleanup"].includes(op))) {
-      completedObjectiveReadback(goalPath, fixture);
+      objectiveReadback(goalPath, fixture);
     } else if (pathExists(goalPath) && !(continuationProfile(config) && ["observe", "cleanup"].includes(op))) {
       throw new Error(op === "setup" ? "Setup requires an absent native goal"
         : "Context calibration requires an absent native goal");
@@ -987,10 +1026,11 @@ export async function runProbe(op, config) {
       schedules: await call("schedule.list", undefined, () => session.rpc.schedule.list()),
     };
     report.before = before;
-    if (fixture.completed_objective) {
-      before.completed_objective = completedObjectiveReadback(report.goal_path, fixture, before.goal);
+    if (fixture.completed_objective || fixture.active_objective) {
+      before[fixture.active_objective ? "active_objective" : "completed_objective"]
+        = objectiveReadback(report.goal_path, fixture, before.goal);
     }
-    if ((!fixture.completed_objective && before.goal?.state !== null)
+    if ((!fixture.completed_objective && !fixture.active_objective && before.goal?.state !== null)
         || !Array.isArray(before.todos?.rows) || before.todos.rows.length
         || !checkSchedules(before.schedules)) {
       throw new Error("Historical snapshot requires an empty goal-free dormant namespace");
@@ -1020,10 +1060,12 @@ export async function runProbe(op, config) {
       schedules: await call("schedule.list", undefined, () => session.rpc.schedule.list()),
       context: {}, snapshot_checks: [], source_query_readbacks: [],
     };
-    if (fixture.completed_objective) {
-      state.completed_objective = completedObjectiveReadback(report.goal_path, fixture, state.goal);
+    if (fixture.completed_objective || fixture.active_objective) {
+      state[fixture.active_objective ? "active_objective" : "completed_objective"]
+        = objectiveReadback(report.goal_path, fixture, state.goal);
     }
-    if ((!fixture.completed_objective && (pathExists(report.goal_path) || state.goal?.state !== null))
+    if ((!fixture.completed_objective && !fixture.active_objective
+        && (pathExists(report.goal_path) || state.goal?.state !== null))
         || state.mode !== "autopilot"
         || !Array.isArray(state.todos?.rows) || state.todos.rows.length !== fixture.snapshot.row_counts.todos
         || !checkSchedules(state.schedules)) {
@@ -1258,6 +1300,7 @@ export async function runProbe(op, config) {
           operational_schedules_before_cleanup: state.operational_schedules_before_cleanup } : {}),
         dependencies_empty: state.dependencies_empty, goal: state.goal, mode: state.mode, context: state.context,
         ...(state.completed_objective ? { completed_objective: state.completed_objective } : {}),
+        ...(state.active_objective ? { active_objective: state.active_objective } : {}),
         ...(historicalProfile(config) ? { residual_namespace_preserved: true } : {}) };
     }
     const result = { errors: [] };
@@ -1358,12 +1401,25 @@ export async function runProbe(op, config) {
         throw new Error("Continuation namespace differs from the isolated setup writer");
       }
       report.before_continuation = await observe(false);
-      report.bound_raw_trigger = parseDataJson(readFileSync(fixture.trigger_file, "utf8")).content;
+      report.bound_raw_trigger = fixture.autopilot_send?.prompt
+        ?? parseDataJson(readFileSync(fixture.trigger_file, "utf8")).content;
+      if (fixture.autopilot_send) {
+        report.recorded_autopilot_send = fixture.autopilot_send;
+        report.recorded_autopilot_contract = {
+          send_surface: "session.rpc.send",
+          source_references: [
+            "1bc7ab074eb4b06e9375850053b1a8e9bb5b8497:src/sdk/nodejs/src/generated/rpc.ts:25750-25819,37192-37193",
+            "1bc7ab074eb4b06e9375850053b1a8e9bb5b8497:src/runtime/src/session/session_send_dispatch.rs:155-168",
+          ],
+          limits: fixture.limitations.slice(-3),
+        };
+      }
       const deferred = parseDataJson(readFileSync(fixture.trigger_file, "utf8"));
       report.frozen_inputs = Object.fromEntries([
         config.context_fixture_file, config.prefix_file, config.prompt_path, identityPath, fixture.canonical_file,
         fixture.trigger_file, resolve(dirname(fixture.trigger_file), deferred.source_event_path),
         ...(fixture.completed_objective ? [fixture.completed_objective.path] : []),
+        ...(fixture.active_objective ? [fixture.active_objective.path, fixture.recorded_autopilot_request.path] : []),
         ...(operational ? Object.keys(operationalHashes) : []),
         join(config.home, "copilot-instructions.md"),
         ...Object.keys(entry.binding.source).map(name => join(dirname(fileURLToPath(import.meta.url)), name)),
@@ -1628,7 +1684,8 @@ export async function runProbe(op, config) {
       return;
     }
     }
-    if (typeof session.send !== "function" || typeof session.abort !== "function") {
+    if (typeof (report.recorded_autopilot_send ? session.rpc?.send : session.send) !== "function"
+        || typeof session.abort !== "function") {
       throw new Error("Missing public SDK send or abort surface");
     }
     const renderedPrompt = readFileSync(report.prompt_path, "utf8");
@@ -1685,9 +1742,13 @@ export async function runProbe(op, config) {
             error: new Error(`${report.timeout_ms}-millisecond SDK send/completion deadline exceeded`),
           }), report.timeout_ms);
         });
-        void call("session.send", { prompt: renderedPrompt, mode: "immediate" }, () => {
+        const sendRequest = report.recorded_autopilot_send
+          ? { ...report.recorded_autopilot_send, mode: "immediate", wait: false }
+          : { prompt: renderedPrompt, mode: "immediate" };
+        void call(report.recorded_autopilot_send ? "session.rpc.send" : "session.send", sendRequest, async () => {
           report.model_send_calls = 1;
-          return session.send({ prompt: renderedPrompt, mode: "immediate" });
+          if (report.recorded_autopilot_send) return (await session.rpc.send(sendRequest))?.messageId;
+          return session.send(sendRequest);
         }).then(id => {
           if (typeof id !== "string" || !id) throw new Error("SDK send returned no message ID");
           report.model_message_id = id;
@@ -1737,7 +1798,7 @@ export async function runProbe(op, config) {
         report.prefix_after = await readEvents();
         const correspondence = continuationCorrespondence(
           report.prefix_before, report.prefix_after, candidateEvents.slice(report.model_event_start_index),
-          report.model_message_id, report.bound_raw_trigger);
+          report.model_message_id, report.bound_raw_trigger, report.recorded_autopilot_send);
         Object.assign(report.checks, correspondence);
         report.primary_system_messages = correspondence.primary_system_messages;
         delete report.checks.primary_system_messages;
