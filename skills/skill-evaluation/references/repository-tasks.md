@@ -181,7 +181,7 @@ The run rechecks retained admission artifact hashes.
 
 ## Run unchanged arms
 
-Follow the skill's [execution default](../SKILL.md#execution-default-github-actions-vms).
+Follow the skill's [execution default](../SKILL.md#2-make-the-test-capable-of-observing-that-behavior).
 Run the model commands below inside the Actions task runtime, or locally only
 when the user explicitly selects local model execution. Docker isolates the
 candidate; these commands do not dispatch a VM.

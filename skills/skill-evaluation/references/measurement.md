@@ -433,7 +433,7 @@ new coordinator or an automatic repair engine.
 
 Use these paid model commands inside the Actions task runtime, or for an
 explicitly selected local run. They execute where invoked; see the skill's
-[execution default](../SKILL.md#execution-default-github-actions-vms).
+[execution default](../SKILL.md#2-make-the-test-capable-of-observing-that-behavior).
 
 ```sh
 python3 scripts/skill_eval.py run CORPUS --case CASE \

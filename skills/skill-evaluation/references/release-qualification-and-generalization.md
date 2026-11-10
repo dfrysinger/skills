@@ -116,7 +116,7 @@ The canary and setup pair validate execution; they do not count toward the
 reported advantage. For the Actions default, use the
 [Actions execution procedure](large-actions-campaign.md) for the frozen attempt
 set, including a bounded corpus. Execution alternatives follow the skill's
-[execution default](../SKILL.md#execution-default-github-actions-vms).
+[execution default](../SKILL.md#2-make-the-test-capable-of-observing-that-behavior).
 
 Measure pass distribution, pass-at-first-attempt, earliest failure frontier,
 instruction uptake, wall time, AI credits, and judge agreement. A cheaper skill
