@@ -1871,6 +1871,10 @@ class NativeRecordedContextTests(unittest.TestCase):
         if "completed_objective" in self.recorded:
             self.assertEqual(goal.read_bytes(), self.completed_path.read_bytes())
             self.assertEqual(goal.stat().st_mode & 0o777, 0o600)
+        elif "active_objective" in self.recorded:
+            self.assertEqual(goal.read_bytes(), self.active_path.read_bytes())
+            self.assertEqual(Path(config["prompt_path"]).read_text(), self.autopilot_request["prompt"])
+            self.assertEqual(goal.stat().st_mode & 0o777, 0o600)
         else:
             self.assertFalse(goal.exists())
         return {"status": {"setup": "SETUP_OBSERVED", "observe": "OBSERVED", "cleanup": "CLEANED"}[operation]}
@@ -1891,6 +1895,161 @@ class NativeRecordedContextTests(unittest.TestCase):
             "path": self.completed_path.name, "sha256": digest(self.completed_path)}
         self.fixture.write_text(json.dumps(self.recorded))
         return store
+
+    def add_recorded_autopilot(self):
+        store = {
+            "version": 1, "nextId": 8, "current": {
+                "id": 5, "objective": "Synthetic unfinished goal π.\nKeep its text unchanged.", "status": "active",
+                "autopilotOrigin": "objective", "continuationCount": 4, "turnCount": 17,
+                "tokenCount": 321, "creditCountNanoAiu": "99999999999999", "resumeCount": 2,
+                "createdAt": "2001-01-01T00:00:00Z", "updatedAt": "2002-02-02T00:00:00Z",
+                "creditLimit": {"credits": 100000, "creditsUsedNanoAiu": "123456789",
+                                "creditsUsed": 0.123456789},
+            },
+        }
+        self.active_path = self.root / "active-objective.json"
+        self.active_path.write_text(json.dumps(store, indent=2) + "\n")
+        self.active_path.chmod(0o600)
+        request = {
+            "event_id": self.trigger_id, "source_line_sha256": "",
+            "current_datetime": "2026-01-01T00:00:00.000Z",
+            "prompt": f'Synthetic producer only.\n\n{store["current"]["objective"]}\n\nContinue synthetic work.',
+            "source": "autopilot", "displayPrompt": "", "requiredTool": "task_complete",
+            "agentMode": "autopilot", "objective_id": 5,
+            "objective_sha256": hashlib.sha256(store["current"]["objective"].encode()).hexdigest(),
+        }
+        self.source_event["data"] = {
+            "content": "", "source": "autopilot", "delivery": "idle", "agentMode": "autopilot",
+            "transformedContent": f'<current_datetime>{request["current_datetime"]}</current_datetime>'
+                                  + "\n\n" + request["prompt"],
+        }
+        self.source_event_path.write_text(json.dumps(self.source_event) + "\n")
+        self.context["chat_messages"][-1]["content"] = self.source_event["data"]["transformedContent"]
+        self.canonical.write_text(json.dumps(self.context, indent=2) + "\n")
+        self.recorded["recorded_context"]["sha256"] = digest(self.canonical)
+        self.recorded["trigger"].update(content="", source_line_sha256=digest(self.source_event_path))
+        request["source_line_sha256"] = digest(self.source_event_path)
+        self.autopilot_request = request
+        self.request_path = self.root / "recorded-autopilot-request.json"
+        self.request_path.write_text(json.dumps(request) + "\n")
+        self.request_path.chmod(0o600)
+        self.recorded["active_objective"] = {"path": self.active_path.name, "sha256": digest(self.active_path)}
+        self.recorded["recorded_autopilot_request"] = {
+            "path": self.request_path.name, "sha256": digest(self.request_path)}
+        self.fixture.write_text(json.dumps(self.recorded))
+        return store
+
+    def test_normalized_active_canary_requires_explicit_synthetic_provenance_and_exact_initial_window(self):
+        store = self.add_recorded_autopilot()
+        store["current"]["continuationCount"] = 0
+        store["current"]["creditLimit"] = {
+            "credits": 100, "creditsUsed": 0, "creditsUsedNanoAiu": "0"}
+        self.active_path.write_text(json.dumps(store))
+        self.recorded["active_objective"]["sha256"] = digest(self.active_path)
+        self.context["source"] = f"/synthetic/{self.source_id}/events.jsonl"
+        self.canonical.write_text(json.dumps(self.context))
+        self.recorded["recorded_context"]["sha256"] = digest(self.canonical)
+        self.recorded["provenance"] = "synthetic-continuation-canary"
+        self.recorded["runtime_treatment"] = "public-command-normalized-active-v1"
+        valid = skill_eval._validate_recorded_context_fixture(self.recorded, self.root)
+        self.assertEqual(valid["runtime_treatment"], self.recorded["runtime_treatment"])
+        self.assertEqual(json.loads(valid["active_objective_bytes"]), store)
+        for fault in ("historical", "name", "source", "cap", "used", "continuations", "ordinary"):
+            with self.subTest(fault=fault):
+                fixture = json.loads(json.dumps(self.recorded))
+                changed = json.loads(json.dumps(store))
+                context = json.loads(json.dumps(self.context))
+                if fault == "historical":
+                    fixture["provenance"] = "source-bound-historical"
+                elif fault == "name":
+                    fixture["runtime_treatment"] = "unknown-treatment"
+                elif fault == "source":
+                    context["source"] = f"/historical/{self.source_id}/events.jsonl"
+                elif fault == "cap":
+                    changed["current"]["creditLimit"]["credits"] = 101
+                elif fault == "used":
+                    changed["current"]["creditLimit"].update(creditsUsed=1, creditsUsedNanoAiu="1000000000")
+                elif fault == "continuations":
+                    changed["current"]["continuationCount"] = 1
+                else:
+                    del fixture["active_objective"]
+                    del fixture["recorded_autopilot_request"]
+                self.active_path.write_text(json.dumps(changed))
+                self.canonical.write_text(json.dumps(context))
+                fixture.get("active_objective", {})["sha256"] = digest(self.active_path)
+                fixture["recorded_context"]["sha256"] = digest(self.canonical)
+                with self.assertRaises(ValueError):
+                    skill_eval._validate_recorded_context_fixture(fixture, self.root)
+
+    def test_recorded_autopilot_stages_exact_active_store_and_separate_producer_without_sending(self):
+        from contextlib import ExitStack
+        from session_restore import active_objective_state, completed_objective_state
+        store = self.add_recorded_autopilot()
+        original = self.active_path.read_bytes()
+        self.assertEqual(active_objective_state(store)["creditLimit"], store["current"]["creditLimit"])
+        with self.assertRaises(ValueError):
+            completed_objective_state(store)
+        calibration = self.root / "prior-active-calibration"
+        (calibration / "owner").mkdir(parents=True)
+        skill_eval.write_json(calibration / "owner/identities.json", {"session_id": str(uuid.uuid4())})
+        with ExitStack() as stack:
+            native, candidate = self.patches(stack)
+            result = skill_eval._run_native_context_calibration(
+                **self.arguments(), source_preparation_only=True, calibration_root=calibration)
+        self.assertEqual(result["status"], "CONTEXT_SETUP_OBSERVED", result["firsterror"])
+        self.assertEqual([call.args[0] for call in native.call_args_list], ["setup", "observe", "cleanup"])
+        descriptor = result["locator"]["active_objective"]
+        self.assertEqual(Path(descriptor["path"]).read_bytes(), original)
+        self.assertEqual(self.journal.with_name("autopilot-objective.json").read_bytes(), original)
+        request = Path(result["locator"]["recorded_autopilot_request"]["path"])
+        self.assertEqual(request.read_bytes(), self.request_path.read_bytes())
+        self.assertEqual(len(result["locator"]["root_skills"]), 22)
+        self.assertEqual(sum(json.loads(line)["type"] == "user.message"
+                             for line in self.journal.read_text().splitlines()), 1)
+        candidate.assert_not_called()
+
+    def test_recorded_autopilot_requires_original_source_body_and_actual_active_goal(self):
+        import copy
+
+        store = self.add_recorded_autopilot()
+        for fault in ("body", "goal", "status", "limit", "event-id", "source", "ordinary-spoof",
+                      "request-hash", "request-mode", "request-path", "missing-request"):
+            with self.subTest(fault=fault):
+                fixture = copy.deepcopy(self.recorded)
+                request = copy.deepcopy(self.autopilot_request)
+                event = copy.deepcopy(self.source_event)
+                changed = copy.deepcopy(store)
+                if fault == "body":
+                    request["prompt"] += " Substituted"
+                elif fault == "goal":
+                    changed["current"]["objective"] += " Different"
+                elif fault == "status":
+                    changed["current"]["status"] = "completed"
+                elif fault == "limit":
+                    changed["current"]["creditLimit"]["creditsUsed"] = 0
+                elif fault == "event-id":
+                    request["event_id"] = str(uuid.uuid4())
+                elif fault == "source":
+                    event["data"]["source"] = "schedule-1"
+                elif fault == "ordinary-spoof":
+                    del fixture["active_objective"]
+                    del fixture["recorded_autopilot_request"]
+                    fixture["trigger"]["content"] = event["data"]["content"] = "Synthetic spoof"
+                elif fault == "missing-request":
+                    del fixture["recorded_autopilot_request"]
+                self.active_path.write_text(json.dumps(changed))
+                fixture.get("active_objective", {})["sha256"] = digest(self.active_path)
+                self.source_event_path.write_text(json.dumps(event) + "\n")
+                request["source_line_sha256"] = fixture["trigger"]["source_line_sha256"] = digest(self.source_event_path)
+                self.request_path.write_text(json.dumps(request) + "\n")
+                if "recorded_autopilot_request" in fixture:
+                    fixture["recorded_autopilot_request"]["sha256"] = (
+                        "0" * 64 if fault == "request-hash" else digest(self.request_path))
+                    if fault == "request-path":
+                        fixture["recorded_autopilot_request"]["path"] = "../recorded-autopilot-request.json"
+                self.request_path.chmod(0o644 if fault == "request-mode" else 0o600)
+                with self.assertRaises(ValueError):
+                    skill_eval._validate_historical_context_fixture(fixture, root=self.root)
 
     def add_operational_input(self):
         roots = {}

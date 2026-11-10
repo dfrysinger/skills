@@ -2411,8 +2411,9 @@ def _stage_recorded_native_context(events, before, *, historical, schema_text, o
     if any(event["type"] not in {"session.start", "session.shutdown"} for event in events):
         raise NativeContextSetupError("Recorded staging requires an empty imported namespace")
     goal_path = journal.with_name("autopilot-objective.json")
-    if "completed_objective" in historical and os.path.lexists(goal_path):
-        raise NativeContextSetupError("Completed objective destination must be absent")
+    objective_key = "active_objective" if "active_objective" in historical else "completed_objective"
+    if objective_key in historical and os.path.lexists(goal_path):
+        raise NativeContextSetupError(f"{objective_key.replace('_', ' ').capitalize()} destination must be absent")
     interfaces = {
         "skill.invoked": "SkillInvokedEvent", "system.message": "SystemMessageEvent",
         "instruction.update": "InstructionUpdateEvent", "user.message": "UserMessageEvent",
@@ -2491,10 +2492,17 @@ def _stage_recorded_native_context(events, before, *, historical, schema_text, o
         "snapshot": historical["snapshot"], "required_tools": historical["required_tools"],
         "limitations": historical["limitations"] + unavailable,
     }
-    if "completed_objective" in historical:
-        locator["completed_objective"] = {
-            "path": str(owner / "completed-objective.json"),
-            "sha256": historical["completed_objective"]["sha256"],
+    if "runtime_treatment" in historical:
+        locator["runtime_treatment"] = historical["runtime_treatment"]
+    if objective_key in historical:
+        locator[objective_key] = {
+            "path": str(owner / f"{objective_key.replace('_', '-')}.json"),
+            "sha256": historical[objective_key]["sha256"],
+        }
+    if "recorded_autopilot_request" in historical:
+        locator["recorded_autopilot_request"] = {
+            "path": str(owner / "recorded-autopilot-request.json"),
+            "sha256": historical["recorded_autopilot_request"]["sha256"],
         }
     artifacts = (
         ("journal-before.jsonl", before), ("journal-staged.jsonl", after),
@@ -2508,10 +2516,14 @@ def _stage_recorded_native_context(events, before, *, historical, schema_text, o
         with (owner / name).open("xb") as stream:
             stream.write(content)
         (owner / name).chmod(0o600)
-    if "completed_objective" in historical:
-        for path in (owner / "completed-objective.json", goal_path):
+    if "recorded_autopilot_request" in historical:
+        with (owner / "recorded-autopilot-request.json").open("xb") as stream:
+            stream.write(historical["recorded_autopilot_request_bytes"])
+        (owner / "recorded-autopilot-request.json").chmod(0o600)
+    if objective_key in historical:
+        for path in (Path(locator[objective_key]["path"]), goal_path):
             with path.open("xb") as stream:
-                stream.write(historical["completed_objective_bytes"])
+                stream.write(historical[f"{objective_key}_bytes"])
             path.chmod(0o600)
     write_json(owner / "staging.json", {
         "schema_sha256": hashlib.sha256(schema_text.encode()).hexdigest(),
@@ -2820,14 +2832,26 @@ def _stage_native_context(*, home: Path, session_id: str, sdk: Path, owner: Path
 def _validate_recorded_context_fixture(fixture: dict, root: Path | None) -> dict:
     from native_workflow import owner_file, read_owner_json
     from session_restore import (
-        compile_task_snapshot, completed_objective_state, permission_rules, recorded_native_payloads,
+        active_objective_state, compile_task_snapshot, completed_objective_state, permission_rules,
+        recorded_autopilot_request, recorded_native_payloads,
+        NORMALIZED_ACTIVE_CANARY, normalized_active_canary,
     )
 
     keys = {"schema_version", "provenance", "recorded_context", "restoration", "trigger", "consumer",
             "snapshot", "required_tools", "limitations", "personal_instructions", "candidate_permissions"}
-    if (set(fixture) - {"completed_objective"} != keys or type(fixture["schema_version"]) is not int
+    autopilot = "recorded_autopilot_request" in fixture
+    normalized = "runtime_treatment" in fixture
+    if (set(fixture) - {"completed_objective", "active_objective", "recorded_autopilot_request",
+                       "runtime_treatment"} != keys
+            or ("active_objective" in fixture) != autopilot
+            or (autopilot and "completed_objective" in fixture)
+            or (normalized and (not autopilot
+                or fixture["runtime_treatment"] != NORMALIZED_ACTIVE_CANARY))
+            or type(fixture["schema_version"]) is not int
             or fixture["schema_version"] != 3
-            or fixture["provenance"] != "source-bound-historical" or root is None
+            or fixture["provenance"] != (
+                "synthetic-continuation-canary" if normalized else "source-bound-historical")
+            or root is None
             or not isinstance(fixture["personal_instructions"], str)
             or not fixture["personal_instructions"].strip()
             or not isinstance(fixture["limitations"], list) or not fixture["limitations"]
@@ -2871,7 +2895,7 @@ def _validate_recorded_context_fixture(fixture: dict, root: Path | None) -> dict
             or not isinstance(trigger, dict) or set(trigger) != {
                 "event_id", "timestamp", "content", "source_line_sha256", "source_event_path"}
             or trigger["event_id"] != restoration["cutoff_event_id"]
-            or not isinstance(trigger["content"], str) or not trigger["content"]
+            or not isinstance(trigger["content"], str) or (not autopilot and not trigger["content"])
             or not re.fullmatch(r"[0-9a-f]{64}", str(trigger["source_line_sha256"]))):
         raise ValueError("Recorded context/cutoff/trigger binding differs")
     measurement.session_uuid(restoration["source_session_id"])
@@ -2893,33 +2917,55 @@ def _validate_recorded_context_fixture(fixture: dict, root: Path | None) -> dict
             or event.get("id") != trigger["event_id"] or event.get("timestamp") != trigger["timestamp"]
             or not isinstance(event.get("data"), dict)
             or not isinstance(event["data"].get("content"), str)
-            or event["data"]["content"] != trigger["content"]):
+            or event["data"]["content"] != trigger["content"]
+            or (not autopilot and (
+                event.get("agentId") or event["data"].get("parentToolCallId")
+                or event["data"].get("source") or event["data"].get("isAutopilotContinuation")
+                or event["data"].get("attachments")))):
         raise ValueError("Original trigger source event binding differs")
     transformed = event["data"].get("transformedContent", event["data"]["content"])
     if (not isinstance(transformed, str) or context["chat_messages"][-1].get("role") != "user"
             or transformed != context["chat_messages"][-1].get("content")):
         raise ValueError("Original trigger transformed content differs")
-    completed = {}
-    if "completed_objective" in fixture:
-        descriptor = fixture["completed_objective"]
+    objective = {}
+    objective_key = "active_objective" if autopilot else "completed_objective"
+    if objective_key in fixture:
+        descriptor = fixture[objective_key]
+        label = "Active" if autopilot else "Completed"
         if (not isinstance(descriptor, dict) or set(descriptor) != {"path", "sha256"}
                 or not isinstance(descriptor["sha256"], str)
                 or re.fullmatch(r"[0-9a-f]{64}", descriptor["sha256"]) is None):
-            raise ValueError("Invalid completed objective input binding")
-        completed_path = owner_file(root.absolute(), descriptor["path"])
-        if completed_path.stat().st_mode & 0o077:
-            raise ValueError("Completed objective source must be owner-only")
-        completed_bytes = completed_path.read_bytes()
-        if hashlib.sha256(completed_bytes).hexdigest() != descriptor["sha256"]:
-            raise ValueError("Completed objective source checksum differs")
-        completed_objective_state(read_owner_json(completed_path))
-        completed["completed_objective_bytes"] = completed_bytes
+            raise ValueError(f"Invalid {label.lower()} objective input binding")
+        objective_path = owner_file(root.absolute(), descriptor["path"])
+        if objective_path.stat().st_mode & 0o077:
+            raise ValueError(f"{label} objective source must be owner-only")
+        objective_bytes = objective_path.read_bytes()
+        if hashlib.sha256(objective_bytes).hexdigest() != descriptor["sha256"]:
+            raise ValueError(f"{label} objective source checksum differs")
+        store = read_owner_json(objective_path)
+        (active_objective_state if autopilot else completed_objective_state)(store)
+        objective[f"{objective_key}_bytes"] = objective_bytes
+    if autopilot:
+        descriptor = fixture["recorded_autopilot_request"]
+        if (not isinstance(descriptor, dict) or set(descriptor) != {"path", "sha256"}
+                or re.fullmatch(r"[0-9a-f]{64}", str(descriptor["sha256"])) is None):
+            raise ValueError("Invalid recorded autopilot request binding")
+        request_path = owner_file(root.absolute(), descriptor["path"])
+        request_bytes = request_path.read_bytes()
+        if (request_path.stat().st_mode & 0o077
+                or hashlib.sha256(request_bytes).hexdigest() != descriptor["sha256"]):
+            raise ValueError("Recorded autopilot request owner artifact differs")
+        objective["autopilot_send"] = recorded_autopilot_request(
+            read_owner_json(request_path), event, trigger, store)
+        objective["recorded_autopilot_request_bytes"] = request_bytes
+        if normalized:
+            normalized_active_canary(store, context["source"])
     permission_rules(fixture["candidate_permissions"])
     return {**fixture, "snapshot": compile_task_snapshot(fixture["snapshot"]),
             "canonical": context, "canonical_bytes": source_bytes,
             "trigger_source_bytes": trigger_bytes,
             "native_payloads": payloads, "recorded_correspondence": correspondence,
-            "excluded_fields": excluded, **completed}
+            "excluded_fields": excluded, **objective}
 
 
 def _validate_historical_context_fixture(fixture: dict, *, root: Path | None = None) -> dict:
@@ -3071,7 +3117,14 @@ def _run_native_context_calibration(
                 or fixture_file.stat().st_mode & 0o077):
             raise ValueError("Context fixture requires an owner-only unaliased single-link file")
         fixture = read_owner_json(fixture_file)
-        historical = isinstance(fixture, dict) and fixture.get("provenance") == "source-bound-historical"
+        normalized = isinstance(fixture, dict) and "runtime_treatment" in fixture
+        historical = isinstance(fixture, dict) and (
+            fixture.get("provenance") == "source-bound-historical" or normalized)
+        if normalized:
+            if continuation_file is None or source_preparation_only or not model_send:
+                raise ValueError("Normalized active treatment requires the explicit continuation canary")
+            result["runtime_treatment"] = fixture["runtime_treatment"]
+            result["historical_active_equivalence"] = False
         calibration_session_id = None
         if source_preparation_only:
             if not historical or model_send:
@@ -3085,7 +3138,9 @@ def _run_native_context_calibration(
                 or any(path.is_symlink() for path in (personal_skill_dir, *personal_skill_dir.parents))):
             raise ValueError("Personal skill discovery requires an unaliased historical definition directory")
         if historical:
-            result["claim"] = "Historical setup observations only; behavioral admission and skill improvement unproved"
+            result["claim"] = ("Synthetic normalized-active infrastructure only; historical equivalence unproved"
+                               if normalized else
+                               "Historical setup observations only; behavioral admission and skill improvement unproved")
             if model_send and continuation_file is None:
                 raise ValueError("Historical context setup forbids model sends")
             fixture = _validate_historical_context_fixture(fixture, root=fixture_file.parent)
@@ -3233,7 +3288,7 @@ def _run_native_context_calibration(
             (owner / name).chmod(0o600)
         prompt_path = owner / "candidate-prompt.md"
         prompt_path.write_text(
-            fixture["trigger"]["content"] if recorded else
+            fixture.get("autopilot_send", {}).get("prompt", fixture["trigger"]["content"]) if recorded else
             "Historical context setup only. No model send." if historical else fixture["prompt"])
         prompt_path.chmod(0o600)
         config = {

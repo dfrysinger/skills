@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import shlex
 import sqlite3
@@ -28,15 +29,37 @@ RECORDED_ASSISTANT_FIELDS = {
 
 
 def completed_objective_state(store: dict) -> dict:
+    return _objective_state(store, "completed")
+
+
+def active_objective_state(store: dict) -> dict:
+    return _objective_state(store, "active")
+
+
+NORMALIZED_ACTIVE_CANARY = "public-command-normalized-active-v1"
+
+
+def normalized_active_canary(store: dict, source: str) -> None:
+    active_objective_state(store)
+    if (not re.fullmatch(r"/synthetic/[0-9a-f-]{36}/events\.jsonl", source)
+            or store["current"]["continuationCount"] != 0
+            or store["current"].get("creditLimit") != {
+                "credits": 100, "creditsUsed": 0, "creditsUsedNanoAiu": "0"}):
+        raise ValueError("Normalized active treatment requires the capped synthetic canary")
+
+
+def _objective_state(store: dict, status: str) -> dict:
     required = {"id", "objective", "status", "autopilotOrigin", "continuationCount", "turnCount",
                 "tokenCount", "creditCountNanoAiu", "resumeCount", "createdAt", "updatedAt"}
     optional = {"completionSummary", "pauseReason"}
+    if status == "active":
+        optional.add("creditLimit")
     current = store.get("current") if isinstance(store, dict) else None
     if (not isinstance(store, dict) or set(store) != {"version", "nextId", "current"}
             or type(store["version"]) is not int or store["version"] != 1
             or not isinstance(current, dict) or not required <= current.keys()
             or current.keys() - required - optional
-            or current["status"] != "completed"
+            or current["status"] != status
             or not isinstance(current["objective"], str) or not current["objective"]
             or current["autopilotOrigin"] not in (None, "objective", "user")
             or any(type(value) is not int or not 1 <= value <= 2**53 - 1
@@ -47,8 +70,11 @@ def completed_objective_state(store: dict) -> dict:
             or not isinstance(current["creditCountNanoAiu"], str)
             or re.fullmatch(r"[0-9]+", current["creditCountNanoAiu"]) is None
             or int(current["creditCountNanoAiu"]) > 2**63 - 1
-            or any(not isinstance(current[key], str) for key in optional if key in current)):
-        raise ValueError("Invalid completed native objective store")
+            or any(not isinstance(current[key], str)
+                   for key in ("completionSummary", "pauseReason") if key in current)
+            or (status == "active" and any(current.get(key)
+                                          for key in ("completionSummary", "pauseReason")))):
+        raise ValueError(f"Invalid {status} native objective store")
     for key in ("createdAt", "updatedAt"):
         value = current[key]
         try:
@@ -56,12 +82,64 @@ def completed_objective_state(store: dict) -> dict:
                     or datetime.fromisoformat(value.replace("Z", "+00:00")).tzinfo is None):
                 raise ValueError()
         except (ValueError, TypeError):
-            raise ValueError("Invalid completed native objective timestamp") from None
+            raise ValueError(f"Invalid {status} native objective timestamp") from None
     state = {key: current[key] for key in
              ("id", "objective", "status", "turnCount", "creditCountNanoAiu",
               "completionSummary", "pauseReason") if key in current}
     state["creditCountNanoAiu"] = str(int(current["creditCountNanoAiu"]))
+    if "creditLimit" in current:
+        limit = current["creditLimit"]
+        if (not isinstance(limit, dict)
+                or set(limit) - {"credits"} != {"creditsUsed", "creditsUsedNanoAiu"}
+                or not isinstance(limit["creditsUsedNanoAiu"], str)
+                or re.fullmatch(r"[0-9]+", limit["creditsUsedNanoAiu"]) is None
+                or int(limit["creditsUsedNanoAiu"]) > 2**63 - 1
+                or type(limit["creditsUsed"]) not in (int, float)
+                or limit["creditsUsed"] != int(limit["creditsUsedNanoAiu"]) / 10**9
+                or ("credits" in limit and (
+                    type(limit["credits"]) not in (int, float)
+                    or not math.isfinite(limit["credits"])
+                    or not 0 < limit["credits"] <= (2**63 - 1) / 10**9))):
+            raise ValueError("Invalid active native objective credit limit")
+        state["creditLimit"] = {**limit, "creditsUsedNanoAiu": str(int(limit["creditsUsedNanoAiu"]))}
     return state
+
+
+def recorded_autopilot_request(request: dict, event: dict, trigger: dict, store: dict) -> dict:
+    active_objective_state(store)
+    keys = {"event_id", "source_line_sha256", "current_datetime", "prompt", "source",
+            "displayPrompt", "requiredTool", "agentMode", "objective_id", "objective_sha256"}
+    current = store["current"]
+    data = event.get("data", {})
+    if (not isinstance(request, dict) or set(request) != keys
+            or request["event_id"] != trigger["event_id"]
+            or re.fullmatch(r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}",
+                            str(request["event_id"])) is None
+            or request["source_line_sha256"] != trigger["source_line_sha256"]
+            or event.get("type") != "user.message" or event.get("id") != request["event_id"]
+            or event.get("timestamp") != trigger["timestamp"]
+            or event.get("agentId") or data.get("parentToolCallId")
+            or data.get("attachments") or data.get("source") != "autopilot"
+            or data.get("delivery") != "idle" or data.get("agentMode") != "autopilot"
+            or data.get("content") != "" or trigger["content"] != ""
+            or request["source"] != "autopilot" or request["displayPrompt"] != ""
+            or request["requiredTool"] != "task_complete" or request["agentMode"] != "autopilot"
+            or type(request["objective_id"]) is not int or request["objective_id"] != current["id"]
+            or request["objective_sha256"] != hashlib.sha256(current["objective"].encode()).hexdigest()
+            or not isinstance(request["prompt"], str) or not request["prompt"].strip()
+            or current["objective"] not in request["prompt"]
+            or not isinstance(request["current_datetime"], str)
+            or re.fullmatch(r"[0-9T:.+Z-]+", request["current_datetime"]) is None
+            or data.get("transformedContent") != (
+                f'<current_datetime>{request["current_datetime"]}</current_datetime>'
+                + "\n\n" + request["prompt"])):
+        raise ValueError("Recorded autopilot request/source/active objective correspondence differs")
+    try:
+        if datetime.fromisoformat(request["current_datetime"].replace("Z", "+00:00")).tzinfo is None:
+            raise ValueError()
+    except ValueError:
+        raise ValueError("Invalid recorded autopilot datetime") from None
+    return {key: request[key] for key in ("prompt", "source", "displayPrompt", "requiredTool", "agentMode")}
 
 
 def recorded_field_digests(value: dict) -> dict:
