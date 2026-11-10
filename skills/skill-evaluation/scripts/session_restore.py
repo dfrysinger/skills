@@ -370,7 +370,7 @@ def compile_task_snapshot(snapshot: dict) -> dict:
             or not isinstance(snapshot["schemas"], dict) or not isinstance(snapshot["rows"], dict)
             or set(snapshot["schemas"]) not in (set(SNAPSHOT_COLUMNS), set(OPERATIONAL_SNAPSHOT_COLUMNS))
             or set(snapshot["rows"]) != set(snapshot["schemas"])
-            or not isinstance(snapshot["queries"], list) or len(snapshot["queries"]) != 4):
+            or not isinstance(snapshot["queries"], list) or not snapshot["queries"]):
         raise ValueError("Invalid historical task snapshot shape")
     tables = {table: columns for table, columns in OPERATIONAL_SNAPSHOT_COLUMNS.items()
               if table in snapshot["schemas"]}
@@ -460,7 +460,18 @@ def compile_task_snapshot(snapshot: dict) -> dict:
                     sqlite3.SQLITE_RECURSIVE,
                 } else sqlite3.SQLITE_DENY)
             try:
-                if len(connection.execute(query["query"]).fetchall()) != query["expected_rows"]:
+                statements = []
+                pending = ""
+                for character in query["query"]:
+                    pending += character
+                    if character == ";" and sqlite3.complete_statement(pending):
+                        statements.append(pending)
+                        pending = ""
+                if pending.strip():
+                    statements.append(pending)
+                returned_rows = sum(len(connection.execute(statement).fetchall())
+                                    for statement in statements)
+                if returned_rows != query["expected_rows"]:
                     raise ValueError("Source query row count differs from snapshot")
             finally:
                 connection.set_authorizer(None)
