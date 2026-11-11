@@ -173,6 +173,7 @@ function profileState(config) {
 }
 
 const normalizedActiveCanary = "public-command-normalized-active-v1";
+const cappedPublicResume = "capped-public-resume-v1";
 
 function contextFixture(config) {
   const path = config.context_fixture_file;
@@ -196,8 +197,10 @@ function contextFixture(config) {
       if (active) keys.push("active_objective");
       if (autopilot) keys.push("recorded_autopilot_request");
       if (normalized) keys.push("runtime_treatment");
+      if (fixture.runtime_treatment === cappedPublicResume) keys.push("provenance");
       if (!isDeepStrictEqual(Object.keys(fixture).sort(), keys.sort())
-          || (normalized && (!active || fixture.runtime_treatment !== normalizedActiveCanary))
+          || (normalized && (!active
+            || ![normalizedActiveCanary, cappedPublicResume].includes(fixture.runtime_treatment)))
           || active !== autopilot || (active && completed)
           || [active && fixture.active_objective, autopilot && fixture.recorded_autopilot_request]
             .filter(value => value !== false).some(value => !value
@@ -240,11 +243,22 @@ function contextFixture(config) {
       const completedStore = completed
         ? parseDataJson(readFileSync(fixture.completed_objective.path, "utf8")) : null;
       const activeStore = active ? parseDataJson(readFileSync(fixture.active_objective.path, "utf8")) : null;
-      if (normalized && (!/^\/synthetic\/[0-9a-f-]{36}\/events\.jsonl$/.test(canonical.source)
+      if (fixture.runtime_treatment === normalizedActiveCanary
+          && (!/^\/synthetic\/[0-9a-f-]{36}\/events\.jsonl$/.test(canonical.source)
           || activeStore.current.continuationCount !== 0
           || !isDeepStrictEqual(activeStore.current.creditLimit,
             { credits: 100, creditsUsed: 0, creditsUsedNanoAiu: "0" }))) {
         throw new Error("Normalized active treatment requires the capped synthetic canary");
+      }
+      if (fixture.runtime_treatment === cappedPublicResume
+          && (!["synthetic-continuation-canary", "source-bound-adapted-public-resume"].includes(fixture.provenance)
+            || typeof canonical.source !== "string" || !canonical.source.startsWith("/")
+            || !canonical.source.endsWith("/events.jsonl")
+            || (fixture.provenance === "synthetic-continuation-canary"
+              ? !/^\/synthetic\/[0-9a-f-]{36}\/events\.jsonl$/.test(canonical.source)
+              : canonical.source.startsWith("/synthetic/"))
+            || Object.hasOwn(activeStore.current, "creditLimit"))) {
+        throw new Error("Adapted capped public resume requires an initially uncapped active objective and matching provenance");
       }
       const recordedRequest = autopilot
         ? parseDataJson(readFileSync(fixture.recorded_autopilot_request.path, "utf8")) : null;
@@ -314,7 +328,9 @@ function contextFixture(config) {
           active_objective_native_state: compiled[3], autopilot_send: compiled[4],
           limitations: [...fixture.limitations,
             "Single recorded native event replay only; automatic producer leases, repeated continuations and timers are not reproduced",
-            "Native runtime regenerates transport current_datetime; the recorded datetime is not sent",
+            fixture.runtime_treatment === cappedPublicResume
+              ? "Opted-in candidate replay restores the exact source transformed prompt through the public SDK hook; zero-model setup sends no prompt"
+              : "Native runtime regenerates transport current_datetime; the recorded datetime is not sent",
             "Pinned single-send forwarding omits billable; no billing-fidelity claim, actual accounting unchanged",
           ] } : {}) };
     }
@@ -460,7 +476,8 @@ function operationalEntry(config) {
   { encoding: "utf8", env: { PATH: process.env.PATH ?? "" } }));
 }
 
-export function continuationCorrespondence(before, after, events, messageId, raw, autopilotSend) {
+export function continuationCorrespondence(before, after, events, messageId, raw, autopilotSend, exactTransformed,
+  nativePrompts) {
   if (after.length < before.length || before.some((event, index) => !isDeepStrictEqual(event, after[index]))) {
     throw new Error("Historical continuation mutated its native journal prefix");
   }
@@ -474,13 +491,23 @@ export function continuationCorrespondence(before, after, events, messageId, raw
       source: "autopilot", agentMode: "autopilot" })
     && data?.content === "" && data.source === "autopilot" && data.agentMode === "autopilot"
     && wrapper && Number.isFinite(Date.parse(wrapper[1]))
-    && data.transformedContent.slice(wrapper[0].length) === raw;
-  if (users.length !== 1 || (autopilotSend ? !autopilotMatches
+    && data.transformedContent.slice(wrapper[0].length) === raw
+    && (exactTransformed === undefined || data.transformedContent === exactTransformed);
+  if ((nativePrompts === undefined ? users.length !== 1 : users.length !== nativePrompts.length + 1)
+      || (autopilotSend ? !autopilotMatches
     : (users[0].data?.content !== raw || users[0].data?.isAutopilotContinuation || users[0].data?.source))
       || users[0].data?.messageId !== messageId || users[0].data?.attachments?.length
       || typeof users[0].data?.interactionId !== "string" || !users[0].data.interactionId) {
     throw new Error("Historical continuation requires exactly one unsubstituted root raw user event");
   }
+  if (nativePrompts !== undefined && (nativePrompts.length > 1 || users.slice(1).some((event, index) => {
+    const later = event.data;
+    return !autopilotSend || later?.content !== "" || later.source !== "autopilot" || later.agentMode !== "autopilot"
+      || later.attachments?.length || typeof later.messageId !== "string" || !later.messageId
+      || later.messageId === messageId || typeof later.interactionId !== "string" || !later.interactionId
+      || typeof later.transformedContent !== "string"
+      || hash(later.transformedContent) !== nativePrompts[index].transformed_sha256;
+  }))) throw new Error("Unbound or substituted native continuation root event");
   const primary = events.filter(event => root(event) && event.type === "system.message"
     && event.data?.interactionId === users[0].data.interactionId);
   if (!primary.length || primary.some(event => typeof event.data?.content !== "string"
@@ -490,11 +517,15 @@ export function continuationCorrespondence(before, after, events, messageId, raw
     throw new Error("Fresh correlated primary system prompt did not verify interactive CLI identity");
   }
   return { prefix_preserved: true, exactly_once: true, interactive_identity: true,
+    ...(nativePrompts === undefined ? {} : { native_continuation_passthrough: true }),
     ...(autopilotSend ? { recorded_autopilot_request: true } : {}),
+    ...(exactTransformed === undefined ? {} : {
+      recorded_transformed_content: true, recorded_transformed_sha256: hash(data.transformedContent),
+    }),
     primary_system_messages: primary, interaction_id: users[0].data.interactionId };
 }
 
-export function continuationCompletion(events, messageId) {
+export function continuationCompletion(events, messageId, opportunity = false, originatingMessageId = messageId) {
   let interactionId;
   let assistant;
   let task;
@@ -509,7 +540,7 @@ export function continuationCompletion(events, messageId) {
         && data.interactionId ? data.interactionId : undefined;
       assistant = task = undefined;
     } else if (event.type === "assistant.message") {
-      assistant = interactionId && typeof event.id === "string" && event.id && data?.originatingMessageId === messageId
+      assistant = interactionId && typeof event.id === "string" && event.id && data?.originatingMessageId === originatingMessageId
         && data.interactionId === interactionId ? event : undefined;
       const requests = Array.isArray(assistant?.data.toolRequests)
         ? assistant.data.toolRequests.filter(request =>
@@ -528,9 +559,25 @@ export function continuationCompletion(events, messageId) {
       task.completion = event;
     } else if (task?.completion && event.type === "assistant.turn_end") {
       task.turn_end = typeof event.id === "string" && event.id && data?.turnId === assistant.data.turnId ? event : undefined;
+      if (opportunity && task.turn_end && !task.invalid) {
+        return { kind: "task_complete", message: assistant,
+          task_complete: { request: task.request, start: task.start,
+            completion: task.completion, turn_end: task.turn_end }, turn_end: event };
+      }
+    } else if (opportunity && event.type === "assistant.turn_end" && typeof event.id === "string" && event.id
+        && assistant?.data.phase === "final_answer"
+        && typeof assistant.data.turnId === "string" && assistant.data.turnId
+        && data?.turnId === assistant.data.turnId
+        && typeof assistant.data.content === "string" && assistant.data.content.trim()
+        && (assistant.data.toolRequests === undefined
+          || (Array.isArray(assistant.data.toolRequests) && assistant.data.toolRequests.length === 0))) {
+      return { kind: "assistant_final", message: assistant, turn_end: event };
     } else if (event.type === "session.idle") {
       if (!data || typeof event.id !== "string" || !event.id || (data.aborted !== undefined && data.aborted !== false)) {
         return { error: new Error("Native session idle was aborted or malformed") };
+      }
+      if (opportunity) {
+        return { error: new Error("Native opportunity idle lacked a matching turn end") };
       }
       if (assistant && typeof assistant.data.content === "string" && assistant.data.content.trim()
           && (assistant.data.toolRequests === undefined
@@ -610,7 +657,10 @@ export function validateConfig(op, config) {
     }
     if (fixture.schema_version === 3 && (fixture.completed_objective || fixture.active_objective)
         && !(continuationProfile(config) && ["observe", "cleanup"].includes(op))) {
-      if (!(fixture.runtime_treatment && op === "candidate")) objectiveReadback(goalPath, fixture);
+      if (!(fixture.runtime_treatment && op === "candidate")
+          && !(fixture.runtime_treatment === cappedPublicResume && ["observe", "cleanup"].includes(op))) {
+        objectiveReadback(goalPath, fixture);
+      }
     } else if (pathExists(goalPath) && !(continuationProfile(config) && ["observe", "cleanup"].includes(op))) {
       throw new Error(op === "setup" ? "Setup requires an absent native goal"
         : "Context calibration requires an absent native goal");
@@ -856,6 +906,10 @@ export async function runProbe(op, config) {
   let operationalHashes;
   let resumedAt;
   let pendingOutcome;
+  let exactRecordedPrompt;
+  let promptFailure;
+  let nativeObservationClosed = false;
+  let completedNativeOpportunity;
   const selected = config?.profile !== undefined;
   let projection;
   let scheduleMapping;
@@ -952,39 +1006,55 @@ export async function runProbe(op, config) {
   const connect = async () => {
     if (client) throw new Error("Previous native owner has not stopped");
     const fixture = historicalProfile(config) ? contextFixture(config) : null;
-    const normalize = fixture?.runtime_treatment && (op === "setup" || isCandidate);
+    const normalize = fixture?.runtime_treatment && (op === "setup" || isCandidate
+      || (fixture.runtime_treatment === cappedPublicResume && !continuation
+        && ["observe", "cleanup"].includes(op)));
     let before;
     let coldStarted;
     if (normalize) {
       if (!report.normalized_active) {
-        report.runtime_treatment = normalizedActiveCanary;
-        report.provenance = "synthetic-continuation-canary";
+        report.runtime_treatment = fixture.runtime_treatment;
+        report.provenance = fixture.runtime_treatment === cappedPublicResume
+          ? fixture.provenance : "synthetic-continuation-canary";
         report.historical_active_equivalence = false;
+        if (fixture.runtime_treatment === cappedPublicResume) {
+          report.runtime_differences = [
+            "Cold load pauses the imported active objective with resumed_session and a fresh updatedAt",
+            "Public autopilot --max-ai-credits 100 resets continuationCount, increments resumeCount, updates origin/time",
+            "The original source store has no creditLimit; the command adds/resets a fixed 100-credit window with initial usage zero",
+            "Cumulative turn/token/credit counters remain source-bound and are not charged against that fresh window",
+            "Returned command prompt is not consumed; only the separately validated original autopilot request may be sent",
+          ];
+        }
         report.normalized_active = {
           source_store: fixture.active_objective_store,
           source_sha256: fixture.active_objective.sha256, transitions: [],
           completion_eligibility: "Command owner records eligibility; no public readback. Native task_complete remains unproven.",
         };
         normalizedExpected = fixture.active_objective_store;
-        if (isCandidate) {
-          if (!continuation || entry.purpose !== "setup-canary") {
+        if (isCandidate || op === "observe" || op === "cleanup") {
+          if (isCandidate && (!continuation || !(fixture.runtime_treatment === cappedPublicResume
+            ? ["setup-canary", "adapted-public-resume"].includes(entry.purpose) : entry.purpose === "setup-canary"))) {
             throw new Error("Normalized active treatment requires setup-canary continuation");
           }
-          const setupPath = join(dirname(config.context_fixture_file), "setup.json");
+          const previousOperation = op === "cleanup" ? "observe" : "setup";
+          const setupPath = join(dirname(config.context_fixture_file), `${previousOperation}.json`);
           requirePath(setupPath, "file");
           const stat = lstatSync(setupPath);
           const setupBytes = readFileSync(setupPath);
           const setup = parseDataJson(setupBytes.toString("utf8"));
           if (stat.uid !== userInfo().uid || stat.nlink !== 1 || (stat.mode & 0o077)
-              || setup.status !== "SETUP_OBSERVED" || setup.session_id !== config.session_id
-              || setup.runtime_treatment !== normalizedActiveCanary
+              || setup.status !== (previousOperation === "setup" ? "SETUP_OBSERVED" : "OBSERVED")
+              || setup.session_id !== config.session_id
+              || setup.runtime_treatment !== fixture.runtime_treatment
               || setup.normalized_active?.source_sha256 !== fixture.active_objective.sha256
               || !isDeepStrictEqual(setup.normalized_active?.source_store, fixture.active_objective_store)
-              || setup.normalized_active?.transitions?.length !== 2) {
+              || setup.normalized_active?.transitions?.length !== (previousOperation === "setup" ? 2 : 1)) {
             throw new Error("Missing matching normalized setup receipt");
           }
           normalizedExpected = setup.normalized_active.transitions.at(-1).resumed.store;
-          report.normalized_active.setup_receipt_sha256 = hash(setupBytes);
+          if (previousOperation === "setup") report.normalized_active.setup_receipt_sha256 = hash(setupBytes);
+          else report.normalized_active.observe_receipt_sha256 = hash(setupBytes);
         }
       }
       before = normalizedReadback(report.goal_path, fixture, normalizedExpected);
@@ -1867,22 +1937,58 @@ export async function runProbe(op, config) {
     let active = true;
     let resolveOutcome;
     const outcome = new Promise(resolve => { resolveOutcome = resolve; });
+    const boundedNative = entry?.native_opportunity_limit === 2;
+    if (boundedNative) {
+      report.native_opportunities = [];
+      completedNativeOpportunity = () => report.native_opportunities[0]?.kind
+        || (messageId === undefined
+          && buffered.filter(event => event.type === "user.message").length === 1
+          && continuationCompletion(buffered,
+            buffered.find(event => event.type === "user.message")?.data?.messageId, true)?.kind);
+    }
+    const finishOutcome = terminal => {
+      if (boundedNative) nativeObservationClosed = true;
+      resolveOutcome(terminal);
+    };
+    if (exactRecordedPrompt !== undefined) promptFailure = error => finishOutcome({ error });
     if (continuation) pendingOutcome = () => {
-      if (messageId !== undefined) resolveOutcome({ pending: true });
+      if (messageId !== undefined) finishOutcome({ pending: true });
     };
     const consume = event => {
       if (!active || event.agentId || event.data?.parentToolCallId) return;
       if (event.type === "session.error") {
-        resolveOutcome({ error: new Error(event.data?.message ?? "Native root session error") });
+        finishOutcome({ error: new Error(event.data?.message ?? "Native root session error") });
       } else if (event.type === "session.idle" && event.data?.aborted === true) {
-        resolveOutcome({ error: new Error("Native session idle was aborted") });
+        finishOutcome({ error: new Error("Native session idle was aborted") });
       } else if (messageId === undefined) {
         buffered.push(event);
       } else if (continuation) {
         completionEvents.push(event);
-        const terminal = event.type === "session.idle"
-          ? continuationCompletion(completionEvents, messageId) : undefined;
-        if (terminal) resolveOutcome(terminal);
+        if (boundedNative) {
+          const users = completionEvents.filter(item => item.type === "user.message");
+          if (users.length > 2 || (users.length && users[0].data?.messageId !== messageId)) {
+            finishOutcome({ error: new Error("Unexpected native continuation root event") });
+            return;
+          }
+          const index = report.native_opportunities.length;
+          const user = users[index];
+          // Native autopilot retains the initiating send's origin across interactions.
+          const terminal = user && continuationCompletion(
+            completionEvents.slice(completionEvents.indexOf(user)), user.data?.messageId, true, messageId);
+          if (terminal?.error) finishOutcome(terminal);
+          else if (terminal) {
+            report.native_opportunities.push({ message_id: user.data.messageId, kind: terminal.kind,
+              message_event_id: terminal.message.id, turn_end_event_id: terminal.turn_end?.id });
+            if (terminal.kind === "task_complete" || report.native_opportunities.length === 2) {
+              report.native_observation_stop = terminal.kind === "task_complete" ? "task_complete" : "opportunity_limit";
+              finishOutcome(terminal);
+            }
+          }
+        } else {
+          const terminal = event.type === "session.idle"
+            ? continuationCompletion(completionEvents, messageId) : undefined;
+          if (terminal) resolveOutcome(terminal);
+        }
       } else if (event.type === "assistant.message") {
         matchingMessage = event.data?.originatingMessageId === messageId
           && typeof event.id === "string" && typeof event.data.content === "string"
@@ -1902,12 +2008,14 @@ export async function runProbe(op, config) {
     const modelStarted = performance.now();
     report.model_timing_source = "Owned SDK send through correlated native session.idle, not provider HTTP timing";
     let deadlineTimer;
+    let abortedAtBoundary = false;
     try {
       try {
         const deadline = new Promise(resolve => {
-          deadlineTimer = setTimeout(() => resolve({
-            error: new Error(`${report.timeout_ms}-millisecond SDK send/completion deadline exceeded`),
-          }), report.timeout_ms);
+          deadlineTimer = setTimeout(() => {
+            if (boundedNative) nativeObservationClosed = true;
+            resolve({ error: new Error(`${report.timeout_ms}-millisecond SDK send/completion deadline exceeded`) });
+          }, report.timeout_ms);
         });
         const sendRequest = report.recorded_autopilot_send
           ? { ...report.recorded_autopilot_send, mode: "immediate", wait: false }
@@ -1921,14 +2029,14 @@ export async function runProbe(op, config) {
           report.model_message_id = id;
           if (!active) return;
           messageId = id;
-          if (continuation && report.pending_input?.length) resolveOutcome({ pending: true });
+          if (continuation && report.pending_input?.length) finishOutcome({ pending: true });
           for (const event of buffered) consume(event);
           buffered.length = 0;
-        }).catch(error => resolveOutcome({ error }));
+        }).catch(error => finishOutcome({ error }));
         const terminal = await Promise.race([outcome, deadline]);
         if (terminal.error) throw terminal.error;
         report.model_result = terminal.message;
-        report.model_completion_event = terminal.idle;
+        report.model_completion_event = terminal.idle ?? terminal.turn_end;
         if (continuation && !terminal.pending) {
           report.model_completion_kind = terminal.kind;
           if (terminal.task_complete) report.model_task_completion = terminal.task_complete;
@@ -1936,13 +2044,19 @@ export async function runProbe(op, config) {
         if (terminal.pending) {
           report.pending_input_observed = true;
           await call("session.abort", undefined, () => session.abort());
+          abortedAtBoundary = boundedNative;
+        } else if (boundedNative && terminal.kind !== "task_complete") {
+          await call("session.abort", undefined, () => session.abort());
+          abortedAtBoundary = true;
         }
       } catch (error) {
         fail(error);
         throw error;
       } finally {
         active = false;
+        nativeObservationClosed = true;
         pendingOutcome = undefined;
+        promptFailure = undefined;
         clearTimeout(deadlineTimer);
         try { stopCompletion(); } catch (error) { fail(error); }
         report.model_completed_at = new Date().toISOString();
@@ -1963,9 +2077,17 @@ export async function runProbe(op, config) {
           throw new Error("Frozen continuation configuration changed");
         }
         report.prefix_after = await readEvents();
+        if (exactRecordedPrompt !== undefined
+            && (report.recorded_prompt_transform.invocations !==
+                (boundedNative ? 1 + report.recorded_prompt_transform.native_passthrough.length : 1)
+              || !report.recorded_prompt_transform.input_verified
+              || report.recorded_prompt_transform.replacement_sha256 !== hash(exactRecordedPrompt))) {
+          throw new Error("Recorded transformed prompt hook did not verify exactly one replacement");
+        }
         const correspondence = continuationCorrespondence(
           report.prefix_before, report.prefix_after, candidateEvents.slice(report.model_event_start_index),
-          report.model_message_id, report.bound_raw_trigger, report.recorded_autopilot_send);
+          report.model_message_id, report.bound_raw_trigger, report.recorded_autopilot_send, exactRecordedPrompt,
+          boundedNative ? report.recorded_prompt_transform.native_passthrough : undefined);
         Object.assign(report.checks, correspondence);
         report.primary_system_messages = correspondence.primary_system_messages;
         delete report.checks.primary_system_messages;
@@ -1977,8 +2099,13 @@ export async function runProbe(op, config) {
             && store.current.id === normalizedExpected.current.id
             && store.current.objective === normalizedExpected.current.objective
             && isDeepStrictEqual(report.final_state.goal?.state, objectiveState(store));
-          if (!report.checks.normalized_native_completion) {
-            throw new Error("Normalized canary requires genuine task_complete and matching completed native/persisted objective");
+          if (entry.purpose === "setup-canary" && (boundedNative
+            ? report.native_opportunities.length !== 2
+              || (report.model_completion_kind === "task_complete" && !report.checks.normalized_native_completion)
+            : !report.checks.normalized_native_completion)) {
+            throw new Error(boundedNative
+              ? "Two-opportunity canary requires two completed native opportunities and consistent task-complete state"
+              : "Normalized canary requires genuine task_complete and matching completed native/persisted objective");
           }
         }
         report.tool_effects = candidateEvents.slice(report.model_event_start_index)
@@ -2005,7 +2132,9 @@ export async function runProbe(op, config) {
       report.status = report.pending_input_observed ? "HUMAN_INPUT_PENDING" : "CANDIDATE_OBSERVED";
     } catch (error) {
       fail(error);
-      try { await call("session.abort", undefined, () => session.abort()); } catch (abortError) { fail(abortError); }
+      if (!abortedAtBoundary) {
+        try { await call("session.abort", undefined, () => session.abort()); } catch (abortError) { fail(abortError); }
+      }
     }
   };
   try {
@@ -2154,6 +2283,62 @@ export async function runProbe(op, config) {
           onElicitationRequest: request => recordPending("elicitation", request),
         };
         delete candidateOptions.availableTools;
+        const fixture = contextFixture(config);
+        if (fixture.runtime_treatment === cappedPublicResume && fixture.autopilot_send) {
+          exactRecordedPrompt = fixture.canonical.chat_messages.at(-1).content;
+          report.recorded_prompt_transform = {
+            surface: "resumeOptions.hooks.onUserPromptTransformed",
+            source_event_id: fixture.source_binding.cutoff_event_id,
+            canonical_sha256: fixture.canonical_sha256,
+            expected_sha256: hash(exactRecordedPrompt), invocations: 0,
+            ...(entry.native_opportunity_limit === 2 ? { native_passthrough: [], held_after_boundary: 0 } : {}),
+          };
+          candidateOptions.hooks = {
+            ...candidateOptions.hooks,
+            onUserPromptTransformed(input, invocation) {
+              const observed = report.recorded_prompt_transform;
+              if (entry.native_opportunity_limit === 2
+                  && (nativeObservationClosed || observed.invocations >= 2
+                    || completedNativeOpportunity?.() === "task_complete")) {
+                observed.held_after_boundary++;
+                return new Promise(() => {});
+              }
+              observed.invocations++;
+              if (entry.native_opportunity_limit === 2 && observed.invocations === 2) {
+                if (completedNativeOpportunity?.() !== "assistant_final" || report.model_send_calls !== 1
+                    || input?.sessionId !== config.session_id || invocation?.sessionId !== config.session_id
+                    || typeof input.prompt !== "string"
+                    || typeof input.transformedPrompt !== "string" || !input.transformedPrompt) {
+                  const error = new Error("Native continuation requires a completed first native opportunity");
+                  fail(error);
+                  promptFailure?.(error);
+                  return new Promise(() => {});
+                }
+                observed.native_passthrough.push({
+                  prompt_sha256: hash(input.prompt), transformed_sha256: hash(input.transformedPrompt),
+                });
+                return {};
+              }
+              const wrapper = typeof input?.transformedPrompt === "string"
+                ? input.transformedPrompt.match(/<current_datetime>([0-9T:.+Z-]+)<\/current_datetime>\n\n/) : null;
+              if (observed.invocations !== 1 || report.model_send_calls !== 1
+                  || input?.sessionId !== config.session_id || invocation?.sessionId !== config.session_id
+                  || input?.prompt !== fixture.autopilot_send.prompt
+                  || !wrapper || !Number.isFinite(Date.parse(wrapper[1]))
+                  || !input.transformedPrompt.includes(fixture.autopilot_send.prompt)) {
+                const error = new Error("Recorded transformed prompt hook input differs from the once-only source-bound send");
+                fail(error);
+                promptFailure?.(error);
+                // The pinned SDK swallows throws. Hold this hook while the existing abort/shutdown path runs.
+                return new Promise(() => {});
+              }
+              observed.input_verified = true;
+              observed.input_sha256 = hash(input.transformedPrompt);
+              observed.replacement_sha256 = hash(exactRecordedPrompt);
+              return { modifiedTransformedPrompt: exactRecordedPrompt };
+            },
+          };
+        }
       }
       report.connection.mode = "copilot-cli";
       report.connection.workingDirectory = config.cwd;
