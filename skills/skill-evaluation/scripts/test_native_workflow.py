@@ -120,6 +120,34 @@ class NativeWorkflowTests(unittest.TestCase):
             self.assertEqual(omitted["binding"]["interactive"], {
                 key: value[key] for key in ("running_in_interactive_mode", "session_capabilities",
                                            "cli_preamble", "executable_path", "locale", "timeout_ms")})
+            for timeout_ms, watchdog in ((10000, 360), (300000, 360), (600000, 660)):
+                with self.subTest(timeout_ms=timeout_ms):
+                    value["timeout_ms"] = timeout_ms
+                    selected = entry()
+                    if timeout_ms != omitted["timeout_ms"]:
+                        self.assertNotEqual(selected["configuration_sha256"], omitted["configuration_sha256"])
+                    with mock.patch("skill_eval.subprocess.run",
+                                    side_effect=subprocess.TimeoutExpired("node", watchdog)) as run:
+                        with self.assertRaises(subprocess.TimeoutExpired):
+                            skill_eval._native_workflow_probe("candidate", {
+                                **config, "continuation_file": str(path),
+                                "output": str(self.base / "candidate.json"),
+                            })
+                    self.assertEqual(run.call_args.kwargs["timeout"], watchdog)
+            for operation, watchdog in (("setup", 390), ("observe", 360), ("cleanup", 360)):
+                with self.subTest(operation=operation):
+                    with mock.patch("skill_eval.subprocess.run",
+                                    side_effect=subprocess.TimeoutExpired("node", watchdog)) as run:
+                        with self.assertRaises(subprocess.TimeoutExpired):
+                            skill_eval._native_workflow_probe(operation, {
+                                **config, "continuation_file": str(path),
+                                "output": str(self.base / f"{operation}.json"),
+                            })
+                    self.assertEqual(run.call_args.kwargs["timeout"], watchdog)
+            value["timeout_ms"] = 600001
+            with self.assertRaisesRegex(ValueError, "interactive continuation configuration"):
+                entry()
+            value["timeout_ms"] = omitted["timeout_ms"]
             hashes = {omitted["configuration_sha256"]}
             for budget in (1, 15000, 50000, 4294967295):
                 with self.subTest(budget=budget):

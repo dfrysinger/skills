@@ -1928,7 +1928,7 @@ export async function runProbe(op, config) {
     }
     if (continuation && report.pending_input?.length) throw new Error("Native input request preceded original submission");
     report.prompt_sha256 = hash(renderedPrompt);
-    report.timeout_ms = Math.max(0, Math.floor(Math.min(report.max_timeout_ms, 330000 - (performance.now() - started))));
+    report.timeout_ms = Math.max(0, Math.floor(Math.min(report.max_timeout_ms, ownerDeadline - performance.now())));
     if (!report.timeout_ms) throw new Error("Owned helper budget exhausted before model dispatch");
     const buffered = [];
     let messageId;
@@ -2175,6 +2175,7 @@ export async function runProbe(op, config) {
       entry = continuationEntry(config);
       report.continuation_entry = entry;
       report.max_timeout_ms = entry.timeout_ms;
+      if (isCandidate) ownerDeadline = started + Math.max(330000, entry.timeout_ms + 30000);
     }
     if (historicalProfile(config) && op === "setup"
         && (config.candidate_permissions.write_paths.length || config.candidate_permissions.shell_commands.length)) {

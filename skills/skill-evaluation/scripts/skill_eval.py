@@ -1748,11 +1748,20 @@ def _native_workflow_probe(operation: str, config: dict, *, consumer: dict | Non
     if output.exists() or output.is_symlink():
         raise ValueError("native probe receipt already exists; retaining first output")
     helper = Path(__file__).resolve().parent / "native_workflow_probe.mjs"
+    helper_timeout = 390 if operation == "setup" else 360
+    if operation == "candidate" and "continuation_file" in config:
+        from native_workflow import continuation_entry
+        try:
+            timeout_ms = continuation_entry(Path(config["continuation_file"]), config)["timeout_ms"]
+        except (OSError, ValueError, TypeError):
+            # The helper retains the original structured failure receipt for invalid inputs.
+            timeout_ms = 300000
+        helper_timeout = max(helper_timeout, (timeout_ms + 999) // 1000 + 60)
     completed = subprocess.run(
         ["node", str(helper), operation, json.dumps(config, sort_keys=True)],
         env=personal_instruction_environment(Path(config["home"])),
         cwd=config["cwd"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, timeout=390 if operation == "setup" else 360, check=False,
+        stderr=subprocess.PIPE, timeout=helper_timeout, check=False,
     )
     output.with_suffix(".stdout.log").write_bytes(completed.stdout)
     output.with_suffix(".stderr.log").write_bytes(completed.stderr)

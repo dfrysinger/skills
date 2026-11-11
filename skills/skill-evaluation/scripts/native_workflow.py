@@ -184,7 +184,7 @@ def continuation_entry(path: Path, config: dict) -> dict:
                    for part in value["executable_path"].split(os.pathsep))
             or not isinstance(value["locale"], str)
             or re.fullmatch(r"[A-Za-z0-9_.@-]+", value["locale"]) is None
-            or type(value["timeout_ms"]) is not int or not 1 <= value["timeout_ms"] <= 300000):
+            or type(value["timeout_ms"]) is not int or not 1 <= value["timeout_ms"] <= 600000):
         raise ValueError("Invalid interactive continuation configuration")
     package = Path(value["package_root"])
     if (not package.is_absolute() or package.resolve() != package or not package.is_dir()
