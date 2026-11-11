@@ -165,13 +165,17 @@ def continuation_entry(path: Path, config: dict) -> dict:
         "schema_version", "purpose", "running_in_interactive_mode", "session_capabilities",
         "cli_preamble", "executable_path", "locale", "timeout_ms", "package_root",
         "workflow_commit", "workflow_sha256", "canary_receipt", "canary_checks",
-    } | ({"skill_char_budget"} if isinstance(value, dict) and "skill_char_budget" in value else set()),
+    } | ({key for key in ("skill_char_budget", "native_opportunity_limit") if key in value}
+         if isinstance(value, dict) else set()),
         "historical continuation")
+    if "native_opportunity_limit" in value and (
+            type(value["native_opportunity_limit"]) is not int or value["native_opportunity_limit"] != 2):
+        raise ValueError("native_opportunity_limit must be the integer 2 when explicitly selected")
     if "skill_char_budget" in value and (
             type(value["skill_char_budget"]) is not int or not 1 <= value["skill_char_budget"] <= 4294967295):
         raise ValueError("skill_char_budget must be an integer in 1..4294967295")
     if (type(value["schema_version"]) is not int or value["schema_version"] != 1
-            or value["purpose"] not in ("setup-canary", "historical")
+            or value["purpose"] not in ("setup-canary", "historical", "adapted-public-resume")
             or value["running_in_interactive_mode"] is not True
             or value["session_capabilities"] != CLI_CONTINUATION_CAPABILITIES
             or value["cli_preamble"] != CLI_CONTINUATION_PREAMBLE
@@ -220,15 +224,23 @@ def continuation_entry(path: Path, config: dict) -> dict:
     }
     if "skill_char_budget" in value:
         binding["interactive"]["skill_char_budget"] = value["skill_char_budget"]
+    capped = False
     if "context_fixture_file" in config:
         fixture = read_owner_json(owned(config["context_fixture_file"]))
         if "runtime_treatment" in fixture:
-            from session_restore import NORMALIZED_ACTIVE_CANARY
-            if (fixture["runtime_treatment"] != NORMALIZED_ACTIVE_CANARY
-                    or value["purpose"] != "setup-canary"
+            from session_restore import NORMALIZED_ACTIVE_CANARY, CAPPED_PUBLIC_RESUME
+            capped = fixture["runtime_treatment"] == CAPPED_PUBLIC_RESUME
+            if ((not capped and (fixture["runtime_treatment"] != NORMALIZED_ACTIVE_CANARY
+                                  or value["purpose"] != "setup-canary"))
+                    or (capped and (
+                        (value["purpose"], fixture.get("provenance")) not in (
+                            ("setup-canary", "synthetic-continuation-canary"),
+                            ("adapted-public-resume", "source-bound-adapted-public-resume"))))
                     or "recorded_autopilot_request" not in fixture):
-                raise ValueError("Normalized active treatment is setup-canary only")
-            binding["runtime_treatment"] = NORMALIZED_ACTIVE_CANARY
+                raise ValueError(
+                    "Adapted capped continuation requires matching synthetic setup-canary or source-bound adapted-public-resume provenance"
+                    if capped else "Normalized active treatment is setup-canary only")
+            binding["runtime_treatment"] = fixture["runtime_treatment"]
         if "recorded_autopilot_request" in fixture:
             if "active_objective" not in fixture or "completed_objective" in fixture:
                 raise ValueError("Recorded autopilot continuation requires its active objective")
@@ -237,6 +249,12 @@ def continuation_entry(path: Path, config: dict) -> dict:
                 "agentMode": "autopilot", "objective_status": "active",
                 "send_surface": "session.rpc.send", "wait": False,
             }
+    if value["purpose"] == "adapted-public-resume" and not capped:
+        raise ValueError("Adapted public-resume purpose requires the capped treatment and source-bound provenance")
+    if "native_opportunity_limit" in value:
+        if not capped:
+            raise ValueError("native_opportunity_limit requires capped source-bound autopilot continuation")
+        binding["native_opportunity_limit"] = value["native_opportunity_limit"]
     if "operational_file" in config:
         binding["operational"] = operational_input(Path(config["operational_file"]), config)["binding"]
     configuration_sha256 = hashlib.sha256(json.dumps(

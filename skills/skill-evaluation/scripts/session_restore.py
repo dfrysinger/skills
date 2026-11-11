@@ -37,6 +37,7 @@ def active_objective_state(store: dict) -> dict:
 
 
 NORMALIZED_ACTIVE_CANARY = "public-command-normalized-active-v1"
+CAPPED_PUBLIC_RESUME = "capped-public-resume-v1"
 
 
 def normalized_active_canary(store: dict, source: str) -> None:
@@ -46,6 +47,18 @@ def normalized_active_canary(store: dict, source: str) -> None:
             or store["current"].get("creditLimit") != {
                 "credits": 100, "creditsUsed": 0, "creditsUsedNanoAiu": "0"}):
         raise ValueError("Normalized active treatment requires the capped synthetic canary")
+
+
+def capped_public_resume(store: dict, source: str, provenance: str) -> None:
+    active_objective_state(store)
+    synthetic = provenance == "synthetic-continuation-canary"
+    if (provenance not in ("synthetic-continuation-canary", "source-bound-adapted-public-resume")
+            or not isinstance(source, str) or not source.startswith("/")
+            or not source.endswith("/events.jsonl")
+            or (synthetic and not re.fullmatch(r"/synthetic/[0-9a-f-]{36}/events\.jsonl", source))
+            or (not synthetic and source.startswith("/synthetic/"))
+            or "creditLimit" in store["current"]):
+        raise ValueError("Adapted capped public resume requires an initially uncapped active objective and matching provenance")
 
 
 def _objective_state(store: dict, status: str) -> dict:

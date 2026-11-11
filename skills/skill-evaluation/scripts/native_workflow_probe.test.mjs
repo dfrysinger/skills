@@ -72,6 +72,11 @@ export class CopilotClient {
     let goalStore;
     try { goalStore = JSON.parse(readFileSync(goalPath, "utf8")); current = goalStore.current; } catch {}
     const persistGoal = () => writeFileSync(goalPath, JSON.stringify(goalStore));
+    state.completeGoal = () => {
+      current.status = "completed";
+      current.completionSummary = "Synthetic completion";
+      persistGoal();
+    };
     if (current && state.pauseOnCold && current.status === "active") {
       Object.assign(current, { status: "paused", pauseReason: "resumed_session",
         updatedAt: new Date().toISOString() });
@@ -96,22 +101,36 @@ export class CopilotClient {
         state.sentId = id;
         state.sendReady?.();
         if (state.sendFails) throw new Error("Test send transport failure");
-        if (state.sendHook) {
-          const messageId = state.sendHook(id, emit);
-          if (state.completeOnSend) {
-            current.status = "completed";
-            current.completionSummary = "Synthetic completion";
-            persistGoal();
+        const finish = () => {
+          if (state.sendHook) {
+            const messageId = state.sendHook(id, emit);
+            if (state.completeOnSend) {
+              current.status = "completed";
+              current.completionSummary = "Synthetic completion";
+              persistGoal();
+            }
+            return messageId;
           }
-          return messageId;
+          emit("assistant.turn_start", { model: options.model });
+          emit("assistant.usage", { apiCallId: "test-api-1", model: options.model });
+          emit("assistant.usage", { apiCallId: "test-api-2", model: options.model });
+          emit("assistant.message", { content: "Test SDK response", originatingMessageId: id });
+          emit("assistant.idle", {});
+          emit("session.idle", { mode: "autopilot" });
+          return id;
+        };
+        if (options.hooks?.onUserPromptTransformed) {
+          void Promise.resolve().then(async () => {
+            const input = { sessionId: session.sessionId,
+              prompt: message.prompt,
+              transformedPrompt: "<current_datetime>2026-02-02T00:00:00.000Z</current_datetime>\\n\\n" + message.prompt };
+            const output = await options.hooks.onUserPromptTransformed(input, { sessionId: session.sessionId });
+            state.transformedPrompt = output?.modifiedTransformedPrompt ?? input.transformedPrompt;
+            finish();
+          }).catch(error => emit("session.error", { message: error.message }));
+          return id;
         }
-        emit("assistant.turn_start", { model: options.model });
-        emit("assistant.usage", { apiCallId: "test-api-1", model: options.model });
-        emit("assistant.usage", { apiCallId: "test-api-2", model: options.model });
-        emit("assistant.message", { content: "Test SDK response", originatingMessageId: id });
-        emit("assistant.idle", {});
-        emit("session.idle", { mode: "autopilot" });
-        return id;
+        return finish();
       },
       rpc: {
         commands: { invoke: async request => {
@@ -864,7 +883,8 @@ async function continuationFixture(t, { loadedCopies = false, operational = fals
     const persist = (type, data) => state.events.push(emit(type, data));
     persist("user.message", { ...(autopilot ? {
       content: "", source: "autopilot", agentMode: "autopilot",
-      transformedContent: `<current_datetime>2026-02-02T00:00:00.000Z</current_datetime>\n\n${owned.request.prompt}`,
+      transformedContent: state.transformedPrompt
+        ?? `<current_datetime>2026-02-02T00:00:00.000Z</current_datetime>\n\n${owned.request.prompt}`,
     } : { content: "Synthetic trigger" }), messageId: id, interactionId: id });
     emit("system.message", {
       interactionId: id, content: input.cli_preamble
@@ -1291,6 +1311,168 @@ async function normalizedCanaryFixture(t) {
   const setupConfig = { ...config, output: join(root, "setup.json") };
   delete setupConfig.continuation_file;
   return { ...owned, setupConfig };
+}
+
+async function twoOpportunityFixture(t) {
+  const owned = await normalizedCanaryFixture(t);
+  const { config, store, source, goal, locator, input, save, state } = owned;
+  Object.assign(store.current, { continuationCount: 10, turnCount: 837, tokenCount: 128149341,
+    creditCountNanoAiu: "3137066880000", resumeCount: 0 });
+  delete store.current.creditLimit;
+  const bytes = JSON.stringify(store);
+  writeFileSync(source, bytes);
+  writeFileSync(goal, bytes);
+  locator.active_objective.sha256 = createHash("sha256").update(bytes).digest("hex");
+  locator.runtime_treatment = "capped-public-resume-v1";
+  locator.provenance = "synthetic-continuation-canary";
+  writeFileSync(config.context_fixture_file, JSON.stringify(locator));
+  input.native_opportunity_limit = 2;
+  save();
+  state.completeViaTool = false;
+  state.completeOnSend = false;
+  assert.equal((await runProbe("setup", owned.setupConfig)).status, "SETUP_OBSERVED");
+  return owned;
+}
+
+test("bounded native observation binds its selector and rejects invalid or uncapped choices before send", async t => {
+  const { config, root, input, save, state, locator } = await twoOpportunityFixture(t);
+  const selected = continuationEntry(config);
+  delete input.native_opportunity_limit;
+  save();
+  const original = continuationEntry(config);
+  assert.notEqual(selected.configuration_sha256, original.configuration_sha256);
+  assert.equal(selected.binding.native_opportunity_limit, 2);
+  assert.equal(original.binding.native_opportunity_limit, undefined);
+  for (const value of [true, 1, 3, 2.5, "2", null]) {
+    config.output = join(root, `invalid-${randomUUID()}.json`);
+    input.native_opportunity_limit = value;
+    save();
+    const result = await runProbe("candidate", config);
+    assert.equal(result.status, "PREMODEL_BLOCKED");
+    assert.match(result.error.message, /native_opportunity_limit/);
+  }
+  input.native_opportunity_limit = 2;
+  locator.runtime_treatment = "public-command-normalized-active-v1";
+  delete locator.provenance;
+  writeFileSync(config.context_fixture_file, JSON.stringify(locator));
+  save();
+  assert.throws(() => continuationEntry(config), /requires capped/);
+  assert.equal(state.sendCalls, 0);
+});
+
+for (const scenario of ["second-final", "empty-native-raw", "first-task", "second-task", "protected-input", "native-error",
+  "aborted", "deadline", "early-prompt", "substituted-root", "substituted-origin", "unmatched-turn",
+  "missing-end-idle", "unmatched-end-idle", "nonfinal-idle"]) {
+  test(`bounded native observation owning capture: ${scenario}`, async t => {
+    const { config, input, save, state, goal } = await twoOpportunityFixture(t);
+    if (["deadline", "substituted-origin", "unmatched-turn"].includes(scenario)) { input.timeout_ms = 25; save(); }
+    if (scenario === "first-task") {
+      state.completeViaTool = true;
+      state.completeOnSend = true;
+    }
+    const first = state.sendHook;
+    state.forwardedNativePrompts = 0;
+    state.thirdModels = 0;
+    state.sendHook = (id, emit) => {
+      const persist = (type, data) => state.events.push(emit(type, data));
+      first(id, (type, data, extra) => {
+        if (type === "session.idle") return { id: randomUUID(), type, data };
+        if (type === "assistant.message" && scenario !== "first-task") {
+          Object.assign(data, { turnId: "first", phase: "final_answer", toolRequests: [] });
+        }
+        return emit(type, data, extra);
+      });
+      state.events = state.events.filter(event => event.type !== "session.idle");
+      if (scenario === "deadline" || scenario === "first-task") return id;
+      if (scenario !== "early-prompt") persist("assistant.turn_end", { turnId: "first" });
+      const hook = state.resumes.at(-1).hooks.onUserPromptTransformed;
+      const next = { sessionId: config.session_id, prompt: "Synthetic native continuation",
+        transformedPrompt: "<current_datetime>2026-02-02T00:00:01.000Z</current_datetime>\n\nSynthetic native continuation" };
+      if (scenario === "empty-native-raw") next.prompt = "";
+      void Promise.resolve(hook(next, { sessionId: config.session_id })).then(output => {
+        state.forwardedNativePrompts++;
+        assert.equal(output?.modifiedTransformedPrompt, undefined);
+        const second = randomUUID();
+        persist("user.message", { content: "", source: "autopilot", agentMode: "autopilot",
+          transformedContent: scenario === "substituted-root" ? "Substituted native input" : next.transformedPrompt,
+          messageId: second, interactionId: second });
+        emit("system.message", { interactionId: second, content: input.cli_preamble
+          + "\nYou are an interactive tool that helps users with software engineering tasks." });
+        if (scenario === "protected-input") {
+          void state.resumes.at(-1).onUserInputRequest({ question: "Synthetic protected input" });
+        } else if (scenario === "native-error") {
+          emit("session.error", { message: "Synthetic native continuation failure" });
+        } else if (scenario === "aborted") {
+          emit("session.idle", { aborted: true });
+        } else if (scenario === "second-task") {
+          const request = { name: "task_complete", toolCallId: "second-task", arguments: { summary: "Synthetic completion" } };
+          persist("assistant.message", { content: null, originatingMessageId: id, interactionId: second,
+            turnId: "second", toolRequests: [request] });
+          persist("tool.execution_start", { toolName: request.name, toolCallId: request.toolCallId,
+            arguments: request.arguments, turnId: "second" });
+          state.completeGoal();
+          persist("tool.execution_complete", { toolCallId: request.toolCallId, success: true,
+            interactionId: second, turnId: "second", result: { content: "Synthetic completion" } });
+          persist("assistant.turn_end", { turnId: "second" });
+        } else {
+          persist("assistant.message", { content: "Synthetic second completed opportunity.",
+            originatingMessageId: scenario === "substituted-origin" ? randomUUID() : id,
+            interactionId: second, turnId: "second",
+            phase: scenario === "nonfinal-idle" ? "commentary" : "final_answer", toolRequests: [] });
+          if (scenario !== "missing-end-idle") {
+            persist("assistant.turn_end", { turnId: ["unmatched-turn", "unmatched-end-idle"].includes(scenario)
+              ? "unrelated" : "second" });
+          }
+          if (scenario.endsWith("-idle")) persist("session.idle", {});
+          void Promise.resolve(hook(next, { sessionId: config.session_id })).then(() => { state.thirdModels++; });
+        }
+      });
+      return id;
+    };
+    const result = await runProbe("candidate", config);
+    const expected = ["second-final", "empty-native-raw", "second-task"].includes(scenario) ? "CANDIDATE_OBSERVED"
+      : scenario === "protected-input" ? "HUMAN_INPUT_PENDING" : "FAILED";
+    assert.equal(result.status, expected, result.error?.message ?? result.status);
+    assert.equal(state.sendCalls, 1);
+    assert.equal(state.thirdModels, 0);
+    assert.equal(JSON.parse(readFileSync(goal)).current.status,
+      ["first-task", "second-task"].includes(scenario) ? "completed" : "active");
+    assert.equal(state.aborts, scenario === "second-task" ? 0 : 1);
+    if (["second-final", "empty-native-raw"].includes(scenario)) {
+      assert.equal(result.native_opportunities.length, 2);
+      assert.equal(result.model_result.data.originatingMessageId, result.model_message_id);
+      assert.equal(result.native_observation_stop, "opportunity_limit");
+      assert.equal(result.model_completion_event.type, "assistant.turn_end");
+      assert.equal(result.checks.exactly_once, true);
+      assert.equal(result.checks.native_continuation_passthrough, true);
+      assert.equal(result.checks.normalized_native_completion, false);
+      assert.equal(result.recorded_prompt_transform.held_after_boundary, 1);
+      assert.equal(result.continuation_receipt.status, "CONTINUATION_CANARY_OBSERVED");
+    } else if (scenario === "early-prompt") {
+      assert.equal(state.forwardedNativePrompts, 0);
+      assert.match(result.error.message, /completed first native opportunity/);
+    } else if (scenario === "substituted-root") {
+      assert.match(result.error.message, /native continuation/);
+    } else if (["deadline", "substituted-origin", "unmatched-turn"].includes(scenario)) {
+      assert.match(result.error.message, /deadline/);
+    } else if (scenario.endsWith("-idle")) {
+      assert.equal(result.native_opportunities.length, 1);
+      assert.match(result.error.message, /matching turn end/);
+    } else if (scenario === "native-error") {
+      assert.match(result.error.message, /Synthetic native continuation failure/);
+    } else if (scenario === "aborted") {
+      assert.match(result.error.message, /Native session idle was aborted/);
+    } else if (scenario === "first-task") {
+      assert.equal(state.forwardedNativePrompts, 0);
+      assert.equal(result.native_opportunities.length, 1);
+      assert.equal(result.model_completion_kind, "task_complete");
+      assert.match(result.error.message, /Two-opportunity canary/);
+    } else if (scenario === "second-task") {
+      assert.equal(result.native_opportunities.length, 2);
+      assert.equal(result.model_completion_kind, "task_complete");
+      assert.equal(result.checks.normalized_native_completion, true);
+    }
+  });
 }
 
 test("normalized canary witnesses both cold pauses and resumes without sending the command prompt", async t => {

@@ -2494,6 +2494,9 @@ def _stage_recorded_native_context(events, before, *, historical, schema_text, o
     }
     if "runtime_treatment" in historical:
         locator["runtime_treatment"] = historical["runtime_treatment"]
+        from session_restore import CAPPED_PUBLIC_RESUME
+        if historical["runtime_treatment"] == CAPPED_PUBLIC_RESUME:
+            locator["provenance"] = historical["provenance"]
     if objective_key in historical:
         locator[objective_key] = {
             "path": str(owner / f"{objective_key.replace('_', '-')}.json"),
@@ -2834,23 +2837,25 @@ def _validate_recorded_context_fixture(fixture: dict, root: Path | None) -> dict
     from session_restore import (
         active_objective_state, compile_task_snapshot, completed_objective_state, permission_rules,
         recorded_autopilot_request, recorded_native_payloads,
-        NORMALIZED_ACTIVE_CANARY, normalized_active_canary,
+        NORMALIZED_ACTIVE_CANARY, normalized_active_canary, CAPPED_PUBLIC_RESUME, capped_public_resume,
     )
 
     keys = {"schema_version", "provenance", "recorded_context", "restoration", "trigger", "consumer",
             "snapshot", "required_tools", "limitations", "personal_instructions", "candidate_permissions"}
     autopilot = "recorded_autopilot_request" in fixture
     normalized = "runtime_treatment" in fixture
+    capped = fixture.get("runtime_treatment") == CAPPED_PUBLIC_RESUME
+    provenances = (("synthetic-continuation-canary", "source-bound-adapted-public-resume") if capped else
+                   ("synthetic-continuation-canary",) if normalized else ("source-bound-historical",))
     if (set(fixture) - {"completed_objective", "active_objective", "recorded_autopilot_request",
                        "runtime_treatment"} != keys
             or ("active_objective" in fixture) != autopilot
             or (autopilot and "completed_objective" in fixture)
             or (normalized and (not autopilot
-                or fixture["runtime_treatment"] != NORMALIZED_ACTIVE_CANARY))
+                or fixture["runtime_treatment"] not in (NORMALIZED_ACTIVE_CANARY, CAPPED_PUBLIC_RESUME)))
             or type(fixture["schema_version"]) is not int
             or fixture["schema_version"] != 3
-            or fixture["provenance"] != (
-                "synthetic-continuation-canary" if normalized else "source-bound-historical")
+            or fixture["provenance"] not in provenances
             or root is None
             or not isinstance(fixture["personal_instructions"], str)
             or not fixture["personal_instructions"].strip()
@@ -2959,7 +2964,10 @@ def _validate_recorded_context_fixture(fixture: dict, root: Path | None) -> dict
             read_owner_json(request_path), event, trigger, store)
         objective["recorded_autopilot_request_bytes"] = request_bytes
         if normalized:
-            normalized_active_canary(store, context["source"])
+            if capped:
+                capped_public_resume(store, context["source"], fixture["provenance"])
+            else:
+                normalized_active_canary(store, context["source"])
     permission_rules(fixture["candidate_permissions"])
     return {**fixture, "snapshot": compile_task_snapshot(fixture["snapshot"]),
             "canonical": context, "canonical_bytes": source_bytes,
@@ -3118,13 +3126,21 @@ def _run_native_context_calibration(
             raise ValueError("Context fixture requires an owner-only unaliased single-link file")
         fixture = read_owner_json(fixture_file)
         normalized = isinstance(fixture, dict) and "runtime_treatment" in fixture
+        from session_restore import CAPPED_PUBLIC_RESUME
+        capped = isinstance(fixture, dict) and fixture.get("runtime_treatment") == CAPPED_PUBLIC_RESUME
         historical = isinstance(fixture, dict) and (
             fixture.get("provenance") == "source-bound-historical" or normalized)
         if normalized:
-            if continuation_file is None or source_preparation_only or not model_send:
+            zero_model_capped_preparation = (
+                capped and fixture.get("provenance") == "source-bound-adapted-public-resume"
+                and source_preparation_only and continuation_file is None and not model_send)
+            if (not zero_model_capped_preparation
+                    and (continuation_file is None or source_preparation_only or not model_send)):
                 raise ValueError("Normalized active treatment requires the explicit continuation canary")
             result["runtime_treatment"] = fixture["runtime_treatment"]
             result["historical_active_equivalence"] = False
+            if capped:
+                result["provenance"] = fixture["provenance"]
         calibration_session_id = None
         if source_preparation_only:
             if not historical or model_send:
@@ -3138,7 +3154,9 @@ def _run_native_context_calibration(
                 or any(path.is_symlink() for path in (personal_skill_dir, *personal_skill_dir.parents))):
             raise ValueError("Personal skill discovery requires an unaliased historical definition directory")
         if historical:
-            result["claim"] = ("Synthetic normalized-active infrastructure only; historical equivalence unproved"
+            result["claim"] = ("Adapted source-bound capped public-resume setup only; historical active equivalence false"
+                               if capped and fixture["provenance"] == "source-bound-adapted-public-resume" else
+                               "Synthetic normalized-active infrastructure only; historical equivalence unproved"
                                if normalized else
                                "Historical setup observations only; behavioral admission and skill improvement unproved")
             if model_send and continuation_file is None:
@@ -3372,6 +3390,12 @@ def _run_native_context_calibration(
                 result["claim"] = ("Synthetic continuation capability observation; historical reproduction and skill efficacy unproved"
                                    if result.get("candidate", {}).get("continuation_entry", {}).get("purpose") == "setup-canary"
                                    else "Historical continuation observation; complete baseline fidelity and skill efficacy unproved")
+            if result.get("runtime_treatment") == "capped-public-resume-v1":
+                result["claim"] = (
+                    "Adapted source-bound capped public-resume observation; historical active equivalence false; "
+                    "behavioral admission and skill efficacy unproved"
+                    if result.get("provenance") == "source-bound-adapted-public-resume" else
+                    "Synthetic capped public-resume capability observation only; historical behavior unproved")
             write_json(run_root / "context-result.json", result)
     return result
 
