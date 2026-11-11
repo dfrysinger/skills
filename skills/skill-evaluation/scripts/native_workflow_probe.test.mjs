@@ -3102,6 +3102,96 @@ test("assistant idle alone or a stalled admission expires at the fixed deadline 
   });
 });
 
+test("malformed continuation type retains the real helper refusal through the parent", async t => {
+  const { config, state, input, save } = await continuationFixture(t);
+  input.package_root = null;
+  save();
+  const completed = spawnSync("python3", ["-B", "-I", "-c",
+    "import sys,json;sys.path.insert(0,sys.argv[1]);from skill_eval import _native_workflow_probe\n"
+      + "try:\n _native_workflow_probe('candidate',json.loads(sys.argv[2]))\n"
+      + "except ValueError:\n pass\n",
+    resolve("skills/skill-evaluation/scripts"), JSON.stringify(config)],
+  { encoding: "utf8", env: { PATH: process.env.PATH } });
+  assert.equal(completed.status, 0, completed.stderr);
+  const report = JSON.parse(readFileSync(config.output, "utf8"));
+  assert.equal(report.status, "PREMODEL_BLOCKED");
+  assert.match(report.firsterror, /TypeError/);
+  assert.equal(report.model_send_calls, 0);
+  assert.deepEqual(report.shutdown_errors, []);
+  assert.equal(state.sendCalls, 0);
+});
+
+test("selected longer continuation still refuses zero-send preflight before changing its budget", async t => {
+  const { config, state, input, save } = await continuationFixture(t);
+  input.timeout_ms = 600000;
+  save();
+  const report = await runProbe("preflight", config);
+  assert.equal(report.status, "PREMODEL_BLOCKED");
+  assert.equal(report.firsterror, "Continuation cannot replace source setup or zero-send preflight");
+  assert.equal(report.continuation_entry, undefined);
+  assert.equal(report.max_timeout_ms, 300000);
+  assert.equal(report.model_send_calls, 0);
+  assert.equal(state.sendCalls, 0);
+  assert.equal(state.owners, 0);
+});
+
+test("selected longer continuation remains pending past the legacy deadline and closes at its own deadline", async t => {
+  const { config, state, input, save } = await continuationFixture(t);
+  input.timeout_ms = 600000;
+  save();
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const ready = new Promise(resolve => { state.sendReady = resolve; });
+  state.sendHook = () => new Promise(() => {});
+  const pending = runProbe("candidate", config);
+  const reachedSend = await Promise.race([ready.then(() => true), pending.then(() => false)]);
+  assert.equal(reachedSend, true);
+  await new Promise(setImmediate);
+  t.mock.timers.tick(300000);
+  await new Promise(setImmediate);
+  assert.equal(state.aborts, 0);
+  t.mock.timers.tick(300000);
+  const report = await pending;
+  assert.equal(report.status, "FAILED");
+  assert.equal(report.timeout_ms, 600000);
+  assert.equal(report.firsterror, "600000-millisecond SDK send/completion deadline exceeded");
+  assert.equal(report.model_send_calls, 1);
+  assert.equal(state.aborts, 1);
+  assert.equal(state.owners, 0);
+  assert.equal(state.handlers.length, 0);
+});
+
+test("selected longer continuation accounts for preflight beyond the legacy owner budget", async t => {
+  const { config, state, input, save } = await continuationFixture(t);
+  input.timeout_ms = 600000;
+  save();
+  let clockCalls = 0;
+  t.mock.method(performance, "now", () => clockCalls++ === 0 ? 0 : 400000);
+  const report = await runProbe("candidate", config);
+  assert.equal(report.status, "CANDIDATE_OBSERVED", report.firsterror);
+  assert.equal(report.max_timeout_ms, 600000);
+  assert.equal(report.timeout_ms, 230000);
+  assert.equal(state.sendCalls, 1);
+  assert.equal(state.owners, 0);
+  assert.equal(state.handlers.length, 0);
+});
+
+test("selected longer continuation does not extend observe or cleanup owner budgets", async t => {
+  for (const operation of ["observe", "cleanup"]) {
+    await t.test(operation, async t => {
+      const { config, state, input, save } = await continuationFixture(t);
+      input.timeout_ms = 600000;
+      save();
+      let clockCalls = 0;
+      t.mock.method(performance, "now", () => clockCalls++ === 0 ? 0 : 400000);
+      const report = await runProbe(operation, config);
+      assert.equal(report.status, "ERROR");
+      assert.equal(report.error.message, "client.start owner deadline exceeded");
+      assert.equal(state.sendCalls, 0);
+      assert.equal(state.owners, 0);
+    });
+  }
+});
+
 test("exhausted owner budget blocks dispatch without a send", async t => {
   const { config, state } = await candidateFixture(t);
   let clockCalls = 0;
