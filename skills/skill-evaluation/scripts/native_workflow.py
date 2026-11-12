@@ -165,12 +165,16 @@ def continuation_entry(path: Path, config: dict) -> dict:
         "schema_version", "purpose", "running_in_interactive_mode", "session_capabilities",
         "cli_preamble", "executable_path", "locale", "timeout_ms", "package_root",
         "workflow_commit", "workflow_sha256", "canary_receipt", "canary_checks",
-    } | ({key for key in ("skill_char_budget", "native_opportunity_limit") if key in value}
+    } | ({key for key in ("skill_char_budget", "native_opportunity_limit",
+                         "observe_until_native_terminal") if key in value}
          if isinstance(value, dict) else set()),
         "historical continuation")
     if "native_opportunity_limit" in value and (
             type(value["native_opportunity_limit"]) is not int or value["native_opportunity_limit"] != 2):
         raise ValueError("native_opportunity_limit must be the integer 2 when explicitly selected")
+    if "observe_until_native_terminal" in value and (
+            value["observe_until_native_terminal"] is not True or "native_opportunity_limit" in value):
+        raise ValueError("observe_until_native_terminal must be true and excludes native_opportunity_limit")
     if "skill_char_budget" in value and (
             type(value["skill_char_budget"]) is not int or not 1 <= value["skill_char_budget"] <= 4294967295):
         raise ValueError("skill_char_budget must be an integer in 1..4294967295")
@@ -255,6 +259,10 @@ def continuation_entry(path: Path, config: dict) -> dict:
         if not capped:
             raise ValueError("native_opportunity_limit requires capped source-bound autopilot continuation")
         binding["native_opportunity_limit"] = value["native_opportunity_limit"]
+    if "observe_until_native_terminal" in value:
+        if not capped:
+            raise ValueError("observe_until_native_terminal requires capped source-bound autopilot continuation")
+        binding["observe_until_native_terminal"] = True
     if "operational_file" in config:
         binding["operational"] = operational_input(Path(config["operational_file"]), config)["binding"]
     configuration_sha256 = hashlib.sha256(json.dumps(

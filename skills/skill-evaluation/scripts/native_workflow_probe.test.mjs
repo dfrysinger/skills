@@ -1475,6 +1475,162 @@ for (const scenario of ["second-final", "empty-native-raw", "first-task", "secon
   });
 }
 
+async function terminalObservationFixture(t) {
+  const owned = await twoOpportunityFixture(t);
+  delete owned.input.native_opportunity_limit;
+  owned.input.observe_until_native_terminal = true;
+  owned.save();
+  return owned;
+}
+
+test("native terminal observation binds its exclusive capped selector before send", async t => {
+  const { config, root, input, save, state, locator } = await terminalObservationFixture(t);
+  const selected = continuationEntry(config);
+  assert.equal(selected.binding.observe_until_native_terminal, true);
+  delete input.observe_until_native_terminal;
+  save();
+  assert.notEqual(continuationEntry(config).configuration_sha256, selected.configuration_sha256);
+  for (const value of [false, 1, "true", null]) {
+    config.output = join(root, `invalid-terminal-${randomUUID()}.json`);
+    input.observe_until_native_terminal = value;
+    save();
+    assert.equal((await runProbe("candidate", config)).status, "PREMODEL_BLOCKED");
+  }
+  input.observe_until_native_terminal = true;
+  input.native_opportunity_limit = 2;
+  save();
+  assert.throws(() => continuationEntry(config), /excludes native_opportunity_limit/);
+  delete input.native_opportunity_limit;
+  locator.runtime_treatment = "public-command-normalized-active-v1";
+  delete locator.provenance;
+  writeFileSync(config.context_fixture_file, JSON.stringify(locator));
+  save();
+  assert.throws(() => continuationEntry(config), /requires capped/);
+  assert.equal(state.sendCalls, 0);
+});
+
+test("native terminal observation can finish at the first genuine native completion", async t => {
+  const { config, state } = await terminalObservationFixture(t);
+  state.completeViaTool = true;
+  state.completeOnSend = true;
+  const result = await runProbe("candidate", config);
+  assert.equal(result.status, "CANDIDATE_OBSERVED", result.error?.message);
+  assert.equal(result.native_opportunities.length, 1);
+  assert.equal(result.native_observation_stop, "task_complete");
+  assert.equal(result.checks.normalized_native_completion, true);
+  assert.equal(state.sendCalls, 1);
+  assert.equal(state.aborts, 0);
+});
+
+for (const scenario of ["third-task", "fourth-task", "child-before-third", "unidentified-child", "mismatched-child",
+  "pending-input", "native-error", "deadline", "early-third", "substituted-third", "unmatched-third"]) {
+  test(`native terminal observation beyond two finals: ${scenario}`, async t => {
+    const { config, input, save, state, goal } = await terminalObservationFixture(t);
+    if (["deadline", "unmatched-third"].includes(scenario)) { input.timeout_ms = 25; save(); }
+    const first = state.sendHook;
+    let forwarded = 0;
+    let afterTerminal = 0;
+    let childrenPassed = 0;
+    state.sendHook = (id, emit) => {
+      const persist = (type, data) => state.events.push(emit(type, data));
+      first(id, (type, data, extra) => {
+        if (type === "session.idle") return { id: randomUUID(), type, data };
+        if (type === "assistant.message") Object.assign(data, { turnId: "first", phase: "final_answer", toolRequests: [] });
+        return emit(type, data, extra);
+      });
+      state.events = state.events.filter(event => event.type !== "session.idle");
+      persist("assistant.turn_end", { turnId: "first" });
+      const hook = state.resumes.at(-1).hooks.onUserPromptTransformed;
+      const next = index => ({ sessionId: config.session_id, prompt: "",
+        transformedPrompt: `<current_datetime>2026-02-02T00:00:0${index}.000Z</current_datetime>\n\nNative ${index}` });
+      const advance = async index => {
+        const prompt = next(index);
+        const output = await hook(prompt, { sessionId: config.session_id });
+        forwarded++;
+        assert.equal(output?.modifiedTransformedPrompt, undefined);
+        const interaction = randomUUID();
+        const turn = `native-${index}`;
+        persist("user.message", { content: "", source: "autopilot", agentMode: "autopilot",
+          transformedContent: scenario === "substituted-third" && index === 3 ? "Substituted" : prompt.transformedPrompt,
+          messageId: interaction, interactionId: interaction });
+        const child = { sessionId: "child-agent", agentId: "child-agent", parentAgentId: config.session_id,
+          prompt: "Synthetic delegated task", transformedPrompt: "Unchanged synthetic delegated task" };
+        if (index === 3 && ["child-before-third", "unidentified-child", "mismatched-child"].includes(scenario)) {
+          if (scenario === "unidentified-child") {
+            delete child.agentId;
+            delete child.parentAgentId;
+          } else if (scenario === "mismatched-child") {
+            child.agentId = "different-agent";
+          }
+          assert.deepEqual(await hook(child, { sessionId: config.session_id }), {});
+          childrenPassed++;
+        }
+        if (index === 3 && scenario === "pending-input") {
+          void state.resumes.at(-1).onUserInputRequest({ question: "Synthetic protected input" });
+          return;
+        }
+        if (index === 3 && scenario === "native-error") {
+          emit("session.error", { message: "Synthetic third native failure" });
+          return;
+        }
+        if (index === (scenario === "fourth-task" ? 4 : 3)
+            && !["deadline", "early-third", "unmatched-third"].includes(scenario)) {
+          const request = { name: "task_complete", toolCallId: turn, arguments: { summary: "Synthetic completion" } };
+          persist("assistant.message", { content: null, originatingMessageId: id, interactionId: interaction,
+            turnId: turn, toolRequests: [request] });
+          persist("tool.execution_start", { toolName: request.name, toolCallId: turn,
+            arguments: request.arguments, turnId: turn });
+          state.completeGoal();
+          persist("tool.execution_complete", { toolCallId: turn, success: true,
+            interactionId: interaction, turnId: turn, result: { content: "Synthetic completion" } });
+          persist("assistant.turn_end", { turnId: turn });
+          if (scenario === "child-before-third") {
+            assert.deepEqual(await hook(child, { sessionId: config.session_id }), {});
+            childrenPassed++;
+          }
+          void Promise.resolve(hook(next(index + 1), { sessionId: config.session_id })).then(() => { afterTerminal++; });
+          return;
+        }
+        persist("assistant.message", { content: `Synthetic final ${index}`, originatingMessageId:
+          scenario === "unmatched-third" && index === 3 ? randomUUID() : id,
+          interactionId: interaction, turnId: turn, phase: "final_answer", toolRequests: [] });
+        if (scenario !== "early-third") persist("assistant.turn_end", { turnId: turn });
+        if (index === 3 && scenario !== "fourth-task") return;
+        void advance(index + 1);
+      };
+      void advance(2);
+      return id;
+    };
+    const result = await runProbe("candidate", config);
+    const completed = ["third-task", "fourth-task", "child-before-third"].includes(scenario);
+    assert.equal(result.status, completed ? "CANDIDATE_OBSERVED"
+      : scenario === "pending-input" ? "HUMAN_INPUT_PENDING" : "FAILED", result.error?.message);
+    assert.equal(state.sendCalls, 1);
+    assert.equal(afterTerminal, 0);
+    assert.equal(state.aborts, completed ? 0 : 1);
+    assert.equal(forwarded, scenario === "early-third" ? 1 : scenario === "fourth-task" ? 3 : 2);
+    assert.equal(JSON.parse(readFileSync(goal)).current.status,
+      completed || scenario === "substituted-third" ? "completed" : "active");
+    if (completed) {
+      assert.equal(result.native_opportunities.length, scenario === "fourth-task" ? 4 : 3);
+      assert.equal(result.native_observation_stop, "task_complete");
+      assert.equal(result.checks.exactly_once, true);
+      assert.equal(result.checks.native_continuation_passthrough, true);
+      assert.equal(result.checks.normalized_native_completion, true);
+      assert.equal(result.recorded_prompt_transform.held_after_boundary, 1);
+      if (scenario === "child-before-third") {
+        assert.equal(childrenPassed, 2);
+        assert.equal(result.recorded_prompt_transform.invocations, 3);
+        assert.equal(result.recorded_prompt_transform.native_passthrough.length, 2);
+      }
+    } else if (scenario === "deadline" || scenario === "unmatched-third") {
+      assert.equal(result.native_observation_stop, "deadline");
+    } else if (scenario === "pending-input") {
+      assert.equal(result.native_observation_stop, "pending_input");
+    }
+  });
+}
+
 test("normalized canary witnesses both cold pauses and resumes without sending the command prompt", async t => {
   const { config, setupConfig, state, store, goal, request, input, save } = await normalizedCanaryFixture(t);
   const setup = await runProbe("setup", setupConfig);

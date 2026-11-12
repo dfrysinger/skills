@@ -477,7 +477,7 @@ function operationalEntry(config) {
 }
 
 export function continuationCorrespondence(before, after, events, messageId, raw, autopilotSend, exactTransformed,
-  nativePrompts) {
+  nativePrompts, observeUntilNativeTerminal = false) {
   if (after.length < before.length || before.some((event, index) => !isDeepStrictEqual(event, after[index]))) {
     throw new Error("Historical continuation mutated its native journal prefix");
   }
@@ -500,7 +500,10 @@ export function continuationCorrespondence(before, after, events, messageId, raw
       || typeof users[0].data?.interactionId !== "string" || !users[0].data.interactionId) {
     throw new Error("Historical continuation requires exactly one unsubstituted root raw user event");
   }
-  if (nativePrompts !== undefined && (nativePrompts.length > 1 || users.slice(1).some((event, index) => {
+  if (nativePrompts !== undefined && ((!observeUntilNativeTerminal && nativePrompts.length > 1)
+      || new Set(users.map(event => event.data?.messageId)).size !== users.length
+      || new Set(users.map(event => event.data?.interactionId)).size !== users.length
+      || users.slice(1).some((event, index) => {
     const later = event.data;
     return !autopilotSend || later?.content !== "" || later.source !== "autopilot" || later.agentMode !== "autopilot"
       || later.attachments?.length || typeof later.messageId !== "string" || !later.messageId
@@ -1937,17 +1940,22 @@ export async function runProbe(op, config) {
     let active = true;
     let resolveOutcome;
     const outcome = new Promise(resolve => { resolveOutcome = resolve; });
-    const boundedNative = entry?.native_opportunity_limit === 2;
+    const observeUntilNativeTerminal = entry?.observe_until_native_terminal === true;
+    const boundedNative = entry?.native_opportunity_limit === 2 || observeUntilNativeTerminal;
     if (boundedNative) {
       report.native_opportunities = [];
-      completedNativeOpportunity = () => report.native_opportunities[0]?.kind
-        || (messageId === undefined
-          && buffered.filter(event => event.type === "user.message").length === 1
-          && continuationCompletion(buffered,
-            buffered.find(event => event.type === "user.message")?.data?.messageId, true)?.kind);
+      completedNativeOpportunity = (index = report.recorded_prompt_transform.invocations - 1) => {
+        const users = buffered.filter(event => event.type === "user.message");
+        const user = users[index];
+        return report.native_opportunities[index]?.kind
+          || (messageId === undefined && user && continuationCompletion(
+            buffered.slice(buffered.indexOf(user)), user.data?.messageId, true, users[0].data?.messageId)?.kind);
+      };
     }
     const finishOutcome = terminal => {
       if (boundedNative) nativeObservationClosed = true;
+      if (observeUntilNativeTerminal) report.native_observation_stop ??=
+        terminal.pending ? "pending_input" : terminal.error ? "native_error" : terminal.kind;
       resolveOutcome(terminal);
     };
     if (exactRecordedPrompt !== undefined) promptFailure = error => finishOutcome({ error });
@@ -1966,7 +1974,9 @@ export async function runProbe(op, config) {
         completionEvents.push(event);
         if (boundedNative) {
           const users = completionEvents.filter(item => item.type === "user.message");
-          if (users.length > 2 || (users.length && users[0].data?.messageId !== messageId)) {
+          if ((!observeUntilNativeTerminal && users.length > 2)
+              || (users.length && users[0].data?.messageId !== messageId)
+              || (observeUntilNativeTerminal && users.length > report.native_opportunities.length + 1)) {
             finishOutcome({ error: new Error("Unexpected native continuation root event") });
             return;
           }
@@ -1979,7 +1989,8 @@ export async function runProbe(op, config) {
           else if (terminal) {
             report.native_opportunities.push({ message_id: user.data.messageId, kind: terminal.kind,
               message_event_id: terminal.message.id, turn_end_event_id: terminal.turn_end?.id });
-            if (terminal.kind === "task_complete" || report.native_opportunities.length === 2) {
+            if (terminal.kind === "task_complete"
+                || (!observeUntilNativeTerminal && report.native_opportunities.length === 2)) {
               report.native_observation_stop = terminal.kind === "task_complete" ? "task_complete" : "opportunity_limit";
               finishOutcome(terminal);
             }
@@ -2014,6 +2025,7 @@ export async function runProbe(op, config) {
         const deadline = new Promise(resolve => {
           deadlineTimer = setTimeout(() => {
             if (boundedNative) nativeObservationClosed = true;
+            if (observeUntilNativeTerminal) report.native_observation_stop = "deadline";
             resolve({ error: new Error(`${report.timeout_ms}-millisecond SDK send/completion deadline exceeded`) });
           }, report.timeout_ms);
         });
@@ -2087,7 +2099,7 @@ export async function runProbe(op, config) {
         const correspondence = continuationCorrespondence(
           report.prefix_before, report.prefix_after, candidateEvents.slice(report.model_event_start_index),
           report.model_message_id, report.bound_raw_trigger, report.recorded_autopilot_send, exactRecordedPrompt,
-          boundedNative ? report.recorded_prompt_transform.native_passthrough : undefined);
+          boundedNative ? report.recorded_prompt_transform.native_passthrough : undefined, observeUntilNativeTerminal);
         Object.assign(report.checks, correspondence);
         report.primary_system_messages = correspondence.primary_system_messages;
         delete report.checks.primary_system_messages;
@@ -2099,11 +2111,11 @@ export async function runProbe(op, config) {
             && store.current.id === normalizedExpected.current.id
             && store.current.objective === normalizedExpected.current.objective
             && isDeepStrictEqual(report.final_state.goal?.state, objectiveState(store));
-          if (entry.purpose === "setup-canary" && (boundedNative
+          if (entry.purpose === "setup-canary" && (entry.native_opportunity_limit === 2
             ? report.native_opportunities.length !== 2
               || (report.model_completion_kind === "task_complete" && !report.checks.normalized_native_completion)
             : !report.checks.normalized_native_completion)) {
-            throw new Error(boundedNative
+            throw new Error(entry.native_opportunity_limit === 2
               ? "Two-opportunity canary requires two completed native opportunities and consistent task-complete state"
               : "Normalized canary requires genuine task_complete and matching completed native/persisted objective");
           }
@@ -2286,31 +2298,36 @@ export async function runProbe(op, config) {
         delete candidateOptions.availableTools;
         const fixture = contextFixture(config);
         if (fixture.runtime_treatment === cappedPublicResume && fixture.autopilot_send) {
+          const observeNative = entry.native_opportunity_limit === 2 || entry.observe_until_native_terminal === true;
           exactRecordedPrompt = fixture.canonical.chat_messages.at(-1).content;
           report.recorded_prompt_transform = {
             surface: "resumeOptions.hooks.onUserPromptTransformed",
             source_event_id: fixture.source_binding.cutoff_event_id,
             canonical_sha256: fixture.canonical_sha256,
             expected_sha256: hash(exactRecordedPrompt), invocations: 0,
-            ...(entry.native_opportunity_limit === 2 ? { native_passthrough: [], held_after_boundary: 0 } : {}),
+            ...(observeNative ? { native_passthrough: [], held_after_boundary: 0 } : {}),
           };
           candidateOptions.hooks = {
             ...candidateOptions.hooks,
             onUserPromptTransformed(input, invocation) {
+              if (typeof input?.agentId === "string" && input.agentId
+                  && input.agentId !== config.session_id && input.sessionId === input.agentId
+                  && typeof input.parentAgentId === "string" && input.parentAgentId
+                  && input.parentAgentId !== input.agentId) return {};
               const observed = report.recorded_prompt_transform;
-              if (entry.native_opportunity_limit === 2
-                  && (nativeObservationClosed || observed.invocations >= 2
+              if (observeNative
+                  && (nativeObservationClosed || (entry.native_opportunity_limit === 2 && observed.invocations >= 2)
                     || completedNativeOpportunity?.() === "task_complete")) {
                 observed.held_after_boundary++;
                 return new Promise(() => {});
               }
               observed.invocations++;
-              if (entry.native_opportunity_limit === 2 && observed.invocations === 2) {
-                if (completedNativeOpportunity?.() !== "assistant_final" || report.model_send_calls !== 1
+              if (observeNative && observed.invocations >= 2) {
+                if (completedNativeOpportunity?.(observed.invocations - 2) !== "assistant_final" || report.model_send_calls !== 1
                     || input?.sessionId !== config.session_id || invocation?.sessionId !== config.session_id
                     || typeof input.prompt !== "string"
                     || typeof input.transformedPrompt !== "string" || !input.transformedPrompt) {
-                  const error = new Error("Native continuation requires a completed first native opportunity");
+                  const error = new Error("Native continuation requires a completed first native opportunity and each preceding opportunity");
                   fail(error);
                   promptFailure?.(error);
                   return new Promise(() => {});
