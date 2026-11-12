@@ -85,6 +85,188 @@ class NativeWorkflowTests(unittest.TestCase):
     def freeze(self):
         skill_eval.freeze_case(self.root, "example-case", replace=False)
 
+    def reuse_fixture(self, *, changed_skill=True):
+        package = self.base / "input"
+        evaluator = package / "evaluator"
+        evaluator.mkdir(parents=True)
+        (evaluator / "native_workflow.py").write_bytes(Path(native_workflow.__file__).read_bytes())
+        (evaluator / "generic.py").write_text("pass\n")
+        home = self.base / "home"
+        home.mkdir()
+        (home / "copilot-instructions.md").write_text("Synthetic instructions\n")
+        personal, alias, custom = home / "skills", self.base / "alias", self.base / "custom"
+        old = "---\nname: example\ndescription: Synthetic.\n---\nRead evidence.\n"
+        for root in (personal, alias, custom):
+            (root / "example").mkdir(parents=True)
+            (root / "example/SKILL.md").write_text(old)
+        events = self.base / "schedule-events.json"
+        skill_eval.write_json(events, [{
+            "id": str(uuid.uuid4()), "timestamp": "2026-01-01T00:00:00Z",
+            "type": "session.schedule_created",
+            "data": {"id": 1, "intervalMs": 3600000, "prompt": "Synthetic wake",
+                     "recurring": True, "origin": "synthetic"},
+        }])
+        events.chmod(0o600)
+        operational = {
+            "schema_version": 1,
+            "installed_plugins": [{"path": str(self.plugin), "name": "synthetic",
+                                   "marketplace": "", "installed_at": "2026-01-01T00:00:00Z"}],
+            "personal_skills": {"path": str(personal)},
+            "custom_skills": {"path": str(custom)},
+            "source_aliases": [{"path": str(alias)}],
+            "schedule_events": {"path": events.name, "sha256": skill_eval.digest(events)},
+        }
+        operation_path = self.base / "operational.json"
+        fixture_path = self.base / "context-fixture.json"
+        cwd = self.base / "run/cwd"
+        cwd.mkdir(parents=True)
+        path = self.base / "continuation.json"
+        value = {
+            "schema_version": 1, "purpose": "setup-canary", "running_in_interactive_mode": True,
+            "session_capabilities": native_workflow.CLI_CONTINUATION_CAPABILITIES,
+            "cli_preamble": native_workflow.CLI_CONTINUATION_PREAMBLE,
+            "executable_path": "/usr/bin:/bin", "locale": "C.UTF-8", "timeout_ms": 10000,
+            "package_root": str(package), "workflow_commit": "a" * 40, "workflow_sha256": "b" * 64,
+            "canary_receipt": None,
+            "canary_checks": {"file": {"path": "result.txt", "sha256": "c" * 64},
+                             "shell": {"command": "printf synthetic"}, "sql": {"query": "SELECT 7"}},
+        }
+        config = {"cwd": str(cwd), "home": str(home), "plugin_path": str(self.plugin),
+                  "cli": str(self.cli), "sdk": str(self.sdk), "model": "fixture-model", "effort": "medium",
+                  "operational_file": str(operation_path), "skill_directories": [str(custom)],
+                  "context_fixture_file": str(fixture_path)}
+
+        def entry():
+            for item in [*operational["installed_plugins"], operational["personal_skills"],
+                         operational["custom_skills"], *operational["source_aliases"]]:
+                item["sha256"] = skill_eval.directory_identity(Path(item["path"]))["sha256"]
+            skill_eval.write_json(operation_path, operational)
+            operation_path.chmod(0o600)
+            skill_eval.write_json(fixture_path, {
+                "runtime_treatment": "capped-public-resume-v1",
+                "provenance": ("synthetic-continuation-canary" if value["purpose"] == "setup-canary"
+                               else "source-bound-adapted-public-resume"),
+                "active_objective": {}, "recorded_autopilot_request": {},
+            })
+            fixture_path.chmod(0o600)
+            skill_eval.write_json(path, value)
+            path.chmod(0o600)
+            with mock.patch.dict("os.environ", {"GITHUB_WORKSPACE": "", "GITHUB_WORKFLOW_SHA": ""}):
+                return native_workflow.continuation_entry(path, config)
+
+        observed = copy.deepcopy(entry()["binding"])
+        prior_source = "d" * 64
+        observed["source"]["native_workflow.py"] = prior_source
+        records = skill_eval.directory_identity(evaluator)["files"]
+        next(item for item in records if item["path"] == "native_workflow.py")["sha256"] = prior_source
+        observed["evaluator_sha256"] = skill_eval.json_fingerprint(records)
+        old_sha = skill_eval.digest(personal / "example/SKILL.md")
+        if changed_skill:
+            for root in (personal, alias):
+                (root / "example/SKILL.md").write_text(old + "Resume independent work.\n")
+        value.update(purpose="adapted-public-resume", canary_checks=None, canary_receipt={
+            "status": "CONTINUATION_CANARY_OBSERVED",
+            "configuration_sha256": skill_eval.json_fingerprint(observed),
+            "interactive_identity": True, "operation_witnesses": True,
+            "exactly_once": True, "shutdown_errors": [],
+        }, canary_reuse={"observed_binding": observed, "skill_delta": {
+            "relative_path": "example/SKILL.md", "old_sha256": old_sha,
+            "new_sha256": skill_eval.digest(personal / "example/SKILL.md"), "source_alias_path": str(alias),
+        }})
+        return value, config, entry, {"personal": personal, "alias": alias, "evaluator": evaluator}
+
+    def test_retained_canary_reuse_preserves_receipt_and_reports_current_identity(self):
+        value, config, entry, roots = self.reuse_fixture()
+        original = copy.deepcopy(value)
+        selected = entry()
+        self.assertEqual(value, original)
+        self.assertEqual(selected["canary_receipt"], original["canary_receipt"])
+        self.assertNotEqual(selected["configuration_sha256"], original["canary_receipt"]["configuration_sha256"])
+        self.assertEqual(selected["configuration_sha256"], skill_eval.json_fingerprint(selected["binding"]))
+        self.assertEqual(selected["binding"]["operational"]["personal_skills"],
+                         skill_eval.directory_identity(roots["personal"])["sha256"])
+        del value["canary_reuse"]
+        with self.assertRaisesRegex(ValueError, "canary receipt"):
+            entry()
+        value["canary_receipt"]["configuration_sha256"] = selected["configuration_sha256"]
+        self.assertEqual(entry()["binding"], selected["binding"])
+
+    def test_retained_canary_reuse_supports_unchanged_skill_control(self):
+        value, config, entry, roots = self.reuse_fixture(changed_skill=False)
+        selected = entry()
+        self.assertEqual(selected["binding"]["operational"], value["canary_reuse"]["observed_binding"]["operational"])
+        self.assertNotEqual(selected["configuration_sha256"], value["canary_receipt"]["configuration_sha256"])
+
+    def test_retained_canary_reuse_refuses_unrelated_dependencies(self):
+        value, config, entry, roots = self.reuse_fixture()
+        original, configuration = copy.deepcopy(value), copy.deepcopy(config)
+        for field in ("model", "effort"):
+            with self.subTest(field=field):
+                config[field] = "changed"
+                with self.assertRaisesRegex(ValueError, "operational dependency"):
+                    entry()
+                config.update(configuration)
+        for field, changed in (("timeout_ms", 10001), ("workflow_sha256", "e" * 64),
+                               ("skill_char_budget", 50000), ("observe_until_native_terminal", True)):
+            with self.subTest(field=field):
+                value[field] = changed
+                with self.assertRaisesRegex(ValueError, "operational dependency"):
+                    entry()
+                value.clear()
+                value.update(copy.deepcopy(original))
+        for root, relative in ((roots["personal"], "example/extra.txt"), (roots["alias"], "extra.txt"),
+                               (roots["evaluator"], "generic.py")):
+            with self.subTest(root=root.name, relative=relative):
+                path = root / relative
+                previous = path.read_bytes() if path.exists() else None
+                path.write_text("Changed unrelated input.\n")
+                with self.assertRaisesRegex(ValueError, "personal skill alias|operational dependency"):
+                    entry()
+                if previous is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(previous)
+        for root, relative in ((roots["personal"], "example/SKILL.md"),
+                               (roots["alias"], "example/SKILL.md"),
+                               (roots["evaluator"], "generic.py")):
+            with self.subTest(mode=root.name):
+                path = root / relative
+                mode = path.stat().st_mode & 0o777
+                path.chmod(mode ^ 0o100)
+                with self.assertRaisesRegex(ValueError, "personal skill alias|operational dependency"):
+                    entry()
+                path.chmod(mode)
+
+    def test_retained_canary_reuse_refuses_invalid_evidence_and_selected_file(self):
+        value, config, entry, roots = self.reuse_fixture()
+        original = copy.deepcopy(value)
+        for field, changed in (("interactive_identity", False), ("operation_witnesses", False),
+                               ("exactly_once", False), ("shutdown_errors", ["error"]),
+                               ("configuration_sha256", "f" * 64)):
+            with self.subTest(receipt=field):
+                value["canary_receipt"][field] = changed
+                with self.assertRaisesRegex(ValueError, "canary receipt|original receipt"):
+                    entry()
+                value.clear()
+                value.update(copy.deepcopy(original))
+        for field, changed in (("relative_path", "../example/SKILL.md"), ("relative_path", None),
+                               ("relative_path", "example/other.md"), ("old_sha256", "invalid"),
+                               ("new_sha256", "f" * 64), ("source_alias_path", "/absent")):
+            with self.subTest(delta=field, changed=changed):
+                value["canary_reuse"]["skill_delta"][field] = changed
+                with self.assertRaises(ValueError):
+                    entry()
+                value.clear()
+                value.update(copy.deepcopy(original))
+        value["canary_reuse"]["extra"] = True
+        with self.assertRaisesRegex(ValueError, "requires exactly"):
+            entry()
+        value.clear()
+        value.update(copy.deepcopy(original))
+        value["purpose"] = "setup-canary"
+        with self.assertRaisesRegex(ValueError, "must not reuse"):
+            entry()
+
     def test_continuation_skill_char_budget_validation_binding_and_receipt(self):
         package = self.base / "input"
         (package / "evaluator").mkdir(parents=True)

@@ -151,7 +151,7 @@ def operational_input(path: Path, config: dict | None = None) -> dict:
 
 
 def continuation_entry(path: Path, config: dict) -> dict:
-    from skill_eval import digest, directory_identity
+    from skill_eval import digest, directory_identity, json_fingerprint
 
     def owned(source):
         source = Path(source)
@@ -166,7 +166,7 @@ def continuation_entry(path: Path, config: dict) -> dict:
         "cli_preamble", "executable_path", "locale", "timeout_ms", "package_root",
         "workflow_commit", "workflow_sha256", "canary_receipt", "canary_checks",
     } | ({key for key in ("skill_char_budget", "native_opportunity_limit",
-                         "observe_until_native_terminal") if key in value}
+                         "observe_until_native_terminal", "canary_reuse") if key in value}
          if isinstance(value, dict) else set()),
         "historical continuation")
     if "native_opportunity_limit" in value and (
@@ -264,10 +264,13 @@ def continuation_entry(path: Path, config: dict) -> dict:
             raise ValueError("observe_until_native_terminal requires capped source-bound autopilot continuation")
         binding["observe_until_native_terminal"] = True
     if "operational_file" in config:
-        binding["operational"] = operational_input(Path(config["operational_file"]), config)["binding"]
+        operational = operational_input(Path(config["operational_file"]), config)
+        binding["operational"] = operational["binding"]
     configuration_sha256 = hashlib.sha256(json.dumps(
         binding, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     if value["purpose"] == "setup-canary":
+        if "canary_reuse" in value:
+            raise ValueError("Setup-purpose canary must not reuse operational evidence")
         if value["canary_receipt"] is not None:
             raise ValueError("Setup-purpose canary must not substitute a historical admission receipt")
         checks = value["canary_checks"]
@@ -289,12 +292,65 @@ def continuation_entry(path: Path, config: dict) -> dict:
                           "operation_witnesses", "exactly_once", "shutdown_errors"}, "interactive canary receipt")
         if (not isinstance(receipt, dict)
                 or receipt.get("status") != "CONTINUATION_CANARY_OBSERVED"
-                or receipt.get("configuration_sha256") != configuration_sha256
                 or receipt.get("interactive_identity") is not True
                 or receipt.get("operation_witnesses") is not True
                 or receipt.get("exactly_once") is not True
                 or receipt.get("shutdown_errors") != []):
             raise ValueError("Missing, mismatched or non-interactive continuation canary receipt")
+        if "canary_reuse" not in value:
+            if receipt["configuration_sha256"] != configuration_sha256:
+                raise ValueError("Missing, mismatched or non-interactive continuation canary receipt")
+        else:
+            if value["purpose"] != "adapted-public-resume" or "operational_file" not in config:
+                raise ValueError("Canary reuse requires an operational adapted public resume")
+            reuse = value["canary_reuse"]
+            _object(reuse, {"observed_binding", "skill_delta"}, "canary reuse")
+            observed = reuse["observed_binding"]
+            if not isinstance(observed, dict) or json_fingerprint(observed) != receipt["configuration_sha256"]:
+                raise ValueError("Retained canary binding differs from its original receipt")
+            delta = reuse["skill_delta"]
+            _object(delta, {"relative_path", "old_sha256", "new_sha256", "source_alias_path"},
+                    "canary skill delta")
+            if not isinstance(delta["relative_path"], str):
+                raise ValueError("Invalid retained canary skill path")
+            relative_path(delta["relative_path"])
+            if (Path(delta["relative_path"]).name != "SKILL.md"
+                    or any(not isinstance(delta[key], str) or re.fullmatch(r"[0-9a-f]{64}", delta[key]) is None
+                           for key in ("old_sha256", "new_sha256"))
+                    or not isinstance(delta["source_alias_path"], str)):
+                raise ValueError("Invalid retained canary skill delta")
+
+            def projected_tree(root, relative, current_sha256, observed_sha256):
+                records = directory_identity(Path(root))["files"]
+                selected = [record for record in records if record["path"] == relative]
+                if len(selected) != 1 or selected[0]["sha256"] != current_sha256:
+                    raise ValueError("Canary reuse file differs from its selected input")
+                selected[0]["sha256"] = observed_sha256
+                return json_fingerprint(records)
+
+            projected = json.loads(json.dumps(binding))
+            projected["operational"]["personal_skills"] = projected_tree(
+                operational["personal_skills"]["path"], delta["relative_path"],
+                delta["new_sha256"], delta["old_sha256"])
+            aliases = [alias for alias in projected["operational"]["source_aliases"]
+                       if alias["path"] == delta["source_alias_path"]]
+            if (len(aliases) != 1
+                    or aliases[0]["sha256"] != binding["operational"]["personal_skills"]):
+                raise ValueError("Canary reuse requires one existing personal skill alias")
+            aliases[0]["sha256"] = projected_tree(
+                aliases[0]["path"], delta["relative_path"], delta["new_sha256"], delta["old_sha256"])
+            try:
+                old_source = observed["source"]["native_workflow.py"]
+                if not isinstance(old_source, str) or re.fullmatch(r"[0-9a-f]{64}", old_source) is None:
+                    raise ValueError("Invalid retained canary source digest")
+                projected["evaluator_sha256"] = projected_tree(
+                    package / "evaluator", "native_workflow.py",
+                    binding["source"]["native_workflow.py"], old_source)
+                projected["source"]["native_workflow.py"] = old_source
+            except (KeyError, TypeError):
+                raise ValueError("Invalid retained canary source binding") from None
+            if projected != observed:
+                raise ValueError("Canary reuse changed an operational dependency")
     return {**value, "configuration_sha256": configuration_sha256, "binding": binding,
             "observed_package": directory_identity(package)}
 
