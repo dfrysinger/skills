@@ -148,6 +148,18 @@ class NativeWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "interactive continuation configuration"):
                 entry()
             value["timeout_ms"] = omitted["timeout_ms"]
+            for terminal in (False, 1, "true", None):
+                with self.subTest(observe_until_native_terminal=terminal):
+                    value["observe_until_native_terminal"] = terminal
+                    with self.assertRaisesRegex(ValueError, "must be true"):
+                        entry()
+            value["observe_until_native_terminal"] = True
+            with self.assertRaisesRegex(ValueError, "requires capped"):
+                entry()
+            value["native_opportunity_limit"] = 2
+            with self.assertRaisesRegex(ValueError, "excludes native_opportunity_limit"):
+                entry()
+            del value["observe_until_native_terminal"], value["native_opportunity_limit"]
             hashes = {omitted["configuration_sha256"]}
             for budget in (1, 15000, 50000, 4294967295):
                 with self.subTest(budget=budget):
