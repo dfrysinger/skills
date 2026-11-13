@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { lstat, mkdir, readFile, readlink, symlink, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { loadConfig, listSkillDirectories, resolveRepoRoot, serialize } from "./config.mjs";
@@ -12,6 +12,8 @@ import {
   codexPlugin,
   copilotMarketplace,
   copilotPlugin,
+  grokMarketplace,
+  grokPlugin,
 } from "./templates.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -72,11 +74,41 @@ async function nextVersion(root, config, explicit) {
   return bumpPatch(current);
 }
 
+export function grokPluginDirectory(config) {
+  return config.emit.grokPluginDirectory ?? `plugins/${config.name}`;
+}
+
+// Relative so a marketplace clone keeps the link inside the repository.
+const GROK_SKILLS_LINK = "../../skills";
+
+export async function ensureGrokSkillsLink(root, pluginDirectory) {
+  const linkPath = resolve(root, pluginDirectory, "skills");
+  try {
+    const stat = await lstat(linkPath);
+    if (!stat.isSymbolicLink()) {
+      throw new Error(`${pluginDirectory}/skills exists and is not a symlink to ${GROK_SKILLS_LINK}`);
+    }
+    const target = await readlink(linkPath);
+    if (target !== GROK_SKILLS_LINK) {
+      throw new Error(
+        `${pluginDirectory}/skills points at ${target}, expected ${GROK_SKILLS_LINK}`,
+      );
+    }
+    return linkPath;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  await mkdir(resolve(root, pluginDirectory), { recursive: true });
+  await symlink(GROK_SKILLS_LINK, linkPath);
+  return linkPath;
+}
+
 export async function generate(root, options = {}) {
   const config = await loadConfig(root);
   const visibility = await assertVisibility(config, options);
   const directories = await listSkillDirectories(root);
   const version = await nextVersion(root, config, options.version);
+  const pluginDirectory = grokPluginDirectory(config);
 
   const outputs = [
     [config.emit.claudePlugin, claudePlugin(config, version, directories)],
@@ -84,10 +116,21 @@ export async function generate(root, options = {}) {
     [config.emit.codexPlugin, codexPlugin(config, version)],
     [config.emit.claudeMarketplace, claudeMarketplace(config, version)],
     [config.emit.copilotMarketplace, copilotMarketplace(config)],
+    [
+      config.emit.grokMarketplace ?? ".grok-plugin/marketplace.json",
+      grokMarketplace(config, version),
+    ],
+    [
+      config.emit.grokPlugin ?? `${pluginDirectory}/.grok-plugin/plugin.json`,
+      grokPlugin(config, version),
+    ],
   ];
+  await ensureGrokSkillsLink(root, pluginDirectory);
 
   for (const [path, value] of outputs) {
-    await writeFile(resolve(root, path), serialize(value), "utf8");
+    const target = resolve(root, path);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, serialize(value), "utf8");
   }
 
   return { version, visibility, written: outputs.map(([path]) => path) };

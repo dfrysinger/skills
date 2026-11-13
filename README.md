@@ -1,6 +1,6 @@
 # skills
 
-Reusable agent skills for [GitHub Copilot CLI](https://docs.github.com/copilot/concepts/agents/copilot-cli), Claude Code, and Codex CLI.
+Reusable agent skills for [GitHub Copilot CLI](https://docs.github.com/copilot/concepts/agents/copilot-cli), Claude Code, Codex CLI, and Grok Build.
 
 These skills help agents plan work, keep long tasks moving, review changes with independent models, verify real behavior, preserve context, and coordinate with other agent sessions.
 
@@ -31,6 +31,16 @@ claude plugin install --scope user dfrysinger-skills@dfrysinger-skills
 codex plugin marketplace add dfrysinger/skills
 codex plugin add dfrysinger-skills@dfrysinger-skills
 ```
+
+### Grok Build
+
+```sh
+grok plugin marketplace add dfrysinger/skills
+grok plugin install dfrysinger-skills --trust
+grok plugin enable dfrysinger-skills
+```
+
+Grok leaves a newly installed plugin off until `enable`. `--trust` lets the session load the plugin's skills. Start a new Grok session after installing.
 
 The plugin is registered as `dfrysinger-skills`. Installing from this GitHub repository is the supported Copilot CLI path; direct local plugin installs are deprecated.
 
@@ -236,7 +246,7 @@ ownership, progress reminders, and a verifiable stopping condition.
 These skills form a small communication stack for long-lived, named agent sessions:
 
 - **[`handoff`](./skills/handoff/SKILL.md):** Write a compact, durable continuation document for another agent or a fresh instance of the same agent.
-- **[`mailbox`](./skills/mailbox/SKILL.md):** Deliver messages and files between named Copilot CLI sessions, including through a shared OneDrive mailbox, with a macOS tmux compatibility path for Claude Code and Codex CLI. Delivery is durable even when the receiving session or computer is offline.
+- **[`mailbox`](./skills/mailbox/SKILL.md):** Deliver messages and files between named Copilot CLI sessions, including through a shared OneDrive mailbox, with a macOS tmux compatibility path for Claude Code, Codex CLI, and Grok Build. Delivery is durable even when the receiving session or computer is offline.
 - **[`self-compact`](./skills/self-compact/SKILL.md):** Compact a Copilot CLI conversation while preserving the durable baton, session-bound state, and one exact next action.
 - **[`rotate-session`](./skills/rotate-session/SKILL.md):** Move a long-lived Copilot CLI session into a fresh conversation that rebuilds context from the retired session's files and history.
 - **[`unattended-run`](./skills/unattended-run/SKILL.md):** Keep a long-running agent moving with an hourly progress nudge and a four-hour charter check, without repeating full reviews on a timer.
@@ -315,6 +325,8 @@ This repository contains curated, shareable skills loaded through host manifests
 plugin.json                 # Copilot CLI skill allowlist
 .claude-plugin/plugin.json  # Claude Code skill allowlist
 .codex-plugin/plugin.json   # Codex plugin manifest
+.grok-plugin/marketplace.json
+plugins/<name>/             # Grok plugin, with skills -> ../../skills
 skills/
   <name>/
     SKILL.md                # Skill prompt and protocol
@@ -332,7 +344,7 @@ To add a public skill:
 3. Run the repository validation.
 4. Commit the skill and manifest changes together.
 
-The Copilot and Claude manifests can omit a skill when the host already provides a native equivalent. The Codex manifest exposes the skills directory as a whole.
+The Copilot and Claude manifests can omit a skill when the host already provides a native equivalent. The Codex manifest exposes the skills directory as a whole. Grok discovers `plugins/<name>/skills/` and also cannot omit a single skill.
 
 Personal-only skills can live under `~/.copilot/skills/<name>/` and be reloaded with `/skills reload`.
 
@@ -363,11 +375,21 @@ codex plugin remove dfrysinger-skills@dfrysinger-skills
 codex plugin add dfrysinger-skills@dfrysinger-skills
 ```
 
+### Grok Build
+
+```sh
+grok plugin marketplace update dfrysinger-skills
+grok plugin update dfrysinger-skills
+grok plugin enable dfrysinger-skills
+```
+
+Start a new Grok session after the update.
+
 ## Forking
 
 If you republish this collection:
 
-1. Change the `name` field in `plugin.json`, `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json`.
+1. Change the `name` field in `plugin.json`, `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, and the Grok plugin manifest.
 2. Review every host-specific path, personal default, companion-project link, and platform requirement.
 3. Keep the attribution in [`skills/NOTICE.md`](./skills/NOTICE.md) for vendored material.
 

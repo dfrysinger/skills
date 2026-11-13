@@ -17,6 +17,8 @@
     "claudeMarketplace": ".claude-plugin/marketplace.json",
     "copilotPlugin": "plugin.json",
     "codexPlugin": ".codex-plugin/plugin.json",
-    "copilotMarketplace": ".agents/plugins/marketplace.json"
+    "copilotMarketplace": ".agents/plugins/marketplace.json",
+    "grokMarketplace": ".grok-plugin/marketplace.json",
+    "grokPlugin": "plugins/dfrysinger-skills/.grok-plugin/plugin.json"
   }
 }

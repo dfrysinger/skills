@@ -349,6 +349,12 @@ plugin.json                       explicit skill allowlist  (Copilot CLI)
 .agents/plugins/marketplace.json  marketplace registration  (Copilot CLI)
 ```
 
+Grok Build was added after this work order. It reads
+`.grok-plugin/marketplace.json` plus `plugins/<name>/.grok-plugin/plugin.json`,
+and discovers skills through the relative symlink `plugins/<name>/skills` →
+`../../skills`. That layout cannot express a per-skill exclusion. Consumers
+pick the Grok manifests up by bumping the packaging pin and regenerating.
+
 Two allowlists exist rather than one because they legitimately differ: the
 public repo lists 24 skills for Claude and 23 for Copilot, excluding
 `rubber-duck` from Copilot which ships it as a built-in agent. Any shared

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readdir, readFile, stat } from "node:fs/promises";
+import { lstat, readlink, readdir, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { loadConfig, resolveRepoRoot } from "./packaging/config.mjs";
@@ -47,13 +47,19 @@ function hasNonEmptyFrontmatterField(frontmatter, field) {
   return value !== "" && value !== "\"\"" && value !== "''";
 }
 
-const [copilotPlugin, claudePlugin, claudeMarketplace, codexPlugin, codexMarketplace] =
+const grokMarketplacePath = config.emit.grokMarketplace ?? ".grok-plugin/marketplace.json";
+const grokPluginDirectory = config.emit.grokPluginDirectory ?? `plugins/${config.name}`;
+const grokPluginPath =
+  config.emit.grokPlugin ?? `${grokPluginDirectory}/.grok-plugin/plugin.json`;
+const [copilotPlugin, claudePlugin, claudeMarketplace, codexPlugin, codexMarketplace, grokPluginManifest, grokMarketplace] =
   await Promise.all([
     readJson(config.emit.copilotPlugin),
     readJson(config.emit.claudePlugin),
     readJson(config.emit.claudeMarketplace),
     readJson(config.emit.codexPlugin),
     readJson(config.emit.copilotMarketplace),
+    readJson(grokPluginPath),
+    readJson(grokMarketplacePath),
   ]);
 
 // Taken from the repo's own config rather than hardcoded, so this validator
@@ -65,6 +71,7 @@ for (const [label, manifest] of [
   ["Copilot plugin", copilotPlugin],
   ["Claude plugin", claudePlugin],
   ["Codex plugin", codexPlugin],
+  ["Grok plugin", grokPluginManifest],
 ]) {
   assert(manifest.name === expectedName, `${label} name must be ${expectedName}`);
   assert(
@@ -129,6 +136,41 @@ assert(
 assert(
   codexMarketplacePlugin.category === "Productivity",
   "Codex marketplace plugin category must be Productivity",
+);
+
+assert(
+  grokMarketplace.name === expectedName,
+  "Grok marketplace name must match the plugin name",
+);
+assert(
+  grokMarketplace.description === claudePlugin.description,
+  "Grok marketplace description must match the plugin description",
+);
+const grokMarketplacePlugin = grokMarketplace.plugins?.find(
+  ({ name }) => name === expectedName,
+);
+assert(grokMarketplacePlugin, "Grok marketplace must expose the plugin");
+assert(
+  grokMarketplacePlugin.version === claudePlugin.version,
+  "Grok marketplace plugin version must match the plugin version",
+);
+assert(
+  grokMarketplacePlugin.description === claudePlugin.description,
+  "Grok marketplace plugin description must match the plugin description",
+);
+assert(
+  grokMarketplacePlugin.source === `./${grokPluginDirectory}`,
+  `Grok marketplace plugin source must be ./${grokPluginDirectory}`,
+);
+const grokSkillsLink = resolve(root, grokPluginDirectory, "skills");
+const grokSkillsStat = await lstat(grokSkillsLink);
+assert(
+  grokSkillsStat.isSymbolicLink(),
+  `${grokPluginDirectory}/skills must be a symlink to the shared skills tree`,
+);
+assert(
+  (await readlink(grokSkillsLink)) === "../../skills",
+  `${grokPluginDirectory}/skills must point at ../../skills`,
 );
 
 const skillDirectories = (await readdir(resolve(root, "skills"), {

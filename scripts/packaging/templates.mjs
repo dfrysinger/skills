@@ -72,6 +72,42 @@ export function claudeMarketplace(config, version) {
 // Copilot's marketplace carries no version or description field; it is
 // deliberately absent rather than omitted by accident, so the version-only
 // diff check never sees this file change at all.
+// Grok's marketplace scanner drops a plugin whose source is the repository
+// root, then finds nothing because these repos have no plugins/ directory.
+// The Grok plugin is a thin directory whose skills/ entry is a relative
+// symlink back to the shared skills tree. Grok discovers that directory, so
+// the manifest cannot express a per-skill exclusion.
+export function grokPlugin(config, version) {
+  if (config.hostExclusions?.grok?.length) {
+    throw new Error(
+      "Grok discovers plugins/<name>/skills/ and cannot express exclusions, " +
+        `but hostExclusions.grok lists: ${config.hostExclusions.grok.join(", ")}`,
+    );
+  }
+  return {
+    name: config.name,
+    version,
+    description: config.description,
+    author: config.author,
+  };
+}
+
+export function grokMarketplace(config, version) {
+  return {
+    name: config.name,
+    description: config.description,
+    owner: config.author,
+    plugins: [
+      {
+        name: config.name,
+        description: config.description,
+        version,
+        source: `./plugins/${config.name}`,
+      },
+    ],
+  };
+}
+
 export function copilotMarketplace(config) {
   return {
     name: config.name,
