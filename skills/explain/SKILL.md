@@ -21,10 +21,10 @@ bad pattern has to be as obvious here as it would be in the diff, and a
 weakness goes in as soon as it is known and stays in every retelling.
 Explaining this way is the default, not a mode the reader requests.
 
-**Simple words, full detail.** These pull in the same direction, not opposite
-ones. The detail belongs in what you describe — the pieces, the order, the
-choice you made — not in the vocabulary you describe it with. Write so that
-someone with no involvement in the project could follow the whole thing.
+**Plain and practical.** Write like a teammate handing over useful work. Say
+what it does, what the reader can do next when an action is needed, and what
+they need to know. Put detail in the actions, decisions and consequences, not
+in formal vocabulary. This applies to replies and written artifacts.
 
 The reader may not know how the system works at all. If they learned it before,
 assume they do not remember it now. Do not depend on a previous explanation,
@@ -34,8 +34,10 @@ reader to reason about a change. This includes decisions they made themselves.
 
 ## The shape
 
-**Open with the result or the "so what" in a sentence or two, then the shape
-below it.** Inside each section, framing comes before the point.
+**Open with the result or the "so what" in a sentence or two.** Use the shape
+below to decide what the reader needs, not as a mandatory set of headings.
+Inside each section, framing comes before the point. A document keeps any
+sections and fields required by its own contract.
 
 **Scale it to the work.** A one-line fix, a version bump, or a contained
 change earns a few sentences covering whichever points apply. Spend the full
@@ -87,10 +89,24 @@ pattern others will build on.
 
 ## Register
 
-Use **ASD-STE100-inspired plain English**: common words, short active sentences,
-and consistent terms. This is a writing guide, not formal compliance with the
-standard or a numerical "80% compliant" score. Keep natural product prose rather
-than forcing a maintenance-manual style.
+Use ordinary words, complete sentences and concrete actions. Keep the tone
+natural, not a maintenance manual or a string of clipped instructions.
+
+- **Start with the reader's job.** A handoff says what to open and try; a
+  design says who does what and what happens if it fails; an update says what
+  changed and whether the reader needs to act. Write headings and table cells
+  around those jobs, not the author's internal categories.
+- **Turn abstract summaries into actions.** "Coordinate validation and
+  permission rules" becomes "Agree on which changes are allowed, who can
+  approve them, and how to check them." "Usage-embedded policy UI" becomes
+  "Usage beside policies." These are wording examples, not replacement facts
+  or required labels for every project.
+- **Keep the exact requirements.** Plain language must preserve identifiers,
+  limits, units, conditions, permissions, failure behavior and approval status.
+  "Compare the proposal's version and before-value with the current budget
+  before writing; a mismatch leaves that target unchanged" is plain and
+  testable. Name both sides of a comparison rather than just saying "check."
+  "Save safely" drops the requirement.
 
 - **Prefer the ordinary phrase to the term of art.** Most jargon has a plain
   equivalent that costs a few more words and no comprehension: say "the part
@@ -151,7 +167,9 @@ none is needed. Any invented details are explicitly labeled illustrative. For
 a contained change, it says what changed and what it touches, in words a
 stranger with no memory of the system could follow.
 
-Check the whole artifact, including tables, headings, and appendices, for
-unnecessary jargon and sentences that imply agreement not established by the
-evidence. A plain-language edit is complete only when it preserves the facts,
-important limits, and technical names while making the meaning easier to follow.
+Read the whole artifact as someone outside the project, including headings,
+tables and appendices. Can they tell who acts, what happens, and what to do
+next when action is needed? Replace labels and abstract summaries that do not
+answer those questions. Check the rewrite against its sources: retain every
+material fact, condition and technical name, and keep proposals distinct from
+agreement. Natural wording with lost requirements is not a passing rewrite.
