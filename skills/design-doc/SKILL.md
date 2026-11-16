@@ -16,11 +16,12 @@ This skill owns the scope and architecture call. It ends when the document is
 written and reviewed. It does not build anything; `development-loop` owns
 forward motion.
 
-Before drafting, invoke `explain` for its shared plain-language and
-proposal-status rules. Apply them to the whole document, including tables and
-acceptance criteria. Keep exact technical requirements, identifiers, and
-machine-readable status fields; explain them in ordinary prose. Separate
-agreed scope from suggested extensions and decisions still needed.
+Before drafting, invoke `explain` for its shared plain-and-practical writing
+and proposal-status rules. Apply them to the whole document, including tables
+and acceptance criteria. The required sections below are the work order's
+structure, not a reason to make the prose formal. Keep exact technical
+requirements, identifiers and machine-readable fields; explain what the
+engineer must build and how someone can check it.
 
 ## 0. Align with the user
 
