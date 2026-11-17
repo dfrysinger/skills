@@ -36,6 +36,41 @@ from skill_eval import (
 
 
 class CopilotInvocationTests(unittest.TestCase):
+    def test_personal_instruction_mode_changes_only_instruction_setup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for enabled in (False, True):
+                with (
+                    self.subTest(enabled=enabled),
+                    mock.patch.dict(os.environ, {
+                        "COPILOT_GITHUB_TOKEN": "synthetic-token",
+                        "COPILOT_CUSTOM_INSTRUCTIONS_DIRS": "/synthetic/ambient",
+                    }),
+                    mock.patch("skill_eval.subprocess.run", return_value=subprocess.CompletedProcess(
+                        [], 0, stdout="fixture\n")) as execute,
+                    mock.patch("skill_eval.measurement.collect"),
+                ):
+                    run_copilot(
+                        copilot=root / "copilot", plugin_dir=root / "plugin", cwd=root,
+                        prompt="synthetic prompt", model="fixture-model", effort="high",
+                        log=root / "raw.jsonl", session_id=str(uuid.uuid4()), resume=False,
+                        home_mode="isolated", run_home=root / "candidate-home",
+                        timeout_seconds=10, allow_skill=True, personal_instructions=enabled,
+                    )
+                    command = execute.call_args.args[0]
+                    env = execute.call_args.kwargs["env"]
+                    self.assertEqual("--no-custom-instructions" in command, not enabled)
+                    self.assertIn("--available-tools=skill,view", command)
+                    self.assertIn("--allow-tool=skill,view", command)
+                    self.assertIn("--disable-builtin-mcps", command)
+                    if enabled:
+                        self.assertNotIn("COPILOT_CUSTOM_INSTRUCTIONS_DIRS", env)
+                        self.assertEqual(Path(env["HOME"]).parent, root)
+                        self.assertNotEqual(env["HOME"], env["COPILOT_HOME"])
+                        self.assertEqual(list(Path(env["HOME"]).iterdir()), [])
+                    else:
+                        self.assertEqual(env["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"], "/synthetic/ambient")
+
     def test_fresh_and_resumed_prompts_do_not_wait_for_parent_stdin(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -51,6 +86,8 @@ class CopilotInvocationTests(unittest.TestCase):
 
             def run_with_open_parent_input(command, **kwargs):
                 self.assertNotIn("--no-remote", command)
+                self.assertIn("--no-custom-instructions", command)
+                self.assertIn("--available-tools=view", command)
                 kwargs.setdefault("stdin", read_fd)
                 return original_run(command, **kwargs)
 
@@ -461,6 +498,243 @@ class SkillEvalTests(unittest.TestCase):
         ]
         history.write_text("".join(json.dumps(record) + "\n" for record in records))
         return case_dir, definition, history
+
+    def test_personal_instruction_carrier_validation_in_mutable_and_frozen_packets(self):
+        from session_restore import validate_restoration
+        case_dir, definition, history = self.restoration_case()
+        restoration = definition["phases"][0]["session_restore"]
+        carrier = history.with_name("personal.md")
+        carrier.write_bytes(b"Synthetic instruction.\r\n")
+        restoration["personal_instructions_file"] = carrier.name
+        (case_dir / "case.json").write_text(json.dumps(definition))
+        frozen = freeze_case(self.root, "example-case", replace=False)
+        verify_case(self.root, "example-case")
+        for root, is_frozen, source in (
+            (case_dir, False, carrier),
+            (frozen, True, frozen / "candidate-pass-1/personal.md"),
+        ):
+            for value in ("missing.md", str(carrier.resolve()), "../personal.md",
+                          "./personal.md", "", None, 1):
+                with self.subTest(frozen=is_frozen, value=value):
+                    restoration["personal_instructions_file"] = value
+                    with self.assertRaises(ValueError):
+                        validate_restoration(definition, root, frozen=is_frozen)
+            restoration["personal_instructions_file"] = "personal.md"
+            source.unlink()
+            source.symlink_to(history)
+            with self.subTest(frozen=is_frozen, symlink=True), self.assertRaises(ValueError):
+                validate_restoration(definition, root, frozen=is_frozen)
+            source.unlink()
+            source.write_bytes(b"Synthetic instruction.\r\n")
+        definition["case_type"] = "repository-task"
+        with self.assertRaisesRegex(ValueError, "read-only"):
+            validate_restoration(definition, case_dir)
+        definition.pop("case_type")
+        restoration["unknown_setup"] = "not supported"
+        with self.assertRaises(ValueError):
+            validate_restoration(definition, case_dir)
+
+    def personal_instruction_run_fixture(self):
+        case_dir, definition, history = self.restoration_case()
+        definition["phases"][0]["session_restore"]["personal_instructions_file"] = "personal.md"
+        definition["phases"][1]["evidence_dir"] = definition["phases"][0]["evidence_dir"]
+        (case_dir / "case.json").write_text(json.dumps(definition))
+        body = b"Synthetic personal instruction.\r\nKeep these exact bytes.\n"
+        history.with_name("personal.md").write_bytes(body)
+        (history.parent / ".github").mkdir()
+        (history.parent / ".github/copilot-instructions.md").write_bytes(body)
+        freeze_case(self.root, "example-case", replace=False)
+        plugin = Path(self.temp.name) / "fixture-plugin"
+        skill = plugin / "skills/example-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: example-skill\ndescription: Synthetic skill.\n---\nInspect the source.\n")
+        copilot = Path(self.temp.name) / "fixture-cli"
+        imported_id = str(uuid.uuid4())
+        copilot.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "args = sys.argv[1:]\n"
+            "if '-C' in args: os.chdir(args[args.index('-C') + 1])\n"
+            "if '--version' in args: print('fixture-cli'); sys.exit()\n"
+            "if 'instruction' in args:\n"
+            " print(json.dumps([{'id':'home-copilot','location':'user','type':'home',"
+            "'sourcePath':str(Path(os.environ['COPILOT_HOME'])/'copilot-instructions.md'),"
+            "'defaultDisabled':False}]))\n"
+            " print('synthetic discovery diagnostic', file=sys.stderr)\n"
+            "elif 'import' in args:\n"
+            f" print(json.dumps({{'ok':True,'code':'session_imported','sessionId':{imported_id!r}}}))\n"
+            "elif '--available-tools=view' in args:\n"
+            " assert '--no-custom-instructions' in args\n"
+            " logs = list(Path.cwd().glob('*-raw.jsonl'))\n"
+            " assert len(logs) == 2\n"
+            " for log in logs:\n"
+            "  call, result = [json.loads(line) for line in log.read_text().splitlines()][:2]\n"
+            "  assert call['data']['toolCallId'] == result['data']['toolCallId']\n"
+            "  assert result['data']['success'] is True\n"
+            "  assert result['data']['result']['content'] == 'product evidence\\n'\n"
+            "  receipt = json.loads(log.with_name(log.name.replace('-raw.jsonl','-receipt.json')).read_text())\n"
+            "  assert receipt['raw_log_sha256'] == __import__('hashlib').sha256(log.read_bytes()).hexdigest()\n"
+            " assert Path('judge-reference/gold.md').is_file()\n"
+            " judgment = {'verdict':'PASS','confidence':'HIGH','matched':['read source'],"
+            "'missed':[],'overcorrections':[],'generalized_skill_defect':None}\n"
+            " print(json.dumps({'type':'assistant.message','data':"
+            "{'content':json.dumps(judgment),'model':args[args.index('--model')+1]}}))\n"
+            " print(json.dumps({'type':'result','exitCode':0}))\n"
+            "else:\n"
+            " print(json.dumps({'type':'tool.execution_start','data':{'toolName':'view',"
+            "'toolCallId':'source-read','arguments':{'path':'product.md'}}}))\n"
+            " print(json.dumps({'type':'tool.execution_complete','data':{'toolCallId':'source-read',"
+            "'success':True,'result':{'content':Path('product.md').read_text()}}}))\n"
+            " print(json.dumps({'type':'assistant.message','data':"
+            "{'content':'candidate-result','model':'fixture-model'}}))\n"
+            " print(json.dumps({'type':'result','exitCode':0}))\n"
+        )
+        copilot.chmod(0o755)
+        return plugin, copilot, body
+
+    def test_personal_instruction_run_keeps_isolation_and_raw_read_evidence_across_phases(self):
+        plugin, copilot, body = self.personal_instruction_run_fixture()
+        original_run = subprocess.run
+        invocations = []
+
+        def execute(command, **kwargs):
+            if "--available-tools=view" in command:
+                self.assertIn("--no-custom-instructions", command)
+                self.assertFalse((Path(kwargs["env"]["COPILOT_HOME"]) / "copilot-instructions.md").exists())
+                return original_run(command, **kwargs)
+            if "--version" not in command:
+                env = kwargs["env"]
+                self.assertNotIn("COPILOT_CUSTOM_INSTRUCTIONS_DIRS", env)
+                self.assertEqual((Path(env["COPILOT_HOME"]) / "copilot-instructions.md").read_bytes(),
+                                 body)
+                self.assertEqual(list(Path(env["HOME"]).iterdir()), [])
+                cwd = Path(kwargs.get("cwd") or command[command.index("-C") + 1])
+                self.assertFalse((cwd / "personal.md").exists())
+                self.assertFalse((cwd / "history.jsonl").exists())
+                self.assertFalse((cwd / "gold.md").exists())
+                self.assertTrue((cwd / ".github/copilot-instructions.md").is_file())
+                invocations.append((command, env["HOME"], env["COPILOT_HOME"], cwd))
+            return original_run(command, **kwargs)
+
+        with (
+            mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "synthetic-token",
+                                        "COPILOT_CUSTOM_INSTRUCTIONS_DIRS": "/synthetic/ambient"}),
+            mock.patch("skill_eval.subprocess.run", side_effect=execute),
+            mock.patch("skill_eval.measurement.collect"),
+        ):
+            run = run_case(self.root, "example-case", plugin, copilot,
+                           "fixture-model", "high", "isolated", 60)
+        self.assertEqual(len({(home, copilot_home) for _, home, copilot_home, _ in invocations}), 1)
+        self.assertEqual(
+            ["discovery" if "instruction" in command else "import" if "import" in command else "candidate"
+             for command, *_ in invocations],
+            ["discovery", "import", "discovery", "candidate", "discovery", "candidate"],
+        )
+        for command, _, _, cwd in invocations:
+            self.assertIn("--plugin-dir", command)
+            if "instruction" in command or "-p" in command:
+                self.assertEqual(Path(command[command.index("-C") + 1]), cwd)
+                self.assertIn("--plugin-dir", command)
+                self.assertNotIn("--no-custom-instructions", command)
+        receipts = list(run.glob("*-instruction-*-receipt.json"))
+        self.assertEqual(len(receipts), 3)
+        for path in receipts:
+            receipt = json.loads(path.read_text())
+            self.assertEqual(receipt["status"], "PASS")
+            self.assertEqual(receipt["source_sha256"], hashlib.sha256(body).hexdigest())
+            self.assertEqual(receipt["installed_sha256"], receipt["source_sha256"])
+            self.assertEqual(digest(Path(receipt["stdout_path"])), receipt["stdout_sha256"])
+            self.assertIn("synthetic discovery diagnostic", Path(receipt["stderr_path"]).read_text())
+        for phase in ("candidate-pass-1", "candidate-pass-2"):
+            receipt = json.loads((run / f"{phase}-receipt.json").read_text())
+            self.assertEqual(receipt["instruction_mode"], "personal-only")
+        for path in run.glob("judgment-*.json"):
+            self.assertEqual(json.loads(path.read_text())["verdict"], "PASS")
+
+    def test_personal_instruction_discovery_failure_stops_before_import_or_candidate(self):
+        plugin, copilot, _ = self.personal_instruction_run_fixture()
+        original_run = subprocess.run
+        personal = {"id": "home-copilot", "location": "user", "type": "home",
+                    "sourcePath": "", "defaultDisabled": False}
+        project = {"id": "repo-copilot", "location": "repository", "type": "repo",
+                   "sourcePath": "/synthetic/project/.github/copilot-instructions.md",
+                   "defaultDisabled": False}
+        cases = [
+            ("extra", [personal, project], 0), ("missing", [], 0),
+            ("disabled", [{**personal, "defaultDisabled": True}], 0),
+            ("malformed", {"sources": [personal]}, 0), ("failed", [personal], 1),
+            ("bad-json", "not-json", 0), ("bad-encoding", b"\xff", 0),
+            ("unknown-enabled-state", [{**personal, "defaultDisabled": None}], 0),
+        ]
+        for label, sources, exit_code in cases:
+            def execute(command, **kwargs):
+                if "--version" in command:
+                    return original_run(command, **kwargs)
+                self.assertIn("instruction", command, "import/model must not execute after failed discovery")
+                if isinstance(sources, list):
+                    for source in sources:
+                        if source.get("id") == "home-copilot":
+                            source["sourcePath"] = str(Path(kwargs["env"]["COPILOT_HOME"]) / "copilot-instructions.md")
+                stdout = sources if isinstance(sources, (str, bytes)) else json.dumps(sources)
+                return subprocess.CompletedProcess(command, exit_code, stdout=stdout, stderr="diagnostic\n")
+
+            with (
+                self.subTest(label=label),
+                mock.patch("skill_eval.subprocess.run", side_effect=execute),
+                mock.patch("skill_eval.run_copilot") as candidate,
+                mock.patch("session_restore.import_session") as imported,
+                mock.patch("skill_eval.run_judges") as judges,
+                self.assertRaisesRegex(ValueError, "instruction discovery"),
+            ):
+                run_case(self.root, "example-case", plugin, copilot,
+                         "fixture-model", "high", "isolated", 60)
+            candidate.assert_not_called()
+            imported.assert_not_called()
+            judges.assert_not_called()
+        failures = list((self.root / "runs").rglob("*-instruction-import-receipt.json"))
+        self.assertEqual(len(failures), len(cases))
+        for path in failures:
+            receipt = json.loads(path.read_text())
+            self.assertEqual(receipt["status"], "FAIL")
+            self.assertTrue(Path(receipt["stdout_path"]).exists())
+            self.assertEqual(Path(receipt["stderr_path"]).read_text(), "diagnostic\n")
+            self.assertTrue(path.with_name("candidate-pass-1-failure-receipt.json").is_file())
+
+    def test_personal_instruction_later_discovery_failure_preserves_first_phase(self):
+        plugin, copilot, _ = self.personal_instruction_run_fixture()
+        original_run = subprocess.run
+        discovery_count = 0
+        candidate_count = 0
+
+        def execute(command, **kwargs):
+            nonlocal discovery_count, candidate_count
+            if "instruction" in command:
+                discovery_count += 1
+                if discovery_count == 3:
+                    return subprocess.CompletedProcess(command, 0, stdout=b"[]", stderr=b"later diagnostic")
+            if "-p" in command:
+                candidate_count += 1
+            return original_run(command, **kwargs)
+
+        with (
+            mock.patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "synthetic-token"}),
+            mock.patch("skill_eval.subprocess.run", side_effect=execute),
+            mock.patch("skill_eval.measurement.collect"),
+            mock.patch("skill_eval.run_judges") as judges,
+            self.assertRaisesRegex(ValueError, "instruction discovery"),
+        ):
+            run_case(self.root, "example-case", plugin, copilot,
+                     "fixture-model", "high", "isolated", 60)
+        self.assertEqual(candidate_count, 1)
+        judges.assert_not_called()
+        failure, = (self.root / "runs").rglob("candidate-pass-2-instruction-candidate-receipt.json")
+        run = failure.parent
+        self.assertEqual(json.loads(failure.read_text())["status"], "FAIL")
+        self.assertTrue((run / "candidate-pass-1-receipt.json").is_file())
+        self.assertTrue((run / "candidate-pass-1-raw.jsonl").is_file())
+        self.assertFalse((run / "candidate-pass-2-raw.jsonl").exists())
 
     def test_restoration_history_is_frozen_but_not_staged(self):
         from skill_eval import copy_packet
