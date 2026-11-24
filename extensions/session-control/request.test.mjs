@@ -70,6 +70,61 @@ async function diagnosticEntries(root) {
   return entries;
 }
 
+test("missing heartbeat directory refuses publication and names independent rescue", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-control-absent-"));
+  try {
+    const prompt = join(root, "objective.txt");
+    await writeFile(prompt, "do not submit this");
+    const run = await runRequest(root, [
+      "autopilot", "--target-session", "session", "--prompt-file", prompt, "--timeout", "0",
+    ]);
+    const result = await run.exit;
+    assert.equal(result.code, 64);
+    assert.match(result.stderr, /built-in.*reload/i);
+    assert.match(result.stderr, /receipts.*retry/i);
+    assert.deepEqual(await readdir(join(root, "pending")).catch(() => []), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("fresh failed SDK readiness refuses publication and names independent rescue", async () => {
+  const root = await mkdtemp(join(tmpdir(), "session-control-readiness-"));
+  try {
+    await mkdir(join(root, "instances"), { recursive: true });
+    await writeFile(join(root, "instances", "session-gen.json"), JSON.stringify({
+      sessionId: "session",
+      generation: "gen",
+      updatedAt: new Date().toISOString(),
+      sdk: { status: "failed" },
+    }));
+    const prompt = join(root, "objective.txt");
+    await writeFile(prompt, "do not submit this");
+    const run = await runRequest(root, [
+      "autopilot", "--target-session", "session", "--prompt-file", prompt, "--timeout", "0",
+    ]);
+    const result = await run.exit;
+    assert.equal(result.code, 64);
+    assert.match(result.stderr, /SDK.*failed/i);
+    assert.match(result.stderr, /built-in.*reload/i);
+    assert.match(result.stderr, /receipts.*retry/i);
+    assert.deepEqual(await readdir(join(root, "pending")).catch(() => []), []);
+    await writeFile(join(root, "instances", "session-gen.json"), JSON.stringify({
+      sessionId: "session",
+      generation: "gen",
+      updatedAt: new Date().toISOString(),
+      sdk: { status: "ok" },
+    }));
+    const recovered = await runRequest(root, [
+      "autopilot", "--target-session", "session", "--prompt-file", prompt, "--timeout", "0",
+    ]);
+    assert.equal((await recovered.exit).code, 0);
+    assert.equal((await waitForRequest(root)).request.target.generation, "gen");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("writes an immediate send request and accepts its receipt", async () => {
   const root = await mkdtemp(join(tmpdir(), "session-control-request-"));
   try {
@@ -122,6 +177,9 @@ test("writes an immediate send request and accepts its receipt", async () => {
     const diagnostics = await diagnosticEntries(root);
     assert.ok(diagnostics.some((entry) => entry.event === "request.published"));
     assert.ok(diagnostics.some((entry) => entry.event === "receipt.completed"));
+    assert.ok(diagnostics.some(
+      (entry) => entry.event === "target.readiness" && entry.sdkReadiness === "unknown",
+    ));
     assert.doesNotMatch(JSON.stringify(diagnostics), /wake the recipient/);
   } finally {
     await rm(root, { recursive: true, force: true });

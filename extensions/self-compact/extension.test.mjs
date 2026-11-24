@@ -146,6 +146,7 @@ async function runExtension(
       `${JSON.stringify({
         sessionId: "session-123",
         generation: "gen-a",
+        ...(readiness === "failed" ? { sdk: { status: "failed" } } : {}),
         updatedAt: new Date(
           Date.now() - (readiness === "stale" ? 60_000 : 0),
         ).toISOString(),
@@ -390,7 +391,7 @@ test("does not treat the embedded extension host as the Node child runtime", asy
   assert.doesNotMatch(source, /execFileAsync\(\s*process\.execPath,/);
 });
 
-for (const readiness of ["zero", "stale", "multiple"]) {
+for (const readiness of ["zero", "stale", "multiple", "failed"]) {
   test(`${readiness} readiness fails before direct compact arming`, async () => {
     const outcome = await runExtension(goodBrief, { readiness });
     assert.equal(outcome.code, 0, outcome.stderr);
@@ -398,9 +399,14 @@ for (const readiness of ["zero", "stale", "multiple"]) {
     assert.equal(registered.result.resultType, "failure");
     assert.match(
       registered.result.textResultForLlm,
-      readiness === "multiple" ? /multiple fresh/ : /no fresh/,
+      readiness === "failed" ? /SDK.*failed/i
+        : readiness === "multiple" ? /multiple fresh/ : /no fresh/,
     );
     assert.equal(outcome.invocation, null);
+    if (readiness === "failed") {
+      assert.match(registered.result.textResultForLlm, /built-in.*reload/i);
+      assert.match(registered.result.textResultForLlm, /receipts.*retry/i);
+    }
   });
 
   test(`${readiness} readiness fails before autopilot preparation`, async () => {

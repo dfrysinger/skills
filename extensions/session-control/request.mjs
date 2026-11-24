@@ -112,9 +112,10 @@ async function resolveTarget({ targetName, tmuxSession, sessionId }) {
     names = await readdir(instancesDir);
   } catch (error) {
     if (error?.code === "ENOENT") {
-      usage(`no live session-control instance for ${targetName ?? tmuxSession ?? sessionId}`);
+      names = [];
+    } else {
+      throw error;
     }
-    throw error;
   }
   const freshInstances = [];
   for (const name of names) {
@@ -172,8 +173,19 @@ async function resolveTarget({ targetName, tmuxSession, sessionId }) {
     });
     usage(
       matches.length === 0
-        ? `no fresh session-control instance for ${label}`
-        : `multiple fresh session-control instances for ${label}`,
+        ? `no fresh session-control instance for ${label}. Use the independent built-in extension reload; inspect existing receipts before retrying any submitted request.`
+        : `multiple fresh session-control instances for ${label}. Use the independent built-in extension reload; inspect existing receipts before retrying any submitted request.`,
+    );
+  }
+  const sdkReadiness = matches[0].sdk?.status ?? "unknown";
+  diagnostics.log("target.readiness", {
+    sessionId: matches[0].sessionId,
+    generation: matches[0].generation,
+    sdkReadiness,
+  });
+  if (sdkReadiness === "failed") {
+    usage(
+      `SDK check failed for ${matches[0].sessionId} generation ${matches[0].generation}. Use the independent built-in extension reload; inspect existing receipts before retrying any submitted request.`,
     );
   }
   return {

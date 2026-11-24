@@ -61,6 +61,23 @@ const autopilotConfirmationTimeoutMs =
   configuredAutopilotConfirmationTimeoutMs > 0
     ? configuredAutopilotConfirmationTimeoutMs
     : 300_000;
+const healthIntervalMs = positiveMilliseconds(
+  process.env.COPILOT_SESSION_CONTROL_HEALTH_INTERVAL_MS,
+  5_000,
+);
+const healthTimeoutMs = positiveMilliseconds(
+  process.env.COPILOT_SESSION_CONTROL_HEALTH_TIMEOUT_MS,
+  10_000,
+);
+const recoverySupported =
+  process.env.COPILOT_EXTENSION_RECOVERY_PARENT_PID === String(process.ppid);
+const sdkReadiness = { status: "unknown", consecutiveFailures: 0 };
+let checkingSdk = false;
+
+function positiveMilliseconds(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 const startupDiagnostics = createDiagnosticLogger(
   root,
@@ -94,6 +111,7 @@ const rotationBarrier =
   join(activeSessionStateDir, "rotation.barrier");
 const deliveryLock = join(activeSessionStateDir, "delivery.lock");
 let heartbeatRefreshing = false;
+let heartbeatWrite = Promise.resolve();
 let identityRefreshing = false;
 let initialTmuxSessionError;
 let initialSessionNameError;
@@ -302,7 +320,7 @@ async function refreshIdentity() {
 }
 
 async function writeHeartbeatSnapshot() {
-  await writeJson(join(instancesDir, `${session.sessionId}-${generation}.json`), {
+  const snapshot = {
     sessionId: session.sessionId,
     tmuxSession,
     sessionName,
@@ -310,8 +328,13 @@ async function writeHeartbeatSnapshot() {
     hostPid: process.ppid,
     pid: process.pid,
     pluginVersion,
+    sdk: { ...sdkReadiness },
     updatedAt: new Date().toISOString(),
-  });
+  };
+  heartbeatWrite = heartbeatWrite.catch(() => {}).then(() =>
+    writeJson(join(instancesDir, `${session.sessionId}-${generation}.json`), snapshot),
+  );
+  await heartbeatWrite;
 }
 
 async function writeHeartbeat() {
@@ -330,6 +353,68 @@ async function writeHeartbeat() {
       });
   } finally {
     heartbeatRefreshing = false;
+  }
+}
+
+async function checkSdkReadiness() {
+  if (checkingSdk) return;
+  checkingSdk = true;
+  let timedOut = false;
+  const publishFailure = async (reason) => {
+    const now = new Date().toISOString();
+    Object.assign(sdkReadiness, {
+      status: "failed",
+      checkedAt: now,
+      lastFailureAt: now,
+      consecutiveFailures: sdkReadiness.consecutiveFailures + 1,
+    });
+    diagnostics.log("sdk.check_failed", { reason, recoverySupported });
+    try {
+      await writeHeartbeatSnapshot();
+    } finally {
+      if (
+        recoverySupported &&
+        sdkReadiness.status === "failed" &&
+        sdkReadiness.consecutiveFailures >= 3
+      ) {
+        diagnostics.log("sdk.recovery_exit", { reason });
+        process.exit(1);
+      }
+    }
+  };
+  // Keep one outstanding read even when the SDK never settles it.
+  const deadline = setInterval(() => {
+    timedOut = true;
+    void publishFailure("timeout").catch(() => {
+      diagnostics.log("sdk.readiness_publish_failed");
+    });
+  }, healthTimeoutMs);
+  try {
+    let readFailed = false;
+    try {
+      await session.rpc.workspaces.readAutopilotObjective();
+    } catch {
+      readFailed = true;
+    } finally {
+      clearInterval(deadline);
+    }
+    if (readFailed) {
+      if (!timedOut) await publishFailure("read-failed");
+      return;
+    }
+    const recovered = sdkReadiness.status !== "ok";
+    const now = new Date().toISOString();
+    Object.assign(sdkReadiness, {
+      status: "ok",
+      checkedAt: now,
+      lastSuccessAt: now,
+      consecutiveFailures: 0,
+    });
+    if (recovered) diagnostics.log("sdk.check_succeeded");
+    await writeHeartbeatSnapshot();
+  } finally {
+    clearInterval(deadline);
+    checkingSdk = false;
   }
 }
 
@@ -1566,6 +1651,14 @@ async function pump() {
 }
 
 await writeHeartbeat();
+void checkSdkReadiness().catch(() => {
+  diagnostics.log("sdk.readiness_publish_failed");
+});
+setInterval(() => {
+  void checkSdkReadiness().catch(() => {
+    diagnostics.log("sdk.readiness_publish_failed");
+  });
+}, healthIntervalMs);
 setInterval(() => void writeHeartbeat(), 5_000);
 setInterval(() => void recoverStaleClaims(), 5_000);
 setInterval(() => void pump(), 500);

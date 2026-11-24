@@ -37,6 +37,7 @@ async function waitFor(read, label, attempts = 300) {
       const value = await read();
       if (value !== undefined) return value;
     } catch (error) {
+      if (error?.terminal) throw error;
       lastError = error;
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -69,8 +70,8 @@ function fingerprint(request) {
     .digest("hex");
 }
 
-async function createHarness(initialState = {}) {
-  const root = await mkdtemp(join(tmpdir(), "session-control-extension-"));
+async function createHarness(initialState = {}, { reuseRoot } = {}) {
+  const root = reuseRoot ?? await mkdtemp(join(tmpdir(), "session-control-extension-"));
   const inbox = join(root, "inbox");
   const statePath = join(root, "state.json");
   const callsPath = join(root, "calls.jsonl");
@@ -95,7 +96,7 @@ async function createHarness(initialState = {}) {
     foregroundSessionId: "test-session",
     ...initialState,
   });
-  await writeFile(callsPath, "");
+  if (!reuseRoot) await writeFile(callsPath, "");
   await writeFile(
     join(sdkDir, "package.json"),
     `${JSON.stringify({
@@ -151,6 +152,10 @@ export async function joinSession() {
     async send(options) {
       record("send", options);
       const current = state();
+      if (current.holdSendAfterRecord) {
+        writeFileSync(process.env.MOCK_CALLS + ".held", "send effect recorded");
+        await new Promise(() => {});
+      }
       if (current.expireEventLogCursorOnce) {
         eventLogCursorExpired = false;
       }
@@ -418,6 +423,10 @@ export async function joinSession() {
       workspaces: {
         async readAutopilotObjective() {
           record("autopilot-objective.read", {});
+          while (state().healthReadBlocked) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          if (state().healthReadFails) throw new Error("SDK read unavailable");
           return {content: state().autopilotObjective ?? null};
         },
       },
@@ -468,7 +477,30 @@ export async function joinSession() {
 `,
   );
   const legacyRotationBarrier = join(root, "legacy-rotation.barrier");
-  const child = spawn(process.execPath, [extensionPath], {
+  const stageBarrier = join(root, "stage-barrier.mjs");
+  if (initialState.stopAtStage) {
+    await writeFile(stageBarrier, `
+import fs from "node:fs/promises";
+import {syncBuiltinESMExports} from "node:module";
+const rename = fs.rename;
+fs.rename = async (from, to) => {
+  await rename(from, to);
+  if (!to.endsWith(".json.stage")) return;
+  const stage = JSON.parse(await fs.readFile(to, "utf8"));
+  if (stage.stage !== process.env.MOCK_STOP_AT_STAGE) return;
+  await fs.writeFile(to + ".held", stage.stage);
+  await new Promise(() => {});
+};
+syncBuiltinESMExports();
+`);
+  }
+  const existingInstances = new Set(
+    await readdir(join(inbox, "instances")).catch(() => []),
+  );
+  const child = spawn(process.execPath, [
+    ...(initialState.stopAtStage ? ["--import", stageBarrier] : []),
+    extensionPath,
+  ], {
     env: Object.fromEntries(
       Object.entries({
       ...process.env,
@@ -481,12 +513,17 @@ export async function joinSession() {
       MOCK_STATE: statePath,
       MOCK_CALLS: callsPath,
       MOCK_DEDUPE_DIR: join(inbox, "dedupe"),
+      MOCK_STOP_AT_STAGE: initialState.stopAtStage,
       MAILBOX_SELF_ADDRESS: initialState.mailboxSelfAddress,
       CLAUDE_CODE_MESSAGING_SOCKET: undefined,
       CODEX_AGENT_STACK_REMOTE_TOKEN: undefined,
       CODEX_APP_SERVER_ENDPOINT: undefined,
       CODEX_LAUNCHER_PID: undefined,
       COPILOT_SESSION_STATE_ROOT: join(root, "session-state"),
+      COPILOT_SESSION_CONTROL_HEALTH_INTERVAL_MS: initialState.healthIntervalMs,
+      COPILOT_SESSION_CONTROL_HEALTH_TIMEOUT_MS: initialState.healthTimeoutMs,
+      COPILOT_EXTENSION_RECOVERY_PARENT_PID: initialState.recoveryParentPid === "current"
+        ? String(process.pid) : initialState.recoveryParentPid,
       COPILOT_SESSION_CONTROL_CONFIRM_TIMEOUT_MS:
         initialState.useDeprecatedConfiguration ? undefined : "500",
       COPILOT_SESSION_INBOX_CONFIRM_TIMEOUT_MS:
@@ -515,7 +552,7 @@ export async function joinSession() {
     : await waitFor(async () => {
         const instances = join(inbox, "instances");
         const names = await readdir(instances);
-        const name = names.find((entry) => entry.endsWith(".json"));
+        const name = names.find((entry) => entry.endsWith(".json") && !existingInstances.has(entry));
         if (!name) return undefined;
         heartbeatPath = join(instances, name);
         return readJson(heartbeatPath);
@@ -548,12 +585,35 @@ export async function joinSession() {
         try {
           return await readJson(join(inbox, directory, `${id}.json`));
         } catch (error) {
-          if (error?.code === "ENOENT") return undefined;
+          if (error?.code === "ENOENT") {
+            if (directory === "completed") {
+              const failed = await readJson(join(inbox, "failed", `${id}.json`))
+                .catch((failure) => {
+                  if (failure?.code !== "ENOENT") throw failure;
+                  return undefined;
+                });
+              if (failed && !failed.sideEffectCompleted) {
+                throw Object.assign(new Error(
+                  `request failed instead of completing: ${JSON.stringify(failed)}`,
+                ), { terminal: true });
+              }
+            }
+            return undefined;
+          }
           throw error;
         }
       },
       `${directory} receipt for ${id}`,
-    );
+    ).catch(async (error) => {
+      error.requestState = {
+        processingStage: await readJson(join(inbox, "processing", `${id}.json.stage`))
+          .catch(() => undefined),
+        failedReceipt: await readJson(join(inbox, "failed", `${id}.json`))
+          .catch(() => undefined),
+        diagnostics: (await diagnosticEntries().catch(() => [])).slice(-12),
+      };
+      throw error;
+    });
   }
 
   async function calls() {
@@ -595,6 +655,7 @@ export async function joinSession() {
     exit,
     heartbeat,
     currentHeartbeat: () => readJson(heartbeatPath),
+    heartbeatPath,
     request,
     receipt,
     calls,
@@ -602,6 +663,161 @@ export async function joinSession() {
     setState,
     stop,
   };
+}
+
+test("SDK readiness records failures and recovery without leaking objective content", async () => {
+  const harness = await createHarness({
+    healthIntervalMs: "30",
+    healthTimeoutMs: "40",
+    autopilotObjective: "private objective text",
+    recoveryParentPid: String(process.ppid),
+  });
+  try {
+    const healthy = await waitFor(async () => {
+      const current = await harness.currentHeartbeat();
+      return current.sdk?.status === "ok" ? current : undefined;
+    }, "successful SDK read");
+    assert.ok(healthy.sdk.lastSuccessAt);
+    await harness.setState({ healthReadFails: true });
+    const failed = await waitFor(async () => {
+      const current = await harness.currentHeartbeat();
+      return current.sdk?.consecutiveFailures >= 3 ? current : undefined;
+    }, "failed SDK reads");
+    assert.equal(failed.sdk.status, "failed");
+    assert.ok(failed.sdk.lastFailureAt);
+    assert.ok(failed.sdk.lastSuccessAt);
+    assert.equal(harness.child.exitCode, null, "older host must not lose its worker");
+    await harness.setState({ healthReadFails: false });
+    await waitFor(async () => {
+      const current = await harness.currentHeartbeat();
+      return current.sdk?.status === "ok" && current.sdk.consecutiveFailures === 0
+        ? current : undefined;
+    }, "SDK recovery");
+    assert.doesNotMatch(JSON.stringify(await harness.diagnosticEntries()), /private objective text/);
+  } finally {
+    await harness.stop();
+  }
+});
+
+test("a stalled SDK read reports failure without piling up read requests", async () => {
+  const harness = await createHarness({
+    healthIntervalMs: "30",
+    healthTimeoutMs: "40",
+    healthReadBlocked: true,
+  });
+  try {
+    await waitFor(async () => {
+      const current = await harness.currentHeartbeat();
+      return current.sdk?.status === "failed" ? current : undefined;
+    }, "SDK deadline");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(
+      (await harness.calls()).filter((call) => call.kind === "autopilot-objective.read").length,
+      1,
+    );
+    assert.equal(harness.child.exitCode, null);
+    await harness.setState({ healthReadBlocked: false });
+    await waitFor(async () => {
+      const current = await harness.currentHeartbeat();
+      return current.sdk?.status === "ok" ? current : undefined;
+    }, "late read recovery");
+  } finally {
+    await harness.stop();
+  }
+});
+
+for (const healthReadBlocked of [false, true]) {
+  test(`supported worker exits after repeated ${healthReadBlocked ? "timed-out" : "rejected"} SDK checks`, async () => {
+    const harness = await createHarness({
+      healthIntervalMs: "30",
+      healthTimeoutMs: "40",
+      healthReadBlocked,
+      healthReadFails: !healthReadBlocked,
+      recoveryParentPid: "current",
+    });
+    try {
+      const outcome = await waitFor(async () =>
+        harness.child.exitCode === null ? undefined : harness.exit,
+      "supporting-host worker exit");
+      assert.equal(outcome.code, 1, outcome.stderr);
+      assert.equal((await harness.currentHeartbeat()).sdk.status, "failed");
+      assert.ok((await harness.diagnosticEntries()).some(
+        (entry) => entry.event === "sdk.recovery_exit",
+      ));
+    } finally {
+      await harness.stop();
+    }
+  });
+}
+
+test("a supported worker stays ready while a legitimate compact is running", async () => {
+  const harness = await createHarness({
+    healthIntervalMs: "30",
+    healthTimeoutMs: "40",
+    compactCompletionDelayMs: 300,
+    compactIdleDelayMs: 320,
+    recoveryParentPid: "current",
+  });
+  try {
+    await harness.request("long-compact", {
+      kind: "compact",
+      customInstructions: "Retain the test's existing state.",
+    });
+    const receipt = await harness.receipt("completed", "long-compact");
+    assert.equal(receipt.status, "completed");
+    assert.equal(harness.child.exitCode, null);
+    assert.equal((await harness.currentHeartbeat()).sdk.status, "ok");
+  } finally {
+    await harness.stop();
+  }
+});
+
+for (const stage of ["claimed", "executing", "executing-after-effect", "executed"]) {
+  test(`replacement preserves request safety after SIGKILL at ${stage}`, async () => {
+    const original = await createHarness({
+      stopAtStage: stage === "executing-after-effect" ? undefined : stage,
+      holdSendAfterRecord: stage === "executing-after-effect",
+    });
+    let replacement;
+    try {
+      await original.request("crash-window", {
+        kind: "send",
+        prompt: "one crash-window effect",
+        mode: "immediate",
+        dedupeKey: `crash-window-${stage}`,
+      });
+      await waitFor(async () => {
+        await readFile(stage === "executing-after-effect"
+          ? join(original.root, "calls.jsonl.held")
+          : join(original.inbox, "processing", "crash-window.json.stage.held"));
+        return true;
+      }, `durable ${stage} barrier`);
+      original.child.kill("SIGKILL");
+      assert.equal((await original.exit).signal, "SIGKILL");
+      await writeState(original.heartbeatPath, {
+        ...await original.currentHeartbeat(),
+        updatedAt: new Date(0).toISOString(),
+      });
+      replacement = await createHarness({}, { reuseRoot: original.root });
+      const receipt = await replacement.receipt(
+        stage.startsWith("executing") ? "failed" : "completed",
+        "crash-window",
+      );
+      if (stage.startsWith("executing")) {
+        assert.equal(receipt.ambiguousSideEffect, true);
+      } else {
+        assert.equal(receipt.status, "completed");
+      }
+      assert.notEqual(replacement.heartbeat.generation, original.heartbeat.generation);
+      assert.equal(
+        (await replacement.calls()).filter((call) => call.kind === "send").length,
+        stage === "executing" ? 0 : 1,
+      );
+    } finally {
+      if (replacement) await replacement.stop();
+      await original.stop();
+    }
+  });
 }
 
 test("background workers withdraw aliases and refuse stale named requests", async () => {
