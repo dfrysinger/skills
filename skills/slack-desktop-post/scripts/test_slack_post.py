@@ -5,7 +5,7 @@ import contextlib
 import io
 import sys
 
-from slack_post import RAW_TOKEN, main, normalize, send_button_for
+from slack_post import RAW_TOKEN, after_send, conversation_from_url, main, normalize, open_conversation, send_button_for
 
 
 class NormalizeTest(unittest.TestCase):
@@ -32,14 +32,15 @@ class RawTokenTest(unittest.TestCase):
 
 
 class Node:
-    def __init__(self, role, desc="", children=()):
-        self.role, self.desc, self.children, self.parent = role, desc, list(children), None
+    def __init__(self, role, desc="", children=(), url=None):
+        self.role, self.desc, self.children, self.parent, self.url = role, desc, list(children), None, url
         for c in self.children:
             c.parent = self
 
 
 def fake_attr(e, name):
-    return {"AXRole": e.role, "AXDescription": e.desc, "AXChildren": e.children, "AXParent": e.parent}[name]
+    return {"AXRole": e.role, "AXDescription": e.desc, "AXChildren": e.children, "AXParent": e.parent,
+            "AXURL": e.url}[name]
 
 
 class SendButtonTest(unittest.TestCase):
@@ -56,6 +57,33 @@ class SendButtonTest(unittest.TestCase):
         self.assertIsNone(send_button_for(box, fake_attr))
 
 
+class ConversationTest(unittest.TestCase):
+    def test_reads_conversation_id_from_client_url(self):
+        self.assertEqual(conversation_from_url("https://app.slack.com/client/T0123456789/D0123456789"), "D0123456789")
+        self.assertEqual(conversation_from_url("https://app.slack.com/client/T01/C0123456789/thread/C0123456789-1.2"),
+                         "C0123456789")
+        self.assertIsNone(conversation_from_url("https://app.slack.com/client/T0123456789"))
+
+    def test_window_shows_one_conversation(self):
+        win = Node("AXWindow", children=[Node("AXGroup", children=[
+            Node("AXWebArea", url="https://app.slack.com/client/T01/D0123456789")])])
+        self.assertEqual(open_conversation(win, fake_attr), "D0123456789")
+
+    def test_two_conversations_is_ambiguous(self):
+        win = Node("AXWindow", children=[Node("AXWebArea", url="https://app.slack.com/client/T01/D01"),
+                                         Node("AXWebArea", url="https://app.slack.com/client/T01/D02")])
+        self.assertIsNone(open_conversation(win, fake_attr))
+
+
+class AfterSendTest(unittest.TestCase):
+    def test_unreadable_composer_is_unknown_not_sent(self):
+        self.assertEqual(after_send(-25204, None)[0], 6)
+
+    def test_cleared_composer_is_sent_and_leftover_text_is_not(self):
+        self.assertEqual(after_send(0, "")[0], 0)
+        self.assertEqual(after_send(0, "still here")[0], 6)
+
+
 class UsageTest(unittest.TestCase):
     def test_bad_arguments_exit_64_not_the_locked_code(self):
         sys.argv = ["slack_post.py", "--team", "E1"]
@@ -66,6 +94,13 @@ class UsageTest(unittest.TestCase):
     def test_send_and_leave_together_is_a_usage_error(self):
         sys.argv = ["slack_post.py", "--team", "E1", "--workspace", "Acme", "--channel-id", "C1", "--name", "x",
                     "--text", "hi", "--send", "--leave"]
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+            main()
+        self.assertEqual(cm.exception.code, 64)
+
+    def test_dm_without_conversation_id_is_a_usage_error(self):
+        sys.argv = ["slack_post.py", "--team", "E1", "--workspace", "Acme", "--user-id", "U1", "--name", "x",
+                    "--text", "hi"]
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
             main()
         self.assertEqual(cm.exception.code, 64)

@@ -6,11 +6,14 @@ moving the pointer. Exit codes:
   0  staged and verified (dry run: composer restored; --leave: draft left in the
      composer for the user to edit and send) or sent (composer cleared)
   2  screen locked or lock state unknown
-  3  Slack not running; window title not '<name> (…' in the workspace; composer,
-     its own Send button, or the Paste menu not found or ambiguous; composer unreadable
+  3  Slack not running; the open conversation ID is not --channel-id/--dm-id; window
+     title not '<name> (…' in the workspace; composer, its own Send button, or the
+     Paste menu not found or ambiguous; composer unreadable
   4  composer already holds a draft (left untouched)
   5  staged text does not match the requested text (composer restored)
-  6  send pressed but composer did not clear (state unknown; do not resend)
+  6  send pressed but the composer did not clear or could not be read (state unknown;
+     do not resend)
+  7  the composer could not be restored after a failed check; staged text may remain
  64  usage error, including raw <@ID>/<#ID>/<!here> tokens (they post as literal text)
 """
 import argparse
@@ -23,6 +26,7 @@ CURLY = str.maketrans({"\u2019": "'", "\u2018": "'", "\u201c": '"', "\u201d": '"
 EMOJI = re.compile(r":[a-z0-9_+\-]+(?:::skin-tone-\d)?:")
 BULLETS = re.compile("[\ue000-\uf8ff\u2022]")
 RAW_TOKEN = re.compile(r"<[@#!][A-Za-z0-9^|_-]+>")
+CLIENT_URL = re.compile(r"^https://app\.slack\.com/client/[^/]+/([A-Z0-9]+)(?:[/?#]|$)")
 
 
 def normalize(text: str) -> str:
@@ -93,6 +97,44 @@ def paste_rich(pid, box, html, plain, attr, set_attr, perform) -> bool:
                 pb.writeObjects_(items)
 
 
+def conversation_from_url(url) -> str | None:
+    """The conversation ID in a Slack client URL: channel C…/G…, or DM D…."""
+    m = CLIENT_URL.match(str(url or ""))
+    return m.group(1) if m else None
+
+
+def open_conversation(win, attr) -> str | None:
+    """Conversation ID the window is showing, or None if absent or ambiguous.
+
+    Display names are not unique, so the window title alone cannot prove the
+    destination; the Slack client page URL carries the conversation ID.
+    """
+    found = set()
+
+    def walk(e, d=0):
+        if d > 30:
+            return
+        if attr(e, "AXRole") == "AXWebArea":
+            cid = conversation_from_url(attr(e, "AXURL"))
+            if cid:
+                found.add(cid)
+                return
+        for c in attr(e, "AXChildren") or []:
+            walk(c, d + 1)
+
+    walk(win)
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def after_send(err, value) -> tuple[int, str]:
+    """Classify the composer read taken after pressing Send."""
+    if err != 0 or not isinstance(value, str):
+        return 6, f"could not read composer after Send (AX error {err}); send state unknown, do not resend"
+    if value.strip():
+        return 6, f"composer did not clear after Send: {value!r}"
+    return 0, "sent: composer cleared; read the channel back to confirm"
+
+
 class Parser(argparse.ArgumentParser):
     def error(self, message):
         self.print_usage(sys.stderr)
@@ -132,7 +174,8 @@ def main() -> int:
                    help="workspace name the Slack window title must show, e.g. Acme")
     dest = p.add_mutually_exclusive_group(required=True)
     dest.add_argument("--channel-id", help="channel ID, e.g. C0123456789")
-    dest.add_argument("--user-id", help="user ID for a DM, e.g. U0123456789")
+    dest.add_argument("--user-id", help="user ID for a DM, e.g. U0123456789; needs --dm-id")
+    p.add_argument("--dm-id", help="the DM's conversation ID, e.g. D0123456789; required with --user-id")
     p.add_argument("--name", required=True,
                    help="name in the composer label 'Message to <name>' (channel name without #, or DM handle)")
     p.add_argument("--text", required=True,
@@ -143,6 +186,11 @@ def main() -> int:
     mode.add_argument("--leave", action="store_true",
                       help="leave the verified draft in the composer for the user to edit and send")
     a = p.parse_args()
+    if a.user_id and not a.dm_id:
+        p.error("--user-id needs --dm-id, the DM conversation ID that proves the destination")
+    if a.channel_id and a.dm_id:
+        p.error("--dm-id only applies with --user-id")
+    target = a.channel_id or a.dm_id
 
     if not a.text.strip():
         print("empty --text", file=sys.stderr)
@@ -179,6 +227,7 @@ def main() -> int:
 
     win = box = None
     title = ""
+    conversation = None
     boxes = []
     deadline = time.time() + 10
     while time.time() < deadline:
@@ -186,7 +235,8 @@ def main() -> int:
         windows = attr(AXUIElementCreateApplication(pid), "AXWindows") or []
         win = windows[0] if windows else None
         title = str(attr(win, "AXTitle") or "") if win is not None else ""
-        if not is_destination(title):
+        conversation = open_conversation(win, attr) if win is not None else None
+        if conversation != target or not is_destination(title):
             continue
         boxes = []
 
@@ -202,6 +252,10 @@ def main() -> int:
         if boxes:
             break
     print("window:", title)
+    print("conversation:", conversation)
+    if conversation != target:
+        print(f"open conversation is {conversation}, expected {target}; refusing to stage", file=sys.stderr)
+        return 3
     if not is_destination(title):
         print(f"window title does not show '{a.name} (…' in workspace '{a.workspace}'; refusing to stage",
               file=sys.stderr)
@@ -222,6 +276,15 @@ def main() -> int:
         print(f"composer already holds a draft; leaving it untouched: {original!r}", file=sys.stderr)
         return 4
 
+    def restore() -> bool:
+        AXUIElementSetAttributeValue(box, "AXValue", original)
+        time.sleep(0.3)
+        err, now = AXUIElementCopyAttributeValue(box, "AXValue", None)
+        if err == 0 and isinstance(now, str) and now.strip() == original.strip():
+            return True
+        print("could not restore the composer; the staged text may still be in it", file=sys.stderr)
+        return False
+
     if html is None:
         AXUIElementSetAttributeValue(box, "AXValue", a.text)
     elif not paste_rich(pid, box, html, a.text, attr, AXUIElementSetAttributeValue, AXUIElementPerformAction):
@@ -231,32 +294,37 @@ def main() -> int:
     staged = attr(box, "AXValue") or ""
     print("staged:", repr(staged))
     if normalize(staged) != normalize(a.text):
-        AXUIElementSetAttributeValue(box, "AXValue", original)
+        if not restore():
+            return 7
         print(f"mismatch:\n  want {normalize(a.text)!r}\n  got  {normalize(staged)!r}", file=sys.stderr)
         return 5
+    if open_conversation(win, attr) != target or attr(box, "AXDescription") != label:
+        if not restore():
+            return 7
+        print("conversation changed while staging; composer restored", file=sys.stderr)
+        return 3
 
     if a.leave:
         print("left: draft verified and waiting in the composer for the user to send")
         return 0
 
     if not a.send:
-        AXUIElementSetAttributeValue(box, "AXValue", original)
+        if not restore():
+            return 7
         print("dry run: verified and restored composer")
         return 0
 
     send = send_button_for(box, attr)
     if send is None:
-        AXUIElementSetAttributeValue(box, "AXValue", original)
+        if not restore():
+            return 7
         print("Send button disappeared after staging; composer restored", file=sys.stderr)
         return 3
     AXUIElementPerformAction(send, "AXPress")
     time.sleep(2)
-    after = attr(box, "AXValue") or ""
-    if after.strip():
-        print(f"composer did not clear after Send: {after!r}", file=sys.stderr)
-        return 6
-    print("sent: composer cleared; read the channel back to confirm")
-    return 0
+    code, message = after_send(*AXUIElementCopyAttributeValue(box, "AXValue", None))
+    print(message, file=sys.stderr if code else sys.stdout)
+    return code
 
 
 if __name__ == "__main__":

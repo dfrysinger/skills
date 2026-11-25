@@ -23,7 +23,7 @@ description: Drafts or posts a Slack message through the macOS desktop app in th
    - **To people:** only when the user asks for a message. Default to the handoff (step 5). Use `--send` only when the user explicitly asks you to post exact text they approved in this conversation.
 
    Done when you can name which grant covers this message.
-2. **Pick the destination** from the channel book by ID, never by typing a name in Slack's switcher. Done when you have `--team`, `--workspace`, `--channel-id` or `--user-id`, and the composer `--name` (channel name without `#`, or the DM person's display name).
+2. **Pick the destination** from the channel book by ID, never by typing a name in Slack's switcher. For a DM you also need `--dm-id`, the DM's own conversation ID (`D…`): display names are not unique, so the script checks this ID, not the name. If the channel book lacks it, read the DM once by user ID (for example `slack_read_channel` with the user ID shows `Channel: DM (D…)`) and save it to the channel book. Done when you have `--team`, `--workspace`, `--channel-id` or `--user-id` with `--dm-id`, and the composer `--name` (channel name without `#`, or the DM person's display name).
 3. **Write it in the team's style.** Follow the matching example in the channel book. Mention people as plain `@handle`; the script refuses raw `<@U…>` tokens (exit 64) because they post as literal text. For bold, italics, lists, code blocks or links, write an HTML file and pass `--html FILE`, with `--text` set to exactly the plain text Slack will show (link text, not the URL). Done when the text says what the user asked for.
 4. **Dry run** with neither `--send` nor `--leave`. Done at exit 0 with `staged:` showing the right window and text.
 5. **Hand off or send.**
@@ -41,16 +41,19 @@ description: Drafts or posts a Slack message through the macOS desktop app in th
   --text "Plain text as Slack shows it" [--html draft.html] [--leave | --send]
 ```
 
+For a DM, replace `--channel-id …` with `--user-id U0123456789 --dm-id D0123456789`.
+
 ## Exit codes
 
 | Code | Meaning | Action |
 | --- | --- | --- |
 | 0 | Verified (dry run), left in the composer (`--leave`), or sent | Next step |
 | 2 | Screen locked or lock state unknown | Wait; retry later |
-| 3 | The window title is not `<name> (…` in workspace `--workspace`; the composer, its own Send button or the Paste menu is missing or ambiguous; or the composer could not be read | Check Slack is running, `--name` and any open thread; retry once |
+| 3 | The open conversation's ID is not `--channel-id` or `--dm-id`; the window title is not `<name> (…` in workspace `--workspace`; the composer, its own Send button or the Paste menu is missing or ambiguous; or the composer could not be read | Check Slack is running, the IDs, `--name` and any open thread; retry once |
 | 4 | The composer already holds a draft | Leave it. Show the draft in chat and ask the user to clear the box. Never clear it yourself |
 | 5 | Staged text differs from `--text` (composer restored) | Fix `--text` or the HTML so they match; dry-run again |
-| 6 | Send pressed but composer did not clear | Take a screenshot before anything else. Never resend until it proves the post is missing |
+| 6 | Send pressed but the composer did not clear or could not be read | Take a screenshot before anything else. Never resend until it proves the post is missing |
+| 7 | A check failed and the composer could not be restored, so staged text may remain | Take a screenshot. If the text is there, show the user and ask them to clear it; never send it |
 | 64 | Usage error, or a raw `<@…>`/`<#…>`/`<!here>` token | Fix the arguments; use `@handle` |
 
 ## Behaviour notes
