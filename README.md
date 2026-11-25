@@ -291,6 +291,7 @@ trigger.
 
 - **[`macos-background-app-control`](./skills/macos-background-app-control/SKILL.md):** Inspect and control a background macOS app without stealing focus or moving the pointer.
 - **[`macos-photos-library`](./skills/macos-photos-library/SKILL.md):** Query Photos metadata and import app-test screenshots into an iCloud Photos album.
+- **[`slack-desktop-post`](./skills/slack-desktop-post/SKILL.md):** Draft or post a Slack message through the macOS desktop app in the background, verified by read-back and screenshot; personal channel IDs stay in a local channel book.
 
 ### Focused utilities
 
