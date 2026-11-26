@@ -540,8 +540,9 @@ def deliver(a, pid, focus, target, html) -> int:
                 if not InputWatch.running:
                     print(PAUSE_UNSEEN, file=sys.stderr)
                     return 8
-                print("the user never paused typing for 15 s within 5 minutes; not opening the deep link, "
-                      "try again later", file=sys.stderr)
+                print("the user never paused typing for 15 s within 5 minutes; not opening the deep link. "
+                      "The conversation isn't in the Slack sidebar; once the user joins it or adds it there, "
+                      "the script can switch to it without bringing Slack forward", file=sys.stderr)
                 return 8
             if not focus.activating():
                 print("cannot tell which app is in front, so focus could not be handed back; "
