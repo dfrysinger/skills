@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 """Stage, verify, and optionally send one message through the Slack desktop app.
 
-Drives the composer through macOS Accessibility (AX) without raising Slack or
-moving the pointer. Exit codes:
+Drives the composer through macOS Accessibility (AX), keeps the user's frontmost
+app in front (Slack comes forward only for an HTML paste, under half a second, after a
+pause in the user's typing), and never moves the pointer. Exit codes:
   0  staged and verified (dry run: composer restored; --leave: draft left in the
      composer for the user to edit and send) or sent (composer cleared)
   2  screen locked or lock state unknown
-  3  Slack not running; window title not '<name> (…' in the workspace; composer,
-     its own Send button, or the Paste menu not found or ambiguous; composer unreadable
-  4  composer already holds a draft (left untouched)
+  3  Slack not running; the open conversation ID is not --channel-id/--dm-id; window
+     title not '<name> (…' in the workspace; composer, its own Send button, or the
+     Paste menu not found or ambiguous; composer unreadable; the frontmost app is
+     unknown, so Slack is not brought forward
+  4  composer already holds a draft, or gained one while --html waited (left untouched)
   5  staged text does not match the requested text (composer restored)
-  6  send pressed but composer did not clear (state unknown; do not resend)
+  6  send state unknown, do not resend: Send pressed but the composer did not clear
+     or could not be read, or keys were pressed while staging and the staged text
+     did not match (composer left as is, since the user may have typed in it)
+  7  the composer could not be restored after a failed check; staged text may remain
+  8  --html only: the user kept typing for 20 s, so Slack was not brought forward to paste
  64  usage error, including raw <@ID>/<#ID>/<!here> tokens (they post as literal text)
 """
 import argparse
@@ -23,6 +30,7 @@ CURLY = str.maketrans({"\u2019": "'", "\u2018": "'", "\u201c": '"', "\u201d": '"
 EMOJI = re.compile(r":[a-z0-9_+\-]+(?:::skin-tone-\d)?:")
 BULLETS = re.compile("[\ue000-\uf8ff\u2022]")
 RAW_TOKEN = re.compile(r"<[@#!][A-Za-z0-9^|_-]+>")
+CLIENT_URL = re.compile(r"^https://app\.slack\.com/client/[^/]+/([A-Z0-9]+)(?:[/?#]|$)")
 
 
 def normalize(text: str) -> str:
@@ -53,10 +61,39 @@ def slack_pid() -> int | None:
     return int(out[0]) if out else None
 
 
-def paste_rich(pid, box, html, plain, attr, set_attr, perform) -> bool:
-    """Paste HTML through Slack's Edit > Paste, then restore the user's clipboard."""
+def paste_rich(pid, box, html, plain, attr, set_attr, perform, focus) -> str:
+    """Paste HTML through Slack's Edit > Paste, then restore the user's clipboard.
+
+    Paste only lands while Slack is the active app, so after a pause in the
+    user's typing Slack comes forward for the press alone (under half a second) and
+    the user's app goes straight back. Returns "pasted", "typed" (keys went down
+    while Slack was in front, so Enter may have sent it), "busy" (the user never
+    paused typing), "draft" (the composer gained text while waiting), "no-front"
+    (the app to hand focus back to is unknown), "unreadable" (the composer
+    could not be re-read) or "no-menu".
+    """
     import AppKit
     from ApplicationServices import AXUIElementCreateApplication
+
+    paste = None
+    for menu in attr(attr(AXUIElementCreateApplication(pid), "AXMenuBar"), "AXChildren") or []:
+        if attr(menu, "AXTitle") == "Edit":
+            for group in attr(menu, "AXChildren") or []:
+                for item in attr(group, "AXChildren") or []:
+                    if attr(item, "AXTitle") == "Paste":
+                        paste = item
+    if paste is None:
+        return "no-menu"
+    if not wait_for_typing_pause():
+        return "busy"
+    now = attr(box, "AXValue")
+    if not isinstance(now, str):
+        return "unreadable"
+    if now.strip():
+        return "draft"
+    start = time.time()
+    if not focus.activating():
+        return "no-front"
 
     pb = AppKit.NSPasteboard.generalPasteboard()
     saved = [[(t, item.dataForType_(t)) for t in item.types()] for item in pb.pasteboardItems() or []]
@@ -66,19 +103,20 @@ def paste_rich(pid, box, html, plain, attr, set_attr, perform) -> bool:
         pb.setString_forType_(html, AppKit.NSPasteboardTypeHTML)
         pb.setString_forType_(plain, AppKit.NSPasteboardTypeString)
         ours = pb.changeCount()
+        if frontmost_pid() != pid:
+            set_attr(AXUIElementCreateApplication(pid), "AXFrontmost", True)
+            deadline = time.time() + 1
+            while frontmost_pid() != pid and time.time() < deadline:
+                time.sleep(0.02)
+            focus.slack_forced()
         set_attr(box, "AXFocused", True)
-        paste = None
-        for menu in attr(attr(AXUIElementCreateApplication(pid), "AXMenuBar"), "AXChildren") or []:
-            if attr(menu, "AXTitle") == "Edit":
-                for group in attr(menu, "AXChildren") or []:
-                    for item in attr(group, "AXChildren") or []:
-                        if attr(item, "AXTitle") == "Paste":
-                            paste = item
-        if paste is None:
-            return False
         perform(paste, "AXPress")
-        time.sleep(1.5)
-        return True
+        time.sleep(0.1)
+        note = focus.hand_back(wait=0.5)
+        if note:
+            print("focus:", note)
+        time.sleep(1.4)
+        return "typed" if seconds_since_keypress() < time.time() - start else "pasted"
     finally:
         if ours is None or pb.changeCount() == ours:
             pb.clearContents()
@@ -91,6 +129,193 @@ def paste_rich(pid, box, html, plain, attr, set_attr, perform) -> bool:
                 items.append(item)
             if items:
                 pb.writeObjects_(items)
+
+
+def frontmost_pid() -> int | None:
+    import AppKit
+
+    # NSWorkspace updates frontmostApplication from run-loop notifications; a
+    # script without a running loop reads a stale value unless it spins one.
+    AppKit.NSRunLoop.currentRunLoop().runUntilDate_(AppKit.NSDate.dateWithTimeIntervalSinceNow_(0.01))
+    app = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
+    return int(app.processIdentifier()) if app else None
+
+
+def seconds_since_keypress() -> float:
+    import Quartz
+
+    return Quartz.CGEventSourceSecondsSinceLastEventType(Quartz.kCGEventSourceStateCombinedSessionState,
+                                                          Quartz.kCGEventKeyDown)
+
+
+def seconds_since_click() -> float:
+    import Quartz
+
+    return Quartz.CGEventSourceSecondsSinceLastEventType(Quartz.kCGEventSourceStateCombinedSessionState,
+                                                          Quartz.kCGEventLeftMouseDown)
+
+
+def wait_for_typing_pause(pause=1.0, timeout=20.0) -> bool:
+    deadline = time.time() + timeout
+    while seconds_since_keypress() < pause:
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.1)
+    return True
+
+
+class Focus:
+    """Hands focus back after the script's own Slack activations, never after the user's.
+
+    The app to return to is whichever non-Slack app is in front at each
+    activation, so an app switch the user made mid-run is respected, and a user
+    already in Slack stays there. A pending hand-back is cancelled when the user
+    switches to a third app, or clicks after both the last time their app was
+    seen in front and the script's own activation of Slack.
+    """
+
+    LATE = 5.0  # Slack can activate itself this long after a deep link
+
+    def __init__(self, slack):
+        self.slack = slack
+        self.owed = None
+        self.seen = self.forced = self.until = 0.0
+
+    def activating(self) -> bool:
+        """Note the app to return to; False when it is unknown, so don't activate."""
+        front = frontmost_pid()
+        if front is None:
+            return False
+        now = time.time()
+        if now >= self.until:
+            self.owed = None
+        if front != self.slack:
+            self.owed, self.seen = front, now
+        self.forced = 0.0
+        self.until = now + self.LATE
+        return True
+
+    def slack_forced(self):
+        """The script itself just brought Slack forward; earlier clicks are not the user's choice."""
+        self.forced = time.time()
+
+    def hand_back(self, wait=0.0) -> str | None:
+        """Return focus if Slack took it; a debt stays open until paid, cancelled or LATE expires."""
+        deadline = time.time() + wait
+        while self.owed is not None:
+            now = time.time()
+            if now >= self.until:
+                self.owed = None
+                return None
+            front = frontmost_pid()
+            if front == self.owed:
+                self.seen = now
+            elif front != self.slack or seconds_since_click() < now - max(self.seen, self.forced):
+                self.owed = None  # the user switched or clicked; their choice stands
+                return None
+            else:
+                note = refocus(self.owed, self.slack)
+                if note == "restored previous app":
+                    self.owed = None
+                return note
+            if now >= deadline:
+                return None
+            time.sleep(0.1)
+        return None
+
+
+def should_refocus(front, prev, slack) -> bool:
+    """Hand focus back only when Slack took it from another app."""
+    return prev is not None and prev != slack and front == slack
+
+
+def refocus(prev, slack, wait=0.0) -> str | None:
+    """Put the user's previous app back in front if Slack took focus.
+
+    Watches for up to `wait` seconds, since Slack activates itself a moment
+    after a deep link. Uses direct AX, which needs no Automation grant, and
+    falls back to NSRunningApplication. Returns a note when it acted.
+    """
+    import AppKit
+    from ApplicationServices import AXUIElementCreateApplication, AXUIElementSetAttributeValue
+
+    deadline = time.time() + wait
+    while True:
+        if should_refocus(frontmost_pid(), prev, slack):
+            AXUIElementSetAttributeValue(AXUIElementCreateApplication(prev), "AXFrontmost", True)
+            time.sleep(0.2)
+            if frontmost_pid() == slack:
+                app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(prev)
+                if app is not None:
+                    app.activateWithOptions_(0)
+                    time.sleep(0.2)
+            return "restored previous app" if frontmost_pid() == prev else "could not restore previous app"
+        if time.time() >= deadline:
+            return None
+        time.sleep(0.1)
+
+
+def sidebar_target(win, cid, attr):
+    """The pressable element of the sidebar row for conversation `cid`, or None.
+
+    Slack tags each sidebar row with the conversation ID as its DOM id. AXPress
+    on the row's first child navigates without activating Slack; pressing the
+    row itself does nothing.
+    """
+    rows = []
+
+    def walk(e, d=0):
+        if d > 30:
+            return
+        if attr(e, "AXRole") == "AXRow" and attr(e, "AXDOMIdentifier") == cid:
+            rows.append(e)
+            return
+        for c in attr(e, "AXChildren") or []:
+            walk(c, d + 1)
+
+    walk(win)
+    if len(rows) != 1:
+        return None
+    kids = attr(rows[0], "AXChildren") or []
+    return kids[0] if kids else None
+
+
+def conversation_from_url(url) -> str | None:
+    """The conversation ID in a Slack client URL: channel C…/G…, or DM D…."""
+    m = CLIENT_URL.match(str(url or ""))
+    return m.group(1) if m else None
+
+
+def open_conversation(win, attr) -> str | None:
+    """Conversation ID the window is showing, or None if absent or ambiguous.
+
+    Display names are not unique, so the window title alone cannot prove the
+    destination; the Slack client page URL carries the conversation ID.
+    """
+    found = set()
+
+    def walk(e, d=0):
+        if d > 30:
+            return
+        if attr(e, "AXRole") == "AXWebArea":
+            cid = conversation_from_url(attr(e, "AXURL"))
+            if cid:
+                found.add(cid)
+                return
+        for c in attr(e, "AXChildren") or []:
+            walk(c, d + 1)
+
+    walk(win)
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def after_send(err, value) -> tuple[int, str]:
+    """Classify the composer read taken after pressing Send."""
+    if err != 0 or not isinstance(value, str):
+        return 6, f"could not read composer after Send (AX error {err}); send state unknown, do not resend"
+    if value.strip():
+        return 6, f"composer did not clear after Send: {value!r}"
+    return 0, "sent: composer cleared; read the channel back to confirm"
 
 
 class Parser(argparse.ArgumentParser):
@@ -132,7 +357,8 @@ def main() -> int:
                    help="workspace name the Slack window title must show, e.g. Acme")
     dest = p.add_mutually_exclusive_group(required=True)
     dest.add_argument("--channel-id", help="channel ID, e.g. C0123456789")
-    dest.add_argument("--user-id", help="user ID for a DM, e.g. U0123456789")
+    dest.add_argument("--user-id", help="user ID for a DM, e.g. U0123456789; needs --dm-id")
+    p.add_argument("--dm-id", help="the DM's conversation ID, e.g. D0123456789; required with --user-id")
     p.add_argument("--name", required=True,
                    help="name in the composer label 'Message to <name>' (channel name without #, or DM handle)")
     p.add_argument("--text", required=True,
@@ -143,6 +369,11 @@ def main() -> int:
     mode.add_argument("--leave", action="store_true",
                       help="leave the verified draft in the composer for the user to edit and send")
     a = p.parse_args()
+    if a.user_id and not a.dm_id:
+        p.error("--user-id needs --dm-id, the DM conversation ID that proves the destination")
+    if a.channel_id and a.dm_id:
+        p.error("--dm-id only applies with --user-id")
+    target = a.channel_id or a.dm_id
 
     if not a.text.strip():
         print("empty --text", file=sys.stderr)
@@ -160,17 +391,58 @@ def main() -> int:
     if pid is None:
         print("Slack is not running", file=sys.stderr)
         return 3
+    focus = Focus(pid)
+    try:
+        return deliver(a, pid, focus, target, html)
+    finally:
+        note = focus.hand_back()
+        if note:
+            print("focus:", note)
 
+
+def deliver(a, pid, focus, target, html) -> int:
     from ApplicationServices import (AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
                                      AXUIElementPerformAction, AXUIElementSetAttributeValue)
-
-    link = (f"slack://channel?team={a.team}&id={a.channel_id}" if a.channel_id
-            else f"slack://user?team={a.team}&id={a.user_id}")
-    subprocess.run(["open", "-g", link], check=True)
 
     def attr(e, name):
         err, v = AXUIElementCopyAttributeValue(e, name, None)
         return v if err == 0 else None
+
+    def main_window():
+        windows = attr(AXUIElementCreateApplication(pid), "AXWindows") or []
+        return windows[0] if windows else None
+
+    def showing():
+        win = main_window()
+        return open_conversation(win, attr) if win is not None else None
+
+    def wait_for_target(seconds):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if showing() == target:
+                return True
+            time.sleep(0.2)
+        return False
+
+    if showing() == target:
+        print("navigate: already open")
+    else:
+        win = main_window()
+        row = sidebar_target(win, target, attr) if win is not None else None
+        if row is not None and AXUIElementPerformAction(row, "AXPress") == 0 and wait_for_target(3):
+            print("navigate: sidebar row")
+        else:
+            link = (f"slack://channel?team={a.team}&id={a.channel_id}" if a.channel_id
+                    else f"slack://user?team={a.team}&id={a.user_id}")
+            if not focus.activating():
+                print("cannot tell which app is in front, so focus could not be handed back; "
+                      "not opening the deep link", file=sys.stderr)
+                return 3
+            subprocess.run(["open", "-g", link], check=True)
+            print("navigate: deep link; Slack may jump to the front, and focus is handed back")
+            note = focus.hand_back(wait=2.0)
+            if note:
+                print("focus:", note)
 
     label = f"Message to {a.name}"
 
@@ -179,14 +451,19 @@ def main() -> int:
 
     win = box = None
     title = ""
+    conversation = None
     boxes = []
     deadline = time.time() + 10
     while time.time() < deadline:
         time.sleep(1)
+        note = focus.hand_back()
+        if note:
+            print("focus:", note)
         windows = attr(AXUIElementCreateApplication(pid), "AXWindows") or []
         win = windows[0] if windows else None
         title = str(attr(win, "AXTitle") or "") if win is not None else ""
-        if not is_destination(title):
+        conversation = open_conversation(win, attr) if win is not None else None
+        if conversation != target or not is_destination(title):
             continue
         boxes = []
 
@@ -202,6 +479,10 @@ def main() -> int:
         if boxes:
             break
     print("window:", title)
+    print("conversation:", conversation)
+    if conversation != target:
+        print(f"open conversation is {conversation}, expected {target}; refusing to stage", file=sys.stderr)
+        return 3
     if not is_destination(title):
         print(f"window title does not show '{a.name} (…' in workspace '{a.workspace}'; refusing to stage",
               file=sys.stderr)
@@ -222,41 +503,81 @@ def main() -> int:
         print(f"composer already holds a draft; leaving it untouched: {original!r}", file=sys.stderr)
         return 4
 
+    def restore() -> bool:
+        AXUIElementSetAttributeValue(box, "AXValue", original)
+        time.sleep(0.3)
+        err, now = AXUIElementCopyAttributeValue(box, "AXValue", None)
+        if err == 0 and isinstance(now, str) and now.strip() == original.strip():
+            return True
+        print("could not restore the composer; the staged text may still be in it", file=sys.stderr)
+        return False
+
+    note = focus.hand_back(wait=0.5)
+    if note:
+        print("focus:", note)
+    pasted = None
+    staging = time.time()
     if html is None:
         AXUIElementSetAttributeValue(box, "AXValue", a.text)
-    elif not paste_rich(pid, box, html, a.text, attr, AXUIElementSetAttributeValue, AXUIElementPerformAction):
-        print("Edit > Paste menu item not found", file=sys.stderr)
-        return 3
+    else:
+        pasted = paste_rich(pid, box, html, a.text, attr, AXUIElementSetAttributeValue, AXUIElementPerformAction,
+                            focus)
+        if pasted == "no-menu":
+            print("Edit > Paste menu item not found", file=sys.stderr)
+            return 3
+        if pasted == "busy":
+            print("the user kept typing for 20 s; nothing pasted, try again later", file=sys.stderr)
+            return 8
+        if pasted == "draft":
+            print("composer gained a draft while waiting; leaving it untouched", file=sys.stderr)
+            return 4
+        if pasted == "unreadable":
+            print("could not re-read the composer after waiting; refusing to paste", file=sys.stderr)
+            return 3
+        if pasted == "no-front":
+            print("cannot tell which app is in front, so focus could not be handed back; not pasting",
+                  file=sys.stderr)
+            return 3
     time.sleep(0.8)
     staged = attr(box, "AXValue") or ""
     print("staged:", repr(staged))
     if normalize(staged) != normalize(a.text):
-        AXUIElementSetAttributeValue(box, "AXValue", original)
         print(f"mismatch:\n  want {normalize(a.text)!r}\n  got  {normalize(staged)!r}", file=sys.stderr)
+        if pasted == "typed" or seconds_since_keypress() < time.time() - staging:
+            # The user may have typed into the composer; restoring would erase their words.
+            print("keys were pressed while staging, so Enter in Slack may have sent it; composer left as "
+                  "is for the user; read the channel before any retry", file=sys.stderr)
+            return 6
+        if not restore():
+            return 7
         return 5
+    if open_conversation(win, attr) != target or attr(box, "AXDescription") != label:
+        if not restore():
+            return 7
+        print("conversation changed while staging; composer restored", file=sys.stderr)
+        return 3
 
     if a.leave:
         print("left: draft verified and waiting in the composer for the user to send")
         return 0
 
     if not a.send:
-        AXUIElementSetAttributeValue(box, "AXValue", original)
+        if not restore():
+            return 7
         print("dry run: verified and restored composer")
         return 0
 
     send = send_button_for(box, attr)
     if send is None:
-        AXUIElementSetAttributeValue(box, "AXValue", original)
+        if not restore():
+            return 7
         print("Send button disappeared after staging; composer restored", file=sys.stderr)
         return 3
     AXUIElementPerformAction(send, "AXPress")
     time.sleep(2)
-    after = attr(box, "AXValue") or ""
-    if after.strip():
-        print(f"composer did not clear after Send: {after!r}", file=sys.stderr)
-        return 6
-    print("sent: composer cleared; read the channel back to confirm")
-    return 0
+    code, message = after_send(*AXUIElementCopyAttributeValue(box, "AXValue", None))
+    print(message, file=sys.stderr if code else sys.stdout)
+    return code
 
 
 if __name__ == "__main__":

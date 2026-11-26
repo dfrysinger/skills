@@ -5,7 +5,7 @@ description: Drafts or posts a Slack message through the macOS desktop app in th
 
 # slack-desktop-post
 
-`scripts/slack_post.py` drives Slack's composer through macOS Accessibility. It never raises Slack or moves the pointer. Messages to people end as a **handoff**: `--leave` puts the verified draft in the channel's message box and the user edits and sends it there, which is faster than revising wording in chat. Commands to bots are a **two-phase send**: a dry run stages and verifies the text and then restores the composer; the same command with `--send` posts it. Slack is the source of truth: a post or draft counts only after a screenshot shows it rendered.
+`scripts/slack_post.py` drives Slack's composer through macOS Accessibility. It keeps the user's frontmost app in front and never moves the pointer, so their typing stays where it was going. Messages to people end as a **handoff**: `--leave` puts the verified draft in the channel's message box and the user edits and sends it there, which is faster than revising wording in chat. Commands to bots are a **two-phase send**: a dry run stages and verifies the text and then restores the composer; the same command with `--send` posts it. Slack is the source of truth: a post or draft counts only after a screenshot shows it rendered.
 
 ## Setup
 
@@ -23,7 +23,7 @@ description: Drafts or posts a Slack message through the macOS desktop app in th
    - **To people:** only when the user asks for a message. Default to the handoff (step 5). Use `--send` only when the user explicitly asks you to post exact text they approved in this conversation.
 
    Done when you can name which grant covers this message.
-2. **Pick the destination** from the channel book by ID, never by typing a name in Slack's switcher. Done when you have `--team`, `--workspace`, `--channel-id` or `--user-id`, and the composer `--name` (channel name without `#`, or the DM person's display name).
+2. **Pick the destination** from the channel book by ID, never by typing a name in Slack's switcher. For a DM you also need `--dm-id`, the DM's own conversation ID (`D…`): display names are not unique, so the script checks this ID, not the name. If the channel book lacks it, read the DM once by user ID (for example `slack_read_channel` with the user ID shows `Channel: DM (D…)`) and save it to the channel book. Done when you have `--team`, `--workspace`, `--channel-id` or `--user-id` with `--dm-id`, and the composer `--name` (channel name without `#`, or the DM person's display name).
 3. **Write it in the team's style.** Follow the matching example in the channel book. Mention people as plain `@handle`; the script refuses raw `<@U…>` tokens (exit 64) because they post as literal text. For bold, italics, lists, code blocks or links, write an HTML file and pass `--html FILE`, with `--text` set to exactly the plain text Slack will show (link text, not the URL). Done when the text says what the user asked for.
 4. **Dry run** with neither `--send` nor `--leave`. Done at exit 0 with `staged:` showing the right window and text.
 5. **Hand off or send.**
@@ -41,22 +41,27 @@ description: Drafts or posts a Slack message through the macOS desktop app in th
   --text "Plain text as Slack shows it" [--html draft.html] [--leave | --send]
 ```
 
+For a DM, replace `--channel-id …` with `--user-id U0123456789 --dm-id D0123456789`.
+
 ## Exit codes
 
 | Code | Meaning | Action |
 | --- | --- | --- |
 | 0 | Verified (dry run), left in the composer (`--leave`), or sent | Next step |
 | 2 | Screen locked or lock state unknown | Wait; retry later |
-| 3 | The window title is not `<name> (…` in workspace `--workspace`; the composer, its own Send button or the Paste menu is missing or ambiguous; or the composer could not be read | Check Slack is running, `--name` and any open thread; retry once |
-| 4 | The composer already holds a draft | Leave it. Show the draft in chat and ask the user to clear the box. Never clear it yourself |
+| 3 | The open conversation's ID is not `--channel-id` or `--dm-id`; the window title is not `<name> (…` in workspace `--workspace`; the composer, its own Send button or the Paste menu is missing or ambiguous; the composer could not be read; or the script couldn't tell which app was in front, so it didn't bring Slack forward | Check Slack is running, the IDs, `--name` and any open thread; retry once |
+| 4 | The composer already holds a draft, or gained one while `--html` waited for a typing pause | Leave it. Show the draft in chat and ask the user to clear the box. Never clear it yourself |
 | 5 | Staged text differs from `--text` (composer restored) | Fix `--text` or the HTML so they match; dry-run again |
-| 6 | Send pressed but composer did not clear | Take a screenshot before anything else. Never resend until it proves the post is missing |
+| 6 | Send state unknown: Send pressed but the composer did not clear or could not be read, or keys were pressed while staging and the text didn't match (Enter in Slack may have sent it; the composer is left as is, since the user may have typed in it) | Take a screenshot before anything else. Never resend until it proves the post is missing. If staged text is still in the box, show the user; never send or clear it yourself |
+| 7 | A check failed and the composer could not be restored, so staged text may remain | Take a screenshot. If the text is there, show the user and ask them to clear it; never send it |
+| 8 | `--html` only: the user kept typing for 20 s, so nothing was pasted | Retry later |
 | 64 | Usage error, or a raw `<@…>`/`<#…>`/`<!here>` token | Fix the arguments; use `@handle` |
 
 ## Behaviour notes
 
 - Plain text is set directly; Slack turns `:emoji:` into images and straight quotes into curly ones. The comparison ignores those, plus pasted list bullets and whitespace.
 - `--html` saves the clipboard, puts HTML and plain text on it, pastes through Slack's Edit > Paste menu, and restores the clipboard. Slack has no tables; put tabular data in a `<pre>` block.
+- Focus: the script switches conversations by pressing the sidebar row through Accessibility, which leaves Slack in the background, and skips the switch when the conversation is already open. It uses the `slack://` deep link only when the conversation has no sidebar row; Slack then jumps forward, and the script returns focus to the app that was in front just before, within about 0.2 s. Edit > Paste works only while Slack is active, so `--html` waits for a 1 s pause in typing, then brings Slack forward for under half a second. The clipboard is replaced only after that pause, and a draft that appears during the wait is left alone (exit 4). If keys go down while staging and the text doesn't match, the script exits 6, because Enter may have sent it. Focus is handed back only after the script's own activations, including late ones up to 5 s after. A switch to a third app, or a click after the script's own activation, cancels a pending hand-back, and a user already in Slack stays there. Cmd-Tab into Slack within those 5 s after a deep link can't be told apart from Slack's own late jump, so it may be undone once. If the script can't tell which app is in front, it won't bring Slack forward (exit 3). A `focus:` line reports any hand-back.
 - The Send button is "Send message" when the composer is empty and "Send now" once it has text. The script presses only the button in the composer's own container, so an open thread's Send is never used.
 - To fix a posted message, edit it in place rather than posting a second copy: open the message's context menu, choose **Edit message**, replace the full text with the approved correction and save. Confirm the message timestamp is unchanged and the text matches, and confirm by screenshot that Slack shows `(edited)`. If editing isn't possible, stop and tell the user rather than posting a duplicate.
 - If something reaches the wrong channel, stop, tell the user, and delete only that exact message once they agree.

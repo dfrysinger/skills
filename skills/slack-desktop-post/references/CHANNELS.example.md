@@ -13,13 +13,13 @@ coworkers' handles.
 
 ## Channels
 
-`--name` is the channel name without `#`, or a DM person's display name.
+`--name` is the channel name without `#`, or a DM person's display name. A DM needs both the person's user ID and the DM's conversation ID (`D…`); display names are not unique.
 
 | Channel | ID | What gets posted there |
 | --- | --- | --- |
 | #team-chat | `C0123456789` | Team questions, review and approval asks, design-doc shares |
 | #team-ops | `C0123456780` | Chatops commands |
-| Self-DM | user `U0123456789` | Safe test target |
+| Self-DM | user `U0123456789`, DM `D0123456789` | Safe test target |
 
 ## People
 
