@@ -6,8 +6,8 @@ import time
 import unittest
 from unittest import mock
 
-from slack_post import (RAW_TOKEN, composer_text, after_send, conversation_from_url, main, normalize, open_conversation,
-                        send_button_for, should_refocus, sidebar_target)
+from slack_post import (RAW_TOKEN, composer_text, after_send, conversation_from_url, join_via_command, main, normalize,
+                        open_conversation, send_button_for, should_refocus, sidebar_target)
 import slack_post
 
 
@@ -35,16 +35,16 @@ class RawTokenTest(unittest.TestCase):
 
 
 class Node:
-    def __init__(self, role, desc="", children=(), url=None, dom=None):
+    def __init__(self, role, desc="", children=(), url=None, dom=None, value=None):
         self.role, self.desc, self.children, self.parent, self.url = role, desc, list(children), None, url
-        self.dom = dom
+        self.dom, self.value = dom, value
         for c in self.children:
             c.parent = self
 
 
 def fake_attr(e, name):
     return {"AXRole": e.role, "AXDescription": e.desc, "AXChildren": e.children, "AXParent": e.parent,
-            "AXURL": e.url, "AXDOMIdentifier": e.dom}[name]
+            "AXURL": e.url, "AXDOMIdentifier": e.dom, "AXValue": e.value}[name]
 
 
 class SendButtonTest(unittest.TestCase):
@@ -72,6 +72,7 @@ class ConversationTest(unittest.TestCase):
         win = Node("AXWindow", children=[Node("AXGroup", children=[
             Node("AXWebArea", url="https://app.slack.com/client/T01/D0123456789")])])
         self.assertEqual(open_conversation(win, fake_attr), "D0123456789")
+        self.assertEqual(open_conversation(win, fake_attr, part=1), "T01")
 
     def test_two_conversations_is_ambiguous(self):
         win = Node("AXWindow", children=[Node("AXWebArea", url="https://app.slack.com/client/T01/D01"),
@@ -284,6 +285,110 @@ class AfterSendTest(unittest.TestCase):
         self.assertEqual(after_send(0, "still here")[0], 6)
 
 
+class JoinTest(unittest.TestCase):
+    def slack(self, draft="\n", runs=True, opens=True, lands="C0123456789"):
+        """A window open on one conversation; pressing Send runs or rejects the staged command."""
+        box = Node("AXTextArea", "Message to someone", value=draft)
+        send = Node("AXButton", "Send now")
+        web = Node("AXWebArea", url="https://app.slack.com/client/T01/D0123456789",
+                   children=[Node("AXGroup", children=[box, send])])
+        win = Node("AXWindow", children=[web])
+        sent = []
+
+        def set_attr(e, name, value):
+            e.value = value
+
+        def perform(e, action):
+            sent.append(box.value)
+            if runs:
+                box.value = "\n"
+                web.url = f"https://app.slack.com/client/T01/{lands}"
+
+        def opened(seconds):
+            return bool(sent) and runs and opens
+
+        return win, box, set_attr, perform, opened, sent
+
+    def join(self, win, set_attr, perform, opened, active=False):
+        return join_via_command(win, "team-chat", "T01", fake_attr, set_attr, perform, opened, lambda: active,
+                                lambda s: None)
+
+    def test_runs_join_from_the_open_conversation(self):
+        win, box, set_attr, perform, opened, sent = self.slack()
+        self.assertEqual(self.join(win, set_attr, perform, opened), "joined")
+        self.assertEqual(sent, ["/join #team-chat"])
+
+    def test_wrong_workspace_sends_nothing(self):
+        win, box, set_attr, perform, opened, sent = self.slack()
+        self.assertEqual(join_via_command(win, "team-chat", "T02", fake_attr, set_attr, perform, opened,
+                                          lambda: False, lambda s: None), "moved-early")
+        self.assertEqual((box.value, sent), ("\n", []))
+
+    def test_existing_draft_is_left_alone_and_nothing_is_sent(self):
+        win, box, set_attr, perform, opened, sent = self.slack(draft="half a thought")
+        self.assertEqual(self.join(win, set_attr, perform, opened), "draft")
+        self.assertEqual((box.value, sent), ("half a thought", []))
+
+    def test_rejected_command_is_cleared_from_the_composer(self):
+        win, box, set_attr, perform, opened, sent = self.slack(runs=False)
+        self.assertEqual(self.join(win, set_attr, perform, opened), "rejected")
+        self.assertEqual(box.value, "\n")
+
+    def test_composer_is_not_overwritten_when_the_user_may_have_typed_in_slack(self):
+        win, box, set_attr, perform, opened, sent = self.slack(runs=False)
+        self.assertEqual(join_via_command(win, "team-chat", "T01", fake_attr, set_attr, perform, opened,
+                                          lambda: bool(sent), lambda s: None), "changed")
+        self.assertEqual(box.value, "/join #team-chat")
+
+    def test_edit_during_the_final_check_is_not_sent(self):
+        win, box, set_attr, perform, opened, sent = self.slack()
+        web = win.children[0]
+        reads = []
+
+        def attr(e, name):
+            if e is web and name == "AXURL":
+                reads.append(1)
+                if len(reads) == 4:
+                    box.value = "/join #team-chat plus my edit"
+            return fake_attr(e, name)
+
+        self.assertEqual(join_via_command(win, "team-chat", "T01", attr, set_attr, perform, opened,
+                                          lambda: False, lambda s: None), "changed")
+        self.assertEqual(sent, [])
+
+    def test_user_already_in_slack_sends_nothing(self):
+        win, box, set_attr, perform, opened, sent = self.slack()
+        self.assertEqual(self.join(win, set_attr, perform, opened, active=True), "user-active")
+        self.assertEqual((box.value, sent), ("\n", []))
+
+    def test_edit_made_from_inside_slack_is_never_overwritten(self):
+        win, box, set_attr, perform, opened, sent = self.slack(runs=False)
+
+        def edited(e, action):
+            perform(e, action)
+            box.value = "/join #team-chat and my own words"
+
+        self.assertEqual(self.join(win, set_attr, edited, opened), "changed")
+        self.assertEqual(box.value, "/join #team-chat and my own words")
+
+    def test_command_that_ran_without_opening_the_channel_is_a_failure(self):
+        win, box, set_attr, perform, opened, sent = self.slack(opens=False, lands="D0123456789")
+        self.assertEqual(self.join(win, set_attr, perform, opened), "not-opened")
+
+    def test_opening_a_different_channel_is_reported_as_a_wrong_join(self):
+        win, box, set_attr, perform, opened, sent = self.slack(opens=False, lands="C0999999999")
+        self.assertEqual(self.join(win, set_attr, perform, opened), "joined-other")
+
+    def test_unreadable_composer_after_send_is_not_called_clean(self):
+        win, box, set_attr, perform, opened, sent = self.slack(opens=False, lands="D0123456789")
+
+        def lost(e, action):
+            perform(e, action)
+            box.value = None
+
+        self.assertEqual(self.join(win, set_attr, lost, opened), "unknown")
+
+
 class UsageTest(unittest.TestCase):
     def test_bad_arguments_exit_64_not_the_locked_code(self):
         sys.argv = ["slack_post.py", "--team", "E1"]
@@ -304,6 +409,15 @@ class UsageTest(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
             main()
         self.assertEqual(cm.exception.code, 64)
+
+
+    def test_join_needs_a_channel_and_a_plain_channel_name(self):
+        for extra in (["--user-id", "U1", "--dm-id", "D1", "--name", "x"],
+                      ["--channel-id", "C1", "--name", "team chat #x"]):
+            sys.argv = ["slack_post.py", "--team", "E1", "--workspace", "Acme", "--text", "hi", "--join", *extra]
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+                main()
+            self.assertEqual(cm.exception.code, 64)
 
 
 if __name__ == "__main__":
