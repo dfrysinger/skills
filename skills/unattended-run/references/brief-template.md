@@ -78,7 +78,13 @@ can restore the process without copying each skill's rules.
 > the concrete ready action, including every required field of a bounded
 > artifact, rather than only naming or promising it.
 > A genuine human-only gate is conditional: name the exact action, automatic
-> resumption, and the next inspection. Remediation remains open until its
+> resumption, and the next inspection. Follow `unattended-run`'s
+> **Keep user requests visible** rule. Invoke `unattended-run` if that rule
+> is no longer in context:
+> after every scheduled prompt, lead the final reply with any unresolved
+> user request, including the context and exact action needed to answer
+> without scrolling back. Apply this to specialized monitors too.
+> Remediation remains open until its
 > observable operational threshold is verified; if it is still violated,
 > preserve an unresolved incident and continue safe remediation or escalation.
 > If a reminder arrives while you are making a user-directed edit to the plan,
