@@ -54,7 +54,7 @@ For a DM, replace `--channel-id …` with `--user-id U0123456789 --dm-id D012345
 | 5 | Staged text differs from `--text` (composer restored) | Fix `--text` or the HTML so they match; dry-run again |
 | 6 | Send state unknown: Send pressed but the composer did not clear or could not be read, or keys were pressed while staging and the text didn't match (Enter in Slack may have sent it; the composer is left as is, since the user may have typed in it) | Take a screenshot before anything else. Never resend until it proves the post is missing. If staged text is still in the box, show the user; never send or clear it yourself |
 | 7 | A check failed and the composer could not be restored, so staged text may remain | Take a screenshot. If the text is there, show the user and ask them to clear it; never send it |
-| 8 | No 15 s pause in typing within 5 minutes, or the typing listener couldn't start, so Slack was not brought forward (`--html` paste or deep-link fallback) | Retry later, or use markup mode; if the listener failed, allow input monitoring for the terminal |
+| 8 | No 15 s pause in typing within 5 minutes, or the typing listener couldn't start, so Slack was not brought forward (`--html` paste or deep-link fallback) | If the deep link was needed, the conversation isn't in the user's sidebar: ask the user to join it or add it to the sidebar (Slack usually shows a Join button instead of a message box until they do), not to open it each time. Otherwise retry later or use markup mode. If the listener failed, allow input monitoring for the terminal |
 | 64 | Usage error, or a raw `<@…>`/`<#…>`/`<!here>` token | Fix the arguments; use `@handle` |
 
 ## Behaviour notes
