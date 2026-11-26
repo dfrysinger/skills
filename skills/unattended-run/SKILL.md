@@ -142,7 +142,7 @@ next.
 After replacing an unsupported permission interaction with a supported route,
 reassess the resulting state. Continue when permitted; if the route exposes a
 genuine user-controlled permission or login action, present that exact action
-once and preserve conditional resumption. Failed setup alone is not proof
+and preserve conditional resumption. Failed setup alone is not proof
 that user approval is needed or that remediation is complete.
 
 An exclusive owner or dependency gate applies only to its overlapping lane.
@@ -157,6 +157,30 @@ permitted procedure having run. State the closure predicate before acting and
 verify it afterward. If the threshold or outcome remains unsatisfied, keep an
 explicit unresolved incident open and continue safe remediation, escalation,
 or one concrete authority request.
+
+## Keep user requests visible
+
+After every scheduled prompt, if progress needs an unresolved action from the
+user, lead the final reply with **Action needed from you:** and repeat the
+request, even when nothing else changed or the audit was reused. Name the
+project and what is blocked in ordinary words, give the exact action or
+decision, and say what will resume after it. The reply must stand alone:
+include the relevant destination, link or command, and the full non-secret
+draft when asking permission to send a message. The user must not need to
+scroll back or open a local file to understand or approve the request.
+
+Repeat the request in this conversation, not the underlying operation.
+This does not authorize outreach, repeat notifications to other people,
+credential retrieval, login attempts, or unchanged tests. Keep secrets out
+of replies. Once the action is satisfied, withdrawn or superseded, stop
+repeating it; waits on agents or external services are not requests for the
+user unless a specific user action is actually needed.
+
+Apply this rule to every run-related schedule, including charter checks,
+progress nudges and specialized monitors. Instructions to avoid repetitive
+status reports do not suppress an unresolved user request. Keep independent
+work moving and preserve each schedule's existing suspension and stop rules;
+do not create extra reminders merely to repeat a request.
 
 ## Steps
 
@@ -471,7 +495,9 @@ manage_schedule action=create interval=4h \
   triggers a full re-brief or constraint challenge. When the shared
   Definition of Done is verified,
   stop BOTH registered schedules and every duplicate pointed at this
-  charter; verify absence."
+  charter; verify absence. Apply the Keep user requests visible rule:
+  if a user action remains unresolved, lead the final reply with
+  Action needed from you and repeat the self-contained request."
 ```
 
 Arm the separate hourly progress nudge with `manage_schedule`:
@@ -502,7 +528,10 @@ manage_schedule action=create interval=1h \
   `ambiguousSideEffect` receipt.
   Preserve live-proof ownership, immutable first outcomes, and normal
   proof and promotion gates. When the shared Definition of Done is
-  verified, stop BOTH registered schedules and verify absence."
+  verified, stop BOTH registered schedules and verify absence.
+  Apply the Keep user requests visible rule: if a user action remains
+  unresolved, lead the final reply with Action needed from you and repeat
+  the self-contained request."
 ```
 
 The charter remains authoritative for skill and compaction policy. Both

@@ -59,10 +59,13 @@ manage_schedule action=create interval=30m \
   explicit challenge and review owner results and advance the next ready
   design action. The native design objective is the primary loop; this reminder
   is only its liveness and recovery backstop. Do not implement, duplicate an
-  active owner, infer owner state from files, replace unrelated state, or
-  repeat a pending user-only question. If status is waiting_user, remain
+  active owner, infer owner state from files, or replace unrelated state.
+  Apply the Keep user requests visible rule from unattended-run: lead the
+  final reply with any unresolved user request and its full context.
+  If status is waiting_user, remain
   stopped by stopping this recorded reminder, verifying its absence, and
-  persisting its stopped status without repeating the question. If status is
+  persisting its stopped status. Repeat the pending question in this reply,
+  without creating another reminder. If status is
   handoff_pending, repair or complete the development-loop handoff and keep
   this reminder until replacement continuity is confirmed. If status is
   approved, abandoned, redirected, or reframed, stop this recorded reminder
@@ -86,7 +89,8 @@ When a genuine user-only decision leaves no independent action ready:
 1. persist the exact question and set status to `waiting_user`;
 2. stop and verify removal of the design reminder;
 3. let the current objective cycle finish on `waiting_user`; and
-4. ask once with the context needed to answer.
+4. ask with the context needed to answer, including in the final reply if
+   this suspension is observed by a scheduled prompt.
 
 After a later user turn makes work ready, set status to `active`, increment and
 persist the cycle, recreate any missing reminder, and deliver the new objective.

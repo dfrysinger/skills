@@ -54,6 +54,15 @@ require 'throughout rollback' "$skill"
 require 'legacy charter re-brief/challenge' "$skill"
 require 'Re-list and require exactly one matching schedule' "$skill"
 require 'reframe trigger' "$skill"
+require '^## Keep user requests visible' "$skill"
+require 'After every scheduled prompt' "$skill"
+require 'Action needed from you:' "$skill"
+require 'full non-secret' "$skill"
+require 'Repeat the request in this conversation, not the underlying operation' "$skill"
+require 'satisfied, withdrawn or superseded' "$skill"
+require 'Keep user requests visible' "$template"
+require 'Invoke `unattended-run` if that rule' "$template"
+reject '\.\./SKILL\.md#keep-user-requests-visible' "$template"
 
 require 'interval: 4h' "$template"
 require 'interval: 1h' "$template"
@@ -103,6 +112,8 @@ printf '%s\n' "$four_hour_prompt" | grep -q 'ALL independent ready'
 printf '%s\n' "$hourly_prompt" | grep -q 'Keep going on the work already underway'
 printf '%s\n' "$hourly_prompt" | grep -q 'Use safe parallelism'
 printf '%s\n' "$hourly_prompt" | grep -q 'one bounded rubber-duck pass'
+printf '%s\n' "$four_hour_prompt" | grep -q 'Keep user requests visible'
+printf '%s\n' "$hourly_prompt" | grep -q 'Keep user requests visible'
 if printf '%s\n' "$hourly_prompt" | grep -Eq 'reading <charter-path>|current plan baton|Run development-loop.*audit|Reconcile each active owner|Complete this audit before'; then
 	printf 'hourly prompt must not require a plan audit\n' >&2
 	exit 1
