@@ -33,10 +33,13 @@ async function freshGenerations(sessionId) {
   try {
     names = await readdir(join(sessionControlRoot, "instances"));
   } catch (error) {
-    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return [];
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+      return { generations: [], failedGenerations: new Set() };
+    }
     throw error;
   }
   const generations = new Set();
+  const failedGenerations = new Set();
   for (const name of names) {
     if (!name.endsWith(".json")) continue;
     try {
@@ -53,21 +56,29 @@ async function freshGenerations(sessionId) {
         age <= 15_000
       ) {
         generations.add(instance.generation);
+        if (instance.sdk?.status === "failed") failedGenerations.add(instance.generation);
       }
     } catch {
       // A malformed or concurrently replaced heartbeat is not readiness.
     }
   }
-  return [...generations];
+  return { generations: [...generations], failedGenerations };
 }
 
 async function requireReady(sessionId) {
-  const generations = await freshGenerations(sessionId);
+  const { generations, failedGenerations } = await freshGenerations(sessionId);
+  const rescue =
+    "Use the independent built-in extension reload; inspect existing receipts before retrying any submitted request.";
   if (generations.length !== 1) {
     throw new Error(
       generations.length === 0
-        ? `no fresh session-control instance for ${sessionId}`
-        : `multiple fresh session-control instances for ${sessionId}`,
+        ? `no fresh session-control instance for ${sessionId}. ${rescue}`
+        : `multiple fresh session-control instances for ${sessionId}. ${rescue}`,
+    );
+  }
+  if (failedGenerations.has(generations[0])) {
+    throw new Error(
+      `SDK check failed for ${sessionId} generation ${generations[0]}. ${rescue}`,
     );
   }
   return generations[0];
