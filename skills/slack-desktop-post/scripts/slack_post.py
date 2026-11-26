@@ -10,13 +10,16 @@ a 15 s pause in the user's typing), and never moves the pointer. Exit codes:
   3  Slack not running; the open conversation ID is not --channel-id/--dm-id; window
      title not '<name> (…' in the workspace; composer, its own Send button, or the
      Paste menu not found or ambiguous; composer unreadable; the frontmost app is
-     unknown, so Slack is not brought forward
-  4  composer already holds a draft, or gained one while --html waited (left untouched)
+     unknown, so Slack is not brought forward; --join's /join did not run (composer
+     restored), ran without opening the channel, or opened a different conversation
+  4  composer already holds a draft, or gained one while --html waited, or the user may
+     have typed in Slack while --join's command was in the composer (left untouched)
   5  staged text does not match the requested text (composer restored)
   6  send state unknown, do not resend: Send pressed but the composer did not clear
      or could not be read, or keys were pressed while staging and the staged text
      did not match (composer left as is, since the user may have typed in it)
-  7  the composer could not be restored after a failed check; staged text may remain
+  7  the composer could not be restored after a failed check; staged text (or the
+     --join command) may remain
   8  no 15 s pause in typing within 5 minutes, or the typing listener could not start,
      so Slack was not brought forward (--html paste or deep-link fallback); nothing staged
  64  usage error, including raw <@ID>/<#ID>/<!here> tokens (they post as literal text)
@@ -31,7 +34,7 @@ CURLY = str.maketrans({"\u2019": "'", "\u2018": "'", "\u201c": '"', "\u201d": '"
 EMOJI = re.compile(r":[a-z0-9_+\-]+(?:::skin-tone-\d)?:")
 BULLETS = re.compile("[\ue000-\uf8ff\u2022]")
 RAW_TOKEN = re.compile(r"<[@#!][A-Za-z0-9^|_-]+>")
-CLIENT_URL = re.compile(r"^https://app\.slack\.com/client/[^/]+/([A-Z0-9]+)(?:[/?#]|$)")
+CLIENT_URL = re.compile(r"^https://app\.slack\.com/client/([^/]+)/([A-Z0-9]+)(?:[/?#]|$)")
 
 
 def composer_text(text: str) -> str:
@@ -376,17 +379,17 @@ def sidebar_target(win, cid, attr):
     return kids[0] if kids else None
 
 
-def conversation_from_url(url) -> str | None:
-    """The conversation ID in a Slack client URL: channel C…/G…, or DM D…."""
+def conversation_from_url(url, part=2) -> str | None:
+    """The conversation ID in a Slack client URL (channel C…/G…, or DM D…); part=1 gives the team ID."""
     m = CLIENT_URL.match(str(url or ""))
-    return m.group(1) if m else None
+    return m.group(part) if m else None
 
 
-def open_conversation(win, attr) -> str | None:
-    """Conversation ID the window is showing, or None if absent or ambiguous.
+def open_conversation(win, attr, part=2) -> str | None:
+    """Conversation ID (or, with part=1, team ID) the window is showing; None if absent or ambiguous.
 
     Display names are not unique, so the window title alone cannot prove the
-    destination; the Slack client page URL carries the conversation ID.
+    destination; the Slack client page URL carries the team and conversation IDs.
     """
     found = set()
 
@@ -394,7 +397,7 @@ def open_conversation(win, attr) -> str | None:
         if d > 30:
             return
         if attr(e, "AXRole") == "AXWebArea":
-            cid = conversation_from_url(attr(e, "AXURL"))
+            cid = conversation_from_url(attr(e, "AXURL"), part)
             if cid:
                 found.add(cid)
                 return
@@ -446,6 +449,109 @@ def send_button_for(box, attr):
     return None
 
 
+JOIN_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,79}$")
+
+
+def join_via_command(win, name, team, attr, set_attr, perform, opened, user_active, pause=time.sleep) -> str:
+    """Send '/join #name' from the conversation already open, so Slack can stay behind.
+
+    Slack runs any message starting with '/' as a command and never posts an unknown
+    one, so the command cannot land as text in the open conversation. The composer is
+    put back only while the user can't have typed in it (user_active() is False).
+    """
+    boxes = []
+
+    def walk(e, d=0):
+        if d > 60:
+            return
+        if attr(e, "AXRole") == "AXTextArea" and str(attr(e, "AXDescription") or "").startswith("Message to "):
+            boxes.append(e)
+        for c in attr(e, "AXChildren") or []:
+            walk(c, d + 1)
+
+    walk(win)
+    start = open_conversation(win, attr)
+    if len(boxes) != 1 or start is None:
+        return "no-composer"
+    box = boxes[0]
+    send = send_button_for(box, attr)
+    if send is None:
+        return "no-send"
+    command = f"/join #{name}"
+
+    def same_place():
+        return open_conversation(win, attr, part=1) == team and open_conversation(win, attr) == start
+
+    if not same_place():
+        return "moved-early"
+    if user_active():
+        return "user-active"
+    original = attr(box, "AXValue")
+    if not isinstance(original, str):
+        return "unreadable"
+    if original.strip():
+        return "draft"
+
+    def put_back(failed):
+        # Overwrite only our own command text, and only while the user can't be in Slack.
+        now = attr(box, "AXValue")
+        if user_active() or not isinstance(now, str) or now.strip() != command:
+            return "changed"
+        set_attr(box, "AXValue", original)
+        pause(0.3)
+        now = attr(box, "AXValue")
+        return failed if isinstance(now, str) and not now.strip() else "unrestored"
+
+    set_attr(box, "AXValue", command)
+    pause(0.5)
+    staged = attr(box, "AXValue")
+    if not isinstance(staged, str):
+        return "unknown"
+    if staged.strip() != command:
+        return "changed"
+    if not same_place():
+        return put_back("moved")
+    now = attr(box, "AXValue")
+    if user_active() or not isinstance(now, str) or now.strip() != command:
+        return "changed"
+    perform(send, "AXPress")
+    left = staged
+    for _ in range(20):
+        pause(0.1)
+        left = attr(box, "AXValue")
+        if not isinstance(left, str) or left.strip() != command:
+            break
+    if not isinstance(left, str):
+        return "unknown"
+    if left.strip() == command:
+        return put_back("rejected")
+    if left.strip():
+        return "changed"
+    # Send cleared the composer, so Slack ran the command; now see where it went.
+    if opened(5):
+        return "joined"
+    if open_conversation(win, attr) not in (start, None):
+        return "joined-other"
+    return "not-opened"
+
+
+JOIN_FAILED = {
+    "moved": (3, "Slack switched conversation or workspace while /join was staged; command removed, nothing sent"),
+    "rejected": (3, "Slack did not run /join (the command stayed in the composer); composer restored. "
+                    "Check the channel name"),
+    "changed": (4, "the composer no longer held exactly the /join command (the user may have typed in Slack), "
+                   "so it was left as is. Take a screenshot; if '/join' text remains, ask the user to clear it"),
+    "unrestored": (7, "the /join command may still be in the open conversation's composer and could not be "
+                      "cleared; take a screenshot and ask the user to clear it"),
+    "unknown": (7, "could not read the composer around /join, so it may still hold the command; take a "
+                   "screenshot and ask the user to clear it"),
+    "not-opened": (3, "Slack ran /join but the channel did not open; it may be private or archived. "
+                      "Ask the user to join it"),
+    "joined-other": (3, "Slack ran /join but opened a different conversation, so --name may not match "
+                        "--channel-id and the user may have joined the wrong channel. Tell the user"),
+}
+
+
 def main() -> int:
     p = Parser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--team", required=True, help="workspace or enterprise team ID from the slack:// link, e.g. T0123456789")
@@ -460,6 +566,9 @@ def main() -> int:
     p.add_argument("--text", required=True,
                    help="message text; with --html, the plain-text version used for the clipboard and verification")
     p.add_argument("--html", help="file holding an HTML version to paste as rich text (bold, italics, lists, links)")
+    p.add_argument("--join", action="store_true",
+                   help="if the channel is not in the sidebar, send '/join #<name>' from the open conversation "
+                        "so Slack stays behind; joining is visible to the channel. Needs --channel-id")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--send", action="store_true", help="press Send after verification (default: dry run)")
     mode.add_argument("--leave", action="store_true",
@@ -469,6 +578,10 @@ def main() -> int:
         p.error("--user-id needs --dm-id, the DM conversation ID that proves the destination")
     if a.channel_id and a.dm_id:
         p.error("--dm-id only applies with --user-id")
+    if a.join and not a.channel_id:
+        p.error("--join only applies with --channel-id")
+    if a.join and not JOIN_NAME.match(a.name):
+        p.error("--join needs --name to be the exact channel name without # (lowercase letters, digits, . _ -)")
     target = a.channel_id or a.dm_id
 
     if not a.text.strip():
@@ -528,9 +641,30 @@ def deliver(a, pid, focus, target, html) -> int:
     else:
         win = main_window()
         row = sidebar_target(win, target, attr) if win is not None else None
+        arrived = False
         if row is not None and AXUIElementPerformAction(row, "AXPress") == 0 and wait_for_target(3):
             print("navigate: sidebar row")
-        else:
+            arrived = True
+        elif a.join and win is not None and frontmost_pid() not in (pid, None):
+            if f" - {a.workspace} - " not in str(attr(win, "AXTitle") or ""):
+                result = "other-workspace"
+            else:
+                began = time.time()
+                result = join_via_command(
+                    win, a.name, a.team, attr, AXUIElementSetAttributeValue, AXUIElementPerformAction, wait_for_target,
+                    lambda: frontmost_pid() in (pid, None) or seconds_since_click() < time.time() - began)
+            if result == "joined":
+                print("navigate: /join; Slack stayed behind")
+                arrived = True
+            elif result in JOIN_FAILED:
+                code, message = JOIN_FAILED[result]
+                if result == "joined-other":
+                    message += f" (now showing {showing()})"
+                print(message, file=sys.stderr)
+                return code
+            else:
+                print(f"could not send /join ({result}); trying the deep link instead")
+        if not arrived:
             link = (f"slack://channel?team={a.team}&id={a.channel_id}" if a.channel_id
                     else f"slack://user?team={a.team}&id={a.user_id}")
             if not InputWatch.running:
@@ -542,7 +676,8 @@ def deliver(a, pid, focus, target, html) -> int:
                     return 8
                 print("the user never paused typing for 15 s within 5 minutes; not opening the deep link. "
                       "The conversation isn't in the Slack sidebar; once the user joins it or adds it there, "
-                      "the script can switch to it without bringing Slack forward", file=sys.stderr)
+                      "the script can switch to it without bringing Slack forward. For a channel the user approved, "
+                      "--join joins it in the background", file=sys.stderr)
                 return 8
             if not focus.activating():
                 print("cannot tell which app is in front, so focus could not be handed back; "
