@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 
 
 FIELDS = {"history_file", "source_session_id", "cutoff_event_id", "skill_context", "limitations"}
+OPTIONAL_FIELDS = {"personal_instructions_file"}
 
 
 def relative_path(value: object) -> str:
@@ -31,8 +32,18 @@ def validate_restoration(definition: dict, root: Path, *, frozen: bool = False) 
         if index != 0 or phase.get("resume"):
             raise ValueError("session_restore is allowed only on the first phase")
         restoration = phase["session_restore"]
-        if not isinstance(restoration, dict) or set(restoration) != FIELDS:
+        if (not isinstance(restoration, dict) or not FIELDS <= set(restoration)
+                or set(restoration) - FIELDS - OPTIONAL_FIELDS):
             raise ValueError("session_restore requires exactly its declared fields")
+        if "personal_instructions_file" in restoration:
+            if definition.get("case_type", "prose") != "prose":
+                raise ValueError("personal instructions are supported only for restored read-only cases")
+            relative = relative_path(restoration["personal_instructions_file"])
+            packet = root / (phase["id"] if frozen else phase["evidence_dir"])
+            source = packet / relative
+            if (source.is_symlink() or not source.is_file()
+                    or not source.resolve().is_relative_to(packet.resolve())):
+                raise ValueError("personal instructions must be a regular file beneath their packet")
         if any(not isinstance(restoration[key], str) or not restoration[key].strip()
                for key in ("source_session_id", "cutoff_event_id")):
             raise ValueError("restoration source and cutoff must be nonempty strings")
@@ -107,6 +118,7 @@ def permission_rules(profile: object, *, workdir: str = "/workspace/repo") -> li
 def import_session(
     restoration: dict, history: Path, *, copilot: str, workdir: str,
     execute, receipt_path: Path, cli_identity: dict, import_path: str | None = None,
+    plugin_dir: str | None = None,
 ) -> str:
     receipt = {
         "schema_version": 1,
@@ -122,6 +134,8 @@ def import_session(
         copilot, "sessions", "import", import_path or str(history),
         "--working-directory", workdir, "--output", "json",
     ]
+    if plugin_dir is not None:
+        command[1:1] = ["--plugin-dir", plugin_dir]
     receipt["command"] = command
     try:
         exit_code, output = execute(command)

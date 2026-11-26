@@ -1384,6 +1384,84 @@ def copilot_identity(copilot: Path) -> dict:
     }
 
 
+def personal_instruction_environment(run_home: Path) -> dict:
+    env = os.environ.copy()
+    run_home.mkdir(parents=True, exist_ok=True)
+    home = run_home.parent / "candidate-os-home"
+    home.mkdir(parents=True, exist_ok=True)
+    env["COPILOT_HOME"] = str(run_home)
+    env["HOME"] = str(home)
+    env.pop("COPILOT_CUSTOM_INSTRUCTIONS_DIRS", None)
+    return env
+
+
+def discover_personal_instructions(
+    *, copilot: Path, plugin_dir: Path, cwd: Path, run_home: Path,
+    source: Path, prefix: Path, timeout_seconds: int,
+) -> Path:
+    installed = run_home / "copilot-instructions.md"
+    stdout_path = prefix.with_name(prefix.name + "-stdout.json")
+    stderr_path = prefix.with_name(prefix.name + "-stderr.log")
+    receipt_path = prefix.with_name(prefix.name + "-receipt.json")
+    command = [
+        str(copilot), "-C", str(cwd), "--plugin-dir", str(plugin_dir),
+        "instruction", "list", "--json",
+    ]
+    receipt = {
+        "schema_version": 1, "status": "FAIL", "instruction_mode": "personal-only",
+        "source_path": str(source), "installed_path": str(installed),
+        "command": command, "workdir": str(cwd), "plugin_dir": str(plugin_dir),
+        "copilot_home": str(run_home), "home": str(run_home.parent / "candidate-os-home"),
+        "stdout_path": str(stdout_path), "stderr_path": str(stderr_path),
+    }
+    stdout, stderr = b"", b""
+    try:
+        receipt["source_sha256"] = digest(source)
+        if installed.is_symlink() or not installed.is_file():
+            raise ValueError("staged personal instruction file is not regular")
+        receipt["installed_sha256"] = digest(installed)
+        if receipt["installed_sha256"] != receipt["source_sha256"]:
+            raise ValueError("staged personal instruction bytes changed")
+        completed = subprocess.run(
+            command, env=personal_instruction_environment(run_home), cwd=cwd,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=timeout_seconds, check=False,
+        )
+        stdout, stderr = completed.stdout, completed.stderr
+        receipt["exit_code"] = completed.returncode
+        if completed.returncode != 0:
+            raise ValueError("instruction list command failed")
+        sources = json.loads(stdout)
+        if (not isinstance(sources, list)
+                or any(not isinstance(item, dict)
+                       or type(item.get("defaultDisabled")) is not bool for item in sources)):
+            raise ValueError("instruction list returned an unsupported source schema")
+        enabled = [item for item in sources if not item["defaultDisabled"]]
+        if len(enabled) != 1:
+            raise ValueError("enabled instructions must be exactly the staged personal source")
+        personal = enabled[0]
+        path = personal.get("sourcePath")
+        if (personal.get("id") != "home-copilot" or personal.get("location") != "user"
+                or personal.get("type") != "home" or not isinstance(path, str)
+                or not Path(path).is_absolute() or Path(path).resolve() != installed.resolve()):
+            raise ValueError("enabled instructions must be exactly the staged personal source")
+        receipt["status"] = "PASS"
+        return receipt_path
+    except subprocess.TimeoutExpired as error:
+        stdout, stderr = error.stdout or b"", error.stderr or b""
+        receipt["error"] = str(error)
+        raise ValueError(f"personal instruction discovery timed out; see {receipt_path}") from error
+    except (OSError, ValueError, TypeError) as error:
+        receipt["error"] = str(error)
+        raise ValueError(f"personal instruction discovery failed: {error}; see {receipt_path}") from error
+    finally:
+        stdout_path.write_bytes(stdout.encode("utf-8") if isinstance(stdout, str) else stdout)
+        stderr_path.write_bytes(stderr.encode("utf-8") if isinstance(stderr, str) else stderr)
+        receipt["stdout_sha256"] = digest(stdout_path)
+        receipt["stderr_sha256"] = digest(stderr_path)
+        write_json(receipt_path, receipt)
+
+
 def run_copilot(
     *,
     copilot: Path,
@@ -1403,6 +1481,7 @@ def run_copilot(
     role: str = "candidate",
     phase: str = "candidate",
     cli_version: str | None = None,
+    personal_instructions: bool = False,
 ) -> list[str]:
     measurement.session_uuid(session_id)
     started_at, started_clock = utc_instant(), time.monotonic()
@@ -1419,7 +1498,7 @@ def run_copilot(
         effort,
         f"--available-tools={available_tools}",
         f"--allow-tool={available_tools}",
-        "--no-custom-instructions",
+        *([] if personal_instructions else ["--no-custom-instructions"]),
         "--disable-builtin-mcps",
         "--no-color",
         "--output-format",
@@ -1450,11 +1529,15 @@ def run_copilot(
             yield content
 
     try:
+        if personal_instructions and home_mode != "isolated":
+            raise ValueError("personal instructions require an isolated candidate home")
         if home_mode == "isolated":
             if not env.get("COPILOT_GITHUB_TOKEN"):
                 raise ValueError("--home-mode isolated requires COPILOT_GITHUB_TOKEN")
             run_home.mkdir(parents=True, exist_ok=True)
             env["COPILOT_HOME"] = str(run_home)
+            if personal_instructions:
+                env = personal_instruction_environment(run_home)
         if resume:
             try:
                 with measurement.host_events(home, session_id) as content:
@@ -1939,11 +2022,16 @@ def _run_case(
     if restored_case and home_mode != "isolated":
         raise ValueError("session restoration requires an isolated candidate home")
     history_sha256 = None
+    personal_source = None
+    run_home = run_root / "candidate-home"
     if restored_case:
         initial_phase = definition["phases"][0]
+        initial_restoration = initial_phase["session_restore"]
         history_sha256 = digest(
-            frozen / initial_phase["id"] / initial_phase["session_restore"]["history_file"]
+            frozen / initial_phase["id"] / initial_restoration["history_file"]
         )
+        if "personal_instructions_file" in initial_restoration:
+            personal_source = frozen / initial_phase["id"] / initial_restoration["personal_instructions_file"]
 
     for phase in definition["phases"]:
         timeline.switch("preparation")
@@ -1955,6 +2043,8 @@ def _run_case(
             for record in read_json(frozen / phase_id / "bundle-manifest.json")["files"]
             if record["sha256"] == history_sha256
         } if restored_case else None
+        if personal_source is not None:
+            excluded.add(initial_restoration["personal_instructions_file"])
         manifest = copy_packet(
             frozen / phase_id, workdir,
             excluded=excluded,
@@ -1968,6 +2058,7 @@ def _run_case(
         prompt_path = run_root / f"{phase_id}-prompt.md"
         prompt_path.write_text(prompt, encoding="utf-8")
         log = run_root / f"{phase_id}-raw.jsonl"
+        instruction_receipts = []
         try:
             candidate_plugin = workdir / "target-plugin"
             if candidate_plugin.exists():
@@ -1976,14 +2067,25 @@ def _run_case(
             snapshot_plugin(pinned_plugin, candidate_plugin)
             if directory_identity(candidate_plugin) != plugin_identity:
                 raise ValueError("candidate plugin changed while being staged")
+            if personal_source is not None and restoration:
+                run_home.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(personal_source, run_home / "copilot-instructions.md")
+                instruction_receipts.append(discover_personal_instructions(
+                    copilot=copilot, plugin_dir=candidate_plugin, cwd=workdir,
+                    run_home=run_home, source=personal_source,
+                    prefix=run_root / f"{phase_id}-instruction-import",
+                    timeout_seconds=timeout_seconds,
+                ))
             if restoration:
                 from session_restore import import_session
-                run_home = run_root / "candidate-home"
                 run_home.mkdir(parents=True, exist_ok=True)
 
                 def execute_import(command):
                     completed = subprocess.run(
-                        command, env={**os.environ, "COPILOT_HOME": str(run_home)},
+                        command, env=(
+                            personal_instruction_environment(run_home) if personal_source is not None
+                            else {**os.environ, "COPILOT_HOME": str(run_home)}
+                        ),
                         cwd=workdir, stdin=subprocess.DEVNULL, text=True,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                         timeout=timeout_seconds, check=False,
@@ -1998,7 +2100,15 @@ def _run_case(
                     copilot=str(copilot), workdir=str(workdir), execute=execute_import,
                     receipt_path=run_root / f"{phase_id}-restoration-receipt.json",
                     cli_identity=read_json(run_root / "copilot-identity.json"),
+                    **({"plugin_dir": str(candidate_plugin)} if personal_source is not None else {}),
                 )
+            if personal_source is not None:
+                instruction_receipts.append(discover_personal_instructions(
+                    copilot=copilot, plugin_dir=candidate_plugin, cwd=workdir,
+                    run_home=run_home, source=personal_source,
+                    prefix=run_root / f"{phase_id}-instruction-candidate",
+                    timeout_seconds=timeout_seconds,
+                ))
             timeline.switch("candidate")
             command = run_copilot(
                 copilot=copilot,
@@ -2017,6 +2127,7 @@ def _run_case(
                 measurement_path=run_root / "measurements" / f"candidate-{phase_id}.json",
                 role="candidate", phase=phase_id,
                 cli_version=read_json(run_root / "copilot-identity.json").get("version"),
+                personal_instructions=personal_source is not None,
             )
             run_result = parse_run(
                 log,
@@ -2069,6 +2180,13 @@ def _run_case(
             "raw_log_sha256": digest(log),
             "output_sha256": digest(output_path),
         }
+        if personal_source is not None:
+            receipt.update(
+                instruction_mode="personal-only",
+                instruction_setup=[
+                    {"path": path.name, "sha256": digest(path)} for path in instruction_receipts
+                ],
+            )
         receipt_path = run_root / f"{phase_id}-receipt.json"
         write_json(receipt_path, receipt)
         phase_outputs.append((phase_id, output_path, receipt_path))
@@ -2082,7 +2200,11 @@ def _run_case(
         frozen=frozen, definition=definition, run_root=run_root,
         pinned_plugin=pinned_plugin, copilot=copilot, home_mode=home_mode,
         timeout_seconds=timeout_seconds,
-        candidate_artifacts=[path for _, output, receipt in phase_outputs for path in (output, receipt)],
+        candidate_artifacts=[
+            path for phase_id, output, receipt in phase_outputs
+            for path in ((output, receipt, run_root / f"{phase_id}-raw.jsonl")
+                         if restored_case else (output, receipt))
+        ],
     )
 
     verdicts = [judgment["verdict"] for judgment in judgments]
