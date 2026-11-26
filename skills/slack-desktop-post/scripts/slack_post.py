@@ -3,7 +3,7 @@
 
 Drives the composer through macOS Accessibility (AX), keeps the user's frontmost
 app in front (Slack comes forward only for an HTML paste or a deep-link fallback, after
-a 30 s pause in the user's typing), and never moves the pointer. Exit codes:
+a 15 s pause in the user's typing), and never moves the pointer. Exit codes:
   0  staged and verified (dry run: composer restored; --leave: draft left in the
      composer for the user to edit and send) or sent (composer cleared)
   2  screen locked or lock state unknown
@@ -17,7 +17,7 @@ a 30 s pause in the user's typing), and never moves the pointer. Exit codes:
      or could not be read, or keys were pressed while staging and the staged text
      did not match (composer left as is, since the user may have typed in it)
   7  the composer could not be restored after a failed check; staged text may remain
-  8  no 30 s pause in typing within 3 minutes, or the typing listener could not start,
+  8  no 15 s pause in typing within 5 minutes, or the typing listener could not start,
      so Slack was not brought forward (--html paste or deep-link fallback); nothing staged
  64  usage error, including raw <@ID>/<#ID>/<!here> tokens (they post as literal text)
 """
@@ -240,8 +240,8 @@ def seconds_since_click() -> float:
                                                              Quartz.kCGEventLeftMouseDown))
 
 
-TYPING_PAUSE = 30.0
-TYPING_WAIT = 180.0
+TYPING_PAUSE = 15.0
+TYPING_WAIT = 300.0
 PAUSE_UNSEEN = ("the typing listener could not start, so a pause in typing can't be confirmed; not bringing "
                 "Slack forward. Allow input monitoring for this terminal, or use markup mode")
 _pause_deadline: float | None = None
@@ -540,7 +540,7 @@ def deliver(a, pid, focus, target, html) -> int:
                 if not InputWatch.running:
                     print(PAUSE_UNSEEN, file=sys.stderr)
                     return 8
-                print("the user never paused typing for 30 s within 3 minutes; not opening the deep link, "
+                print("the user never paused typing for 15 s within 5 minutes; not opening the deep link, "
                       "try again later", file=sys.stderr)
                 return 8
             if not focus.activating():
@@ -638,7 +638,7 @@ def deliver(a, pid, focus, target, html) -> int:
             print(PAUSE_UNSEEN, file=sys.stderr)
             return 8
         if pasted == "busy":
-            print("the user never paused typing for 30 s within 3 minutes, or resumed just before the paste; "
+            print("the user never paused typing for 15 s within 5 minutes, or resumed just before the paste; "
                   "nothing pasted, try again later", file=sys.stderr)
             return 8
         if pasted == "draft":
