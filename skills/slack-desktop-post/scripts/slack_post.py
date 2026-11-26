@@ -2,8 +2,8 @@
 """Stage, verify, and optionally send one message through the Slack desktop app.
 
 Drives the composer through macOS Accessibility (AX), keeps the user's frontmost
-app in front (Slack comes forward only for an HTML paste, under half a second, after a
-pause in the user's typing), and never moves the pointer. Exit codes:
+app in front (Slack comes forward only for an HTML paste or a deep-link fallback, after
+a 30 s pause in the user's typing), and never moves the pointer. Exit codes:
   0  staged and verified (dry run: composer restored; --leave: draft left in the
      composer for the user to edit and send) or sent (composer cleared)
   2  screen locked or lock state unknown
@@ -17,7 +17,8 @@ pause in the user's typing), and never moves the pointer. Exit codes:
      or could not be read, or keys were pressed while staging and the staged text
      did not match (composer left as is, since the user may have typed in it)
   7  the composer could not be restored after a failed check; staged text may remain
-  8  --html only: the user kept typing for 20 s, so Slack was not brought forward to paste
+  8  no 30 s pause in typing within 3 minutes, or the typing listener could not start,
+     so Slack was not brought forward (--html paste or deep-link fallback); nothing staged
  64  usage error, including raw <@ID>/<#ID>/<!here> tokens (they post as literal text)
 """
 import argparse
@@ -31,6 +32,12 @@ EMOJI = re.compile(r":[a-z0-9_+\-]+(?:::skin-tone-\d)?:")
 BULLETS = re.compile("[\ue000-\uf8ff\u2022]")
 RAW_TOKEN = re.compile(r"<[@#!][A-Za-z0-9^|_-]+>")
 CLIENT_URL = re.compile(r"^https://app\.slack\.com/client/[^/]+/([A-Z0-9]+)(?:[/?#]|$)")
+
+
+def composer_text(text: str) -> str:
+    """Slack's composer turns each newline set through AX into a blank line plus a
+    new line; the Unicode line separator gives a single line break."""
+    return text.replace("\r\n", "\n").replace("\n", "\u2028")
 
 
 def normalize(text: str) -> str:
@@ -61,16 +68,18 @@ def slack_pid() -> int | None:
     return int(out[0]) if out else None
 
 
-def paste_rich(pid, box, html, plain, attr, set_attr, perform, focus) -> str:
+def paste_rich(pid, box, html, plain, attr, set_attr, perform, focus, still_there) -> str:
     """Paste HTML through Slack's Edit > Paste, then restore the user's clipboard.
 
     Paste only lands while Slack is the active app, so after a pause in the
     user's typing Slack comes forward for the press alone (under half a second) and
     the user's app goes straight back. Returns "pasted", "typed" (keys went down
     while Slack was in front, so Enter may have sent it), "busy" (the user never
-    paused typing), "draft" (the composer gained text while waiting), "no-front"
-    (the app to hand focus back to is unknown), "unreadable" (the composer
-    could not be re-read) or "no-menu".
+    paused typing), "unwatched" (the typing listener isn't running), "draft"
+    (the composer gained text while waiting), "moved" (the conversation changed
+    while waiting), "no-front" (the app to hand focus back to is unknown),
+    "unreadable" (the composer could not be re-read), "no-focus" (Slack or its
+    composer did not take focus, so nothing was pasted) or "no-menu".
     """
     import AppKit
     from ApplicationServices import AXUIElementCreateApplication
@@ -84,13 +93,21 @@ def paste_rich(pid, box, html, plain, attr, set_attr, perform, focus) -> str:
                         paste = item
     if paste is None:
         return "no-menu"
-    if not wait_for_typing_pause():
-        return "busy"
-    now = attr(box, "AXValue")
-    if not isinstance(now, str):
-        return "unreadable"
-    if now.strip():
-        return "draft"
+    while True:
+        if not InputWatch.running:
+            return "unwatched"
+        if not wait_for_typing_pause():
+            return "unwatched" if not InputWatch.running else "busy"
+        now = attr(box, "AXValue")
+        if not isinstance(now, str):
+            return "unreadable"
+        if now.strip():
+            return "draft"
+        if not still_there():
+            return "moved"
+        # Typing may have resumed during the checks; wait again (same deadline) if so.
+        if InputWatch.running and seconds_since_keypress() >= TYPING_PAUSE:
+            break
     start = time.time()
     if not focus.activating():
         return "no-front"
@@ -103,13 +120,19 @@ def paste_rich(pid, box, html, plain, attr, set_attr, perform, focus) -> str:
         pb.setString_forType_(html, AppKit.NSPasteboardTypeHTML)
         pb.setString_forType_(plain, AppKit.NSPasteboardTypeString)
         ours = pb.changeCount()
+        # Reading the clipboard can block on another app; recheck right before Slack comes forward.
+        if not InputWatch.running:
+            return "unwatched"
+        if seconds_since_keypress() < TYPING_PAUSE:
+            return "busy"
         if frontmost_pid() != pid:
             set_attr(AXUIElementCreateApplication(pid), "AXFrontmost", True)
             deadline = time.time() + 1
             while frontmost_pid() != pid and time.time() < deadline:
                 time.sleep(0.02)
             focus.slack_forced()
-        set_attr(box, "AXFocused", True)
+        if frontmost_pid() != pid or set_attr(box, "AXFocused", True) != 0 or attr(box, "AXFocused") is not True:
+            return "no-focus"
         perform(paste, "AXPress")
         time.sleep(0.1)
         note = focus.hand_back(wait=0.5)
@@ -141,27 +164,100 @@ def frontmost_pid() -> int | None:
     return int(app.processIdentifier()) if app else None
 
 
+class InputWatch:
+    """Listen-only event tap that records when keys and clicks last happened.
+
+    The system idle timers miss input that keyboard sharers such as Deskflow
+    re-post from a private event source, so they report the user as idle
+    while they type. A session tap sees that input too.
+    """
+
+    last: dict[int, float] = {}
+    running = False
+    started: float | None = None
+
+    @classmethod
+    def start(cls) -> bool:
+        if cls.running:
+            return True
+        import threading
+
+        import Quartz as Q
+
+        ready = threading.Event()
+
+        def run():
+            tap = None
+
+            def seen(proxy, kind, event, ref):
+                now = time.monotonic()
+                if kind in (Q.kCGEventTapDisabledByTimeout, Q.kCGEventTapDisabledByUserInput):
+                    # Input while the tap was off went unseen, so the pause starts over.
+                    cls.last[Q.kCGEventKeyDown] = cls.last[Q.kCGEventLeftMouseDown] = now
+                    Q.CGEventTapEnable(tap, True)
+                else:
+                    cls.last[kind] = now
+                return event
+
+            mask = Q.CGEventMaskBit(Q.kCGEventKeyDown) | Q.CGEventMaskBit(Q.kCGEventLeftMouseDown)
+            tap = Q.CGEventTapCreate(Q.kCGSessionEventTap, Q.kCGHeadInsertEventTap, Q.kCGEventTapOptionListenOnly,
+                                     mask, seen, None)
+            if tap:
+                source = Q.CFMachPortCreateRunLoopSource(None, tap, 0)
+                Q.CFRunLoopAddSource(Q.CFRunLoopGetCurrent(), source, Q.kCFRunLoopCommonModes)
+                Q.CGEventTapEnable(tap, True)
+                cls.started = time.monotonic()
+                cls.running = True
+            ready.set()
+            if tap:
+                Q.CFRunLoopRun()
+                cls.running = False
+
+        threading.Thread(target=run, daemon=True).start()
+        ready.wait(2)
+        return cls.running
+
+    @classmethod
+    def since(cls, kind: int) -> float:
+        # Input before the tap started is unknown, so it counts as just now.
+        at = cls.last.get(kind, cls.started)
+        return float("inf") if at is None else time.monotonic() - at
+
+
 def seconds_since_keypress() -> float:
     import Quartz
 
-    return Quartz.CGEventSourceSecondsSinceLastEventType(Quartz.kCGEventSourceStateCombinedSessionState,
-                                                          Quartz.kCGEventKeyDown)
+    return min(InputWatch.since(Quartz.kCGEventKeyDown),
+               Quartz.CGEventSourceSecondsSinceLastEventType(Quartz.kCGEventSourceStateCombinedSessionState,
+                                                             Quartz.kCGEventKeyDown))
 
 
 def seconds_since_click() -> float:
     import Quartz
 
-    return Quartz.CGEventSourceSecondsSinceLastEventType(Quartz.kCGEventSourceStateCombinedSessionState,
-                                                          Quartz.kCGEventLeftMouseDown)
+    return min(InputWatch.since(Quartz.kCGEventLeftMouseDown),
+               Quartz.CGEventSourceSecondsSinceLastEventType(Quartz.kCGEventSourceStateCombinedSessionState,
+                                                             Quartz.kCGEventLeftMouseDown))
 
 
-def wait_for_typing_pause(pause=1.0, timeout=20.0) -> bool:
-    deadline = time.time() + timeout
+TYPING_PAUSE = 30.0
+TYPING_WAIT = 180.0
+PAUSE_UNSEEN = ("the typing listener could not start, so a pause in typing can't be confirmed; not bringing "
+                "Slack forward. Allow input monitoring for this terminal, or use markup mode")
+_pause_deadline: float | None = None
+
+
+def wait_for_typing_pause(pause=TYPING_PAUSE, timeout=TYPING_WAIT) -> bool:
+    """Waits for a typing pause; every wait in one run shares a single deadline."""
+    global _pause_deadline
+    if _pause_deadline is None:
+        _pause_deadline = time.time() + timeout
+    deadline = _pause_deadline
     while seconds_since_keypress() < pause:
-        if time.time() >= deadline:
+        if time.time() >= deadline or not InputWatch.running:
             return False
         time.sleep(0.1)
-    return True
+    return InputWatch.running
 
 
 class Focus:
@@ -392,6 +488,9 @@ def main() -> int:
         print("Slack is not running", file=sys.stderr)
         return 3
     focus = Focus(pid)
+    if not InputWatch.start():
+        print("input listener unavailable; Slack won't be brought forward (--html paste or deep-link fallback)",
+              file=sys.stderr)
     try:
         return deliver(a, pid, focus, target, html)
     finally:
@@ -434,6 +533,16 @@ def deliver(a, pid, focus, target, html) -> int:
         else:
             link = (f"slack://channel?team={a.team}&id={a.channel_id}" if a.channel_id
                     else f"slack://user?team={a.team}&id={a.user_id}")
+            if not InputWatch.running:
+                print(PAUSE_UNSEEN, file=sys.stderr)
+                return 8
+            if not wait_for_typing_pause():
+                if not InputWatch.running:
+                    print(PAUSE_UNSEEN, file=sys.stderr)
+                    return 8
+                print("the user never paused typing for 30 s within 3 minutes; not opening the deep link, "
+                      "try again later", file=sys.stderr)
+                return 8
             if not focus.activating():
                 print("cannot tell which app is in front, so focus could not be handed back; "
                       "not opening the deep link", file=sys.stderr)
@@ -518,19 +627,29 @@ def deliver(a, pid, focus, target, html) -> int:
     pasted = None
     staging = time.time()
     if html is None:
-        AXUIElementSetAttributeValue(box, "AXValue", a.text)
+        AXUIElementSetAttributeValue(box, "AXValue", composer_text(a.text))
     else:
         pasted = paste_rich(pid, box, html, a.text, attr, AXUIElementSetAttributeValue, AXUIElementPerformAction,
-                            focus)
+                            focus, lambda: open_conversation(win, attr) == target and attr(box, "AXDescription") == label)
         if pasted == "no-menu":
             print("Edit > Paste menu item not found", file=sys.stderr)
             return 3
+        if pasted == "unwatched":
+            print(PAUSE_UNSEEN, file=sys.stderr)
+            return 8
         if pasted == "busy":
-            print("the user kept typing for 20 s; nothing pasted, try again later", file=sys.stderr)
+            print("the user never paused typing for 30 s within 3 minutes, or resumed just before the paste; "
+                  "nothing pasted, try again later", file=sys.stderr)
             return 8
         if pasted == "draft":
             print("composer gained a draft while waiting; leaving it untouched", file=sys.stderr)
             return 4
+        if pasted == "no-focus":
+            print("Slack's composer did not take focus; nothing pasted", file=sys.stderr)
+            return 3
+        if pasted == "moved":
+            print("conversation changed while waiting for a pause in typing; nothing pasted", file=sys.stderr)
+            return 3
         if pasted == "unreadable":
             print("could not re-read the composer after waiting; refusing to paste", file=sys.stderr)
             return 3

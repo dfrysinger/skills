@@ -10,6 +10,7 @@ coworkers' handles.
 | --- | --- | --- |
 | `--team` | `T0123456789` | The `team=` value of any `slack://` link, or the workspace ID in a Slack MCP response |
 | `--workspace` | `Acme` | The workspace name in the Slack window title: `<channel> (Channel) - <workspace> - Slack` |
+| Markup mode | `on` | Slack > Settings > Advanced > *Format messages with markup*. `on`: write Slack markup in `--text`; `off`: use `--html` for formatting |
 
 ## Channels
 

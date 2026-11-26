@@ -1,11 +1,12 @@
 """Offline checks for slack_post.py. Run: python3 -m unittest discover scripts"""
-import unittest
-
 import contextlib
 import io
 import sys
+import time
+import unittest
+from unittest import mock
 
-from slack_post import (RAW_TOKEN, after_send, conversation_from_url, main, normalize, open_conversation,
+from slack_post import (RAW_TOKEN, composer_text, after_send, conversation_from_url, main, normalize, open_conversation,
                         send_button_for, should_refocus, sidebar_target)
 import slack_post
 
@@ -190,6 +191,88 @@ class FocusTest(unittest.TestCase):
         self.assertTrue(focus.activating())
         self.assertIsNone(focus.hand_back())
         self.assertEqual(self.calls, [])
+
+
+class ComposerTextTest(unittest.TestCase):
+    def test_newlines_become_single_line_separators(self):
+        self.assertEqual(composer_text("a\nb\r\nc"), "a\u2028b\u2028c")
+
+
+class InputWatchTest(unittest.TestCase):
+    def test_tapped_keypress_counts_when_system_idle_timer_misses_it(self):
+        import Quartz
+
+        kind = Quartz.kCGEventKeyDown
+        saved = slack_post.InputWatch.last.get(kind)
+        slack_post.InputWatch.last[kind] = time.monotonic() - 0.2
+        try:
+            self.assertLess(slack_post.seconds_since_keypress(), 0.5)
+        finally:
+            if saved is None:
+                slack_post.InputWatch.last.pop(kind, None)
+            else:
+                slack_post.InputWatch.last[kind] = saved
+
+    def test_time_before_the_tap_started_is_not_a_pause(self):
+        import Quartz
+
+        kind = Quartz.kCGEventKeyDown
+        with mock.patch.dict(slack_post.InputWatch.last, clear=True), \
+                mock.patch.object(slack_post.InputWatch, "started", time.monotonic() - 1):
+            self.assertLess(slack_post.InputWatch.since(kind), 2)
+
+
+class TypingPauseTest(unittest.TestCase):
+    def test_stopped_listener_never_counts_as_a_pause(self):
+        with mock.patch.object(slack_post, "_pause_deadline", None), \
+                mock.patch.object(slack_post.InputWatch, "running", False), \
+                mock.patch.object(slack_post, "seconds_since_keypress", return_value=999):
+            self.assertFalse(slack_post.wait_for_typing_pause())
+
+    def test_conversation_change_during_the_wait_blocks_the_paste(self):
+        paste = object()
+        tree = {"AXMenuBar": "bar", ("bar", "AXChildren"): ["edit"], ("edit", "AXTitle"): "Edit",
+                ("edit", "AXChildren"): ["group"], ("group", "AXChildren"): [paste], (paste, "AXTitle"): "Paste",
+                ("box", "AXValue"): ""}
+
+        def attr(e, name):
+            return tree.get(name) if name == "AXMenuBar" else tree.get((e, name))
+
+        focus, perform = mock.Mock(), mock.Mock()
+        with mock.patch.object(slack_post.InputWatch, "running", True), \
+                mock.patch.object(slack_post, "wait_for_typing_pause", return_value=True):
+            got = slack_post.paste_rich(1, "box", "<b>x</b>", "x", attr, mock.Mock(), perform, focus,
+                                        lambda: False)
+        self.assertEqual(got, "moved")
+        perform.assert_not_called()
+        focus.activating.assert_not_called()
+
+    def test_typing_during_the_checks_waits_again_before_slack_comes_forward(self):
+        paste = object()
+        tree = {"AXMenuBar": "bar", ("bar", "AXChildren"): ["edit"], ("edit", "AXTitle"): "Edit",
+                ("edit", "AXChildren"): ["group"], ("group", "AXChildren"): [paste], (paste, "AXTitle"): "Paste",
+                ("box", "AXValue"): ""}
+
+        def attr(e, name):
+            return tree.get(name) if name == "AXMenuBar" else tree.get((e, name))
+
+        focus = mock.Mock()
+        focus.activating.return_value = False
+        with mock.patch.object(slack_post.InputWatch, "running", True), \
+                mock.patch.object(slack_post, "wait_for_typing_pause", return_value=True) as wait, \
+                mock.patch.object(slack_post, "seconds_since_keypress", side_effect=[0, 999]):
+            slack_post.paste_rich(1, "box", "<b>x</b>", "x", attr, mock.Mock(), mock.Mock(), focus, lambda: True)
+        self.assertEqual(wait.call_count, 2)
+
+    def test_all_waits_in_a_run_share_one_deadline(self):
+        with mock.patch.object(slack_post, "_pause_deadline", None), \
+                mock.patch.object(slack_post.InputWatch, "running", True), \
+                mock.patch.object(slack_post, "seconds_since_keypress", return_value=0), \
+                mock.patch.object(slack_post.time, "sleep"):
+            self.assertFalse(slack_post.wait_for_typing_pause(timeout=0.05))
+            begun = time.time()
+            self.assertFalse(slack_post.wait_for_typing_pause(timeout=60))
+            self.assertLess(time.time() - begun, 1)
 
 
 class AfterSendTest(unittest.TestCase):
